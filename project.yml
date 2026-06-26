@@ -1,0 +1,39 @@
+name: AgentSecretVault
+
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+
+targets:
+  VaultCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Sources/VaultCore
+
+  VaultCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Tests/VaultCoreTests
+    dependencies:
+      - target: VaultCore
+
+schemes:
+  VaultCore:
+    build:
+      targets:
+        VaultCore: all
+        VaultCoreTests:
+          - test
+    test:
+      targets:
+        - VaultCoreTests
