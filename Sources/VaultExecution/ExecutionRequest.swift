@@ -1,7 +1,7 @@
 import VaultAuthorization
 import VaultCore
 
-public struct ExecutionRequest: Sendable {
+public struct ExecutionRequest: Codable, Equatable, Sendable {
     public let templateID: String
     public var executable: String
     public var values: [String: String]

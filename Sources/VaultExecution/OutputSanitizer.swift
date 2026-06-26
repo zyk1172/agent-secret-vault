@@ -1,6 +1,6 @@
 import Foundation
 
-public enum OutputQuarantineReason: Equatable, Sendable {
+public enum OutputQuarantineReason: String, Codable, Equatable, Sendable {
     case binaryOutput
     case invalidUTF8
     case emptySecretMaterial

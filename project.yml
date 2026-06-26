@@ -50,6 +50,19 @@ targets:
       - target: VaultCore
       - target: VaultAuthorization
 
+  VaultIPC:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Sources/VaultIPC
+    dependencies:
+      - target: VaultCore
+      - target: VaultExecution
+
   AgentSecretVaultApp:
     type: framework
     platform: macOS
@@ -105,6 +118,20 @@ targets:
       - target: VaultCore
       - target: VaultAuthorization
 
+  VaultIPCTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Tests/VaultIPCTests
+    dependencies:
+      - target: VaultIPC
+      - target: VaultCore
+      - target: VaultExecution
+
 schemes:
   VaultCore:
     build:
@@ -146,3 +173,13 @@ schemes:
     test:
       targets:
         - VaultExecutionTests
+
+  VaultIPC:
+    build:
+      targets:
+        VaultIPC: all
+        VaultIPCTests:
+          - test
+    test:
+      targets:
+        - VaultIPCTests

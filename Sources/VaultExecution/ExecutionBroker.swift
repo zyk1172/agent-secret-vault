@@ -19,9 +19,52 @@ public enum ExecutionBrokerError: Error, Equatable, Sendable {
     case sanitizedOutputInvalidUTF8
 }
 
-public enum SanitizedExecutionResult: Equatable, Sendable {
+public enum SanitizedExecutionResult: Codable, Equatable, Sendable {
     case completed(exitCode: Int32, stdout: String, stderr: String)
     case quarantined(reason: OutputQuarantineReason)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case exitCode
+        case stdout
+        case stderr
+        case reason
+    }
+
+    private enum ResultType: String, Codable {
+        case completed
+        case quarantined
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(ResultType.self, forKey: .type) {
+        case .completed:
+            self = .completed(
+                exitCode: try container.decode(Int32.self, forKey: .exitCode),
+                stdout: try container.decode(String.self, forKey: .stdout),
+                stderr: try container.decode(String.self, forKey: .stderr)
+            )
+        case .quarantined:
+            self = .quarantined(
+                reason: try container.decode(OutputQuarantineReason.self, forKey: .reason)
+            )
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .completed(exitCode, stdout, stderr):
+            try container.encode(ResultType.completed, forKey: .type)
+            try container.encode(exitCode, forKey: .exitCode)
+            try container.encode(stdout, forKey: .stdout)
+            try container.encode(stderr, forKey: .stderr)
+        case let .quarantined(reason):
+            try container.encode(ResultType.quarantined, forKey: .type)
+            try container.encode(reason, forKey: .reason)
+        }
+    }
 }
 
 public struct VaultSecretResolver: SecretResolving {
