@@ -132,6 +132,16 @@ targets:
       - target: VaultCore
       - target: VaultExecution
 
+  LeakTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Tests/LeakTests
+
 schemes:
   VaultCore:
     build:
@@ -160,9 +170,12 @@ schemes:
         AgentSecretVault: all
         VaultAuthorizationTests:
           - test
+        LeakTests:
+          - test
     test:
       targets:
         - VaultAuthorizationTests
+        - LeakTests
 
   VaultExecution:
     build:

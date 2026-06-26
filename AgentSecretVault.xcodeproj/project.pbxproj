@@ -27,6 +27,7 @@
 		3C0EF4F70DE68663E926B3E6 /* FoundationProcessRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CFD32C707884AB57296B2DC /* FoundationProcessRunnerTests.swift */; };
 		43DDF1E6C39DF77CF3ACECBA /* VaultIPC.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8347118BC278FC424612FB12 /* VaultIPC.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		470801D614D02E545372F074 /* SecureViewerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70F6620BED8EECC8639FE3F2 /* SecureViewerModelTests.swift */; };
+		4A7D39F5C07BA809524C7AE4 /* LeakFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211F11622B266D45650C39AB /* LeakFixtureTests.swift */; };
 		4E3B6533B15BF622D3B6D737 /* SecureViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BFFBA845365D35828E227A7 /* SecureViewerView.swift */; };
 		5270BF5749AD5CCB2CF09F46 /* UnixSocketServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC7F118BF83A43C32D12CDD6 /* UnixSocketServer.swift */; };
 		544051C7732DD36C1AB1ED3A /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
@@ -283,6 +284,7 @@
 		10E2A63DB743A413D156906A /* VaultCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VaultCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		152A604D4093E5ECB97E2DB0 /* VaultCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VaultCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		17906FCCA92001E35B05C859 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
+		211F11622B266D45650C39AB /* LeakFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeakFixtureTests.swift; sourceTree = "<group>"; };
 		230A0104310147543F599824 /* DeviceKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStoreTests.swift; sourceTree = "<group>"; };
 		2584C836A66EB8508C623312 /* AuditEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditEvent.swift; sourceTree = "<group>"; };
 		2CC02DFEE6424F6FBA1E99EF /* FileRecordStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRecordStoreTests.swift; sourceTree = "<group>"; };
@@ -327,6 +329,7 @@
 		A25504036D47D31EE4E7511B /* AgentSecretVaultApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSecretVaultApp.swift; sourceTree = "<group>"; };
 		A432CB8446238C66798AD338 /* RiskClass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RiskClass.swift; sourceTree = "<group>"; };
 		AFB210516492FB189FBE7BAC /* SecureViewerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureViewerModel.swift; sourceTree = "<group>"; };
+		B93F20B98265182A0BF4A5EA /* LeakTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LeakTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA1CC470853AA6288AEBE2E7 /* RecordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordStore.swift; sourceTree = "<group>"; };
 		BE70432F8DE10B5500959108 /* AgentSecretVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentSecretVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BE7F60B3C847EBA94E16143C /* ExecutionRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionRequest.swift; sourceTree = "<group>"; };
@@ -429,6 +432,7 @@
 			isa = PBXGroup;
 			children = (
 				CF2D6903358E783D7F8D39BF /* AgentSecretVaultApp */,
+				53140C300DCC84E4D88F8EDB /* LeakTests */,
 				3A5CB7585FA55C65AAED5DBF /* VaultAuthorization */,
 				2FCA4B2A071444F9A3341991 /* VaultAuthorizationTests */,
 				D303334CD9F7C3A8CEAF0432 /* VaultCore */,
@@ -495,6 +499,7 @@
 			children = (
 				BE70432F8DE10B5500959108 /* AgentSecretVault.app */,
 				63F5D406A6125C21AADB774C /* AgentSecretVaultApp.framework */,
+				B93F20B98265182A0BF4A5EA /* LeakTests.xctest */,
 				873C5E8748C746C1969B5989 /* VaultAuthorization.framework */,
 				FBF2368932F9CC8076EE9BEB /* VaultAuthorizationTests.xctest */,
 				152A604D4093E5ECB97E2DB0 /* VaultCore.framework */,
@@ -517,6 +522,15 @@
 				BA1CC470853AA6288AEBE2E7 /* RecordStore.swift */,
 			);
 			path = Store;
+			sourceTree = "<group>";
+		};
+		53140C300DCC84E4D88F8EDB /* LeakTests */ = {
+			isa = PBXGroup;
+			children = (
+				211F11622B266D45650C39AB /* LeakFixtureTests.swift */,
+			);
+			name = LeakTests;
+			path = Tests/LeakTests;
 			sourceTree = "<group>";
 		};
 		5B60CEC039CCC10F967E1154 /* VaultExecution */ = {
@@ -681,6 +695,23 @@
 			productName = VaultCore;
 			productReference = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */;
 			productType = "com.apple.product-type.framework";
+		};
+		9227D2F55FB4803209A319E0 /* LeakTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E6260A892F10DB7C42053B00 /* Build configuration list for PBXNativeTarget "LeakTests" */;
+			buildPhases = (
+				AFCB821BB93E680F67A74C83 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LeakTests;
+			packageProductDependencies = (
+			);
+			productName = LeakTests;
+			productReference = B93F20B98265182A0BF4A5EA /* LeakTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		9F2E69B01BADE19D1D01BD87 /* VaultAuthorizationTests */ = {
 			isa = PBXNativeTarget;
@@ -852,6 +883,7 @@
 			targets = (
 				7903CCB8DDC2D9E64D67EF83 /* AgentSecretVault */,
 				DA878B25FC53EE16E95B63F8 /* AgentSecretVaultApp */,
+				9227D2F55FB4803209A319E0 /* LeakTests */,
 				AE5F1C6D2F8A37D4BCC25000 /* VaultAuthorization */,
 				9F2E69B01BADE19D1D01BD87 /* VaultAuthorizationTests */,
 				80070F72AE7434D0324B2C9D /* VaultCore */,
@@ -926,6 +958,14 @@
 				FE0A0C65F1BB294B697ABA95 /* SecretReferenceTests.swift in Sources */,
 				7FE86D50BE116091F855CCAC /* SmokeTests.swift in Sources */,
 				759967029B18E891FCF6F5C2 /* VaultCipherTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AFCB821BB93E680F67A74C83 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4A7D39F5C07BA809524C7AE4 /* LeakFixtureTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1149,6 +1189,22 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		3441755DC5B87258D9B64D3F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
@@ -1412,6 +1468,22 @@
 			};
 			name = Debug;
 		};
+		C6727DB43503B653B0AE5B45 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
 		CE0538908BA573D93499C52D /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1672,6 +1744,15 @@
 			buildConfigurations = (
 				02FD6FA3CC3D401C554F0DD3 /* Debug */,
 				F78751894CFEF2BD87F8A4B6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E6260A892F10DB7C42053B00 /* Build configuration list for PBXNativeTarget "LeakTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3441755DC5B87258D9B64D3F /* Debug */,
+				C6727DB43503B653B0AE5B45 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
