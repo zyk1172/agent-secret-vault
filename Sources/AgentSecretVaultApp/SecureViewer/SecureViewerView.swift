@@ -94,16 +94,20 @@ public struct SecureViewerView: View {
                 .font(.headline)
                 .foregroundStyle(.orange)
 
-            Text(displayText)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.disabled)
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(.quaternary, lineWidth: 1)
-                }
+            ScrollView {
+                Text(displayText)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.disabled)
+                    .privacySensitive()
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: 260, alignment: .topLeading)
+            .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(.quaternary, lineWidth: 1)
+            }
 
             HStack {
                 Button("Copy for 60 seconds · 复制 60 秒") {
