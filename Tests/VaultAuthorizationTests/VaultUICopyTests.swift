@@ -40,6 +40,15 @@ import Testing
     #expect(allChinese.contains("管理员或 root"))
 }
 
+@Test func clipboardBoundaryDoesNotClaimAppClipboardClearing() throws {
+    let clipboardBoundary = try #require(VaultUICopy.securityBoundaries.first { $0.id == "clipboard" })
+
+    #expect(clipboardBoundary.englishBody.contains("system clipboard"))
+    #expect(clipboardBoundary.chineseBody.contains("系统剪贴板"))
+    #expect(clipboardBoundary.englishBody.contains("The app clears") == false)
+    #expect(clipboardBoundary.chineseBody.contains("App 只会") == false)
+}
+
 @Test func secureViewerEmptyStateGivesActionableGuidance() {
     #expect(VaultUICopy.secureViewerEmptyTitle.english == "No plaintext is currently loaded.")
     #expect(VaultUICopy.secureViewerEmptyTitle.chinese == "当前没有载入明文。")

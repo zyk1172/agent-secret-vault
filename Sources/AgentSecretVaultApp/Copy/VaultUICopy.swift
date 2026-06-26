@@ -66,7 +66,7 @@ public enum VaultUICopy {
 
     public static let securityBoundaries: [SecurityBoundaryCopy] = [
         SecurityBoundaryCopy(id: "agent-plaintext", symbolName: "eye.slash", englishTitle: "Plaintext stays local", englishBody: "Agents never receive decrypted values.", chineseTitle: "明文留在本机", chineseBody: "Agent 不会收到解密后的值。", isLimitation: false),
-        SecurityBoundaryCopy(id: "clipboard", symbolName: "doc.on.clipboard", englishTitle: "Clipboard is explicit", englishBody: "Copy only when you are ready to paste immediately. The app clears only its own clipboard value if unchanged.", chineseTitle: "剪贴板必须显式使用", chineseBody: "只在准备立即粘贴时复制。App 只会在内容未被替换时清除自己写入的剪贴板内容。", isLimitation: false),
+        SecurityBoundaryCopy(id: "clipboard", symbolName: "doc.on.clipboard", englishTitle: "Clipboard is explicit", englishBody: "Copying places plaintext on the system clipboard. Paste immediately, then clear or overwrite the clipboard when finished.", chineseTitle: "剪贴板必须显式使用", chineseBody: "复制会把明文放入系统剪贴板。请立即粘贴，并在完成后清除或覆盖剪贴板。", isLimitation: false),
         SecurityBoundaryCopy(id: "risk-classes", symbolName: "touchid", englishTitle: "Fresh authorization for risk", englishBody: "Send, delete, and credential-change actions cannot reuse a read authorization.", chineseTitle: "高风险操作重新授权", chineseBody: "发送、删除和凭据变更不能复用读取授权。", isLimitation: false),
         SecurityBoundaryCopy(id: "excluded-threats", symbolName: "exclamationmark.triangle", englishTitle: "Local compromise is out of scope", englishBody: "This does not protect against malware running as the same macOS user, screen recording, or an attacker with administrator or root control.", chineseTitle: "本机失陷不在防御范围内", chineseBody: "这不能防御以同一 macOS 用户身份运行的恶意软件、屏幕录制，或拥有管理员或 root 权限的攻击者。", isLimitation: true)
     ]
