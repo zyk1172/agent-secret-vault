@@ -48,7 +48,9 @@
 		90BBDCFCE2A59C5B1FEB3C6D /* EncryptSelectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E838C75776FBAFAE527F127 /* EncryptSelectionCoordinator.swift */; };
 		954056E5B84809E03489F5BD /* VaultIPC.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8347118BC278FC424612FB12 /* VaultIPC.framework */; };
 		9B9282C6D5109C80CDE49E47 /* AgentSecretVaultApp.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 63F5D406A6125C21AADB774C /* AgentSecretVaultApp.framework */; };
+		9CA5D51B4B7F4E31567D607C /* MasterKeyCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBFAD3C60A94D0736DFC3FEE /* MasterKeyCoordinatorTests.swift */; };
 		9D2957976899BE565CB55FF6 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A32D3D9C633F8718F4CB18EC /* RecoveryKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70C84A29C4675B2DC09B4411 /* RecoveryKeyStore.swift */; };
 		A3B6CB397B3FCDA9AB98097B /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
 		A6B2C533DB06B3DE7B7805ED /* VaultExecution.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 44E711499A79A5F3591E9CBF /* VaultExecution.framework */; };
 		A9DB4251AD407A3AA08E3AED /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
@@ -68,6 +70,7 @@
 		E6F2BBB724669D211C445F21 /* FileRecordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CC02DFEE6424F6FBA1E99EF /* FileRecordStoreTests.swift */; };
 		E9AC8C529DF4B6A9F0091232 /* VaultCipher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C043479279EF8194EEB17D71 /* VaultCipher.swift */; };
 		ED22B3BEB9E258BF9185D828 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F23629CE7ADF68B2F5B11B94 /* MasterKeyCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44F6255CBDC64D728D47A0DF /* MasterKeyCoordinator.swift */; };
 		F349FE47AD62FE03DB8A438C /* ExecutionBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECE0ABA382348646E9F9859E /* ExecutionBroker.swift */; };
 		F3AB50E4571CEDA56EA33B71 /* TemplateValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E8A2D1F69A190F408BD83E6 /* TemplateValidatorTests.swift */; };
 		F3DADE550489AAAAEBDA7D0F /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
@@ -280,6 +283,7 @@
 		3E8A2D1F69A190F408BD83E6 /* TemplateValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateValidatorTests.swift; sourceTree = "<group>"; };
 		41D8E80AB31BB877B700B09E /* BiometricAuthorizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricAuthorizing.swift; sourceTree = "<group>"; };
 		44E711499A79A5F3591E9CBF /* VaultExecution.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VaultExecution.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		44F6255CBDC64D728D47A0DF /* MasterKeyCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyCoordinator.swift; sourceTree = "<group>"; };
 		45DA451A56B15C8D880CB7B7 /* ExecutionTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionTemplate.swift; sourceTree = "<group>"; };
 		48DD5765E2D0221E04B18023 /* VaultIPCTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VaultIPCTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E838C75776FBAFAE527F127 /* EncryptSelectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptSelectionCoordinator.swift; sourceTree = "<group>"; };
@@ -292,6 +296,7 @@
 		64779477930C89D60B24982F /* SelectionReplacing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionReplacing.swift; sourceTree = "<group>"; };
 		6C657BE2EC6158989B14BCFA /* OutputSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputSanitizer.swift; sourceTree = "<group>"; };
 		6DD6728F4B44BF37B56BCCC1 /* AuthorizationSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorizationSessionTests.swift; sourceTree = "<group>"; };
+		70C84A29C4675B2DC09B4411 /* RecoveryKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryKeyStore.swift; sourceTree = "<group>"; };
 		70F6620BED8EECC8639FE3F2 /* SecureViewerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureViewerModelTests.swift; sourceTree = "<group>"; };
 		732CC92EF3064CA06721A5DC /* IPCMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPCMessageTests.swift; sourceTree = "<group>"; };
 		7416E0E120A257AAFC8D8EB1 /* LocalAuthenticator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAuthenticator.swift; sourceTree = "<group>"; };
@@ -313,6 +318,7 @@
 		C043479279EF8194EEB17D71 /* VaultCipher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipher.swift; sourceTree = "<group>"; };
 		D22F43DF3B68F1294A79AE16 /* EncryptedRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedRecord.swift; sourceTree = "<group>"; };
 		D4FEB24A0D31161000986EA2 /* VaultCipherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipherTests.swift; sourceTree = "<group>"; };
+		DBFAD3C60A94D0736DFC3FEE /* MasterKeyCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyCoordinatorTests.swift; sourceTree = "<group>"; };
 		ECE0ABA382348646E9F9859E /* ExecutionBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionBroker.swift; sourceTree = "<group>"; };
 		FBF2368932F9CC8076EE9BEB /* VaultAuthorizationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VaultAuthorizationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC7F118BF83A43C32D12CDD6 /* UnixSocketServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnixSocketServer.swift; sourceTree = "<group>"; };
@@ -437,6 +443,7 @@
 				6DD6728F4B44BF37B56BCCC1 /* AuthorizationSessionTests.swift */,
 				230A0104310147543F599824 /* DeviceKeyStoreTests.swift */,
 				9475BA82BE21180CC54725D5 /* EncryptSelectionCoordinatorTests.swift */,
+				DBFAD3C60A94D0736DFC3FEE /* MasterKeyCoordinatorTests.swift */,
 				70F6620BED8EECC8639FE3F2 /* SecureViewerModelTests.swift */,
 			);
 			name = VaultAuthorizationTests;
@@ -450,6 +457,8 @@
 				41D8E80AB31BB877B700B09E /* BiometricAuthorizing.swift */,
 				17906FCCA92001E35B05C859 /* DeviceKeyStore.swift */,
 				7416E0E120A257AAFC8D8EB1 /* LocalAuthenticator.swift */,
+				44F6255CBDC64D728D47A0DF /* MasterKeyCoordinator.swift */,
+				70C84A29C4675B2DC09B4411 /* RecoveryKeyStore.swift */,
 				A432CB8446238C66798AD338 /* RiskClass.swift */,
 			);
 			name = VaultAuthorization;
@@ -888,6 +897,7 @@
 				1572006CADBDB81555FEE30A /* AuthorizationSessionTests.swift in Sources */,
 				855D4EAB807F3C6D9E6D2B3F /* DeviceKeyStoreTests.swift in Sources */,
 				0EA762CFF629300107D2C1A7 /* EncryptSelectionCoordinatorTests.swift in Sources */,
+				9CA5D51B4B7F4E31567D607C /* MasterKeyCoordinatorTests.swift in Sources */,
 				470801D614D02E545372F074 /* SecureViewerModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -911,6 +921,8 @@
 				0C10F85F60D5002DD22ABBC3 /* BiometricAuthorizing.swift in Sources */,
 				6121EC1FDA447E4DA09E0EEC /* DeviceKeyStore.swift in Sources */,
 				13D5B5D46C7995CFABB452A3 /* LocalAuthenticator.swift in Sources */,
+				F23629CE7ADF68B2F5B11B94 /* MasterKeyCoordinator.swift in Sources */,
+				A32D3D9C633F8718F4CB18EC /* RecoveryKeyStore.swift in Sources */,
 				2CE0631F6417C573C50CF552 /* RiskClass.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
