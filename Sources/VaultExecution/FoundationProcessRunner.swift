@@ -188,11 +188,11 @@ private final class FoundationProcessRunState: @unchecked Sendable {
 
     private func markAndTerminate(_ finishReason: FoundationProcessFinishReason) {
         lock.withLock {
+            guard let process, process.isRunning else { return }
+
             if reason == nil {
                 reason = finishReason
             }
-
-            guard let process, process.isRunning else { return }
 
             process.terminate()
         }
