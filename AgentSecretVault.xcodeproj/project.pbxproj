@@ -33,6 +33,7 @@
 		759967029B18E891FCF6F5C2 /* VaultCipherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FEB24A0D31161000986EA2 /* VaultCipherTests.swift */; };
 		7DF4057817940312452A40A6 /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 873C5E8748C746C1969B5989 /* VaultAuthorization.framework */; };
 		7E8E998F6C375013C483E4CF /* VaultCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B341FE47429FE4DC462C267 /* VaultCore.swift */; };
+		7F91E0E71A9803CD0FED6B33 /* ExecutionBrokerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 068F6017BFABC0F9F724DDC6 /* ExecutionBrokerTests.swift */; };
 		7FE86D50BE116091F855CCAC /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30AE4B82C55D540C574C7429 /* SmokeTests.swift */; };
 		8178653BA2E48771E9BD5772 /* AuthorizationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D516329714201C601649E90 /* AuthorizationSession.swift */; };
 		855D4EAB807F3C6D9E6D2B3F /* DeviceKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230A0104310147543F599824 /* DeviceKeyStoreTests.swift */; };
@@ -55,6 +56,7 @@
 		E6F2BBB724669D211C445F21 /* FileRecordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CC02DFEE6424F6FBA1E99EF /* FileRecordStoreTests.swift */; };
 		E9AC8C529DF4B6A9F0091232 /* VaultCipher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C043479279EF8194EEB17D71 /* VaultCipher.swift */; };
 		ED22B3BEB9E258BF9185D828 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F349FE47AD62FE03DB8A438C /* ExecutionBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECE0ABA382348646E9F9859E /* ExecutionBroker.swift */; };
 		F3AB50E4571CEDA56EA33B71 /* TemplateValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E8A2D1F69A190F408BD83E6 /* TemplateValidatorTests.swift */; };
 		F3DADE550489AAAAEBDA7D0F /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
 		F72022F358BD9ED045667C6C /* RecordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1CC470853AA6288AEBE2E7 /* RecordStore.swift */; };
@@ -205,6 +207,7 @@
 /* Begin PBXFileReference section */
 		0047E32E5D06B11C5797C871 /* SecretReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretReference.swift; sourceTree = "<group>"; };
 		00E92A9526712032B801FB78 /* FileRecordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRecordStore.swift; sourceTree = "<group>"; };
+		068F6017BFABC0F9F724DDC6 /* ExecutionBrokerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionBrokerTests.swift; sourceTree = "<group>"; };
 		10E2A63DB743A413D156906A /* VaultCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VaultCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		152A604D4093E5ECB97E2DB0 /* VaultCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VaultCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		17906FCCA92001E35B05C859 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
@@ -245,6 +248,7 @@
 		C043479279EF8194EEB17D71 /* VaultCipher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipher.swift; sourceTree = "<group>"; };
 		D22F43DF3B68F1294A79AE16 /* EncryptedRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedRecord.swift; sourceTree = "<group>"; };
 		D4FEB24A0D31161000986EA2 /* VaultCipherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipherTests.swift; sourceTree = "<group>"; };
+		ECE0ABA382348646E9F9859E /* ExecutionBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionBroker.swift; sourceTree = "<group>"; };
 		FBF2368932F9CC8076EE9BEB /* VaultAuthorizationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VaultAuthorizationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -331,6 +335,7 @@
 		20A4FB4ABF23B629BE7B1D73 /* VaultExecutionTests */ = {
 			isa = PBXGroup;
 			children = (
+				068F6017BFABC0F9F724DDC6 /* ExecutionBrokerTests.swift */,
 				5CFD32C707884AB57296B2DC /* FoundationProcessRunnerTests.swift */,
 				5C4470975586A86A2B51BEC4 /* OutputSanitizerTests.swift */,
 				3E8A2D1F69A190F408BD83E6 /* TemplateValidatorTests.swift */,
@@ -400,6 +405,7 @@
 		5B60CEC039CCC10F967E1154 /* VaultExecution */ = {
 			isa = PBXGroup;
 			children = (
+				ECE0ABA382348646E9F9859E /* ExecutionBroker.swift */,
 				BE7F60B3C847EBA94E16143C /* ExecutionRequest.swift */,
 				45DA451A56B15C8D880CB7B7 /* ExecutionTemplate.swift */,
 				76624FFF725B93374AD31F93 /* FoundationProcessRunner.swift */,
@@ -677,6 +683,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F349FE47AD62FE03DB8A438C /* ExecutionBroker.swift in Sources */,
 				1B452D75C8772703CE489968 /* ExecutionRequest.swift in Sources */,
 				C2B3AFC5FF41064C34641832 /* ExecutionTemplate.swift in Sources */,
 				F76B0CAB0F203046E5360B40 /* FoundationProcessRunner.swift in Sources */,
@@ -726,6 +733,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7F91E0E71A9803CD0FED6B33 /* ExecutionBrokerTests.swift in Sources */,
 				3C0EF4F70DE68663E926B3E6 /* FoundationProcessRunnerTests.swift in Sources */,
 				D7CC3506688C0823474CA53A /* OutputSanitizerTests.swift in Sources */,
 				F3AB50E4571CEDA56EA33B71 /* TemplateValidatorTests.swift in Sources */,
