@@ -9,7 +9,7 @@ struct AgentSecretVaultApplication: App {
 
     var body: some Scene {
         WindowGroup {
-            SecureViewerView(model: secureViewerModel)
+            VaultDashboardView(secureViewerModel: secureViewerModel)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                     secureViewerModel.handleFocusChanged(isFocused: false)
                 }
