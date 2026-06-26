@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "validate-secret-output",
+      "description": "Blocks plaintext-shaped Agent Secret Vault output. Never request plaintext from MCP. Never echo resolved credentials. Use `secret://` references.",
+      "events": [
+        "tool_result"
+      ],
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/hooks/validate_secret_output.js"
+      ]
+    }
+  ]
+}

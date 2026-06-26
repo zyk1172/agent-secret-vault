@@ -1,0 +1,35 @@
+{
+  "name": "agent-secret-vault",
+  "version": "0.1.0",
+  "description": "Use a local macOS vault for encrypted agent secrets without returning plaintext to Codex.",
+  "author": {
+    "name": "Local developer"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "secrets",
+    "encryption",
+    "mcp",
+    "macos"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Secret Vault",
+    "shortDescription": "Use encrypted secret references without exposing plaintext.",
+    "longDescription": "Agent Secret Vault connects Codex to a local macOS app over authenticated IPC. Codex can request status, create secret references, request local reveal, and run secure executions, but plaintext remains in the app boundary.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "MCP",
+      "Local",
+      "Security"
+    ],
+    "defaultPrompt": [
+      "Show vault status.",
+      "Create a secret reference from selected text.",
+      "Run a secure command using secret:// references."
+    ],
+    "brandColor": "#0F766E"
+  },
+  "mcpServers": "./.mcp.json"
+}

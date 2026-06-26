@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "agent-secret-vault": {
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/../../mcp-server/dist/server.js"
+      ]
+    }
+  }
+}
