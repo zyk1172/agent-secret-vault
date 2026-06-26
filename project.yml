@@ -37,6 +37,19 @@ targets:
     sources:
       - Sources/VaultAuthorization
 
+  VaultExecution:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Sources/VaultExecution
+    dependencies:
+      - target: VaultCore
+      - target: VaultAuthorization
+
   AgentSecretVaultApp:
     type: framework
     platform: macOS
@@ -78,6 +91,20 @@ targets:
       - target: VaultCore
       - target: AgentSecretVaultApp
 
+  VaultExecutionTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Tests/VaultExecutionTests
+    dependencies:
+      - target: VaultExecution
+      - target: VaultCore
+      - target: VaultAuthorization
+
 schemes:
   VaultCore:
     build:
@@ -109,3 +136,13 @@ schemes:
     test:
       targets:
         - VaultAuthorizationTests
+
+  VaultExecution:
+    build:
+      targets:
+        VaultExecution: all
+        VaultExecutionTests:
+          - test
+    test:
+      targets:
+        - VaultExecutionTests
