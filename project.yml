@@ -45,10 +45,24 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
     sources:
-      - Sources/AgentSecretVaultApp
+      - path: Sources/AgentSecretVaultApp
+        excludes:
+          - AgentSecretVaultApp.swift
     dependencies:
       - target: VaultCore
       - target: VaultAuthorization
+
+  AgentSecretVault:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    productName: AgentSecretVault
+    sources:
+      - Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift
+    info:
+      path: Config/Info.plist
+    dependencies:
+      - target: AgentSecretVaultApp
 
   VaultAuthorizationTests:
     type: bundle.unit-test
@@ -80,6 +94,16 @@ schemes:
       targets:
         VaultAuthorization: all
         AgentSecretVaultApp: all
+        VaultAuthorizationTests:
+          - test
+    test:
+      targets:
+        - VaultAuthorizationTests
+
+  AgentSecretVault:
+    build:
+      targets:
+        AgentSecretVault: all
         VaultAuthorizationTests:
           - test
     test:
