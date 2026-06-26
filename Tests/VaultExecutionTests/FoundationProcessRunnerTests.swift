@@ -1,0 +1,94 @@
+import Foundation
+import Testing
+@testable import VaultExecution
+
+@Test func directRunnerDoesNotInvokeShellForMetacharacters() async throws {
+    let runner = FoundationProcessRunner()
+    let result = try await runner.run(
+        ProcessInvocation(
+            executable: "/usr/bin/printf",
+            arguments: ["%s", "hello; echo injected"]
+        ),
+        stdin: Data(),
+        timeout: .seconds(2),
+        outputLimitBytes: 1_024
+    )
+
+    #expect(result.exitCode == 0)
+    #expect(String(decoding: result.stdout, as: UTF8.self) == "hello; echo injected")
+    #expect(result.stderr.isEmpty)
+}
+
+@Test func directRunnerDoesNotExpandEnvironmentVariablesThroughShell() async throws {
+    let runner = FoundationProcessRunner()
+    let result = try await runner.run(
+        ProcessInvocation(
+            executable: "/usr/bin/env",
+            arguments: ["/usr/bin/printf", "%s", "$HOME"]
+        ),
+        stdin: Data(),
+        timeout: .seconds(2),
+        outputLimitBytes: 1_024
+    )
+
+    #expect(result.exitCode == 0)
+    #expect(String(decoding: result.stdout, as: UTF8.self) == "$HOME")
+    #expect(result.stderr.isEmpty)
+}
+
+@Test func timeoutTerminatesLongRunningProcess() async throws {
+    let runner = FoundationProcessRunner()
+
+    await expectRunError(.timedOut) {
+        _ = try await runner.run(
+            ProcessInvocation(executable: "/bin/sleep", arguments: ["5"]),
+            stdin: Data(),
+            timeout: .milliseconds(100),
+            outputLimitBytes: 1_024
+        )
+    }
+}
+
+@Test func outputLargerThanLimitIsRejected() async throws {
+    let runner = FoundationProcessRunner()
+
+    await expectRunError(.outputLimitExceeded) {
+        _ = try await runner.run(
+            ProcessInvocation(executable: "/usr/bin/yes", arguments: ["x"]),
+            stdin: Data(),
+            timeout: .seconds(2),
+            outputLimitBytes: 1_024
+        )
+    }
+}
+
+@Test func stdinIsClosedAfterSuppliedBytes() async throws {
+    let runner = FoundationProcessRunner()
+    let result = try await runner.run(
+        ProcessInvocation(
+            executable: "/usr/bin/env",
+            arguments: ["/bin/cat"]
+        ),
+        stdin: Data("sealed input".utf8),
+        timeout: .seconds(2),
+        outputLimitBytes: 1_024
+    )
+
+    #expect(result.exitCode == 0)
+    #expect(String(decoding: result.stdout, as: UTF8.self) == "sealed input")
+    #expect(result.stderr.isEmpty)
+}
+
+private func expectRunError(
+    _ expected: ProcessRunError,
+    performing operation: () async throws -> Void
+) async {
+    do {
+        try await operation()
+        Issue.record("Expected \(expected), but process execution succeeded.")
+    } catch let error as ProcessRunError {
+        #expect(error == expected)
+    } catch {
+        Issue.record("Expected \(expected), but caught \(error).")
+    }
+}
