@@ -35,7 +35,7 @@ public struct SecureViewerView: View {
 
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(VaultUICopy.clipboardWarning.english) \(VaultUICopy.clipboardWarning.chinese) The app will clear the clipboard only if nothing else has replaced it.")
+            Text("Copy only when you are ready to paste immediately. Plaintext will be placed on the system clipboard; clear or overwrite it when finished. 只在准备立即粘贴时复制。明文会进入系统剪贴板；完成后请清除或覆盖它。")
         }
     }
 
@@ -120,10 +120,10 @@ public struct SecureViewerView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            Text("Copy only when ready to paste immediately. Clipboard clearing is best-effort and app-owned only.")
+            Text("Copy only when ready to paste immediately. Plaintext copied to the system clipboard remains available until you clear or overwrite it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("只在准备立即粘贴时复制。剪贴板清除是尽力而为，并且只清除本 App 写入且未被替换的内容。")
+            Text("只在准备立即粘贴时复制。复制到系统剪贴板的明文会保留到你清除或覆盖它。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
