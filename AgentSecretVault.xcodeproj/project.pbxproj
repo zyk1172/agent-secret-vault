@@ -8,11 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		72A9C281322BC8D176CA6BF7 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		73D74F23B91F4B9C8E61D62A /* RandomBytes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25B5068E35B4B25A7B196EF /* RandomBytes.swift */; };
 		7B5DC86B403349EBA8F55FE4 /* SecretReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C1842FC72B5469BB2F8F54C /* SecretReference.swift */; };
 		7E8E998F6C375013C483E4CF /* VaultCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B341FE47429FE4DC462C267 /* VaultCore.swift */; };
 		7FE86D50BE116091F855CCAC /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30AE4B82C55D540C574C7429 /* SmokeTests.swift */; };
 		9DD68F0DCE8E4A188885BD68 /* SecretReferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C88D5F0F3D4EFCAC25C43F /* SecretReferenceTests.swift */; };
+		A62B1D6AC9A84D85A0F1E9B2 /* VaultCipherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4E0E5F5D7B44B19A2E8C6D0 /* VaultCipherTests.swift */; };
 		AB53EB2556514911B577539A /* EncryptedRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3485F744510D49879A74F247 /* EncryptedRecord.swift */; };
+		D985CA75897D4338904BD545 /* VaultCipher.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B0B6291D73466A9C7E9F43 /* VaultCipher.swift */; };
 		FDE5D3FB0B2CB3A52D586F8E /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
 /* End PBXBuildFile section */
 
@@ -48,6 +51,9 @@
 		37C88D5F0F3D4EFCAC25C43F /* SecretReferenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretReferenceTests.swift; sourceTree = "<group>"; };
 		3C1842FC72B5469BB2F8F54C /* SecretReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretReference.swift; sourceTree = "<group>"; };
 		5B341FE47429FE4DC462C267 /* VaultCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCore.swift; sourceTree = "<group>"; };
+		B4E0E5F5D7B44B19A2E8C6D0 /* VaultCipherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipherTests.swift; sourceTree = "<group>"; };
+		D25B5068E35B4B25A7B196EF /* RandomBytes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RandomBytes.swift; sourceTree = "<group>"; };
+		F0B0B6291D73466A9C7E9F43 /* VaultCipher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipher.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,6 +91,7 @@
 			children = (
 				30AE4B82C55D540C574C7429 /* SmokeTests.swift */,
 				37C88D5F0F3D4EFCAC25C43F /* SecretReferenceTests.swift */,
+				B4E0E5F5D7B44B19A2E8C6D0 /* VaultCipherTests.swift */,
 			);
 			name = VaultCoreTests;
 			path = Tests/VaultCoreTests;
@@ -99,9 +106,19 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
+		D0B65E67E0634BE38CF2C1D0 /* Crypto */ = {
+			isa = PBXGroup;
+			children = (
+				D25B5068E35B4B25A7B196EF /* RandomBytes.swift */,
+				F0B0B6291D73466A9C7E9F43 /* VaultCipher.swift */,
+			);
+			path = Crypto;
+			sourceTree = "<group>";
+		};
 		D303334CD9F7C3A8CEAF0432 /* VaultCore */ = {
 			isa = PBXGroup;
 			children = (
+				D0B65E67E0634BE38CF2C1D0 /* Crypto */,
 				C824059946814DC0ADCB7E91 /* Models */,
 				5B341FE47429FE4DC462C267 /* VaultCore.swift */,
 			);
@@ -186,7 +203,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				AB53EB2556514911B577539A /* EncryptedRecord.swift in Sources */,
+				73D74F23B91F4B9C8E61D62A /* RandomBytes.swift in Sources */,
 				7B5DC86B403349EBA8F55FE4 /* SecretReference.swift in Sources */,
+				D985CA75897D4338904BD545 /* VaultCipher.swift in Sources */,
 				7E8E998F6C375013C483E4CF /* VaultCore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -197,6 +216,7 @@
 			files = (
 				7FE86D50BE116091F855CCAC /* SmokeTests.swift in Sources */,
 				9DD68F0DCE8E4A188885BD68 /* SecretReferenceTests.swift in Sources */,
+				A62B1D6AC9A84D85A0F1E9B2 /* VaultCipherTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
