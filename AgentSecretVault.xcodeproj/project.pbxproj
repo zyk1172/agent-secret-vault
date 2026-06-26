@@ -21,6 +21,7 @@
 		30FE43E16AC503F880C2939C /* FileRecordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00E92A9526712032B801FB78 /* FileRecordStore.swift */; };
 		33E2BE31F96401366B38415D /* VaultExecution.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 44E711499A79A5F3591E9CBF /* VaultExecution.framework */; };
 		376BD20EAEF0D334B379D6E0 /* TemplateValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89E213269F2B56F80660D182 /* TemplateValidator.swift */; };
+		39AA4F34F344E2AB0ED8253F /* OutputSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C657BE2EC6158989B14BCFA /* OutputSanitizer.swift */; };
 		3C0EF4F70DE68663E926B3E6 /* FoundationProcessRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CFD32C707884AB57296B2DC /* FoundationProcessRunnerTests.swift */; };
 		470801D614D02E545372F074 /* SecureViewerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70F6620BED8EECC8639FE3F2 /* SecureViewerModelTests.swift */; };
 		4E3B6533B15BF622D3B6D737 /* SecureViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BFFBA845365D35828E227A7 /* SecureViewerView.swift */; };
@@ -47,6 +48,7 @@
 		CF5D1C60E5F36DCD82EE6802 /* AgentSecretVaultApp.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 63F5D406A6125C21AADB774C /* AgentSecretVaultApp.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D11C3205AB6D2D2C46701C92 /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 873C5E8748C746C1969B5989 /* VaultAuthorization.framework */; };
 		D7730ED7F2FE012B27E8796C /* EncryptedRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22F43DF3B68F1294A79AE16 /* EncryptedRecord.swift */; };
+		D7CC3506688C0823474CA53A /* OutputSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C4470975586A86A2B51BEC4 /* OutputSanitizerTests.swift */; };
 		E0DC1F8C4AF313C9610D8EB1 /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 873C5E8748C746C1969B5989 /* VaultAuthorization.framework */; };
 		E1F886DD66891F419F1D6641 /* EncryptSelectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 398F0C1CE97710B6C1E140E0 /* EncryptSelectionService.swift */; };
 		E2A1B681D23127C4513C9C5D /* AgentSecretVaultApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25504036D47D31EE4E7511B /* AgentSecretVaultApp.swift */; };
@@ -218,10 +220,12 @@
 		4E838C75776FBAFAE527F127 /* EncryptSelectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptSelectionCoordinator.swift; sourceTree = "<group>"; };
 		595445285D2BAB088369475A /* RandomBytes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RandomBytes.swift; sourceTree = "<group>"; };
 		5B341FE47429FE4DC462C267 /* VaultCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCore.swift; sourceTree = "<group>"; };
+		5C4470975586A86A2B51BEC4 /* OutputSanitizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputSanitizerTests.swift; sourceTree = "<group>"; };
 		5C757BD62ECBBC0686CD8DC7 /* SecretReferenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretReferenceTests.swift; sourceTree = "<group>"; };
 		5CFD32C707884AB57296B2DC /* FoundationProcessRunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationProcessRunnerTests.swift; sourceTree = "<group>"; };
 		63F5D406A6125C21AADB774C /* AgentSecretVaultApp.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = AgentSecretVaultApp.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		64779477930C89D60B24982F /* SelectionReplacing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionReplacing.swift; sourceTree = "<group>"; };
+		6C657BE2EC6158989B14BCFA /* OutputSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputSanitizer.swift; sourceTree = "<group>"; };
 		6DD6728F4B44BF37B56BCCC1 /* AuthorizationSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorizationSessionTests.swift; sourceTree = "<group>"; };
 		70F6620BED8EECC8639FE3F2 /* SecureViewerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureViewerModelTests.swift; sourceTree = "<group>"; };
 		7416E0E120A257AAFC8D8EB1 /* LocalAuthenticator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAuthenticator.swift; sourceTree = "<group>"; };
@@ -328,6 +332,7 @@
 			isa = PBXGroup;
 			children = (
 				5CFD32C707884AB57296B2DC /* FoundationProcessRunnerTests.swift */,
+				5C4470975586A86A2B51BEC4 /* OutputSanitizerTests.swift */,
 				3E8A2D1F69A190F408BD83E6 /* TemplateValidatorTests.swift */,
 			);
 			name = VaultExecutionTests;
@@ -398,6 +403,7 @@
 				BE7F60B3C847EBA94E16143C /* ExecutionRequest.swift */,
 				45DA451A56B15C8D880CB7B7 /* ExecutionTemplate.swift */,
 				76624FFF725B93374AD31F93 /* FoundationProcessRunner.swift */,
+				6C657BE2EC6158989B14BCFA /* OutputSanitizer.swift */,
 				9DA49553AEAA23F5BF7919E9 /* ProcessRunning.swift */,
 				89E213269F2B56F80660D182 /* TemplateValidator.swift */,
 			);
@@ -674,6 +680,7 @@
 				1B452D75C8772703CE489968 /* ExecutionRequest.swift in Sources */,
 				C2B3AFC5FF41064C34641832 /* ExecutionTemplate.swift in Sources */,
 				F76B0CAB0F203046E5360B40 /* FoundationProcessRunner.swift in Sources */,
+				39AA4F34F344E2AB0ED8253F /* OutputSanitizer.swift in Sources */,
 				FDC6E9995D8106AE766D7D93 /* ProcessRunning.swift in Sources */,
 				376BD20EAEF0D334B379D6E0 /* TemplateValidator.swift in Sources */,
 			);
@@ -720,6 +727,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3C0EF4F70DE68663E926B3E6 /* FoundationProcessRunnerTests.swift in Sources */,
+				D7CC3506688C0823474CA53A /* OutputSanitizerTests.swift in Sources */,
 				F3AB50E4571CEDA56EA33B71 /* TemplateValidatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
