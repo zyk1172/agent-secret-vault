@@ -15,6 +15,20 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "DA878B25FC53EE16E95B63F8"
+               BuildableName = "AgentSecretVaultApp.framework"
+               BlueprintName = "AgentSecretVaultApp"
+               ReferencedContainer = "container:AgentSecretVault.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "AE5F1C6D2F8A37D4BCC25000"
                BuildableName = "VaultAuthorization.framework"
                BlueprintName = "VaultAuthorization"
@@ -46,9 +60,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "AE5F1C6D2F8A37D4BCC25000"
-            BuildableName = "VaultAuthorization.framework"
-            BlueprintName = "VaultAuthorization"
+            BlueprintIdentifier = "DA878B25FC53EE16E95B63F8"
+            BuildableName = "AgentSecretVaultApp.framework"
+            BlueprintName = "AgentSecretVaultApp"
             ReferencedContainer = "container:AgentSecretVault.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -81,9 +95,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "AE5F1C6D2F8A37D4BCC25000"
-            BuildableName = "VaultAuthorization.framework"
-            BlueprintName = "VaultAuthorization"
+            BlueprintIdentifier = "DA878B25FC53EE16E95B63F8"
+            BuildableName = "AgentSecretVaultApp.framework"
+            BlueprintName = "AgentSecretVaultApp"
             ReferencedContainer = "container:AgentSecretVault.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -97,9 +111,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "AE5F1C6D2F8A37D4BCC25000"
-            BuildableName = "VaultAuthorization.framework"
-            BlueprintName = "VaultAuthorization"
+            BlueprintIdentifier = "DA878B25FC53EE16E95B63F8"
+            BuildableName = "AgentSecretVaultApp.framework"
+            BlueprintName = "AgentSecretVaultApp"
             ReferencedContainer = "container:AgentSecretVault.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
