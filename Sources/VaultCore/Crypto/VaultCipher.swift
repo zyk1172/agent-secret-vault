@@ -19,7 +19,16 @@ public struct VaultCipher: Sendable {
     ) throws -> EncryptedRecord {
         let dataKeyBytes = try RandomBytes.generate(count: 32)
         let dataKey = SymmetricKey(data: dataKeyBytes)
-        let authenticatedData = Self.authenticatedData(for: id)
+        let now = Date()
+        let authenticatedData = Self.authenticatedData(
+            formatVersion: VaultFormat.current,
+            id: id,
+            recordVersion: version,
+            label: label,
+            policy: policy,
+            createdAt: now,
+            updatedAt: now
+        )
 
         let sealedPlaintext = try AES.GCM.seal(
             plaintext,
@@ -31,7 +40,6 @@ public struct VaultCipher: Sendable {
             using: masterKey,
             authenticating: authenticatedData
         )
-        let now = Date()
 
         return EncryptedRecord(
             formatVersion: VaultFormat.current,
@@ -58,7 +66,15 @@ public struct VaultCipher: Sendable {
             throw VaultCryptoError.integrityFailed
         }
 
-        let authenticatedData = Self.authenticatedData(for: record.id)
+        let authenticatedData = Self.authenticatedData(
+            formatVersion: record.formatVersion,
+            id: record.id,
+            recordVersion: record.recordVersion,
+            label: record.label,
+            policy: record.policy,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt
+        )
 
         do {
             let wrappedBox = try AES.GCM.SealedBox(
@@ -88,13 +104,45 @@ public struct VaultCipher: Sendable {
         }
     }
 
-    private static func authenticatedData(for id: String) -> Data {
-        Data("\(id):\(VaultFormat.current)".utf8)
+    private static func authenticatedData(
+        formatVersion: Int,
+        id: String,
+        recordVersion: Int,
+        label: String?,
+        policy: SecretPolicy,
+        createdAt: Date,
+        updatedAt: Date
+    ) -> Data {
+        var data = Data("VaultCipher.EncryptedRecord.AAD.v1".utf8)
+        data.appendLengthPrefixed(Data(String(formatVersion).utf8))
+        data.appendLengthPrefixed(Data(id.utf8))
+        data.appendLengthPrefixed(Data(String(recordVersion).utf8))
+        data.appendLengthPrefixed(label.map { Data($0.utf8) })
+        data.appendLengthPrefixed(Data(policy.rawValue.utf8))
+        data.appendLengthPrefixed(Data(String(createdAt.timeIntervalSinceReferenceDate.bitPattern).utf8))
+        data.appendLengthPrefixed(Data(String(updatedAt.timeIntervalSinceReferenceDate.bitPattern).utf8))
+        return data
     }
 }
 
 private extension AES.GCM.Nonce {
     var data: Data {
         withUnsafeBytes { Data($0) }
+    }
+}
+
+private extension Data {
+    mutating func appendLengthPrefixed(_ component: Data?) {
+        if let component {
+            appendUInt64(UInt64(component.count))
+            append(component)
+        } else {
+            appendUInt64(UInt64.max)
+        }
+    }
+
+    mutating func appendUInt64(_ value: UInt64) {
+        var bigEndian = value.bigEndian
+        Swift.withUnsafeBytes(of: &bigEndian) { append(contentsOf: $0) }
     }
 }
