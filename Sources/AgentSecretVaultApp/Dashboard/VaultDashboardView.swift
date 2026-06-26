@@ -54,7 +54,12 @@ public struct VaultDashboardView: View {
                 chineseBody: "对外发送需要重新授权，并且返回内容会经过脱敏处理。"
             )
         case .orphanReview:
-            OrphanReviewView(candidates: [], requestPermanentDelete: { _ in })
+            WorkflowInfoView(
+                title: "Orphan Review · 孤立记录检查",
+                systemImage: "tray.full",
+                englishBody: "Run an orphan scan before reviewing encrypted records. Scanning only finds candidates; deletion still requires separate highest-risk authorization.",
+                chineseBody: "先运行孤立记录扫描，再查看候选加密记录。扫描只会找出候选项；删除仍然需要单独完成最高风险级别授权。"
+            )
         case .securityModel:
             SecurityModelSummaryView()
         }

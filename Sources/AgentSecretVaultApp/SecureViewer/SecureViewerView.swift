@@ -25,11 +25,11 @@ public struct SecureViewerView: View {
             model.close()
         }
         .confirmationDialog(
-            "Copy plaintext to the clipboard for 60 seconds?",
+            "Copy plaintext to the clipboard?",
             isPresented: $isConfirmingCopy,
             titleVisibility: .visible
         ) {
-            Button("Copy for 60 seconds") {
+            Button("Copy plaintext") {
                 model.copyFor60SecondsAfterConfirmation()
             }
 
@@ -43,9 +43,9 @@ public struct SecureViewerView: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Reveal Secret · 查看明文", systemImage: "eye")
                 .font(.largeTitle.weight(.bold))
-            Text("Plaintext appears here only after local authorization, and clears on focus loss, sleep, timeout, close, or app exit.")
+            Text("Plaintext appears here only after local authorization, and clears on focus loss, sleep, close, or app exit.")
                 .foregroundStyle(.secondary)
-            Text("完成本机授权后，明文才会显示在这里；失焦、睡眠、超时、关闭或退出都会清除。")
+            Text("完成本机授权后，明文才会显示在这里；失焦、睡眠、关闭或退出都会清除。")
                 .foregroundStyle(.secondary)
         }
     }
@@ -110,7 +110,7 @@ public struct SecureViewerView: View {
             }
 
             HStack {
-                Button("Copy for 60 seconds · 复制 60 秒") {
+                Button("Copy plaintext · 复制明文") {
                     isConfirmingCopy = true
                 }
 
