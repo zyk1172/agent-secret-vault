@@ -27,6 +27,28 @@ targets:
     dependencies:
       - target: VaultCore
 
+  VaultAuthorization:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Sources/VaultAuthorization
+
+  VaultAuthorizationTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Tests/VaultAuthorizationTests
+    dependencies:
+      - target: VaultAuthorization
+
 schemes:
   VaultCore:
     build:
@@ -37,3 +59,13 @@ schemes:
     test:
       targets:
         - VaultCoreTests
+
+  VaultAuthorization:
+    build:
+      targets:
+        VaultAuthorization: all
+        VaultAuthorizationTests:
+          - test
+    test:
+      targets:
+        - VaultAuthorizationTests
