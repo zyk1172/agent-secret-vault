@@ -1,0 +1,105 @@
+import Foundation
+import Testing
+@testable import VaultCore
+
+private let validRecordID = "01JABCDEF0123456789ABCDEFG"
+
+@Test func savingCreatesFirstVersionSidecar() async throws {
+    let baseDirectory = try makeTemporaryDirectory()
+    let store = FileRecordStore(baseDirectory: baseDirectory)
+    let record = makeRecord(version: 1)
+
+    try await store.save(record)
+
+    let expectedURL = baseDirectory
+        .appendingPathComponent(".agent-secret-vault")
+        .appendingPathComponent("records")
+        .appendingPathComponent(validRecordID)
+        .appendingPathComponent("00000001.json")
+    #expect(FileManager.default.fileExists(atPath: expectedURL.path))
+    #expect(try await store.versions(id: validRecordID) == [1])
+}
+
+@Test func loadingLatestReturnsHighestValidVersion() async throws {
+    let baseDirectory = try makeTemporaryDirectory()
+    let store = FileRecordStore(baseDirectory: baseDirectory)
+    let first = makeRecord(version: 1)
+    let second = makeRecord(version: 2)
+
+    try await store.save(first)
+    try await store.save(second)
+    try Data("not json".utf8).write(to: versionURL(baseDirectory: baseDirectory, version: 3))
+
+    #expect(try await store.latest(id: validRecordID) == second)
+    #expect(try await store.versions(id: validRecordID) == [1, 2])
+}
+
+@Test func failedReplacementLeavesPriorVersionReadable() async throws {
+    let baseDirectory = try makeTemporaryDirectory()
+    let store = FileRecordStore(baseDirectory: baseDirectory)
+    let prior = makeRecord(version: 1)
+
+    try await store.save(prior)
+    try FileManager.default.createDirectory(
+        at: versionURL(baseDirectory: baseDirectory, version: 2),
+        withIntermediateDirectories: false
+    )
+
+    do {
+        try await store.save(makeRecord(version: 2))
+        Issue.record("Expected save to fail when final version path cannot be replaced.")
+    } catch {
+        #expect(try await store.latest(id: validRecordID) == prior)
+    }
+}
+
+@Test func pathTraversalIDsAreRejected() async throws {
+    let baseDirectory = try makeTemporaryDirectory()
+    let store = FileRecordStore(baseDirectory: baseDirectory)
+    let traversalRecord = makeRecord(id: "../outside", version: 1)
+
+    do {
+        try await store.save(traversalRecord)
+        Issue.record("Expected path traversal ID to be rejected.")
+    } catch {
+        #expect(!FileManager.default.fileExists(
+            atPath: baseDirectory.appendingPathComponent("outside").path
+        ))
+    }
+}
+
+private func makeTemporaryDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FileRecordStoreTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func versionURL(baseDirectory: URL, version: Int) -> URL {
+    baseDirectory
+        .appendingPathComponent(".agent-secret-vault")
+        .appendingPathComponent("records")
+        .appendingPathComponent(validRecordID)
+        .appendingPathComponent(String(format: "%08d.json", version))
+}
+
+private func makeRecord(
+    id: String = validRecordID,
+    version: Int
+) -> EncryptedRecord {
+    EncryptedRecord(
+        formatVersion: VaultFormat.current,
+        id: id,
+        recordVersion: version,
+        ciphertext: Data([0x01, UInt8(version)]),
+        nonce: Data([0x02, UInt8(version)]),
+        tag: Data([0x03, UInt8(version)]),
+        wrappedDataKey: Data([0x04, UInt8(version)]),
+        wrappedDataKeyNonce: Data([0x05, UInt8(version)]),
+        wrappedDataKeyTag: Data([0x06, UInt8(version)]),
+        label: "label-\(version)",
+        policy: .credential,
+        createdAt: Date(timeIntervalSinceReferenceDate: 1_234_567.25),
+        updatedAt: Date(timeIntervalSinceReferenceDate: 1_234_567.5 + Double(version))
+    )
+}
