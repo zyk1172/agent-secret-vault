@@ -26,6 +26,17 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 
+// src/pairing/pairing.ts
+function interpretWorkbenchStatus(input) {
+  if (!input.reachable) {
+    return { canOperate: false, message: "Agent Secret Vault is unavailable." };
+  }
+  if (input.status.locked) {
+    return { canOperate: false, message: "Unlock Agent Secret Vault to continue." };
+  }
+  return { canOperate: true, message: "Agent Secret Vault is ready." };
+}
+
 // src/ui/statusBar.ts
 function updateStatusBar(element, state) {
   const connection = state.connected ? "connected" : "not connected";
@@ -43,8 +54,9 @@ var commandDefinitions = [
 ];
 var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   async onload() {
+    const pairing = interpretWorkbenchStatus({ reachable: false });
     const status = this.addStatusBarItem();
-    updateStatusBar(status, { connected: false, locked: true });
+    updateStatusBar(status, { connected: pairing.canOperate, locked: !pairing.canOperate });
     for (const definition of commandDefinitions) {
       this.addCommand({
         id: definition.id,

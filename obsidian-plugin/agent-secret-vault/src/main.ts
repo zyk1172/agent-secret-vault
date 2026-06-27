@@ -1,4 +1,5 @@
 import { Notice, Plugin } from "obsidian";
+import { interpretWorkbenchStatus } from "./pairing/pairing";
 import { updateStatusBar } from "./ui/statusBar";
 
 export const commandDefinitions = [
@@ -11,8 +12,9 @@ export const commandDefinitions = [
 
 export default class AgentSecretVaultPlugin extends Plugin {
   async onload(): Promise<void> {
+    const pairing = interpretWorkbenchStatus({ reachable: false });
     const status = this.addStatusBarItem();
-    updateStatusBar(status, { connected: false, locked: true });
+    updateStatusBar(status, { connected: pairing.canOperate, locked: !pairing.canOperate });
 
     for (const definition of commandDefinitions) {
       this.addCommand({
