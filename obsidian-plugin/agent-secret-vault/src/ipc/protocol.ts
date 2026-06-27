@@ -31,20 +31,28 @@ export const IpcRequest = z.discriminatedUnion("type", [
   }).strict()
 ]);
 
+export const WorkbenchStatus = z.object({
+  locked: z.boolean(),
+  ipcAvailable: z.boolean(),
+  activeKnowledgeBaseRoot: z.string().nullable(),
+  pluginConnected: z.boolean()
+}).strict();
+
+export const OrphanScanResult = z.object({
+  missingRecords: z.array(SecretReference),
+  unreferencedRecords: z.array(SecretReference)
+}).strict();
+
 export const IpcResponse = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("workbenchStatus"),
-    locked: z.boolean(),
-    ipcAvailable: z.boolean(),
-    activeKnowledgeBaseRoot: z.string().nullable(),
-    pluginConnected: z.boolean()
+    status: WorkbenchStatus
   }).strict(),
   z.object({ type: z.literal("created"), reference: SecretReference }).strict(),
   z.object({ type: z.literal("revealSessionOpened"), sessionID: z.string().min(1) }).strict(),
   z.object({
     type: z.literal("orphanScan"),
-    missingRecords: z.array(SecretReference),
-    unreferencedRecords: z.array(SecretReference)
+    result: OrphanScanResult
   }).strict(),
   z.object({ type: z.literal("failure"), code: z.string().min(1) }).strict()
 ]);

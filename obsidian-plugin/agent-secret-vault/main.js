@@ -31,7 +31,7 @@ function interpretWorkbenchStatus(input) {
   if (!input.reachable) {
     return { canOperate: false, message: "Agent Secret Vault is unavailable." };
   }
-  if (input.status.locked) {
+  if (input.status.status.locked) {
     return { canOperate: false, message: "Unlock Agent Secret Vault to continue." };
   }
   return { canOperate: true, message: "Agent Secret Vault is ready." };

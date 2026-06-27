@@ -25,4 +25,40 @@ describe("IPC protocol", () => {
       sessionID: "session-1"
     });
   });
+
+  it("parses Swift-shaped workbench status responses", () => {
+    expect(IpcResponse.parse({
+      type: "workbenchStatus",
+      status: {
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: null,
+        pluginConnected: true
+      }
+    })).toEqual({
+      type: "workbenchStatus",
+      status: {
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: null,
+        pluginConnected: true
+      }
+    });
+  });
+
+  it("parses Swift-shaped orphan scan responses", () => {
+    expect(IpcResponse.parse({
+      type: "orphanScan",
+      result: {
+        missingRecords: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        unreferencedRecords: []
+      }
+    })).toEqual({
+      type: "orphanScan",
+      result: {
+        missingRecords: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        unreferencedRecords: []
+      }
+    });
+  });
 });

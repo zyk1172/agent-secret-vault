@@ -12,10 +12,12 @@ describe("pairing", () => {
       reachable: true,
       status: {
         type: "workbenchStatus",
-        locked: true,
-        ipcAvailable: true,
-        activeKnowledgeBaseRoot: null,
-        pluginConnected: true
+        status: {
+          locked: true,
+          ipcAvailable: true,
+          activeKnowledgeBaseRoot: null,
+          pluginConnected: true
+        }
       }
     })).toEqual({
       canOperate: false,
