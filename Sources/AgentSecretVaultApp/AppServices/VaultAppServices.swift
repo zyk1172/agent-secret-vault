@@ -2,13 +2,21 @@ import Foundation
 import VaultCore
 import VaultIPC
 
+public protocol TextEncrypting: Sendable {
+    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference
+}
+
 public actor VaultAppServices: WorkbenchServicing {
-    private let encryptSelection: any EncryptSelectionCoordinating
+    private let textEncryptor: any TextEncrypting
     private let activeRoot: URL?
 
-    public init(encryptSelection: any EncryptSelectionCoordinating, activeRoot: URL?) {
-        self.encryptSelection = encryptSelection
+    public init(textEncryptor: any TextEncrypting, activeRoot: URL?) {
+        self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
+    }
+
+    public init(encryptSelection: any EncryptSelectionCoordinating & TextEncrypting, activeRoot: URL?) {
+        self.init(textEncryptor: encryptSelection, activeRoot: activeRoot)
     }
 
     public func status() async -> WorkbenchStatus {
@@ -21,15 +29,12 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String {
-        let result = try await encryptSelection.encryptAndReplace(
-            plaintext: plaintext,
+        let reference = try await textEncryptor.encryptText(
+            plaintext,
             label: label,
             policy: policy
         )
-        switch result {
-        case let .replaced(reference), let .unlinkedRecord(reference):
-            return reference.description
-        }
+        return reference.description
     }
 
     public func openRevealSession(references: [String], context: RevealContext) async throws -> String {

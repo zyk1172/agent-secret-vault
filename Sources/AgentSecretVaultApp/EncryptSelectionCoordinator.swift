@@ -26,7 +26,7 @@ public protocol EncryptSelectionCoordinating: Sendable {
     ) async throws -> EncryptSelectionResult
 }
 
-public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating {
+public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEncrypting {
     private let recordStore: any RecordStore
     private let selectionReplacer: any SelectionReplacing
     private let deviceKeyStore: any DeviceKeyStoring
@@ -52,6 +52,21 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating {
         label: String?,
         policy: SecretPolicy
     ) async throws -> EncryptSelectionResult {
+        let reference = try await encryptText(plaintext, label: label, policy: policy)
+
+        do {
+            try await selectionReplacer.replaceSelection(with: reference.description)
+            return .replaced(reference)
+        } catch {
+            return .unlinkedRecord(reference)
+        }
+    }
+
+    public func encryptText(
+        _ plaintext: String,
+        label: String?,
+        policy: SecretPolicy
+    ) async throws -> SecretReference {
         guard !plaintext.isEmpty else {
             throw EncryptSelectionError.emptyPlaintext
         }
@@ -77,13 +92,7 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating {
         )
 
         try await recordStore.save(record)
-
-        do {
-            try await selectionReplacer.replaceSelection(with: reference.description)
-            return .replaced(reference)
-        } catch {
-            return .unlinkedRecord(reference)
-        }
+        return reference
     }
 }
 

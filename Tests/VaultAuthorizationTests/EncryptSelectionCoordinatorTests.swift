@@ -44,6 +44,29 @@ import VaultCore
     #expect(String(data: decrypted, encoding: .utf8) == "sk-test-123")
 }
 
+@Test func vaultAppServicesEncryptTextReturnsReferenceWithoutReplacingSelection() async throws {
+    let recordStore = RecordingRecordStore()
+    let selectionReplacer = RecordingSelectionReplacer()
+    let expectedReference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let coordinator = EncryptSelectionCoordinator(
+        recordStore: recordStore,
+        selectionReplacer: selectionReplacer,
+        deviceKeyStore: StaticDeviceKeyStore(keyData: Data(repeating: 0x55, count: 32)),
+        idGenerator: StaticSecretIDGenerator(id: expectedReference.id)
+    )
+    let services = VaultAppServices(encryptSelection: coordinator, activeRoot: nil)
+
+    let reference = try await services.encryptText(
+        "obsidian-owned-selection",
+        label: "Obsidian selection",
+        policy: .credential
+    )
+
+    #expect(reference == expectedReference.description)
+    #expect((await recordStore.records).count == 1)
+    #expect(await selectionReplacer.replacementAttempts == 0)
+}
+
 @Test func replacementFailureReturnsUnlinkedRecordWithoutRetryingReplacement() async throws {
     let log = OperationLog()
     let recordStore = RecordingRecordStore(log: log)
