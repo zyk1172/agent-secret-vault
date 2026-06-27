@@ -8,6 +8,7 @@ import {
   AuthenticatedIpcRequest,
   CapabilityToken,
   IpcFrameCodec,
+  IpcRequest,
   IpcResponse
 } from "../src/protocol.js";
 import {
@@ -32,8 +33,19 @@ describe("IPC response schema", () => {
   it("accepts every Swift IPCResponse case", () => {
     const fixtures = [
       { type: "status", locked: false },
+      {
+        type: "workbenchStatus",
+        status: {
+          locked: false,
+          ipcAvailable: true,
+          activeKnowledgeBaseRoot: null,
+          pluginConnected: true
+        }
+      },
       { type: "displayedToUser" },
       { type: "created", reference: validReference },
+      { type: "revealSessionOpened", sessionID: "session-1" },
+      { type: "orphanScan", result: { missingRecords: [], unreferencedRecords: [] } },
       {
         type: "execution",
         result: { type: "completed", exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "" }
@@ -57,6 +69,18 @@ describe("IPC response schema", () => {
     ).toThrow();
     expect(() =>
       IpcResponse.parse({
+        type: "workbenchStatus",
+        status: {
+          locked: false,
+          ipcAvailable: true,
+          activeKnowledgeBaseRoot: null,
+          pluginConnected: true
+        },
+        plaintext: "leak"
+      })
+    ).toThrow();
+    expect(() =>
+      IpcResponse.parse({
         type: "execution",
         result: {
           type: "completed",
@@ -67,6 +91,49 @@ describe("IPC response schema", () => {
         }
       })
     ).toThrow();
+  });
+});
+
+describe("IPC request schema", () => {
+  it("accepts every Swift IPCRequest case", () => {
+    const fixtures = [
+      { type: "status" },
+      { type: "workbenchStatus" },
+      { type: "reveal", reference: validReference, reason: "show to user" },
+      { type: "encrypt", label: "api token", policy: "externalSend" },
+      {
+        type: "encryptText",
+        plaintext: "local-only plaintext",
+        label: null,
+        policy: "credential"
+      },
+      {
+        type: "revealReferences",
+        references: [validReference],
+        context: {
+          reason: "Paragraph reveal",
+          template: "Token: {{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      },
+      { type: "scanOrphans", markdownReferences: [validReference] },
+      {
+        type: "execute",
+        request: {
+          templateID: "send-message",
+          executable: "/usr/bin/printf",
+          values: { message: "hello" },
+          secrets: { apiToken: validReference },
+          destinationHost: "api.example.com",
+          destinationPath: "/v1/send",
+          requestedRisk: 2
+        }
+      }
+    ];
+
+    for (const fixture of fixtures) {
+      expect(IpcRequest.parse(fixture)).toEqual(fixture);
+    }
   });
 });
 
@@ -84,6 +151,33 @@ describe("authenticated IPC request schema", () => {
         request: { type: "status" }
       })
     ).toThrow();
+  });
+
+  it("accepts authenticated workbench request cases", () => {
+    const requests = [
+      { type: "workbenchStatus" },
+      {
+        type: "encryptText",
+        plaintext: "local-only plaintext",
+        label: null,
+        policy: "credential"
+      },
+      {
+        type: "revealReferences",
+        references: [validReference],
+        context: {
+          reason: "Paragraph reveal",
+          template: "Token: {{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      },
+      { type: "scanOrphans", markdownReferences: [validReference] }
+    ];
+
+    for (const request of requests) {
+      const authenticated = { capabilityToken: validToken, request };
+      expect(AuthenticatedIpcRequest.parse(authenticated)).toEqual(authenticated);
+    }
   });
 });
 
