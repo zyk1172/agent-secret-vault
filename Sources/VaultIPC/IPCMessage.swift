@@ -166,6 +166,13 @@ public struct WorkbenchStatus: Codable, Equatable, Sendable {
     public let activeKnowledgeBaseRoot: String?
     public let pluginConnected: Bool
 
+    private enum CodingKeys: String, CodingKey {
+        case locked
+        case ipcAvailable
+        case activeKnowledgeBaseRoot
+        case pluginConnected
+    }
+
     public init(
         locked: Bool,
         ipcAvailable: Bool,
@@ -176,6 +183,18 @@ public struct WorkbenchStatus: Codable, Equatable, Sendable {
         self.ipcAvailable = ipcAvailable
         self.activeKnowledgeBaseRoot = activeKnowledgeBaseRoot
         self.pluginConnected = pluginConnected
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(locked, forKey: .locked)
+        try container.encode(ipcAvailable, forKey: .ipcAvailable)
+        if let activeKnowledgeBaseRoot {
+            try container.encode(activeKnowledgeBaseRoot, forKey: .activeKnowledgeBaseRoot)
+        } else {
+            try container.encodeNil(forKey: .activeKnowledgeBaseRoot)
+        }
+        try container.encode(pluginConnected, forKey: .pluginConnected)
     }
 }
 

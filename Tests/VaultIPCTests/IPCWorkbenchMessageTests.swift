@@ -42,6 +42,25 @@ import VaultIPC
         #expect(!json.contains("plaintext"))
         #expect(!json.contains("resolvedValue"))
         #expect(!json.contains("secretValue"))
-        _ = try JSONDecoder().decode(IPCResponse.self, from: encoded)
+        let decoded = try JSONDecoder().decode(IPCResponse.self, from: encoded)
+        #expect(decoded == response)
     }
+}
+
+@Test func workbenchStatusEncodesNilKnowledgeBaseRootAsExplicitNull() throws {
+    let status = WorkbenchStatus(
+        locked: true,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: nil,
+        pluginConnected: false
+    )
+
+    let encoded = try JSONEncoder().encode(status)
+    let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+
+    #expect(object.keys.contains("activeKnowledgeBaseRoot"))
+    #expect(object["activeKnowledgeBaseRoot"] is NSNull)
+
+    let decoded = try JSONDecoder().decode(WorkbenchStatus.self, from: encoded)
+    #expect(decoded == status)
 }
