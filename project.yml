@@ -170,11 +170,14 @@ schemes:
         AgentSecretVault: all
         VaultAuthorizationTests:
           - test
+        VaultIPCTests:
+          - test
         LeakTests:
           - test
     test:
       targets:
         - VaultAuthorizationTests
+        - VaultIPCTests
         - LeakTests
 
   VaultExecution:

@@ -19,6 +19,33 @@ export type SecretReference = z.infer<typeof SecretReference>;
 export const SecretPolicy = z.enum(["read", "externalSend", "credential"]);
 export type SecretPolicy = z.infer<typeof SecretPolicy>;
 
+export const WorkbenchStatus = z.object({
+  locked: z.boolean(),
+  ipcAvailable: z.boolean(),
+  activeKnowledgeBaseRoot: z.string().nullable(),
+  pluginConnected: z.boolean()
+}).strict();
+export type WorkbenchStatus = z.infer<typeof WorkbenchStatus>;
+
+export const ReferenceRange = z.object({
+  index: z.number().int(),
+  placeholder: z.string().min(1)
+}).strict();
+export type ReferenceRange = z.infer<typeof ReferenceRange>;
+
+export const RevealContext = z.object({
+  reason: z.string().min(1),
+  template: z.string(),
+  ranges: z.array(ReferenceRange)
+}).strict();
+export type RevealContext = z.infer<typeof RevealContext>;
+
+export const OrphanScanResult = z.object({
+  missingRecords: z.array(z.string()),
+  unreferencedRecords: z.array(z.string())
+}).strict();
+export type OrphanScanResult = z.infer<typeof OrphanScanResult>;
+
 export const RiskClass = z.union([z.literal(0), z.literal(1), z.literal(2)]);
 export type RiskClass = z.infer<typeof RiskClass>;
 
@@ -37,6 +64,7 @@ export type ExecutionRequest = z.infer<typeof ExecutionRequest>;
 
 export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("status") }).strict(),
+  z.object({ type: z.literal("workbenchStatus") }).strict(),
   z
     .object({
       type: z.literal("reveal"),
@@ -49,6 +77,27 @@ export const IpcRequest = z.discriminatedUnion("type", [
       type: z.literal("encrypt"),
       label: z.string().nullable().optional(),
       policy: SecretPolicy
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("encryptText"),
+      plaintext: z.string(),
+      label: z.string().nullable().optional(),
+      policy: SecretPolicy
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("revealReferences"),
+      references: z.array(SecretReference),
+      context: RevealContext
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("scanOrphans"),
+      markdownReferences: z.array(SecretReference)
     })
     .strict(),
   z
@@ -94,6 +143,12 @@ export const SanitizedExecutionResult = z.discriminatedUnion("type", [
 ]);
 export type SanitizedExecutionResult = z.infer<typeof SanitizedExecutionResult>;
 
+export const RevealSessionOpened = z.object({
+  type: z.literal("revealSessionOpened"),
+  sessionID: z.string().min(1)
+}).strict();
+export type RevealSessionOpened = z.infer<typeof RevealSessionOpened>;
+
 export const IpcResponse = z.discriminatedUnion("type", [
   z
     .object({
@@ -101,11 +156,24 @@ export const IpcResponse = z.discriminatedUnion("type", [
       locked: z.boolean()
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("workbenchStatus"),
+      status: WorkbenchStatus
+    })
+    .strict(),
   z.object({ type: z.literal("displayedToUser") }).strict(),
   z
     .object({
       type: z.literal("created"),
       reference: SecretReference
+    })
+    .strict(),
+  RevealSessionOpened,
+  z
+    .object({
+      type: z.literal("orphanScan"),
+      result: OrphanScanResult
     })
     .strict(),
   z
