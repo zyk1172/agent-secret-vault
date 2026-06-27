@@ -1,4 +1,4 @@
-import { Plugin } from "obsidian";
+import { Notice, Plugin } from "obsidian";
 import { updateStatusBar } from "./ui/statusBar";
 
 export const commandDefinitions = [
@@ -19,7 +19,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         id: definition.id,
         name: definition.name,
         callback: () => {
-          console.log(`Agent Secret Vault command pending implementation: ${definition.id}`);
+          new Notice(`Agent Secret Vault: ${definition.id} is not connected yet.`);
         }
       });
     }
