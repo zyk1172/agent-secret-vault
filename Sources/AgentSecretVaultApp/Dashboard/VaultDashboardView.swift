@@ -113,7 +113,7 @@ private struct WorkflowInfoView: View {
                 .foregroundStyle(.secondary)
             Text(chineseBody)
                 .foregroundStyle(.secondary)
-            Text("This section documents the safe workflow for the first UI release.")
+            Text("Guide only. This page is not a connected encryption tool.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

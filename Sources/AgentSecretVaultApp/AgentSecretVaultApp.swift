@@ -1,6 +1,7 @@
 import AppKit
 import AgentSecretVaultApp
 import SwiftUI
+import VaultIPC
 
 @main
 struct AgentSecretVaultApplication: App {
@@ -9,7 +10,12 @@ struct AgentSecretVaultApplication: App {
 
     var body: some Scene {
         WindowGroup {
-            VaultDashboardView(secureViewerModel: secureViewerModel)
+            VaultWorkbenchView(status: WorkbenchStatus(
+                locked: true,
+                ipcAvailable: false,
+                activeKnowledgeBaseRoot: nil,
+                pluginConnected: false
+            ))
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                     secureViewerModel.handleFocusChanged(isFocused: false)
                 }

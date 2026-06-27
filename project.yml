@@ -90,6 +90,7 @@ targets:
       path: Config/Info.plist
     dependencies:
       - target: AgentSecretVaultApp
+      - target: VaultIPC
 
   VaultAuthorizationTests:
     type: bundle.unit-test
