@@ -1,6 +1,8 @@
 import net from "node:net";
 import { IpcRequest, IpcResponse } from "./protocol";
 
+const MAX_FRAME_BYTES = 1_048_576;
+
 export class LocalVaultClient {
   constructor(private readonly socketPath: string) {}
 
@@ -12,15 +14,57 @@ export class LocalVaultClient {
 
     return await new Promise((resolve, reject) => {
       const socket = net.createConnection(this.socketPath);
-      const chunks: Buffer[] = [];
+      let buffer = Buffer.alloc(0);
+      let settled = false;
+
+      const settle = (callback: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        callback();
+        socket.destroy();
+      };
+
+      const rejectWith = (error: unknown): void => {
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+      };
+
+      const parseAvailableFrame = (): void => {
+        if (buffer.length < 4) {
+          return;
+        }
+
+        const length = buffer.readUInt32BE(0);
+        if (length > MAX_FRAME_BYTES) {
+          rejectWith(new Error("IPC frame exceeds maximum size."));
+          return;
+        }
+
+        const frameLength = 4 + length;
+        if (buffer.length < frameLength) {
+          return;
+        }
+
+        try {
+          const json = buffer.subarray(4, frameLength).toString("utf8");
+          const response = IpcResponse.parse(JSON.parse(json));
+          settle(() => resolve(response));
+        } catch (error) {
+          rejectWith(error);
+        }
+      };
+
       socket.on("connect", () => socket.write(frame));
-      socket.on("data", (chunk) => chunks.push(chunk));
-      socket.on("error", reject);
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        parseAvailableFrame();
+      });
+      socket.on("error", rejectWith);
       socket.on("end", () => {
-        const data = Buffer.concat(chunks);
-        const length = data.readUInt32BE(0);
-        const json = data.subarray(4, 4 + length).toString("utf8");
-        resolve(IpcResponse.parse(JSON.parse(json)));
+        if (!settled) {
+          rejectWith(new Error("Incomplete IPC frame."));
+        }
       });
     });
   }

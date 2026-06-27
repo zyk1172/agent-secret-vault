@@ -34,6 +34,9 @@ function interpretWorkbenchStatus(input) {
   if (input.status.status.locked) {
     return { canOperate: false, message: "Unlock Agent Secret Vault to continue." };
   }
+  if (!input.status.status.ipcAvailable) {
+    return { canOperate: false, message: "Agent Secret Vault IPC is unavailable." };
+  }
   return { canOperate: true, message: "Agent Secret Vault is ready." };
 }
 
