@@ -4,7 +4,7 @@ export interface ContextLeakWarning {
   suggestion: string;
 }
 
-const CANONICAL_SECRET_REFERENCE = /\bsecret:\/\/[A-HJ-NP-Z0-9]{26}\b/g;
+const CANONICAL_SECRET_REFERENCE = /\bsecret:\/\/[0-9A-HJKMNP-TV-Z]{26}\b/g;
 const RISKY_CONTEXT_WORD = /密码|password|token|api key|root key|银行卡|card number/i;
 
 export function detectContextLeaks(line: string): ContextLeakWarning[] {

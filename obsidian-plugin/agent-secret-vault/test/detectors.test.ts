@@ -53,6 +53,29 @@ describe("detectSensitiveText", () => {
     expect(JSON.stringify(findings)).not.toContain("correct-horse-battery-staple");
   });
 
+  it("detects passwd and pwd assignments with quoted and unquoted values", () => {
+    const findings = detectSensitiveText('passwd="hunter2"\npwd=correct-horse-battery-staple');
+
+    expect(findings).toEqual([
+      {
+        start: 8,
+        end: 15,
+        ruleId: "password-assignment",
+        confidence: "medium",
+        redactedPreview: "********"
+      },
+      {
+        start: 21,
+        end: 49,
+        ruleId: "password-assignment",
+        confidence: "medium",
+        redactedPreview: "correct-…aple"
+      }
+    ]);
+    expect(JSON.stringify(findings)).not.toContain("hunter2");
+    expect(JSON.stringify(findings)).not.toContain("correct-horse-battery-staple");
+  });
+
   it("detects private key blocks and redacts the block preview", () => {
     const text = [
       "before",

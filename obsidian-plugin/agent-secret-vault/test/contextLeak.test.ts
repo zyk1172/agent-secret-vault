@@ -16,6 +16,10 @@ describe("detectContextLeaks", () => {
     expect(detectContextLeaks("请引用 secret://0123456789ABCDEFGHJKMNPQRS 这条记录")).toEqual([]);
   });
 
+  it("does not warn for invalid secret references containing disallowed characters", () => {
+    expect(detectContextLeaks("password secret://0123456789ABCDEFGHJKLMNPQRU")).toEqual([]);
+  });
+
   it("warns for English risky context and multiple canonical references", () => {
     expect(
       detectContextLeaks(
