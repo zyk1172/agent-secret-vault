@@ -20,4 +20,23 @@ describe("applyReplacements", () => {
       ])
     ).toBe("alpha secret://PASSWORD beta secret://OPENAI gamma");
   });
+
+  it("throws when planned replacements overlap", () => {
+    const text = "alpha hunter2 beta";
+
+    expect(() =>
+      applyReplacements(text, [
+        {
+          start: 6,
+          end: 13,
+          replacementText: "secret://PASSWORD"
+        },
+        {
+          start: 10,
+          end: 16,
+          replacementText: "secret://OVERLAP"
+        }
+      ])
+    ).toThrow("Replacement ranges overlap.");
+  });
 });
