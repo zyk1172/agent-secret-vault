@@ -65,6 +65,7 @@
 		90BBDCFCE2A59C5B1FEB3C6D /* EncryptSelectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E838C75776FBAFAE527F127 /* EncryptSelectionCoordinator.swift */; };
 		9407BE52CF3848457E752F43 /* ConnectionStatusCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C3CD4133726E8B882639FB /* ConnectionStatusCard.swift */; };
 		954056E5B84809E03489F5BD /* VaultIPC.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8347118BC278FC424612FB12 /* VaultIPC.framework */; };
+		9664BCF20CBC6F30CF016676 /* RevealSessionPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BDC475D20ADAE44E8FDD9EA /* RevealSessionPresenter.swift */; };
 		99AE103B060E5CD3CE12E47F /* VaultIPC.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8347118BC278FC424612FB12 /* VaultIPC.framework */; };
 		9B9282C6D5109C80CDE49E47 /* AgentSecretVaultApp.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 63F5D406A6125C21AADB774C /* AgentSecretVaultApp.framework */; };
 		9CA5D51B4B7F4E31567D607C /* MasterKeyCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBFAD3C60A94D0736DFC3FEE /* MasterKeyCoordinatorTests.swift */; };
@@ -345,6 +346,7 @@
 		34789708774FCD69D8518978 /* OrphanReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrphanReviewView.swift; sourceTree = "<group>"; };
 		37E7113D1625EDDC62A66FF8 /* VaultIPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultIPC.swift; sourceTree = "<group>"; };
 		398F0C1CE97710B6C1E140E0 /* EncryptSelectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptSelectionService.swift; sourceTree = "<group>"; };
+		3BDC475D20ADAE44E8FDD9EA /* RevealSessionPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealSessionPresenter.swift; sourceTree = "<group>"; };
 		3D516329714201C601649E90 /* AuthorizationSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorizationSession.swift; sourceTree = "<group>"; };
 		3D99CD22B1841BA6CF877EB3 /* RecordMigrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordMigrator.swift; sourceTree = "<group>"; };
 		3E8A2D1F69A190F408BD83E6 /* TemplateValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateValidatorTests.swift; sourceTree = "<group>"; };
@@ -534,6 +536,7 @@
 			isa = PBXGroup;
 			children = (
 				46C3CD4133726E8B882639FB /* ConnectionStatusCard.swift */,
+				3BDC475D20ADAE44E8FDD9EA /* RevealSessionPresenter.swift */,
 				477A6A243F6915B5990ABA1D /* RevealSessionWindow.swift */,
 				D7AA48DC206059E2CDE253F4 /* SetupGuideView.swift */,
 				A39FCD70795D28DFF0409942 /* VaultWorkbenchView.swift */,
@@ -1170,6 +1173,7 @@
 				269D40B291F18F63A000E3A5 /* InstructionStepCard.swift in Sources */,
 				74B51BBA52A0415C39675269 /* OrphanReviewView.swift in Sources */,
 				4230317926F7DA1EEADF5DE2 /* OverviewGuideView.swift in Sources */,
+				9664BCF20CBC6F30CF016676 /* RevealSessionPresenter.swift in Sources */,
 				AE11A6288E89567BC2902A2A /* RevealSessionStore.swift in Sources */,
 				CF02741EA5E8DADA6E62C389 /* RevealSessionWindow.swift in Sources */,
 				8CF18F5B6F853F5F90F3CF5D /* SecureViewerModel.swift in Sources */,

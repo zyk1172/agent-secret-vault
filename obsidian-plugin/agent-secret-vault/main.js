@@ -244,21 +244,87 @@ function interpretWorkbenchStatus(input) {
 }
 
 // src/reveal/paragraphReveal.ts
-var SECRET_REFERENCE_PATTERN2 = /secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g;
+var SECRET_SCHEME = "secret://";
+var SECRET_ID_LENGTH = 26;
+var ALLOWED_ID_CHARACTERS = new Set("0123456789ABCDEFGHJKMNPQRSTVWXYZ".split(""));
+var TOKEN_BOUNDARY_CHARACTERS = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.-".split(""));
+function isBoundaryCharacter(text, index) {
+  if (index < 0 || index >= text.length) {
+    return true;
+  }
+  return !TOKEN_BOUNDARY_CHARACTERS.has(text[index] ?? "");
+}
+function extractReferenceMatches(paragraph) {
+  const matches = [];
+  let searchStart = 0;
+  while (searchStart < paragraph.length) {
+    const schemeStart = paragraph.indexOf(SECRET_SCHEME, searchStart);
+    if (schemeStart === -1) {
+      break;
+    }
+    searchStart = schemeStart + SECRET_SCHEME.length;
+    if (!isBoundaryCharacter(paragraph, schemeStart - 1)) {
+      continue;
+    }
+    const idStart = schemeStart + SECRET_SCHEME.length;
+    const idEnd = idStart + SECRET_ID_LENGTH;
+    if (idEnd > paragraph.length) {
+      continue;
+    }
+    const id = paragraph.slice(idStart, idEnd);
+    if (![...id].every((character) => ALLOWED_ID_CHARACTERS.has(character))) {
+      continue;
+    }
+    if (!isBoundaryCharacter(paragraph, idEnd)) {
+      continue;
+    }
+    matches.push({
+      reference: `${SECRET_SCHEME}${id}`,
+      start: schemeStart,
+      end: idEnd
+    });
+  }
+  return matches;
+}
+function placeholderNonce() {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === "function") {
+    return randomUUID.call(globalThis.crypto).replace(/-/g, "");
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+}
+function choosePlaceholder(index, paragraph, usedPlaceholders) {
+  const legacyPlaceholder = `{{${index}}}`;
+  if (!paragraph.includes(legacyPlaceholder) && !usedPlaceholders.has(legacyPlaceholder)) {
+    return legacyPlaceholder;
+  }
+  while (true) {
+    const candidate = `{{ASV_REVEAL_${index}_${placeholderNonce()}}}`;
+    if (!paragraph.includes(candidate) && !usedPlaceholders.has(candidate)) {
+      return candidate;
+    }
+  }
+}
 function buildParagraphRevealRequest(paragraph) {
-  const references = [];
-  const ranges = [];
-  let referenceIndex = 0;
-  const template = paragraph.replace(SECRET_REFERENCE_PATTERN2, (reference) => {
-    const placeholder = `{{${referenceIndex}}}`;
-    references.push(reference);
-    ranges.push({ index: referenceIndex, placeholder });
-    referenceIndex += 1;
-    return placeholder;
-  });
-  if (references.length === 0) {
+  const matches = extractReferenceMatches(paragraph);
+  if (matches.length === 0) {
     throw new Error("NO_SECRET_REFERENCES");
   }
+  const references = [];
+  const ranges = [];
+  const usedPlaceholders = /* @__PURE__ */ new Set();
+  let template = "";
+  let lastEnd = 0;
+  matches.forEach((match, referenceIndex) => {
+    const placeholder = choosePlaceholder(referenceIndex, paragraph, usedPlaceholders);
+    usedPlaceholders.add(placeholder);
+    references.push(match.reference);
+    ranges.push({ index: referenceIndex, placeholder });
+    template += paragraph.slice(lastEnd, match.start);
+    template += placeholder;
+    lastEnd = match.end;
+  });
+  template += paragraph.slice(lastEnd);
   return {
     type: "revealReferences",
     references,

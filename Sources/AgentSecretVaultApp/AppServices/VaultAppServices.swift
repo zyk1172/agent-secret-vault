@@ -3,6 +3,10 @@ import Foundation
 import VaultCore
 import VaultIPC
 
+public protocol RevealSessionPresenting: Sendable {
+    func present(sessionID: String, store: RevealSessionStore) async
+}
+
 public protocol TextEncrypting: Sendable {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference
 }
@@ -13,19 +17,22 @@ public actor VaultAppServices: WorkbenchServicing {
     private let recordResolver: VaultRecordResolver?
     private let masterKey: SymmetricKey?
     private let revealSessionStore: RevealSessionStore
+    private let revealSessionPresenter: any RevealSessionPresenting
 
     public init(
         textEncryptor: any TextEncrypting,
         activeRoot: URL?,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
-        revealSessionStore: RevealSessionStore = RevealSessionStore()
+        revealSessionStore: RevealSessionStore = RevealSessionStore(),
+        revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter()
     ) {
         self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
         self.recordResolver = recordResolver
         self.masterKey = masterKey
         self.revealSessionStore = revealSessionStore
+        self.revealSessionPresenter = revealSessionPresenter
     }
 
     public init(
@@ -33,14 +40,16 @@ public actor VaultAppServices: WorkbenchServicing {
         activeRoot: URL?,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
-        revealSessionStore: RevealSessionStore = RevealSessionStore()
+        revealSessionStore: RevealSessionStore = RevealSessionStore(),
+        revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter()
     ) {
         self.init(
             textEncryptor: encryptSelection,
             activeRoot: activeRoot,
             recordResolver: recordResolver,
             masterKey: masterKey,
-            revealSessionStore: revealSessionStore
+            revealSessionStore: revealSessionStore,
+            revealSessionPresenter: revealSessionPresenter
         )
     }
 
@@ -66,9 +75,6 @@ public actor VaultAppServices: WorkbenchServicing {
         guard !references.isEmpty else {
             throw VaultAppServicesRevealError.invalidRevealContext
         }
-        guard let recordResolver, let masterKey else {
-            throw VaultAppServicesRevealError.revealUnavailable
-        }
 
         let validatedReferences: [String]
         do {
@@ -77,8 +83,10 @@ public actor VaultAppServices: WorkbenchServicing {
             throw VaultAppServicesRevealError.invalidReference
         }
 
-        guard context.ranges.count == validatedReferences.count else {
-            throw VaultAppServicesRevealError.invalidRevealContext
+        try validateRevealContext(context, referenceCount: validatedReferences.count)
+
+        guard let recordResolver, let masterKey else {
+            throw VaultAppServicesRevealError.revealUnavailable
         }
 
         let plaintexts = try await validatedReferences.asyncMap { reference in
@@ -90,7 +98,9 @@ public actor VaultAppServices: WorkbenchServicing {
         }
 
         let resolvedParagraph = try resolveTemplate(context.template, ranges: context.ranges, plaintexts: plaintexts)
-        return await revealSessionStore.create(resolvedParagraph: resolvedParagraph)
+        let sessionID = await revealSessionStore.create(resolvedParagraph: resolvedParagraph)
+        await revealSessionPresenter.present(sessionID: sessionID, store: revealSessionStore)
+        return sessionID
     }
 
     public func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {
@@ -111,6 +121,50 @@ public actor VaultAppServices: WorkbenchServicing {
         }
 
         return replacePlaceholders(in: template, replacements: replacements)
+    }
+
+    private func validateRevealContext(_ context: RevealContext, referenceCount: Int) throws {
+        guard context.ranges.count == referenceCount else {
+            throw VaultAppServicesRevealError.invalidRevealContext
+        }
+
+        var seenIndices: Set<Int> = []
+        var seenPlaceholders: Set<String> = []
+
+        for range in context.ranges {
+            guard 0..<referenceCount ~= range.index,
+                  !range.placeholder.isEmpty,
+                  seenIndices.insert(range.index).inserted,
+                  seenPlaceholders.insert(range.placeholder).inserted
+            else {
+                throw VaultAppServicesRevealError.invalidRevealContext
+            }
+
+            guard countOccurrences(of: range.placeholder, in: context.template) == 1 else {
+                throw VaultAppServicesRevealError.invalidRevealContext
+            }
+        }
+
+        let placeholders = Array(seenPlaceholders)
+        for lhsIndex in placeholders.indices {
+            for rhsIndex in placeholders.indices where lhsIndex != rhsIndex {
+                guard !placeholders[lhsIndex].contains(placeholders[rhsIndex]) else {
+                    throw VaultAppServicesRevealError.invalidRevealContext
+                }
+            }
+        }
+    }
+
+    private func countOccurrences(of needle: String, in haystack: String) -> Int {
+        var count = 0
+        var searchRange = haystack.startIndex..<haystack.endIndex
+
+        while let range = haystack.range(of: needle, range: searchRange) {
+            count += 1
+            searchRange = range.upperBound..<haystack.endIndex
+        }
+
+        return count
     }
 
     private func replacePlaceholders(in template: String, replacements: [String: String]) -> String {
