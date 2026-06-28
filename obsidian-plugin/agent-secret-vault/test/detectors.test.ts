@@ -30,6 +30,29 @@ describe("detectSensitiveText", () => {
     expect(JSON.stringify(findings)).not.toContain("abcdefghijklmnopqrstuvwxyz");
   });
 
+  it("detects quoted password assignments without exposing plaintext", () => {
+    const findings = detectSensitiveText('password="hunter2"\npassword: \'correct-horse-battery-staple\'');
+
+    expect(findings).toEqual([
+      {
+        start: 10,
+        end: 17,
+        ruleId: "password-assignment",
+        confidence: "medium",
+        redactedPreview: "********"
+      },
+      {
+        start: 30,
+        end: 58,
+        ruleId: "password-assignment",
+        confidence: "medium",
+        redactedPreview: "correct-…aple"
+      }
+    ]);
+    expect(JSON.stringify(findings)).not.toContain("hunter2");
+    expect(JSON.stringify(findings)).not.toContain("correct-horse-battery-staple");
+  });
+
   it("detects private key blocks and redacts the block preview", () => {
     const text = [
       "before",

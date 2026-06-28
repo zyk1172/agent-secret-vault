@@ -27,7 +27,7 @@ function collectMatches(text: string, regex: RegExp, ruleId: SensitiveFinding["r
   const matches: RuleMatch[] = [];
 
   for (const match of text.matchAll(regex)) {
-    const value = match[1] ?? match[0];
+    const value = match.slice(1).find((capture): capture is string => capture !== undefined) ?? match[0];
     const matchStart = match.index ?? 0;
     const valueOffset = match[0].indexOf(value);
     const start = matchStart + valueOffset;
@@ -49,7 +49,7 @@ export function detectSensitiveText(text: string): SensitiveFinding[] {
     ...collectMatches(text, /sk-proj-[A-Za-z0-9_-]{20,}/g, "openai-api-key", "high"),
     ...collectMatches(text, /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "private-key", "high"),
     ...collectMatches(text, /\bBearer\s+([A-Za-z0-9._~+/=-]{10,})/g, "bearer-token", "high"),
-    ...collectMatches(text, /\bpassword\s*[:=]\s*([^\s"'`]+)/gi, "password-assignment", "medium")
+    ...collectMatches(text, /\bpassword\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/gi, "password-assignment", "medium")
   ];
 
   return matches
