@@ -1,5 +1,6 @@
 export interface ContextLeakWarning {
-  reference: string;
+  ruleId: "semantic-secret-label";
+  message: "Surrounding text reveals the secret type.";
   suggestion: string;
 }
 
@@ -14,7 +15,8 @@ export function detectContextLeaks(line: string): ContextLeakWarning[] {
   return Array.from(line.matchAll(CANONICAL_SECRET_REFERENCE), (match) => {
     const reference = match[0];
     return {
-      reference,
+      ruleId: "semantic-secret-label",
+      message: "Surrounding text reveals the secret type.",
       suggestion: `凭据：${reference}`
     };
   });

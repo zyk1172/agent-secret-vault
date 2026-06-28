@@ -5,7 +5,8 @@ describe("detectContextLeaks", () => {
   it("warns when a canonical secret reference appears with risky Chinese context", () => {
     expect(detectContextLeaks("我的 Gmail 密码是 secret://0123456789ABCDEFGHJKMNPQRS")).toEqual([
       {
-        reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+        ruleId: "semantic-secret-label",
+        message: "Surrounding text reveals the secret type.",
         suggestion: "凭据：secret://0123456789ABCDEFGHJKMNPQRS"
       }
     ]);
@@ -22,11 +23,13 @@ describe("detectContextLeaks", () => {
       )
     ).toEqual([
       {
-        reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+        ruleId: "semantic-secret-label",
+        message: "Surrounding text reveals the secret type.",
         suggestion: "凭据：secret://0123456789ABCDEFGHJKMNPQRS"
       },
       {
-        reference: "secret://ABCDEFGHJKMNPQRSTVWXYZ0123",
+        ruleId: "semantic-secret-label",
+        message: "Surrounding text reveals the secret type.",
         suggestion: "凭据：secret://ABCDEFGHJKMNPQRSTVWXYZ0123"
       }
     ]);
