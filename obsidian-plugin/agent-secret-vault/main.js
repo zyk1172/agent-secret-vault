@@ -243,6 +243,33 @@ function interpretWorkbenchStatus(input) {
   return { canOperate: true, message: "Agent Secret Vault is ready." };
 }
 
+// src/reveal/paragraphReveal.ts
+var SECRET_REFERENCE_PATTERN2 = /secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g;
+function buildParagraphRevealRequest(paragraph) {
+  const references = [];
+  const ranges = [];
+  let referenceIndex = 0;
+  const template = paragraph.replace(SECRET_REFERENCE_PATTERN2, (reference) => {
+    const placeholder = `{{${referenceIndex}}}`;
+    references.push(reference);
+    ranges.push({ index: referenceIndex, placeholder });
+    referenceIndex += 1;
+    return placeholder;
+  });
+  if (references.length === 0) {
+    throw new Error("NO_SECRET_REFERENCES");
+  }
+  return {
+    type: "revealReferences",
+    references,
+    context: {
+      reason: "Reveal current paragraph",
+      template,
+      ranges
+    }
+  };
+}
+
 // src/ui/statusBar.ts
 function updateStatusBar(element, state) {
   const connection = state.connected ? "connected" : "not connected";
@@ -292,6 +319,13 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
             await this.encryptCurrentParagraph(editor);
           }
         });
+      } else if (definition.id === "reveal-current-paragraph") {
+        this.addCommand({
+          ...command,
+          editorCallback: async (editor) => {
+            await this.revealCurrentParagraph(editor);
+          }
+        });
       } else {
         this.addCommand(command);
       }
@@ -338,6 +372,27 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
       new import_obsidian.Notice(`Agent Secret Vault: encryption failed (${message}).`);
+    }
+  }
+  async revealCurrentParagraph(editor) {
+    const documentText = editor.getValue();
+    const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
+    let request;
+    try {
+      request = buildParagraphRevealRequest(range.text);
+    } catch {
+      new import_obsidian.Notice("Agent Secret Vault: current paragraph has no secret reference.");
+      return;
+    }
+    try {
+      const response = await this.createVaultClient().request(request);
+      if (response.type !== "revealSessionOpened") {
+        throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
+      }
+      new import_obsidian.Notice("Agent Secret Vault: reveal session opened in the Mac app.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+      new import_obsidian.Notice(`Agent Secret Vault: reveal failed (${message}).`);
     }
   }
 };

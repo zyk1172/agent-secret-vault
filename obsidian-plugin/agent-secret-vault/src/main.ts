@@ -2,7 +2,9 @@ import { Notice, Plugin, type Editor, type EditorPosition } from "obsidian";
 import { encryptTextRange } from "./encrypt/encryptSelection";
 import { extractCurrentParagraph, type TextRange } from "./editor/selection";
 import { LocalVaultClient } from "./ipc/client";
+import type { IpcRequest } from "./ipc/protocol";
 import { interpretWorkbenchStatus } from "./pairing/pairing";
+import { buildParagraphRevealRequest } from "./reveal/paragraphReveal";
 import { updateStatusBar } from "./ui/statusBar";
 
 const DEFAULT_SOCKET_PATH = `${process.env.HOME ?? ""}/Library/Application Support/AgentSecretVault/IPC/agent-secret-vault.sock`;
@@ -50,6 +52,13 @@ export default class AgentSecretVaultPlugin extends Plugin {
           ...command,
           editorCallback: async (editor: Editor) => {
             await this.encryptCurrentParagraph(editor);
+          }
+        });
+      } else if (definition.id === "reveal-current-paragraph") {
+        this.addCommand({
+          ...command,
+          editorCallback: async (editor: Editor) => {
+            await this.revealCurrentParagraph(editor);
           }
         });
       } else {
@@ -110,6 +119,31 @@ export default class AgentSecretVaultPlugin extends Plugin {
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
       new Notice(`Agent Secret Vault: encryption failed (${message}).`);
+    }
+  }
+
+  private async revealCurrentParagraph(editor: Editor): Promise<void> {
+    const documentText = editor.getValue();
+    const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
+    let request: IpcRequest;
+
+    try {
+      request = buildParagraphRevealRequest(range.text);
+    } catch {
+      new Notice("Agent Secret Vault: current paragraph has no secret reference.");
+      return;
+    }
+
+    try {
+      const response = await this.createVaultClient().request(request);
+      if (response.type !== "revealSessionOpened") {
+        throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
+      }
+
+      new Notice("Agent Secret Vault: reveal session opened in the Mac app.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+      new Notice(`Agent Secret Vault: reveal failed (${message}).`);
     }
   }
 }
