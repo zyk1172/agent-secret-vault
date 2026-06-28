@@ -24,6 +24,7 @@ public actor VaultAppServices: WorkbenchServicing {
     private let masterKeyProvider: (@Sendable () async throws -> SymmetricKey)?
     private let revealSessionStore: RevealSessionStore
     private let revealSessionPresenter: any RevealSessionPresenting
+    private let orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)?
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -33,7 +34,8 @@ public actor VaultAppServices: WorkbenchServicing {
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable () async throws -> SymmetricKey)? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
-        revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter()
+        revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
+        orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil
     ) {
         self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
@@ -43,6 +45,7 @@ public actor VaultAppServices: WorkbenchServicing {
         self.masterKeyProvider = masterKeyProvider
         self.revealSessionStore = revealSessionStore
         self.revealSessionPresenter = revealSessionPresenter
+        self.orphanScanObserver = orphanScanObserver
     }
 
     public init(
@@ -53,7 +56,8 @@ public actor VaultAppServices: WorkbenchServicing {
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable () async throws -> SymmetricKey)? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
-        revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter()
+        revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
+        orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil
     ) {
         self.init(
             textEncryptor: encryptSelection,
@@ -63,7 +67,8 @@ public actor VaultAppServices: WorkbenchServicing {
             masterKey: masterKey,
             masterKeyProvider: masterKeyProvider,
             revealSessionStore: revealSessionStore,
-            revealSessionPresenter: revealSessionPresenter
+            revealSessionPresenter: revealSessionPresenter,
+            orphanScanObserver: orphanScanObserver
         )
     }
 
@@ -136,10 +141,12 @@ public actor VaultAppServices: WorkbenchServicing {
         let markdownReferenceSet = Set(markdownReferences.compactMap(Self.canonicalReference))
         let storedReferenceSet = Set(try await recordLister.recordIDs().map { "secret://\($0)" })
 
-        return OrphanScanResult(
+        let result = OrphanScanResult(
             missingRecords: Array(markdownReferenceSet.subtracting(storedReferenceSet)).sorted(),
             unreferencedRecords: Array(storedReferenceSet.subtracting(markdownReferenceSet)).sorted()
         )
+        await orphanScanObserver?(result)
+        return result
     }
 
     private static func canonicalReference(_ reference: String) -> String? {

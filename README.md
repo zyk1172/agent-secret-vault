@@ -30,7 +30,7 @@ xcodebuild test -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -de
 cd mcp-server && npm test && npm run typecheck && npm run build
 cd ../obsidian-plugin/agent-secret-vault && npm test && npm run typecheck && npm run build
 cd ../..
-ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/agent-secret-vault/dist
+ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/agent-secret-vault/main.js obsidian-plugin/agent-secret-vault/dist
 git diff --check
 ```
 
@@ -46,6 +46,10 @@ git diff --check
 6. Use reveal for the current paragraph only when local display is needed. The
    app opens an app-owned temporary reveal window; the plugin receives status
    only, not decrypted values.
+
+MCP `secret_create_request` and `secure_execute` are first-release compatibility
+endpoints. They return non-sensitive unavailable statuses until the app-side
+selection and execution bridges are enabled.
 
 ## Security model
 

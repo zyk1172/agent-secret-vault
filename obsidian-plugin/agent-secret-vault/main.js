@@ -24,7 +24,7 @@ __export(main_exports, {
   default: () => AgentSecretVaultPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian = require("obsidian");
+var import_obsidian2 = require("obsidian");
 
 // src/editor/selection.ts
 function extractCurrentParagraph(documentText, cursorOffset) {
@@ -270,6 +270,31 @@ function interpretWorkbenchStatus(input) {
   return { canOperate: true, message: "Agent Secret Vault is ready." };
 }
 
+// src/replace/transactionalReplace.ts
+function compareFromEnd(left, right) {
+  return right.start - left.start || right.end - left.end;
+}
+function validateReplacements(text, replacements) {
+  const ascendingReplacements = [...replacements].sort((left, right) => left.start - right.start || left.end - right.end);
+  for (const replacement of ascendingReplacements) {
+    if (replacement.start < 0 || replacement.end < replacement.start || replacement.end > text.length) {
+      throw new RangeError("Replacement range is outside the original text.");
+    }
+  }
+  for (let index = 1; index < ascendingReplacements.length; index += 1) {
+    if (ascendingReplacements[index].start < ascendingReplacements[index - 1].end) {
+      throw new RangeError("Replacement ranges overlap.");
+    }
+  }
+}
+function applyReplacements(text, replacements) {
+  validateReplacements(text, replacements);
+  return [...replacements].sort(compareFromEnd).reduce(
+    (updatedText, replacement) => `${updatedText.slice(0, replacement.start)}${replacement.replacementText}${updatedText.slice(replacement.end)}`,
+    text
+  );
+}
+
 // src/reveal/paragraphReveal.ts
 var SECRET_SCHEME = "secret://";
 var SECRET_ID_LENGTH = 26;
@@ -363,6 +388,113 @@ function buildParagraphRevealRequest(paragraph) {
   };
 }
 
+// src/scan/detectors.ts
+function redactValue(value) {
+  if (value.length <= 10) {
+    return "********";
+  }
+  return `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
+}
+function collectMatches(text, regex, ruleId, confidence) {
+  const matches = [];
+  for (const match of text.matchAll(regex)) {
+    const value = match.slice(1).find((capture) => capture !== void 0) ?? match[0];
+    const matchStart = match.index ?? 0;
+    const valueOffset = match[0].indexOf(value);
+    const start = matchStart + valueOffset;
+    matches.push({
+      start,
+      end: start + value.length,
+      value,
+      ruleId,
+      confidence
+    });
+  }
+  return matches;
+}
+function detectSensitiveText(text) {
+  const matches = [
+    ...collectMatches(text, /sk-proj-[A-Za-z0-9_-]{20,}/g, "openai-api-key", "high"),
+    ...collectMatches(text, /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "private-key", "high"),
+    ...collectMatches(text, /\bBearer\s+([A-Za-z0-9._~+/=-]{10,})/g, "bearer-token", "high"),
+    ...collectMatches(text, /\b(?:password|passwd|pwd)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/gi, "password-assignment", "medium")
+  ];
+  return matches.sort((left, right) => left.start - right.start || left.end - right.end).map(({ start, end, ruleId, confidence, value }) => ({
+    start,
+    end,
+    ruleId,
+    confidence,
+    redactedPreview: redactValue(value)
+  }));
+}
+
+// src/scan/vaultScanner.ts
+function hashMarkdown(text) {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+function scanMarkdownFile(filePath, text) {
+  const contentHash = hashMarkdown(text);
+  return detectSensitiveText(text).map((finding) => ({
+    ...finding,
+    filePath,
+    contentHash,
+    plaintextForCurrentProcessOnly: text.slice(finding.start, finding.end)
+  }));
+}
+
+// src/ui/reviewModal.ts
+var import_obsidian = require("obsidian");
+var ReviewModal = class extends import_obsidian.Modal {
+  constructor(app, findings, applyFindings) {
+    super(app);
+    this.findings = findings;
+    this.applyFindings = applyFindings;
+  }
+  findings;
+  applyFindings;
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Agent Secret Vault review queue" });
+    if (this.findings.length === 0) {
+      contentEl.createEl("p", { text: "No sensitive text findings in this scan." });
+      return;
+    }
+    const list = contentEl.createEl("ul");
+    const selected = new Set(this.findings);
+    for (const finding of this.findings) {
+      const item = list.createEl("li");
+      const checkbox = item.createEl("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = true;
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          selected.add(finding);
+        } else {
+          selected.delete(finding);
+        }
+      });
+      item.createEl("div", { text: finding.filePath });
+      item.createEl("div", { text: `Rule: ${finding.ruleId}` });
+      item.createEl("div", { text: `Confidence: ${finding.confidence}` });
+      item.createEl("code", { text: finding.redactedPreview });
+    }
+    if (this.applyFindings) {
+      const button = contentEl.createEl("button", { text: "Encrypt selected findings" });
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        await this.applyFindings?.([...selected]);
+        this.close();
+      });
+    }
+  }
+};
+
 // src/ui/statusBar.ts
 function updateStatusBar(element, state) {
   const connection = state.connected ? "connected" : "not connected";
@@ -382,7 +514,7 @@ var commandDefinitions = [
   { id: "scan-vault", name: "Scan vault for sensitive text" },
   { id: "reveal-current-paragraph", name: "Reveal current paragraph in Agent Secret Vault" }
 ];
-var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
+var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   createVaultClient() {
     return new LocalVaultClient(DEFAULT_SOCKET_PATH);
   }
@@ -395,7 +527,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
         id: definition.id,
         name: definition.name,
         callback: () => {
-          new import_obsidian.Notice(`Agent Secret Vault: ${definition.id} is not connected yet.`);
+          new import_obsidian2.Notice(`Agent Secret Vault: ${definition.id} is not connected yet.`);
         }
       };
       if (definition.id === "encrypt-selection") {
@@ -419,6 +551,20 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
             await this.revealCurrentParagraph(editor);
           }
         });
+      } else if (definition.id === "scan-current-note") {
+        this.addCommand({
+          ...command,
+          editorCallback: async (editor) => {
+            await this.scanCurrentNote(editor);
+          }
+        });
+      } else if (definition.id === "scan-vault") {
+        this.addCommand({
+          ...command,
+          callback: async () => {
+            await this.scanVault();
+          }
+        });
       } else {
         this.addCommand(command);
       }
@@ -427,7 +573,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   async encryptSelection(editor) {
     const text = editor.getSelection();
     if (text.length === 0) {
-      new import_obsidian.Notice("Agent Secret Vault: select text to encrypt.");
+      new import_obsidian2.Notice("Agent Secret Vault: select text to encrypt.");
       return;
     }
     const from = editor.getCursor("from");
@@ -442,7 +588,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
     const documentText = editor.getValue();
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     if (range.text.trim().length === 0) {
-      new import_obsidian.Notice("Agent Secret Vault: current paragraph is empty.");
+      new import_obsidian2.Notice("Agent Secret Vault: current paragraph is empty.");
       return;
     }
     await this.encryptRange(editor, range, editor.offsetToPos(range.start), editor.offsetToPos(range.end));
@@ -457,14 +603,14 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
         client: this.createVaultClient()
       });
       if (editor.getRange(fromPos, toPos) !== range.text) {
-        new import_obsidian.Notice("Agent Secret Vault: note changed before encryption completed; leaving text unchanged.");
+        new import_obsidian2.Notice("Agent Secret Vault: note changed before encryption completed; leaving text unchanged.");
         return;
       }
       editor.replaceRange(result.reference, fromPos, toPos, "agent-secret-vault");
-      new import_obsidian.Notice("Agent Secret Vault: encrypted text into a secret reference.");
+      new import_obsidian2.Notice("Agent Secret Vault: encrypted text into a secret reference.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian.Notice(`Agent Secret Vault: encryption failed (${message}).`);
+      new import_obsidian2.Notice(`Agent Secret Vault: encryption failed (${message}).`);
     }
   }
   async revealCurrentParagraph(editor) {
@@ -474,7 +620,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
     try {
       request = buildParagraphRevealRequest(range.text);
     } catch {
-      new import_obsidian.Notice("Agent Secret Vault: current paragraph has no secret reference.");
+      new import_obsidian2.Notice("Agent Secret Vault: current paragraph has no secret reference.");
       return;
     }
     try {
@@ -482,10 +628,94 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
       if (response.type !== "revealSessionOpened") {
         throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
       }
-      new import_obsidian.Notice("Agent Secret Vault: reveal session opened in the Mac app.");
+      new import_obsidian2.Notice("Agent Secret Vault: reveal session opened in the Mac app.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian.Notice(`Agent Secret Vault: reveal failed (${message}).`);
+      new import_obsidian2.Notice(`Agent Secret Vault: reveal failed (${message}).`);
     }
+  }
+  async scanCurrentNote(editor) {
+    const originalText = editor.getValue();
+    const activeFilePath = this.app.workspace?.getActiveFile()?.path ?? "current-note.md";
+    const findings = scanMarkdownFile(activeFilePath, originalText);
+    new ReviewModal(this.app, findings, async (selectedFindings) => {
+      try {
+        if (editor.getValue() !== originalText) {
+          new import_obsidian2.Notice("Agent Secret Vault: note changed after scan; leaving text unchanged.");
+          return;
+        }
+        const updatedText = await this.encryptFindingsInText(originalText, selectedFindings);
+        editor.setValue(updatedText);
+        new import_obsidian2.Notice(`Agent Secret Vault: encrypted ${selectedFindings.length} finding${selectedFindings.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+        new import_obsidian2.Notice(`Agent Secret Vault: scan replacement failed (${message}).`);
+      }
+    }).open();
+  }
+  async scanVault() {
+    const files = this.app.vault.getMarkdownFiles();
+    const filesByPath = new Map(files.map((file) => [file.path, file]));
+    const snapshots = /* @__PURE__ */ new Map();
+    const allFindings = [];
+    for (const file of files) {
+      const text = await this.app.vault.cachedRead(file);
+      snapshots.set(file.path, text);
+      allFindings.push(...scanMarkdownFile(file.path, text));
+    }
+    new ReviewModal(this.app, allFindings, async (selectedFindings) => {
+      try {
+        await this.applyVaultFindings(selectedFindings, filesByPath, snapshots);
+        new import_obsidian2.Notice(`Agent Secret Vault: encrypted ${selectedFindings.length} finding${selectedFindings.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+        new import_obsidian2.Notice(`Agent Secret Vault: scan replacement failed (${message}).`);
+      }
+    }).open();
+  }
+  async applyVaultFindings(selectedFindings, filesByPath, snapshots) {
+    const findingsByPath = /* @__PURE__ */ new Map();
+    for (const finding of selectedFindings) {
+      const existing = findingsByPath.get(finding.filePath) ?? [];
+      existing.push(finding);
+      findingsByPath.set(finding.filePath, existing);
+    }
+    for (const [filePath, findings] of findingsByPath) {
+      const file = filesByPath.get(filePath);
+      const originalText = snapshots.get(filePath);
+      if (!file || originalText === void 0) {
+        continue;
+      }
+      const currentText = await this.app.vault.cachedRead(file);
+      if (currentText !== originalText) {
+        new import_obsidian2.Notice(`Agent Secret Vault: ${filePath} changed after scan; leaving it unchanged.`);
+        continue;
+      }
+      const updatedText = await this.encryptFindingsInText(originalText, findings);
+      await this.app.vault.modify(file, updatedText);
+    }
+  }
+  async encryptFindingsInText(text, findings) {
+    const client = this.createVaultClient();
+    const replacements = [];
+    for (const finding of findings) {
+      const plaintext = finding.plaintextForCurrentProcessOnly ?? text.slice(finding.start, finding.end);
+      const response = await client.request({
+        type: "encryptText",
+        plaintext,
+        label: `${finding.filePath}:${finding.ruleId}`,
+        policy: "credential"
+      });
+      if (response.type !== "created") {
+        throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
+      }
+      replacements.push({
+        start: finding.start,
+        end: finding.end,
+        replacementText: response.reference
+      });
+      finding.plaintextForCurrentProcessOnly = void 0;
+    }
+    return applyReplacements(text, replacements);
   }
 };

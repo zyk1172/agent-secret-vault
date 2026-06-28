@@ -14,7 +14,7 @@ struct AgentSecretVaultApplication: App {
 
     var body: some Scene {
         WindowGroup {
-            VaultWorkbenchView(status: runtime.status)
+            VaultWorkbenchView(status: runtime.status, orphanScanResult: runtime.orphanScanResult)
                 .task {
                     await runtime.start()
                 }
@@ -24,6 +24,17 @@ struct AgentSecretVaultApplication: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
+                    runtime.clearRevealSessions()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.willSleepNotification)) { _ in
+                    secureViewerModel.handleSleepNotification()
+                    runtime.clearRevealSessions()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
+                    secureViewerModel.handleLockNotification()
+                    runtime.clearRevealSessions()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     runtime.clearRevealSessions()
                 }
         }
@@ -41,6 +52,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         activeKnowledgeBaseRoot: nil,
         pluginConnected: false
     )
+    @Published var orphanScanResult: OrphanScanResult?
 
     private var controller: AppIPCController?
     private var started = false
@@ -98,7 +110,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             masterKeyProvider: {
                 SymmetricKey(data: try await deviceKeyStore.deviceKey(reason: "Reveal paragraph"))
             },
-            revealSessionStore: RevealSessionStore(defaultTTLSeconds: 60)
+            revealSessionStore: RevealSessionStore(defaultTTLSeconds: 60),
+            orphanScanObserver: { [weak self] result in
+                await MainActor.run {
+                    self?.orphanScanResult = result
+                }
+            }
         )
         let server = try UnixSocketServer(configuration: .defaultConfiguration())
         let controller = AppIPCController(

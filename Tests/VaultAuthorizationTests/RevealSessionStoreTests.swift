@@ -21,6 +21,20 @@ import VaultIPC
     #expect(await store.paragraph(id: id) == nil)
 }
 
+@Test func revealSessionStoreInvokesClearHandlerAfterTTL() async throws {
+    let store = RevealSessionStore(defaultTTLSeconds: 0.01)
+    let flag = ClearFlag()
+    let id = await store.create(resolvedParagraph: "Token: ASV_CANARY_REVEAL_TTL")
+
+    await store.setClearHandler(id: id) {
+        await flag.markCleared()
+    }
+
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    #expect(await flag.wasCleared)
+}
+
 @Test func revealSessionStoreClearAllRemovesAllSessions() async {
     let store = RevealSessionStore()
     let firstID = await store.create(resolvedParagraph: "first")
@@ -105,6 +119,14 @@ private struct UnusedTextEncryptor: TextEncrypting {
 
 private enum UnusedTextEncryptorError: Error {
     case unexpectedCall
+}
+
+private actor ClearFlag {
+    private(set) var wasCleared = false
+
+    func markCleared() {
+        wasCleared = true
+    }
 }
 
 private actor SpyRevealSessionPresenter: RevealSessionPresenting {

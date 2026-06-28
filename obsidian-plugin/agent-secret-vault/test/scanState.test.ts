@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { scanMarkdownFile } from "../src/scan/vaultScanner";
+import { hashMarkdown, scanMarkdownFile } from "../src/scan/vaultScanner";
 import { serializeScanState, type ScanFindingState } from "../src/scan/scanState";
 
 describe("scan state serialization", () => {
@@ -46,7 +45,7 @@ describe("scanMarkdownFile", () => {
     expect(findings).toEqual([
       {
         filePath: "Daily.md",
-        contentHash: `sha256:${createHash("sha256").update(text).digest("hex")}`,
+        contentHash: hashMarkdown(text),
         start: 11,
         end: 18,
         ruleId: "password-assignment",
@@ -56,7 +55,7 @@ describe("scanMarkdownFile", () => {
       },
       {
         filePath: "Daily.md",
-        contentHash: `sha256:${createHash("sha256").update(text).digest("hex")}`,
+        contentHash: hashMarkdown(text),
         start: 41,
         end: 67,
         ruleId: "bearer-token",

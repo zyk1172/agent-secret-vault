@@ -164,7 +164,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_create_request",
       title: "Create Secret From App Selection",
       description:
-        "Asks the macOS app to encrypt selected local text and returns only a secret:// reference. Plaintext is never returned.",
+        "First-release compatibility endpoint for app-side selection encryption. It may return SELECTION_ENCRYPT_UNAVAILABLE until the macOS selection bridge is enabled. Plaintext is never returned.",
       inputSchema: CreateInput,
       outputSchema: CreateOutput,
       async handler(input) {
@@ -184,7 +184,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secure_execute",
       title: "Secure Execute",
       description:
-        "Executes an allowlisted local template through the macOS app using secret:// references for secret slots. Plaintext is never returned.",
+        "First-release compatibility endpoint for allowlisted local execution. It may return EXECUTE_UNAVAILABLE until the execution bridge is enabled. Plaintext is never returned.",
       inputSchema: ExecuteInput,
       outputSchema: ExecuteOutput,
       async handler(input) {

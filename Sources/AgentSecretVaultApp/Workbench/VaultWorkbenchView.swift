@@ -13,9 +13,11 @@ public enum VaultWorkbenchCopy {
 
 public struct VaultWorkbenchView: View {
     let status: WorkbenchStatus
+    let orphanScanResult: OrphanScanResult?
 
-    public init(status: WorkbenchStatus) {
+    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult? = nil) {
         self.status = status
+        self.orphanScanResult = orphanScanResult
     }
 
     public var body: some View {
@@ -25,6 +27,7 @@ public struct VaultWorkbenchView: View {
                     .font(.largeTitle.weight(.bold))
                 ConnectionStatusCard(status: status)
                 SetupGuideView(status: status)
+                OrphanReviewView(result: orphanScanResult) { _ in }
                 Text(VaultWorkbenchCopy.securityBoundary)
                     .font(.callout)
                     .foregroundStyle(.secondary)

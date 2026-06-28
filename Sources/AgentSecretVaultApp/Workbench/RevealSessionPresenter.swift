@@ -55,6 +55,13 @@ private final class RevealSessionWindowRegistry {
         }
 
         controllers[sessionID] = controller
+        Task { [weak controller] in
+            await store.setClearHandler(id: sessionID) {
+                await MainActor.run {
+                    controller?.closeBecauseSessionCleared()
+                }
+            }
+        }
         controller.show()
     }
 
@@ -100,6 +107,11 @@ private final class RevealSessionWindowController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        window.close()
+    }
+
+    func closeBecauseSessionCleared() {
+        didClear = true
         window.close()
     }
 

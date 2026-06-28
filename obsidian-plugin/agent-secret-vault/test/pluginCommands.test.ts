@@ -11,7 +11,21 @@ vi.mock("obsidian", () => ({
       obsidianMock.notices.push(message);
     }
   },
+  Modal: class ModalTestDouble {
+    contentEl = { empty: vi.fn(), createEl: vi.fn() };
+
+    constructor(_app: unknown) {}
+
+    open(): void {}
+    close(): void {}
+  },
   Plugin: class ObsidianPluginTestDouble {
+    app: unknown;
+
+    constructor(app: unknown) {
+      this.app = app;
+    }
+
     addStatusBarItem(): HTMLElement {
       return { textContent: "" } as HTMLElement;
     }
