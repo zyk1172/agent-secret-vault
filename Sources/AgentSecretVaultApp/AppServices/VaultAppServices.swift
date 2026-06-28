@@ -14,6 +14,7 @@ public protocol TextEncrypting: Sendable {
 public actor VaultAppServices: WorkbenchServicing {
     private let textEncryptor: any TextEncrypting
     private let activeRoot: URL?
+    private let recordLister: (any RecordListing)?
     private let recordResolver: VaultRecordResolver?
     private let masterKey: SymmetricKey?
     private let revealSessionStore: RevealSessionStore
@@ -22,6 +23,7 @@ public actor VaultAppServices: WorkbenchServicing {
     public init(
         textEncryptor: any TextEncrypting,
         activeRoot: URL?,
+        recordLister: (any RecordListing)? = nil,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
@@ -29,6 +31,7 @@ public actor VaultAppServices: WorkbenchServicing {
     ) {
         self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
+        self.recordLister = recordLister
         self.recordResolver = recordResolver
         self.masterKey = masterKey
         self.revealSessionStore = revealSessionStore
@@ -38,6 +41,7 @@ public actor VaultAppServices: WorkbenchServicing {
     public init(
         encryptSelection: any EncryptSelectionCoordinating & TextEncrypting,
         activeRoot: URL?,
+        recordLister: (any RecordListing)? = nil,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
@@ -46,6 +50,7 @@ public actor VaultAppServices: WorkbenchServicing {
         self.init(
             textEncryptor: encryptSelection,
             activeRoot: activeRoot,
+            recordLister: recordLister,
             recordResolver: recordResolver,
             masterKey: masterKey,
             revealSessionStore: revealSessionStore,
@@ -104,7 +109,21 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {
-        OrphanScanResult(missingRecords: [], unreferencedRecords: [])
+        guard let recordLister else {
+            return OrphanScanResult(missingRecords: [], unreferencedRecords: [])
+        }
+
+        let markdownReferenceSet = Set(markdownReferences.compactMap(Self.canonicalReference))
+        let storedReferenceSet = Set(try await recordLister.recordIDs().map { "secret://\($0)" })
+
+        return OrphanScanResult(
+            missingRecords: Array(markdownReferenceSet.subtracting(storedReferenceSet)).sorted(),
+            unreferencedRecords: Array(storedReferenceSet.subtracting(markdownReferenceSet)).sorted()
+        )
+    }
+
+    private static func canonicalReference(_ reference: String) -> String? {
+        try? SecretReference(reference).description
     }
 
     private func resolveTemplate(_ template: String, ranges: [ReferenceRange], plaintexts: [String]) throws -> String {

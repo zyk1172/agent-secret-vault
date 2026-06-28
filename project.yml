@@ -171,6 +171,8 @@ schemes:
     build:
       targets:
         AgentSecretVault: all
+        VaultCoreTests:
+          - test
         VaultAuthorizationTests:
           - test
         VaultIPCTests:
@@ -179,6 +181,7 @@ schemes:
           - test
     test:
       targets:
+        - VaultCoreTests
         - VaultAuthorizationTests
         - VaultIPCTests
         - LeakTests

@@ -9,7 +9,7 @@ public enum FileRecordStoreError: Error, Equatable, Sendable {
     case verificationFailed
 }
 
-public struct FileRecordStore: RecordStore {
+public struct FileRecordStore: RecordStore, RecordListing {
     private let baseDirectory: URL
 
     public init(baseDirectory: URL) {
@@ -93,6 +93,33 @@ public struct FileRecordStore: RecordStore {
         return validVersions.sorted()
     }
 
+    public func recordIDs() async throws -> [String] {
+        let directory = recordsDirectory()
+        guard fileManager.fileExists(atPath: directory.path) else {
+            return []
+        }
+        try rejectSymlink(at: directory)
+
+        let contents = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsSubdirectoryDescendants]
+        )
+
+        return try contents.compactMap { url in
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true,
+                  values.isSymbolicLink != true
+            else {
+                return nil
+            }
+
+            let id = url.lastPathComponent
+            return (try? SecretReference("secret://\(id)")).map(\.id)
+        }
+        .sorted()
+    }
+
     private func loadValidRecord(id: String, version: Int) throws -> EncryptedRecord {
         let url = versionURL(id: id, version: version)
         try rejectSymlink(at: url)
@@ -117,10 +144,14 @@ public struct FileRecordStore: RecordStore {
     }
 
     private func recordDirectory(id: String) -> URL {
+        recordsDirectory()
+            .appendingPathComponent(id, isDirectory: true)
+    }
+
+    private func recordsDirectory() -> URL {
         baseDirectory
             .appendingPathComponent(".agent-secret-vault", isDirectory: true)
             .appendingPathComponent("records", isDirectory: true)
-            .appendingPathComponent(id, isDirectory: true)
     }
 
     private func versionURL(id: String, version: Int) -> URL {

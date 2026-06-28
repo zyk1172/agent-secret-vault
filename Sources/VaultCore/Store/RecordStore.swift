@@ -3,3 +3,7 @@ public protocol RecordStore: Sendable {
     func latest(id: String) async throws -> EncryptedRecord
     func versions(id: String) async throws -> [Int]
 }
+
+public protocol RecordListing: Sendable {
+    func recordIDs() async throws -> [String]
+}
