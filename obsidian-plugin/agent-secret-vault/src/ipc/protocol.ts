@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const SecretReference = z.string().regex(/^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/);
 export const SecretPolicy = z.enum(["credential", "externalSend", "localOnly"]);
+export const CapabilityToken = z.string().min(1);
 
 export const RevealContext = z.object({
   reason: z.string().min(1),
@@ -31,6 +32,11 @@ export const IpcRequest = z.discriminatedUnion("type", [
   }).strict()
 ]);
 
+export const AuthenticatedIpcRequest = z.object({
+  capabilityToken: CapabilityToken,
+  request: IpcRequest
+}).strict();
+
 export const WorkbenchStatus = z.object({
   locked: z.boolean(),
   ipcAvailable: z.boolean(),
@@ -59,3 +65,4 @@ export const IpcResponse = z.discriminatedUnion("type", [
 
 export type IpcRequest = z.infer<typeof IpcRequest>;
 export type IpcResponse = z.infer<typeof IpcResponse>;
+export type AuthenticatedIpcRequest = z.infer<typeof AuthenticatedIpcRequest>;

@@ -19,6 +19,12 @@ public final class RevealSessionPresenter: RevealSessionPresenting, @unchecked S
     }
 }
 
+public enum RevealSessionLifecycle {
+    @MainActor public static func clearAll() {
+        RevealSessionWindowRegistry.shared.clearAll()
+    }
+}
+
 @MainActor
 private final class RevealSessionWindowRegistry {
     static let shared = RevealSessionWindowRegistry()
@@ -50,6 +56,14 @@ private final class RevealSessionWindowRegistry {
 
         controllers[sessionID] = controller
         controller.show()
+    }
+
+    func clearAll() {
+        let openControllers = Array(controllers.values)
+        controllers.removeAll()
+        for controller in openControllers {
+            controller.close()
+        }
     }
 }
 

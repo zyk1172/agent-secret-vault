@@ -103,6 +103,14 @@ async function loadRuntimeNet() {
   const runtimeImport = Function("specifier", "return import(specifier)");
   return await runtimeImport("node:net");
 }
+async function loadRuntimeFs() {
+  const runtimeRequire = Function("return typeof require === 'function' ? require : undefined")();
+  if (runtimeRequire) {
+    return runtimeRequire("node:fs");
+  }
+  const runtimeImport = Function("specifier", "return import(specifier)");
+  return await runtimeImport("node:fs");
+}
 function parseIpcResponse(json) {
   let parsed;
   try {
@@ -162,15 +170,24 @@ function isSecretReferenceArray(value) {
 var LocalVaultClient = class {
   requestTimeoutMs;
   netModule;
+  fsModule;
+  tokenPath;
   constructor(socketPath, options = {}) {
     this.socketPath = socketPath;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.netModule = options.netModule;
+    this.fsModule = options.fsModule;
+    this.tokenPath = options.tokenPath ?? socketPath.replace(/agent-secret-vault\.sock$/, "capability.token");
   }
   socketPath;
   async request(request) {
     const net = this.netModule ?? await loadRuntimeNet();
-    const payload = Buffer.from(JSON.stringify(request), "utf8");
+    const fs = this.fsModule ?? await loadRuntimeFs();
+    const authenticatedRequest = {
+      capabilityToken: this.readCapabilityToken(fs),
+      request
+    };
+    const payload = Buffer.from(JSON.stringify(authenticatedRequest), "utf8");
     const frame = Buffer.alloc(4 + payload.length);
     frame.writeUInt32BE(payload.length, 0);
     payload.copy(frame, 4);
@@ -226,6 +243,16 @@ var LocalVaultClient = class {
         }
       });
     });
+  }
+  readCapabilityToken(fs) {
+    const tokenStat = fs.statSync(this.tokenPath);
+    if ((tokenStat.mode & 63) !== 0) {
+      throw new Error("IPC token permissions allow non-owner access.");
+    }
+    if (typeof process.getuid === "function" && tokenStat.uid !== process.getuid()) {
+      throw new Error("IPC token owner does not match current user.");
+    }
+    return fs.readFileSync(this.tokenPath, "utf8").trim();
   }
 };
 

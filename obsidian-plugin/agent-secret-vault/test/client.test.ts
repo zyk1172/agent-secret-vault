@@ -63,6 +63,12 @@ afterEach(async () => {
 });
 
 describe("LocalVaultClient", () => {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+  const fsModule = {
+    statSync: () => ({ mode: 0o600, uid }),
+    readFileSync: (_path: string, _encoding: BufferEncoding) => "test-capability-token"
+  };
+
   it("resolves after a complete response frame without waiting for socket end", async () => {
     const socketPath = await createSocketServer((socket) => {
       socket.on("data", () => {
@@ -78,7 +84,7 @@ describe("LocalVaultClient", () => {
       });
     });
 
-    const client = new LocalVaultClient(socketPath, { netModule: net });
+    const client = new LocalVaultClient(socketPath, { netModule: net, fsModule });
 
     await expect(expectWithin(client.request({ type: "workbenchStatus" }), 100)).resolves.toEqual({
       type: "workbenchStatus",
@@ -104,7 +110,7 @@ describe("LocalVaultClient", () => {
       });
     });
 
-    const client = new LocalVaultClient(socketPath, { netModule: net });
+    const client = new LocalVaultClient(socketPath, { netModule: net, fsModule });
 
     await expect(client.request({
       type: "encryptText",
@@ -117,10 +123,13 @@ describe("LocalVaultClient", () => {
     });
 
     expect(receivedRequest).toEqual({
-      type: "encryptText",
-      plaintext: "ASV_CANARY_PLUGIN",
-      label: null,
-      policy: "credential"
+      capabilityToken: "test-capability-token",
+      request: {
+        type: "encryptText",
+        plaintext: "ASV_CANARY_PLUGIN",
+        label: null,
+        policy: "credential"
+      }
     });
   });
 
@@ -130,7 +139,7 @@ describe("LocalVaultClient", () => {
       socket.end();
     });
 
-    const client = new LocalVaultClient(socketPath, { netModule: net });
+    const client = new LocalVaultClient(socketPath, { netModule: net, fsModule });
 
     await expect(client.request({ type: "workbenchStatus" })).rejects.toThrow("Incomplete IPC frame");
   });
@@ -140,8 +149,21 @@ describe("LocalVaultClient", () => {
       // Keep the connection open without sending a frame.
     });
 
-    const client = new LocalVaultClient(socketPath, { netModule: net, requestTimeoutMs: 10 });
+    const client = new LocalVaultClient(socketPath, { netModule: net, fsModule, requestTimeoutMs: 10 });
 
     await expect(client.request({ type: "workbenchStatus" })).rejects.toThrow("IPC request timed out");
+  });
+
+  it("rejects world-readable capability tokens before connecting", async () => {
+    const socketPath = await createSocketServer(() => {});
+    const client = new LocalVaultClient(socketPath, {
+      netModule: net,
+      fsModule: {
+        statSync: () => ({ mode: 0o644, uid }),
+        readFileSync: (_path: string, _encoding: BufferEncoding) => "test-capability-token"
+      }
+    });
+
+    await expect(client.request({ type: "workbenchStatus" })).rejects.toThrow("permissions");
   });
 });

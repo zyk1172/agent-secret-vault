@@ -31,13 +31,13 @@ describe("security documentation", () => {
     }
   });
 
-  it("lists release checklist acceptance criteria 1 through 16", async () => {
+  it("lists release checklist acceptance criteria 1 through 17", async () => {
     const checklist = await readFile(
       path.join(repositoryRoot, "docs/security/release-checklist.md"),
       "utf8"
     );
 
-    for (let criterion = 1; criterion <= 16; criterion += 1) {
+    for (let criterion = 1; criterion <= 17; criterion += 1) {
       expect(checklist).toMatch(new RegExp(`^${criterion}\\.\\s`, "m"));
     }
   });

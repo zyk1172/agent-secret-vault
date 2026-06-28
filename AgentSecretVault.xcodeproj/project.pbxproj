@@ -41,12 +41,15 @@
 		544051C7732DD36C1AB1ED3A /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
 		55EADB7D403B83D62C4499EB /* VaultUICopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F04B12E92A26C3B39C7C9C5B /* VaultUICopy.swift */; };
 		5617CFF5024E8249A82ABD8E /* SecurityBoundaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 148069E65B634F445C8E15A6 /* SecurityBoundaryCard.swift */; };
+		561DFDCC9DD4E73E98F978F4 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5B7E39AEC5DE27DA04B2E09C /* VaultExecution.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 44E711499A79A5F3591E9CBF /* VaultExecution.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6121EC1FDA447E4DA09E0EEC /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17906FCCA92001E35B05C859 /* DeviceKeyStore.swift */; };
 		613FDB6EBDCA8F0DCCAE022A /* AgentSecretVaultApp.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 63F5D406A6125C21AADB774C /* AgentSecretVaultApp.framework */; };
 		61DB4BA5DCA8E6905C88D158 /* AuditEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2584C836A66EB8508C623312 /* AuditEvent.swift */; };
 		66340A2CD505540D7B8E4BE7 /* VaultUICopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 910934C77627E25B9E2EEF98 /* VaultUICopyTests.swift */; };
 		69E3CC07034AE77A0592DB48 /* VaultExecution.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 44E711499A79A5F3591E9CBF /* VaultExecution.framework */; };
+		6B827659426215A206D405A9 /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 873C5E8748C746C1969B5989 /* VaultAuthorization.framework */; };
+		6C0A6F614AA973E1D0B6E5BD /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
 		6D3392DFE497386DA15888A1 /* VaultExecution.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 44E711499A79A5F3591E9CBF /* VaultExecution.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6FFB8EC1AA969D8F4A9DCEA5 /* IPCWorkbenchMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1CB06E0EA917CE3886A0380 /* IPCWorkbenchMessageTests.swift */; };
 		72A9C281322BC8D176CA6BF7 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -81,6 +84,7 @@
 		ABB3B1DC5FB19D24F3291A74 /* SecretReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0047E32E5D06B11C5797C871 /* SecretReference.swift */; };
 		AE0160D05E432B2F384942AD /* EncryptedAuditLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04047C45EAF89A929CD9BDF /* EncryptedAuditLogTests.swift */; };
 		AE11A6288E89567BC2902A2A /* RevealSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21CDAEB48D5C096256FE989D /* RevealSessionStore.swift */; };
+		AF571F97F90ED76EDD0D6416 /* VaultAuthorization.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 873C5E8748C746C1969B5989 /* VaultAuthorization.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B1C012806CB38EB1335D8CB1 /* MarkdownReferenceScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BB15703DA8ED1FC661536F2 /* MarkdownReferenceScannerTests.swift */; };
 		B2E11023D282B8A431A67F62 /* VaultAuthorization.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 873C5E8748C746C1969B5989 /* VaultAuthorization.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BA8A77DDC0A29CF738B55AF1 /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
@@ -184,12 +188,26 @@
 			remoteGlobalIDString = B7A08F9AACC69B82887EFB79;
 			remoteInfo = VaultIPC;
 		};
+		7AE387E7D0C564E7566C3C92 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 672B1683207D2FE9D7045D82 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AE5F1C6D2F8A37D4BCC25000;
+			remoteInfo = VaultAuthorization;
+		};
 		7D9645F6B865E70E23049EC0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 672B1683207D2FE9D7045D82 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = AE5F1C6D2F8A37D4BCC25000;
 			remoteInfo = VaultAuthorization;
+		};
+		84C583304FEC444D0F804D66 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 672B1683207D2FE9D7045D82 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 80070F72AE7434D0324B2C9D;
+			remoteInfo = VaultCore;
 		};
 		8DF22B136C0F16F4B7F6317F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -283,6 +301,8 @@
 			files = (
 				CF5D1C60E5F36DCD82EE6802 /* AgentSecretVaultApp.framework in Embed Frameworks */,
 				2D87ADD6802E08CF23614FE2 /* VaultIPC.framework in Embed Frameworks */,
+				561DFDCC9DD4E73E98F978F4 /* VaultCore.framework in Embed Frameworks */,
+				AF571F97F90ED76EDD0D6416 /* VaultAuthorization.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -428,6 +448,8 @@
 			files = (
 				613FDB6EBDCA8F0DCCAE022A /* AgentSecretVaultApp.framework in Frameworks */,
 				1040CDB417AFA2C068902802 /* VaultIPC.framework in Frameworks */,
+				6C0A6F614AA973E1D0B6E5BD /* VaultCore.framework in Frameworks */,
+				6B827659426215A206D405A9 /* VaultAuthorization.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -818,6 +840,8 @@
 			dependencies = (
 				7E362EBD1704EB54DCC439EB /* PBXTargetDependency */,
 				6210304BEB34580A8F07EF4F /* PBXTargetDependency */,
+				E7F52C9E8B1BF0AE0B1D222A /* PBXTargetDependency */,
+				17C67F2100F5D03479AB2DD6 /* PBXTargetDependency */,
 			);
 			name = AgentSecretVault;
 			packageProductDependencies = (
@@ -1214,6 +1238,11 @@
 			target = DA878B25FC53EE16E95B63F8 /* AgentSecretVaultApp */;
 			targetProxy = 0E5AE24028AE04702E977BFB /* PBXContainerItemProxy */;
 		};
+		17C67F2100F5D03479AB2DD6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AE5F1C6D2F8A37D4BCC25000 /* VaultAuthorization */;
+			targetProxy = 7AE387E7D0C564E7566C3C92 /* PBXContainerItemProxy */;
+		};
 		18F41172E39E7C9E495FE9D1 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 37D669435F1F98C8BA878445 /* VaultExecution */;
@@ -1303,6 +1332,11 @@
 			isa = PBXTargetDependency;
 			target = 80070F72AE7434D0324B2C9D /* VaultCore */;
 			targetProxy = DE3CF320319A574C9E17049C /* PBXContainerItemProxy */;
+		};
+		E7F52C9E8B1BF0AE0B1D222A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 80070F72AE7434D0324B2C9D /* VaultCore */;
+			targetProxy = 84C583304FEC444D0F804D66 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 

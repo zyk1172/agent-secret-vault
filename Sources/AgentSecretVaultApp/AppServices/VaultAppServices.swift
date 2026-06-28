@@ -21,6 +21,7 @@ public actor VaultAppServices: WorkbenchServicing {
     private let recordLister: (any RecordListing)?
     private let recordResolver: VaultRecordResolver?
     private let masterKey: SymmetricKey?
+    private let masterKeyProvider: (@Sendable () async throws -> SymmetricKey)?
     private let revealSessionStore: RevealSessionStore
     private let revealSessionPresenter: any RevealSessionPresenting
 
@@ -30,6 +31,7 @@ public actor VaultAppServices: WorkbenchServicing {
         recordLister: (any RecordListing)? = nil,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
+        masterKeyProvider: (@Sendable () async throws -> SymmetricKey)? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter()
     ) {
@@ -38,6 +40,7 @@ public actor VaultAppServices: WorkbenchServicing {
         self.recordLister = recordLister
         self.recordResolver = recordResolver
         self.masterKey = masterKey
+        self.masterKeyProvider = masterKeyProvider
         self.revealSessionStore = revealSessionStore
         self.revealSessionPresenter = revealSessionPresenter
     }
@@ -48,6 +51,7 @@ public actor VaultAppServices: WorkbenchServicing {
         recordLister: (any RecordListing)? = nil,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
+        masterKeyProvider: (@Sendable () async throws -> SymmetricKey)? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter()
     ) {
@@ -57,6 +61,7 @@ public actor VaultAppServices: WorkbenchServicing {
             recordLister: recordLister,
             recordResolver: recordResolver,
             masterKey: masterKey,
+            masterKeyProvider: masterKeyProvider,
             revealSessionStore: revealSessionStore,
             revealSessionPresenter: revealSessionPresenter
         )
@@ -94,9 +99,10 @@ public actor VaultAppServices: WorkbenchServicing {
 
         try validateRevealContext(context, referenceCount: validatedReferences.count)
 
-        guard let recordResolver, let masterKey else {
+        guard let recordResolver else {
             throw VaultAppServicesRevealError.revealUnavailable
         }
+        let masterKey = try await resolvedMasterKey()
 
         let plaintexts = try await validatedReferences.asyncMap { reference in
             let data = try await recordResolver.resolve(reference: reference, masterKey: masterKey)
@@ -110,6 +116,16 @@ public actor VaultAppServices: WorkbenchServicing {
         let sessionID = await revealSessionStore.create(resolvedParagraph: resolvedParagraph)
         await revealSessionPresenter.present(sessionID: sessionID, store: revealSessionStore)
         return sessionID
+    }
+
+    private func resolvedMasterKey() async throws -> SymmetricKey {
+        if let masterKey {
+            return masterKey
+        }
+        guard let masterKeyProvider else {
+            throw VaultAppServicesRevealError.revealUnavailable
+        }
+        return try await masterKeyProvider()
     }
 
     public func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {

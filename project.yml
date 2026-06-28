@@ -91,6 +91,8 @@ targets:
     dependencies:
       - target: AgentSecretVaultApp
       - target: VaultIPC
+      - target: VaultCore
+      - target: VaultAuthorization
 
   VaultAuthorizationTests:
     type: bundle.unit-test

@@ -11,7 +11,7 @@ xcodebuild test -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -de
 cd mcp-server && npm test && npm run typecheck && npm run build
 cd ../obsidian-plugin/agent-secret-vault && npm test && npm run typecheck && npm run build
 cd ../..
-ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/agent-secret-vault/dist
+ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/agent-secret-vault/main.js obsidian-plugin/agent-secret-vault/dist
 git diff --check
 git status --short
 ```
@@ -34,6 +34,7 @@ git status --short
 14. Paragraph reveal returns only status to the Obsidian plugin and MCP callers.
 15. Obsidian search does not index revealed plaintext.
 16. Context-leak warnings trigger for password, token, API key, and 银行卡 candidates.
+17. Plaintext canary scans include the shipped Obsidian plugin bundle at `obsidian-plugin/agent-secret-vault/main.js`.
 
 ## Manual checks
 

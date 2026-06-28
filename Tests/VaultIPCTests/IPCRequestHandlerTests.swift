@@ -5,6 +5,7 @@ import VaultIPC
 
 private actor SpyWorkbenchService: WorkbenchServicing {
     var encryptCalls: [String] = []
+    var revealCalls: [[String]] = []
 
     func status() async -> WorkbenchStatus {
         WorkbenchStatus(locked: false, ipcAvailable: true, activeKnowledgeBaseRoot: "/tmp/kb", pluginConnected: true)
@@ -16,12 +17,34 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     }
 
     func openRevealSession(references: [String], context: RevealContext) async throws -> String {
-        "session-1"
+        revealCalls.append(references)
+        return "session-1"
     }
 
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {
         OrphanScanResult(missingRecords: [], unreferencedRecords: [])
     }
+}
+
+@Test func handlerSupportsLegacyMCPRequestsWithoutPlaintextResponses() async throws {
+    let service = SpyWorkbenchService()
+    let handler = IPCRequestHandler(service: service)
+
+    #expect(try await handler.handle(.status) == .status(locked: false))
+    #expect(try await handler.handle(.reveal(
+        reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+        reason: "show to user"
+    )) == .displayedToUser)
+    #expect(try await handler.handle(.encrypt(label: nil, policy: .credential)) == .failure(code: "SELECTION_ENCRYPT_UNAVAILABLE"))
+    #expect(try await handler.handle(.execute(.init(
+        templateID: "noop",
+        executable: "/usr/bin/true",
+        values: [:],
+        secrets: [:],
+        destinationHost: nil,
+        destinationPath: nil,
+        requestedRisk: .read
+    ))) == .failure(code: "EXECUTE_UNAVAILABLE"))
 }
 
 @Test func handlerReturnsStatusAndNeverPlaintextInEncryptResponse() async throws {

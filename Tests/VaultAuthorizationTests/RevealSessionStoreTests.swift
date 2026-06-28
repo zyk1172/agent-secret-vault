@@ -13,6 +13,14 @@ import VaultIPC
     #expect(await store.paragraph(id: id) == nil)
 }
 
+@Test func revealSessionStoreExpiresSessionsAfterTTL() async throws {
+    let store = RevealSessionStore(defaultTTLSeconds: 0.01)
+    let id = await store.create(resolvedParagraph: "Token: ASV_CANARY_REVEAL_TTL")
+    #expect(await store.paragraph(id: id) == "Token: ASV_CANARY_REVEAL_TTL")
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(await store.paragraph(id: id) == nil)
+}
+
 @Test func revealSessionStoreClearAllRemovesAllSessions() async {
     let store = RevealSessionStore()
     let firstID = await store.create(resolvedParagraph: "first")
