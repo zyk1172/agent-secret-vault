@@ -6,10 +6,11 @@ import { createVaultToolDefinitions, type VaultIpcClient } from "../src/server.j
 const validReference = "secret://0123456789ABCDEFGHJKMNPQRS";
 
 describe("MCP tool contracts", () => {
-  it("registers only the four non-plaintext tools", () => {
+  it("registers only the five non-plaintext tools", () => {
     const tools = createVaultToolDefinitions(new FakeClient([]));
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "paragraph_reveal_request",
       "secret_create_request",
       "secret_reveal_request",
       "secure_execute",
@@ -41,6 +42,35 @@ describe("MCP tool contracts", () => {
       { type: "reveal", reference: validReference, reason: "manual verification" }
     ]);
     expect(result.structuredContent).toEqual({ status: "DISPLAYED_TO_USER" });
+    expectForbiddenKeysAbsent(result.structuredContent);
+  });
+
+  it("paragraph_reveal_request opens a local reveal session without returning plaintext", async () => {
+    const references = [validReference];
+    const client = new FakeClient([{ type: "revealSessionOpened", sessionID: "session-1" }]);
+    const tool = getTool(client, "paragraph_reveal_request");
+
+    const result = await tool.handler({
+      references,
+      template: "Deploy token: {{0}}",
+      reason: "ASV_CANARY plaintext boundary check"
+    });
+
+    expect(client.requests).toEqual([
+      {
+        type: "revealReferences",
+        references,
+        context: {
+          reason: "ASV_CANARY plaintext boundary check",
+          template: "Deploy token: {{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      }
+    ]);
+    expect(result.structuredContent).toEqual({ status: "DISPLAYED_TO_USER" });
+    const resultJson = JSON.stringify(result);
+    expect(resultJson).not.toContain("ASV_CANARY");
+    expect(resultJson).not.toMatch(/plaintext/i);
     expectForbiddenKeysAbsent(result.structuredContent);
   });
 

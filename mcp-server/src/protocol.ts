@@ -35,7 +35,7 @@ export type ReferenceRange = z.infer<typeof ReferenceRange>;
 
 export const RevealContext = z.object({
   reason: z.string().min(1),
-  template: z.string(),
+  template: z.string().min(1),
   ranges: z.array(ReferenceRange)
 }).strict();
 export type RevealContext = z.infer<typeof RevealContext>;
@@ -90,7 +90,7 @@ export const IpcRequest = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("revealReferences"),
-      references: z.array(SecretReference),
+      references: z.array(SecretReference).min(1),
       context: RevealContext
     })
     .strict(),

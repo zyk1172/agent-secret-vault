@@ -76,6 +76,14 @@ const RevealInput = z
   })
   .strict();
 
+const ParagraphRevealInput = z
+  .object({
+    references: z.array(SecretReference).min(1),
+    template: z.string().min(1),
+    reason: z.string().min(1)
+  })
+  .strict();
+
 const CreateInput = z
   .object({
     label: z.string().nullable().optional(),
@@ -120,6 +128,33 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           reason: parsed.reason
         });
         if (response.type === "displayedToUser") {
+          return structuredResult({ status: "DISPLAYED_TO_USER" });
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "paragraph_reveal_request",
+      title: "Request Paragraph Reveal",
+      description:
+        "Asks the macOS app to display a paragraph locally with referenced secrets filled in. Plaintext is never returned.",
+      inputSchema: ParagraphRevealInput,
+      outputSchema: RevealOutput,
+      async handler(input) {
+        const parsed = ParagraphRevealInput.parse(input);
+        const response = await client.request({
+          type: "revealReferences",
+          references: parsed.references,
+          context: {
+            reason: parsed.reason,
+            template: parsed.template,
+            ranges: parsed.references.map((_, index) => ({
+              index,
+              placeholder: `{{${index}}}`
+            }))
+          }
+        });
+        if (response.type === "revealSessionOpened") {
           return structuredResult({ status: "DISPLAYED_TO_USER" });
         }
         return structuredResult(statusOnly(response));
