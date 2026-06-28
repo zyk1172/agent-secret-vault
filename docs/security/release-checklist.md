@@ -9,8 +9,9 @@ export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
 xcodegen generate
 xcodebuild test -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
 cd mcp-server && npm test && npm run typecheck && npm run build
-cd ..
-ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts
+cd ../obsidian-plugin/agent-secret-vault && npm test && npm run typecheck && npm run build
+cd ../..
+ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/agent-secret-vault/dist
 git diff --check
 git status --short
 ```
@@ -29,6 +30,10 @@ git status --short
 10. Knowledge-base replacement failures preserve the source plaintext and the newly encrypted record for manual recovery.
 11. Template validation rejects undeclared executables, destinations, parameters, and side-effect escalation.
 12. Cryptographic migration tests prove that failed migrations preserve the last valid record.
+13. Scan state does not persist full plaintext.
+14. Paragraph reveal returns only status to the Obsidian plugin and MCP callers.
+15. Obsidian search does not index revealed plaintext.
+16. Context-leak warnings trigger for password, token, API key, and 银行卡 candidates.
 
 ## Manual checks
 

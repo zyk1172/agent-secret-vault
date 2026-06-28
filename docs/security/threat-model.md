@@ -26,6 +26,12 @@ server and Codex plugin are untrusted for plaintext handling: they may request
 actions, but they must not receive plaintext, unwrapped keys, resolved command
 arguments, or bulk export data.
 
+The Obsidian plugin follows the same boundary. App-to-plugin responses for
+selection encryption, scan, and paragraph reveal must return opaque references,
+candidate metadata, or operation status only; paragraph reveal opens an
+app-owned temporary display window and does not send decrypted values back to
+the plugin.
+
 ## Excluded threats
 
 The product does not claim to resist:
@@ -44,8 +50,7 @@ agent/cloud/log exposure, not that it defeats local same-user compromise.
 
 The first release also excludes:
 
-- Claude and Hermes integrations;
-- automatic sensitive-information detection;
+- Claude and Hermes integrations as dedicated packaged integrations;
 - full-note encryption;
 - plaintext rendering inside the original Codex App;
 - iPhone or iPad clients;
