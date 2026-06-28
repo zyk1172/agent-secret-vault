@@ -334,8 +334,24 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 }
 
+const SECRET_SCHEME = "secret://";
+const SECRET_ID_LENGTH = 26;
 const SECRET_REFERENCE_REGEX = /secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g;
+const SECRET_TOKEN_CHARACTERS = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/-".split(""));
 
 function extractSecretReferences(text: string): string[] {
-  return [...text.matchAll(SECRET_REFERENCE_REGEX)].map((match) => match[0]);
+  return [...text.matchAll(SECRET_REFERENCE_REGEX)]
+    .filter((match) => {
+      const start = match.index ?? 0;
+      const end = start + SECRET_SCHEME.length + SECRET_ID_LENGTH;
+      return isReferenceBoundary(text, start - 1) && isReferenceBoundary(text, end);
+    })
+    .map((match) => match[0]);
+}
+
+function isReferenceBoundary(text: string, index: number): boolean {
+  if (index < 0 || index >= text.length) {
+    return true;
+  }
+  return !SECRET_TOKEN_CHARACTERS.has(text[index] ?? "");
 }

@@ -175,7 +175,11 @@ describe("scan commands", () => {
     const files = [{ path: "a.md" }, { path: "b.md" }];
     const contents = new Map([
       ["a.md", `one ${makeReference(5)}`],
-      ["b.md", `duplicate ${makeReference(5)} and two ${makeReference(6)}.`]
+      ["b.md", [
+        `duplicate ${makeReference(5)} and two ${makeReference(6)}.`,
+        `embedded prefix${makeReference(7)} ignored`,
+        `long ${makeReference(8)}ABC ignored`
+      ].join("\n")]
     ]);
     const requests: unknown[] = [];
     const plugin = new AgentSecretVaultPlugin({

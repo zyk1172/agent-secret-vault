@@ -801,7 +801,20 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     return applyReplacements(text, replacements);
   }
 };
+var SECRET_SCHEME2 = "secret://";
+var SECRET_ID_LENGTH2 = 26;
 var SECRET_REFERENCE_REGEX = /secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g;
+var SECRET_TOKEN_CHARACTERS = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/-".split(""));
 function extractSecretReferences(text) {
-  return [...text.matchAll(SECRET_REFERENCE_REGEX)].map((match) => match[0]);
+  return [...text.matchAll(SECRET_REFERENCE_REGEX)].filter((match) => {
+    const start = match.index ?? 0;
+    const end = start + SECRET_SCHEME2.length + SECRET_ID_LENGTH2;
+    return isReferenceBoundary(text, start - 1) && isReferenceBoundary(text, end);
+  }).map((match) => match[0]);
+}
+function isReferenceBoundary(text, index) {
+  if (index < 0 || index >= text.length) {
+    return true;
+  }
+  return !SECRET_TOKEN_CHARACTERS.has(text[index] ?? "");
 }
