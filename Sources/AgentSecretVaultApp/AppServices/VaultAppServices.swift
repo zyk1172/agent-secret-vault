@@ -11,6 +11,10 @@ public protocol TextEncrypting: Sendable {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference
 }
 
+public enum VaultAppServicesOrphanScanError: Error, Equatable, Sendable {
+    case scanUnavailable
+}
+
 public actor VaultAppServices: WorkbenchServicing {
     private let textEncryptor: any TextEncrypting
     private let activeRoot: URL?
@@ -110,7 +114,7 @@ public actor VaultAppServices: WorkbenchServicing {
 
     public func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {
         guard let recordLister else {
-            return OrphanScanResult(missingRecords: [], unreferencedRecords: [])
+            throw VaultAppServicesOrphanScanError.scanUnavailable
         }
 
         let markdownReferenceSet = Set(markdownReferences.compactMap(Self.canonicalReference))

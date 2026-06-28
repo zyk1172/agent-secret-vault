@@ -33,17 +33,17 @@ private let missingReferencedID = "01J44444444444444444444444"
     ))
 }
 
-@Test func vaultAppServicesScanOrphansReturnsEmptyResultWhenRecordListingIsUnavailable() async throws {
+@Test func vaultAppServicesScanOrphansThrowsWhenRecordListingIsUnavailable() async throws {
     let services = VaultAppServices(
         textEncryptor: UnusedOrphanScanTextEncryptor(),
         activeRoot: nil
     )
 
-    let result = try await services.scanOrphans(markdownReferences: [
-        "secret://\(missingReferencedID)"
-    ])
-
-    #expect(result == OrphanScanResult(missingRecords: [], unreferencedRecords: []))
+    await #expect(throws: VaultAppServicesOrphanScanError.scanUnavailable) {
+        _ = try await services.scanOrphans(markdownReferences: [
+            "secret://\(missingReferencedID)"
+        ])
+    }
 }
 
 private struct UnusedOrphanScanTextEncryptor: TextEncrypting {
