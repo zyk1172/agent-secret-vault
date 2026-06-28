@@ -44,6 +44,39 @@ function collectMatches(text: string, regex: RegExp, ruleId: SensitiveFinding["r
   return matches;
 }
 
+const rulePriority: Record<SensitiveFinding["ruleId"], number> = {
+  "private-key": 0,
+  "openai-api-key": 1,
+  "bearer-token": 2,
+  "password-assignment": 3
+};
+
+function confidencePriority(confidence: SensitiveConfidence): number {
+  return confidence === "high" ? 0 : 1;
+}
+
+function overlaps(left: RuleMatch, right: RuleMatch): boolean {
+  return left.start < right.end && right.start < left.end;
+}
+
+function compareFindingPriority(left: RuleMatch, right: RuleMatch): number {
+  return confidencePriority(left.confidence) - confidencePriority(right.confidence)
+    || (right.end - right.start) - (left.end - left.start)
+    || rulePriority[left.ruleId] - rulePriority[right.ruleId]
+    || left.start - right.start
+    || left.end - right.end;
+}
+
+function suppressOverlaps(matches: RuleMatch[]): RuleMatch[] {
+  const accepted: RuleMatch[] = [];
+  for (const candidate of [...matches].sort(compareFindingPriority)) {
+    if (!accepted.some((finding) => overlaps(finding, candidate))) {
+      accepted.push(candidate);
+    }
+  }
+  return accepted.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
 export function detectSensitiveText(text: string): SensitiveFinding[] {
   const matches = [
     ...collectMatches(text, /sk-proj-[A-Za-z0-9_-]{20,}/g, "openai-api-key", "high"),
@@ -52,8 +85,7 @@ export function detectSensitiveText(text: string): SensitiveFinding[] {
     ...collectMatches(text, /\b(?:password|passwd|pwd)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/gi, "password-assignment", "medium")
   ];
 
-  return matches
-    .sort((left, right) => left.start - right.start || left.end - right.end)
+  return suppressOverlaps(matches)
     .map(({ start, end, ruleId, confidence, value }) => ({
       start,
       end,

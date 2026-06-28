@@ -22,6 +22,7 @@ export const commandDefinitions = [
   { id: "encrypt-current-paragraph", name: "Encrypt current paragraph" },
   { id: "scan-current-note", name: "Scan current note for sensitive text" },
   { id: "scan-vault", name: "Scan vault for sensitive text" },
+  { id: "scan-orphans", name: "Scan vault for orphaned secret references" },
   { id: "reveal-current-paragraph", name: "Reveal current paragraph in Agent Secret Vault" }
 ] as const;
 
@@ -34,6 +35,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     const pairing = interpretWorkbenchStatus({ reachable: false });
     const status = this.addStatusBarItem();
     updateStatusBar(status, { connected: pairing.canOperate, locked: !pairing.canOperate });
+    await this.refreshStatus(status);
 
     for (const definition of commandDefinitions) {
       const command = {
@@ -79,9 +81,31 @@ export default class AgentSecretVaultPlugin extends Plugin {
             await this.scanVault();
           }
         });
+      } else if (definition.id === "scan-orphans") {
+        this.addCommand({
+          ...command,
+          callback: async () => {
+            await this.scanOrphans();
+          }
+        });
       } else {
         this.addCommand(command);
       }
+    }
+  }
+
+  private async refreshStatus(status: HTMLElement): Promise<void> {
+    try {
+      const response = await this.createVaultClient().request({ type: "workbenchStatus" });
+      if (response.type === "workbenchStatus") {
+        const pairing = interpretWorkbenchStatus({ reachable: true, status: response });
+        updateStatusBar(status, {
+          connected: pairing.canOperate && response.status.pluginConnected,
+          locked: response.status.locked
+        });
+      }
+    } catch {
+      updateStatusBar(status, { connected: false, locked: true });
     }
   }
 
@@ -200,8 +224,8 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
       try {
-        await this.applyVaultFindings(selectedFindings, filesByPath, snapshots);
-        new Notice(`Agent Secret Vault: encrypted ${selectedFindings.length} finding${selectedFindings.length === 1 ? "" : "s"}.`);
+        const result = await this.applyVaultFindings(selectedFindings, filesByPath, snapshots);
+        new Notice(this.replacementSummary(result.appliedCount, result.skippedCount));
       } catch (error) {
         const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
         new Notice(`Agent Secret Vault: scan replacement failed (${message}).`);
@@ -209,12 +233,38 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }).open();
   }
 
+  private async scanOrphans(): Promise<void> {
+    const references = new Set<string>();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const text = await this.app.vault.cachedRead(file);
+      for (const reference of extractSecretReferences(text)) {
+        references.add(reference);
+      }
+    }
+
+    try {
+      const response = await this.createVaultClient().request({
+        type: "scanOrphans",
+        markdownReferences: [...references].sort()
+      });
+      if (response.type !== "orphanScan") {
+        throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
+      }
+      new Notice("Agent Secret Vault: orphan scan sent to the Mac app.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+      new Notice(`Agent Secret Vault: orphan scan failed (${message}).`);
+    }
+  }
+
   private async applyVaultFindings(
     selectedFindings: ScanFindingState[],
     filesByPath: Map<string, TFile>,
     snapshots: Map<string, string>
-  ): Promise<void> {
+  ): Promise<{ appliedCount: number; skippedCount: number }> {
     const findingsByPath = new Map<string, ScanFindingState[]>();
+    let appliedCount = 0;
+    let skippedCount = 0;
     for (const finding of selectedFindings) {
       const existing = findingsByPath.get(finding.filePath) ?? [];
       existing.push(finding);
@@ -225,18 +275,31 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const file = filesByPath.get(filePath);
       const originalText = snapshots.get(filePath);
       if (!file || originalText === undefined) {
+        skippedCount += findings.length;
         continue;
       }
 
       const currentText = await this.app.vault.cachedRead(file);
       if (currentText !== originalText) {
         new Notice(`Agent Secret Vault: ${filePath} changed after scan; leaving it unchanged.`);
+        skippedCount += findings.length;
         continue;
       }
 
       const updatedText = await this.encryptFindingsInText(originalText, findings);
       await this.app.vault.modify(file, updatedText);
+      appliedCount += findings.length;
     }
+
+    return { appliedCount, skippedCount };
+  }
+
+  private replacementSummary(appliedCount: number, skippedCount: number): string {
+    const applied = `encrypted ${appliedCount} finding${appliedCount === 1 ? "" : "s"}`;
+    if (skippedCount === 0) {
+      return `Agent Secret Vault: ${applied}.`;
+    }
+    return `Agent Secret Vault: ${applied}; skipped ${skippedCount} changed finding${skippedCount === 1 ? "" : "s"}.`;
   }
 
   private async encryptFindingsInText(
@@ -269,4 +332,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     return applyReplacements(text, replacements);
   }
+}
+
+const SECRET_REFERENCE_REGEX = /secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g;
+
+function extractSecretReferences(text: string): string[] {
+  return [...text.matchAll(SECRET_REFERENCE_REGEX)].map((match) => match[0]);
 }

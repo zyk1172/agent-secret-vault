@@ -3,7 +3,7 @@ import type { IpcRequest } from "../ipc/protocol";
 const SECRET_SCHEME = "secret://";
 const SECRET_ID_LENGTH = 26;
 const ALLOWED_ID_CHARACTERS = new Set("0123456789ABCDEFGHJKMNPQRSTVWXYZ".split(""));
-const TOKEN_BOUNDARY_CHARACTERS = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.-".split(""));
+const TOKEN_BOUNDARY_CHARACTERS = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/-".split(""));
 
 interface ReferenceMatch {
   reference: string;

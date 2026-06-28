@@ -115,6 +115,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 await MainActor.run {
                     self?.orphanScanResult = result
                 }
+            },
+            statusObserver: { [weak self] status in
+                await MainActor.run {
+                    self?.status = status
+                }
             }
         )
         let server = try UnixSocketServer(configuration: .defaultConfiguration())

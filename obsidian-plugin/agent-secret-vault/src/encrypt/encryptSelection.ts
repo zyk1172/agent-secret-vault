@@ -9,7 +9,7 @@ export async function encryptTextRange(input: {
   documentText: string;
   range: TextRange;
   label: string | null;
-  policy: "credential" | "externalSend" | "localOnly";
+  policy: "credential" | "externalSend" | "read";
   client: VaultClientLike;
 }): Promise<{ updatedText: string; reference: string }> {
   const response = await input.client.request({

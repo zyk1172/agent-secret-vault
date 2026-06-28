@@ -25,6 +25,8 @@ public actor VaultAppServices: WorkbenchServicing {
     private let revealSessionStore: RevealSessionStore
     private let revealSessionPresenter: any RevealSessionPresenting
     private let orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)?
+    private let statusObserver: (@Sendable (WorkbenchStatus) async -> Void)?
+    private var pluginConnected = false
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -35,7 +37,8 @@ public actor VaultAppServices: WorkbenchServicing {
         masterKeyProvider: (@Sendable () async throws -> SymmetricKey)? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
-        orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil
+        orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil,
+        statusObserver: (@Sendable (WorkbenchStatus) async -> Void)? = nil
     ) {
         self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
@@ -46,6 +49,7 @@ public actor VaultAppServices: WorkbenchServicing {
         self.revealSessionStore = revealSessionStore
         self.revealSessionPresenter = revealSessionPresenter
         self.orphanScanObserver = orphanScanObserver
+        self.statusObserver = statusObserver
     }
 
     public init(
@@ -57,7 +61,8 @@ public actor VaultAppServices: WorkbenchServicing {
         masterKeyProvider: (@Sendable () async throws -> SymmetricKey)? = nil,
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
-        orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil
+        orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil,
+        statusObserver: (@Sendable (WorkbenchStatus) async -> Void)? = nil
     ) {
         self.init(
             textEncryptor: encryptSelection,
@@ -68,8 +73,17 @@ public actor VaultAppServices: WorkbenchServicing {
             masterKeyProvider: masterKeyProvider,
             revealSessionStore: revealSessionStore,
             revealSessionPresenter: revealSessionPresenter,
-            orphanScanObserver: orphanScanObserver
+            orphanScanObserver: orphanScanObserver,
+            statusObserver: statusObserver
         )
+    }
+
+    public func recordPluginActivity() async {
+        guard !pluginConnected else {
+            return
+        }
+        pluginConnected = true
+        await statusObserver?(status())
     }
 
     public func status() async -> WorkbenchStatus {
@@ -77,7 +91,7 @@ public actor VaultAppServices: WorkbenchServicing {
             locked: false,
             ipcAvailable: true,
             activeKnowledgeBaseRoot: activeRoot?.path,
-            pluginConnected: false
+            pluginConnected: pluginConnected
         )
     }
 

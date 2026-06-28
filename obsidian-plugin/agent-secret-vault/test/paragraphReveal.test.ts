@@ -43,6 +43,15 @@ describe("paragraph reveal", () => {
     ]);
   });
 
+  it("accepts a reference followed by normal sentence punctuation", () => {
+    const request = expectRevealReferencesRequest(buildParagraphRevealRequest(
+      "The token is secret://0123456789ABCDEFGHJKMNPQRS."
+    ));
+
+    expect(request.references).toEqual(["secret://0123456789ABCDEFGHJKMNPQRS"]);
+    expect(request.context.template).toBe("The token is {{0}}.");
+  });
+
   it("keeps duplicate reference occurrences as separate reveal ranges", () => {
     const request = expectRevealReferencesRequest(buildParagraphRevealRequest(
       "Use secret://0123456789ABCDEFGHJKMNPQRS twice: secret://0123456789ABCDEFGHJKMNPQRS done."

@@ -46,9 +46,34 @@ private let missingReferencedID = "01J44444444444444444444444"
     }
 }
 
+@Test func vaultAppServicesTracksPluginActivityInStatus() async throws {
+    let observer = StatusObserver()
+    let services = VaultAppServices(
+        textEncryptor: UnusedOrphanScanTextEncryptor(),
+        activeRoot: nil,
+        statusObserver: { status in
+            await observer.append(status)
+        }
+    )
+
+    #expect(await services.status().pluginConnected == false)
+    await services.recordPluginActivity()
+
+    #expect(await services.status().pluginConnected == true)
+    #expect(await observer.statuses.map(\.pluginConnected) == [true])
+}
+
 private struct UnusedOrphanScanTextEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         try SecretReference("secret://\(storedReferencedID)")
+    }
+}
+
+private actor StatusObserver {
+    private(set) var statuses: [WorkbenchStatus] = []
+
+    func append(_ status: WorkbenchStatus) {
+        statuses.append(status)
     }
 }
 

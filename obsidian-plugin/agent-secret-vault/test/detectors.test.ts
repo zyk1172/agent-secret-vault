@@ -97,4 +97,18 @@ describe("detectSensitiveText", () => {
     });
     expect(JSON.stringify(findings)).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
   });
+
+  it("suppresses overlapping findings with deterministic priority", () => {
+    const findings = detectSensitiveText("Authorization: Bearer sk-proj-1234567890abcdef1234567890abcdef");
+
+    expect(findings).toEqual([
+      {
+        start: 22,
+        end: 62,
+        ruleId: "openai-api-key",
+        confidence: "high",
+        redactedPreview: "sk-proj-…cdef"
+      }
+    ]);
+  });
 });

@@ -2,10 +2,15 @@ import Foundation
 import VaultCore
 
 public protocol WorkbenchServicing: Sendable {
+    func recordPluginActivity() async
     func status() async -> WorkbenchStatus
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
     func openRevealSession(references: [String], context: RevealContext) async throws -> String
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult
+}
+
+public extension WorkbenchServicing {
+    func recordPluginActivity() async {}
 }
 
 public enum IPCRequestHandlerError: Error, Equatable, Sendable {
@@ -20,6 +25,7 @@ public struct IPCRequestHandler: Sendable {
     }
 
     public func handle(_ request: IPCRequest) async throws -> IPCResponse {
+        await service.recordPluginActivity()
         switch request {
         case .status:
             return .status(locked: await service.status().locked)

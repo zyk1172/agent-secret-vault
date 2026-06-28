@@ -299,7 +299,7 @@ function applyReplacements(text, replacements) {
 var SECRET_SCHEME = "secret://";
 var SECRET_ID_LENGTH = 26;
 var ALLOWED_ID_CHARACTERS = new Set("0123456789ABCDEFGHJKMNPQRSTVWXYZ".split(""));
-var TOKEN_BOUNDARY_CHARACTERS = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.-".split(""));
+var TOKEN_BOUNDARY_CHARACTERS = new Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/-".split(""));
 function isBoundaryCharacter(text, index) {
   if (index < 0 || index >= text.length) {
     return true;
@@ -412,6 +412,30 @@ function collectMatches(text, regex, ruleId, confidence) {
   }
   return matches;
 }
+var rulePriority = {
+  "private-key": 0,
+  "openai-api-key": 1,
+  "bearer-token": 2,
+  "password-assignment": 3
+};
+function confidencePriority(confidence) {
+  return confidence === "high" ? 0 : 1;
+}
+function overlaps(left, right) {
+  return left.start < right.end && right.start < left.end;
+}
+function compareFindingPriority(left, right) {
+  return confidencePriority(left.confidence) - confidencePriority(right.confidence) || right.end - right.start - (left.end - left.start) || rulePriority[left.ruleId] - rulePriority[right.ruleId] || left.start - right.start || left.end - right.end;
+}
+function suppressOverlaps(matches) {
+  const accepted = [];
+  for (const candidate of [...matches].sort(compareFindingPriority)) {
+    if (!accepted.some((finding) => overlaps(finding, candidate))) {
+      accepted.push(candidate);
+    }
+  }
+  return accepted.sort((left, right) => left.start - right.start || left.end - right.end);
+}
 function detectSensitiveText(text) {
   const matches = [
     ...collectMatches(text, /sk-proj-[A-Za-z0-9_-]{20,}/g, "openai-api-key", "high"),
@@ -419,7 +443,7 @@ function detectSensitiveText(text) {
     ...collectMatches(text, /\bBearer\s+([A-Za-z0-9._~+/=-]{10,})/g, "bearer-token", "high"),
     ...collectMatches(text, /\b(?:password|passwd|pwd)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/gi, "password-assignment", "medium")
   ];
-  return matches.sort((left, right) => left.start - right.start || left.end - right.end).map(({ start, end, ruleId, confidence, value }) => ({
+  return suppressOverlaps(matches).map(({ start, end, ruleId, confidence, value }) => ({
     start,
     end,
     ruleId,
@@ -512,6 +536,7 @@ var commandDefinitions = [
   { id: "encrypt-current-paragraph", name: "Encrypt current paragraph" },
   { id: "scan-current-note", name: "Scan current note for sensitive text" },
   { id: "scan-vault", name: "Scan vault for sensitive text" },
+  { id: "scan-orphans", name: "Scan vault for orphaned secret references" },
   { id: "reveal-current-paragraph", name: "Reveal current paragraph in Agent Secret Vault" }
 ];
 var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
@@ -522,6 +547,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     const pairing = interpretWorkbenchStatus({ reachable: false });
     const status = this.addStatusBarItem();
     updateStatusBar(status, { connected: pairing.canOperate, locked: !pairing.canOperate });
+    await this.refreshStatus(status);
     for (const definition of commandDefinitions) {
       const command = {
         id: definition.id,
@@ -565,9 +591,30 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
             await this.scanVault();
           }
         });
+      } else if (definition.id === "scan-orphans") {
+        this.addCommand({
+          ...command,
+          callback: async () => {
+            await this.scanOrphans();
+          }
+        });
       } else {
         this.addCommand(command);
       }
+    }
+  }
+  async refreshStatus(status) {
+    try {
+      const response = await this.createVaultClient().request({ type: "workbenchStatus" });
+      if (response.type === "workbenchStatus") {
+        const pairing = interpretWorkbenchStatus({ reachable: true, status: response });
+        updateStatusBar(status, {
+          connected: pairing.canOperate && response.status.pluginConnected,
+          locked: response.status.locked
+        });
+      }
+    } catch {
+      updateStatusBar(status, { connected: false, locked: true });
     }
   }
   async encryptSelection(editor) {
@@ -665,16 +712,40 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     }
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
       try {
-        await this.applyVaultFindings(selectedFindings, filesByPath, snapshots);
-        new import_obsidian2.Notice(`Agent Secret Vault: encrypted ${selectedFindings.length} finding${selectedFindings.length === 1 ? "" : "s"}.`);
+        const result = await this.applyVaultFindings(selectedFindings, filesByPath, snapshots);
+        new import_obsidian2.Notice(this.replacementSummary(result.appliedCount, result.skippedCount));
       } catch (error) {
         const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
         new import_obsidian2.Notice(`Agent Secret Vault: scan replacement failed (${message}).`);
       }
     }).open();
   }
+  async scanOrphans() {
+    const references = /* @__PURE__ */ new Set();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const text = await this.app.vault.cachedRead(file);
+      for (const reference of extractSecretReferences(text)) {
+        references.add(reference);
+      }
+    }
+    try {
+      const response = await this.createVaultClient().request({
+        type: "scanOrphans",
+        markdownReferences: [...references].sort()
+      });
+      if (response.type !== "orphanScan") {
+        throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
+      }
+      new import_obsidian2.Notice("Agent Secret Vault: orphan scan sent to the Mac app.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+      new import_obsidian2.Notice(`Agent Secret Vault: orphan scan failed (${message}).`);
+    }
+  }
   async applyVaultFindings(selectedFindings, filesByPath, snapshots) {
     const findingsByPath = /* @__PURE__ */ new Map();
+    let appliedCount = 0;
+    let skippedCount = 0;
     for (const finding of selectedFindings) {
       const existing = findingsByPath.get(finding.filePath) ?? [];
       existing.push(finding);
@@ -684,16 +755,27 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       const file = filesByPath.get(filePath);
       const originalText = snapshots.get(filePath);
       if (!file || originalText === void 0) {
+        skippedCount += findings.length;
         continue;
       }
       const currentText = await this.app.vault.cachedRead(file);
       if (currentText !== originalText) {
         new import_obsidian2.Notice(`Agent Secret Vault: ${filePath} changed after scan; leaving it unchanged.`);
+        skippedCount += findings.length;
         continue;
       }
       const updatedText = await this.encryptFindingsInText(originalText, findings);
       await this.app.vault.modify(file, updatedText);
+      appliedCount += findings.length;
     }
+    return { appliedCount, skippedCount };
+  }
+  replacementSummary(appliedCount, skippedCount) {
+    const applied = `encrypted ${appliedCount} finding${appliedCount === 1 ? "" : "s"}`;
+    if (skippedCount === 0) {
+      return `Agent Secret Vault: ${applied}.`;
+    }
+    return `Agent Secret Vault: ${applied}; skipped ${skippedCount} changed finding${skippedCount === 1 ? "" : "s"}.`;
   }
   async encryptFindingsInText(text, findings) {
     const client = this.createVaultClient();
@@ -719,3 +801,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     return applyReplacements(text, replacements);
   }
 };
+var SECRET_REFERENCE_REGEX = /secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g;
+function extractSecretReferences(text) {
+  return [...text.matchAll(SECRET_REFERENCE_REGEX)].map((match) => match[0]);
+}

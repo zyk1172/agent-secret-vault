@@ -142,4 +142,64 @@ describe("scan commands", () => {
     expect(contents.get("b.md")).toBe("no secrets here");
     expect(obsidianMock.notices).toContain("Agent Secret Vault: encrypted 1 finding.");
   });
+
+  it("reports skipped findings when vault files changed after scan", async () => {
+    const files = [{ path: "a.md" }];
+    const contents = new Map([["a.md", "password = hunter2"]]);
+    const plugin = new AgentSecretVaultPlugin({
+      vault: {
+        getMarkdownFiles: () => files,
+        cachedRead: async (file: { path: string }) => contents.get(file.path) ?? "",
+        modify: async (file: { path: string }, updatedText: string) => {
+          contents.set(file.path, updatedText);
+        }
+      }
+    } as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      scanVault: () => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async () => ({ type: "created", reference: makeReference(4) })
+    });
+
+    await plugin.scanVault();
+    contents.set("a.md", "password = user-edited");
+
+    await reviewMock.apply?.(reviewMock.findings);
+
+    expect(contents.get("a.md")).toBe("password = user-edited");
+    expect(obsidianMock.notices).toContain("Agent Secret Vault: encrypted 0 findings; skipped 1 changed finding.");
+  });
+
+  it("sends markdown references to the app orphan scanner", async () => {
+    const files = [{ path: "a.md" }, { path: "b.md" }];
+    const contents = new Map([
+      ["a.md", `one ${makeReference(5)}`],
+      ["b.md", `duplicate ${makeReference(5)} and two ${makeReference(6)}.`]
+    ]);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({
+      vault: {
+        getMarkdownFiles: () => files,
+        cachedRead: async (file: { path: string }) => contents.get(file.path) ?? ""
+      }
+    } as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      scanOrphans: () => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "orphanScan", result: { missingRecords: [], unreferencedRecords: [] } };
+      }
+    });
+
+    await plugin.scanOrphans();
+
+    expect(requests).toEqual([{
+      type: "scanOrphans",
+      markdownReferences: [makeReference(5), makeReference(6)]
+    }]);
+    expect(obsidianMock.notices).toContain("Agent Secret Vault: orphan scan sent to the Mac app.");
+  });
 });
