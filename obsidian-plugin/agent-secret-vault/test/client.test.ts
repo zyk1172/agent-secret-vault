@@ -78,7 +78,7 @@ describe("LocalVaultClient", () => {
       });
     });
 
-    const client = new LocalVaultClient(socketPath);
+    const client = new LocalVaultClient(socketPath, { netModule: net });
 
     await expect(expectWithin(client.request({ type: "workbenchStatus" }), 100)).resolves.toEqual({
       type: "workbenchStatus",
@@ -91,14 +91,57 @@ describe("LocalVaultClient", () => {
     });
   });
 
+  it("sends an exact framed IPC request body", async () => {
+    let receivedRequest: unknown;
+    const socketPath = await createSocketServer((socket) => {
+      socket.on("data", (chunk) => {
+        const length = chunk.readUInt32BE(0);
+        receivedRequest = JSON.parse(chunk.subarray(4, 4 + length).toString("utf8"));
+        socket.write(encodeFrame({
+          type: "created",
+          reference: "secret://0123456789ABCDEFGHJKMNPQRS"
+        }));
+      });
+    });
+
+    const client = new LocalVaultClient(socketPath, { netModule: net });
+
+    await expect(client.request({
+      type: "encryptText",
+      plaintext: "ASV_CANARY_PLUGIN",
+      label: null,
+      policy: "credential"
+    })).resolves.toEqual({
+      type: "created",
+      reference: "secret://0123456789ABCDEFGHJKMNPQRS"
+    });
+
+    expect(receivedRequest).toEqual({
+      type: "encryptText",
+      plaintext: "ASV_CANARY_PLUGIN",
+      label: null,
+      policy: "credential"
+    });
+  });
+
   it("rejects short frames cleanly", async () => {
     const socketPath = await createSocketServer((socket) => {
       socket.write(Buffer.from([0x00, 0x00]));
       socket.end();
     });
 
-    const client = new LocalVaultClient(socketPath);
+    const client = new LocalVaultClient(socketPath, { netModule: net });
 
     await expect(client.request({ type: "workbenchStatus" })).rejects.toThrow("Incomplete IPC frame");
+  });
+
+  it("rejects when a connected socket never returns a complete frame", async () => {
+    const socketPath = await createSocketServer(() => {
+      // Keep the connection open without sending a frame.
+    });
+
+    const client = new LocalVaultClient(socketPath, { netModule: net, requestTimeoutMs: 10 });
+
+    await expect(client.request({ type: "workbenchStatus" })).rejects.toThrow("IPC request timed out");
   });
 });

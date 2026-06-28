@@ -10,4 +10,14 @@ describe("selection helpers", () => {
       text: "password = hunter2\napi token here"
     });
   });
+
+  it("treats whitespace-only blank lines as paragraph separators", () => {
+    const text = "alpha\n  \npassword = hunter2\napi token here\n\t \nomega";
+
+    expect(extractCurrentParagraph(text, text.indexOf("token"))).toEqual({
+      start: 9,
+      end: 42,
+      text: "password = hunter2\napi token here"
+    });
+  });
 });

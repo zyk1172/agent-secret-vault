@@ -1,102 +1,14 @@
-import { Notice, Plugin, type Editor } from "obsidian";
+import { Notice, Plugin, type Editor, type EditorPosition } from "obsidian";
 import { encryptTextRange } from "./encrypt/encryptSelection";
 import { extractCurrentParagraph, type TextRange } from "./editor/selection";
-import type { IpcRequest, IpcResponse } from "./ipc/protocol";
+import { LocalVaultClient } from "./ipc/client";
 import { interpretWorkbenchStatus } from "./pairing/pairing";
 import { updateStatusBar } from "./ui/statusBar";
 
 const DEFAULT_SOCKET_PATH = `${process.env.HOME ?? ""}/Library/Application Support/AgentSecretVault/IPC/agent-secret-vault.sock`;
-const MAX_FRAME_BYTES = 1_048_576;
-const SECRET_REFERENCE_PATTERN = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
 
-function parseEncryptResponse(json: string): IpcResponse {
-  const parsed = JSON.parse(json) as unknown;
-  if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) {
-    throw new Error("Invalid IPC response.");
-  }
-
-  if (parsed.type === "created" && "reference" in parsed && typeof parsed.reference === "string") {
-    if (!SECRET_REFERENCE_PATTERN.test(parsed.reference)) {
-      throw new Error("Invalid secret reference.");
-    }
-
-    return { type: "created", reference: parsed.reference };
-  }
-
-  if (parsed.type === "failure" && "code" in parsed && typeof parsed.code === "string" && parsed.code.length > 0) {
-    return { type: "failure", code: parsed.code };
-  }
-
-  throw new Error("Unexpected IPC response.");
-}
-
-class RuntimeVaultClient {
-  constructor(private readonly socketPath: string) {}
-
-  async request(request: IpcRequest): Promise<IpcResponse> {
-    const nodeRequire = Function("return require")() as NodeRequire;
-    const net = nodeRequire("node:net") as typeof import("node:net");
-    const payload = Buffer.from(JSON.stringify(request), "utf8");
-    const frame = Buffer.alloc(4 + payload.length);
-    frame.writeUInt32BE(payload.length, 0);
-    payload.copy(frame, 4);
-
-    return await new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
-      let buffer = Buffer.alloc(0);
-      let settled = false;
-
-      const settle = (callback: () => void): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        callback();
-        socket.destroy();
-      };
-
-      const rejectWith = (error: unknown): void => {
-        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
-      };
-
-      const parseAvailableFrame = (): void => {
-        if (buffer.length < 4) {
-          return;
-        }
-
-        const length = buffer.readUInt32BE(0);
-        if (length > MAX_FRAME_BYTES) {
-          rejectWith(new Error("IPC frame exceeds maximum size."));
-          return;
-        }
-
-        const frameLength = 4 + length;
-        if (buffer.length < frameLength) {
-          return;
-        }
-
-        try {
-          const json = buffer.subarray(4, frameLength).toString("utf8");
-          const response = parseEncryptResponse(json);
-          settle(() => resolve(response));
-        } catch (error) {
-          rejectWith(error);
-        }
-      };
-
-      socket.on("connect", () => socket.write(frame));
-      socket.on("data", (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
-        parseAvailableFrame();
-      });
-      socket.on("error", rejectWith);
-      socket.on("end", () => {
-        if (!settled) {
-          rejectWith(new Error("Incomplete IPC frame."));
-        }
-      });
-    });
-  }
+function clonePosition(position: EditorPosition): EditorPosition {
+  return { line: position.line, ch: position.ch };
 }
 
 export const commandDefinitions = [
@@ -108,8 +20,8 @@ export const commandDefinitions = [
 ] as const;
 
 export default class AgentSecretVaultPlugin extends Plugin {
-  private createVaultClient(): RuntimeVaultClient {
-    return new RuntimeVaultClient(DEFAULT_SOCKET_PATH);
+  private createVaultClient(): LocalVaultClient {
+    return new LocalVaultClient(DEFAULT_SOCKET_PATH);
   }
 
   async onload(): Promise<void> {
@@ -159,7 +71,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
       start: editor.posToOffset(from),
       end: editor.posToOffset(to),
       text
-    });
+    }, clonePosition(from), clonePosition(to));
   }
 
   private async encryptCurrentParagraph(editor: Editor): Promise<void> {
@@ -170,10 +82,15 @@ export default class AgentSecretVaultPlugin extends Plugin {
       return;
     }
 
-    await this.encryptRange(editor, range);
+    await this.encryptRange(editor, range, editor.offsetToPos(range.start), editor.offsetToPos(range.end));
   }
 
-  private async encryptRange(editor: Editor, range: TextRange): Promise<void> {
+  private async encryptRange(
+    editor: Editor,
+    range: TextRange,
+    fromPos: EditorPosition,
+    toPos: EditorPosition
+  ): Promise<void> {
     try {
       const result = await encryptTextRange({
         documentText: editor.getValue(),
@@ -183,7 +100,12 @@ export default class AgentSecretVaultPlugin extends Plugin {
         client: this.createVaultClient()
       });
 
-      editor.setValue(result.updatedText);
+      if (editor.getRange(fromPos, toPos) !== range.text) {
+        new Notice("Agent Secret Vault: note changed before encryption completed; leaving text unchanged.");
+        return;
+      }
+
+      editor.replaceRange(result.reference, fromPos, toPos, "agent-secret-vault");
       new Notice("Agent Secret Vault: encrypted text into a secret reference.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";

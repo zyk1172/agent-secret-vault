@@ -28,10 +28,46 @@ var import_obsidian = require("obsidian");
 
 // src/editor/selection.ts
 function extractCurrentParagraph(documentText, cursorOffset) {
-  const before = documentText.lastIndexOf("\n\n", Math.max(0, cursorOffset - 1));
-  const after = documentText.indexOf("\n\n", cursorOffset);
-  const start = before === -1 ? 0 : before + 2;
-  const end = after === -1 ? documentText.length : after;
+  const offset = Math.min(Math.max(cursorOffset, 0), documentText.length);
+  const lines = [];
+  let lineStart = 0;
+  while (lineStart <= documentText.length) {
+    const newline = documentText.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? documentText.length : newline;
+    lines.push({
+      start: lineStart,
+      end: lineEnd,
+      nextStart: newline === -1 ? documentText.length : newline + 1,
+      blank: documentText.slice(lineStart, lineEnd).trim().length === 0
+    });
+    if (newline === -1) {
+      break;
+    }
+    lineStart = newline + 1;
+  }
+  const currentLineIndex = Math.max(0, lines.findIndex((line, index) => {
+    const nextLine = lines[index + 1];
+    const lineLimit = nextLine ? nextLine.start : documentText.length + 1;
+    return offset >= line.start && offset < lineLimit;
+  }));
+  const currentLine = lines[currentLineIndex];
+  if (currentLine.blank) {
+    return {
+      start: currentLine.start,
+      end: currentLine.end,
+      text: documentText.slice(currentLine.start, currentLine.end)
+    };
+  }
+  let previousBlank;
+  for (let index = currentLineIndex - 1; index >= 0; index -= 1) {
+    if (lines[index].blank) {
+      previousBlank = lines[index];
+      break;
+    }
+  }
+  const nextBlank = lines.slice(currentLineIndex + 1).find((line) => line.blank);
+  const start = previousBlank ? previousBlank.nextStart : 0;
+  const end = nextBlank ? Math.max(start, nextBlank.start - 1) : documentText.length;
   return { start, end, text: documentText.slice(start, end) };
 }
 function replaceRange(documentText, range, replacement) {
@@ -54,6 +90,144 @@ async function encryptTextRange(input) {
     reference: response.reference
   };
 }
+
+// src/ipc/client.ts
+var MAX_FRAME_BYTES = 1048576;
+var DEFAULT_REQUEST_TIMEOUT_MS = 1e4;
+var SECRET_REFERENCE_PATTERN = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
+async function loadRuntimeNet() {
+  const runtimeRequire = Function("return typeof require === 'function' ? require : undefined")();
+  if (runtimeRequire) {
+    return runtimeRequire("node:net");
+  }
+  const runtimeImport = Function("specifier", "return import(specifier)");
+  return await runtimeImport("node:net");
+}
+function parseIpcResponse(json) {
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error("Invalid IPC response.");
+  }
+  if (!isRecord(parsed) || typeof parsed.type !== "string") {
+    throw new Error("Unexpected IPC response.");
+  }
+  if (parsed.type === "created" && isSecretReference(parsed.reference)) {
+    return { type: "created", reference: parsed.reference };
+  }
+  if (parsed.type === "failure" && typeof parsed.code === "string" && parsed.code.length > 0) {
+    return { type: "failure", code: parsed.code };
+  }
+  if (parsed.type === "revealSessionOpened" && typeof parsed.sessionID === "string" && parsed.sessionID.length > 0) {
+    return { type: "revealSessionOpened", sessionID: parsed.sessionID };
+  }
+  if (parsed.type === "workbenchStatus" && isRecord(parsed.status)) {
+    const status = parsed.status;
+    if (typeof status.locked === "boolean" && typeof status.ipcAvailable === "boolean" && (typeof status.activeKnowledgeBaseRoot === "string" || status.activeKnowledgeBaseRoot === null) && typeof status.pluginConnected === "boolean") {
+      return {
+        type: "workbenchStatus",
+        status: {
+          locked: status.locked,
+          ipcAvailable: status.ipcAvailable,
+          activeKnowledgeBaseRoot: status.activeKnowledgeBaseRoot,
+          pluginConnected: status.pluginConnected
+        }
+      };
+    }
+  }
+  if (parsed.type === "orphanScan" && isRecord(parsed.result)) {
+    const result = parsed.result;
+    if (isSecretReferenceArray(result.missingRecords) && isSecretReferenceArray(result.unreferencedRecords)) {
+      return {
+        type: "orphanScan",
+        result: {
+          missingRecords: result.missingRecords,
+          unreferencedRecords: result.unreferencedRecords
+        }
+      };
+    }
+  }
+  throw new Error("Unexpected IPC response.");
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+function isSecretReference(value) {
+  return typeof value === "string" && SECRET_REFERENCE_PATTERN.test(value);
+}
+function isSecretReferenceArray(value) {
+  return Array.isArray(value) && value.every(isSecretReference);
+}
+var LocalVaultClient = class {
+  requestTimeoutMs;
+  netModule;
+  constructor(socketPath, options = {}) {
+    this.socketPath = socketPath;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.netModule = options.netModule;
+  }
+  socketPath;
+  async request(request) {
+    const net = this.netModule ?? await loadRuntimeNet();
+    const payload = Buffer.from(JSON.stringify(request), "utf8");
+    const frame = Buffer.alloc(4 + payload.length);
+    frame.writeUInt32BE(payload.length, 0);
+    payload.copy(frame, 4);
+    return await new Promise((resolve, reject) => {
+      const socket = net.createConnection(this.socketPath);
+      let buffer = Buffer.alloc(0);
+      let settled = false;
+      const timeout = setTimeout(() => {
+        rejectWith(new Error("IPC request timed out."));
+      }, this.requestTimeoutMs);
+      const settle = (callback) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        callback();
+        socket.destroy();
+      };
+      const rejectWith = (error) => {
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+      };
+      const parseAvailableFrame = () => {
+        if (buffer.length < 4) {
+          return;
+        }
+        const length = buffer.readUInt32BE(0);
+        if (length > MAX_FRAME_BYTES) {
+          rejectWith(new Error("IPC frame exceeds maximum size."));
+          return;
+        }
+        const frameLength = 4 + length;
+        if (buffer.length < frameLength) {
+          return;
+        }
+        try {
+          const json = buffer.subarray(4, frameLength).toString("utf8");
+          const response = parseIpcResponse(json);
+          settle(() => resolve(response));
+        } catch (error) {
+          rejectWith(error);
+        }
+      };
+      socket.on("connect", () => socket.write(frame));
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        parseAvailableFrame();
+      });
+      socket.on("error", rejectWith);
+      socket.on("end", () => {
+        if (!settled) {
+          rejectWith(new Error("Incomplete IPC frame."));
+        }
+      });
+    });
+  }
+};
 
 // src/pairing/pairing.ts
 function interpretWorkbenchStatus(input) {
@@ -78,86 +252,9 @@ function updateStatusBar(element, state) {
 
 // src/main.ts
 var DEFAULT_SOCKET_PATH = `${process.env.HOME ?? ""}/Library/Application Support/AgentSecretVault/IPC/agent-secret-vault.sock`;
-var MAX_FRAME_BYTES = 1048576;
-var SECRET_REFERENCE_PATTERN = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
-function parseEncryptResponse(json) {
-  const parsed = JSON.parse(json);
-  if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) {
-    throw new Error("Invalid IPC response.");
-  }
-  if (parsed.type === "created" && "reference" in parsed && typeof parsed.reference === "string") {
-    if (!SECRET_REFERENCE_PATTERN.test(parsed.reference)) {
-      throw new Error("Invalid secret reference.");
-    }
-    return { type: "created", reference: parsed.reference };
-  }
-  if (parsed.type === "failure" && "code" in parsed && typeof parsed.code === "string" && parsed.code.length > 0) {
-    return { type: "failure", code: parsed.code };
-  }
-  throw new Error("Unexpected IPC response.");
+function clonePosition(position) {
+  return { line: position.line, ch: position.ch };
 }
-var RuntimeVaultClient = class {
-  constructor(socketPath) {
-    this.socketPath = socketPath;
-  }
-  socketPath;
-  async request(request) {
-    const nodeRequire = Function("return require")();
-    const net = nodeRequire("node:net");
-    const payload = Buffer.from(JSON.stringify(request), "utf8");
-    const frame = Buffer.alloc(4 + payload.length);
-    frame.writeUInt32BE(payload.length, 0);
-    payload.copy(frame, 4);
-    return await new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
-      let buffer = Buffer.alloc(0);
-      let settled = false;
-      const settle = (callback) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        callback();
-        socket.destroy();
-      };
-      const rejectWith = (error) => {
-        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
-      };
-      const parseAvailableFrame = () => {
-        if (buffer.length < 4) {
-          return;
-        }
-        const length = buffer.readUInt32BE(0);
-        if (length > MAX_FRAME_BYTES) {
-          rejectWith(new Error("IPC frame exceeds maximum size."));
-          return;
-        }
-        const frameLength = 4 + length;
-        if (buffer.length < frameLength) {
-          return;
-        }
-        try {
-          const json = buffer.subarray(4, frameLength).toString("utf8");
-          const response = parseEncryptResponse(json);
-          settle(() => resolve(response));
-        } catch (error) {
-          rejectWith(error);
-        }
-      };
-      socket.on("connect", () => socket.write(frame));
-      socket.on("data", (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
-        parseAvailableFrame();
-      });
-      socket.on("error", rejectWith);
-      socket.on("end", () => {
-        if (!settled) {
-          rejectWith(new Error("Incomplete IPC frame."));
-        }
-      });
-    });
-  }
-};
 var commandDefinitions = [
   { id: "encrypt-selection", name: "Encrypt selection" },
   { id: "encrypt-current-paragraph", name: "Encrypt current paragraph" },
@@ -167,7 +264,7 @@ var commandDefinitions = [
 ];
 var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   createVaultClient() {
-    return new RuntimeVaultClient(DEFAULT_SOCKET_PATH);
+    return new LocalVaultClient(DEFAULT_SOCKET_PATH);
   }
   async onload() {
     const pairing = interpretWorkbenchStatus({ reachable: false });
@@ -212,7 +309,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
       start: editor.posToOffset(from),
       end: editor.posToOffset(to),
       text
-    });
+    }, clonePosition(from), clonePosition(to));
   }
   async encryptCurrentParagraph(editor) {
     const documentText = editor.getValue();
@@ -221,9 +318,9 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
       new import_obsidian.Notice("Agent Secret Vault: current paragraph is empty.");
       return;
     }
-    await this.encryptRange(editor, range);
+    await this.encryptRange(editor, range, editor.offsetToPos(range.start), editor.offsetToPos(range.end));
   }
-  async encryptRange(editor, range) {
+  async encryptRange(editor, range, fromPos, toPos) {
     try {
       const result = await encryptTextRange({
         documentText: editor.getValue(),
@@ -232,7 +329,11 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
         policy: "credential",
         client: this.createVaultClient()
       });
-      editor.setValue(result.updatedText);
+      if (editor.getRange(fromPos, toPos) !== range.text) {
+        new import_obsidian.Notice("Agent Secret Vault: note changed before encryption completed; leaving text unchanged.");
+        return;
+      }
+      editor.replaceRange(result.reference, fromPos, toPos, "agent-secret-vault");
       new import_obsidian.Notice("Agent Secret Vault: encrypted text into a secret reference.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
