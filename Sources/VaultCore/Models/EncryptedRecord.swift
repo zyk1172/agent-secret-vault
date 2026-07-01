@@ -10,6 +10,7 @@ public struct EncryptedRecord: Codable, Sendable, Equatable {
     public let wrappedDataKey: Data
     public let wrappedDataKeyNonce: Data
     public let wrappedDataKeyTag: Data
+    public let keyDerivationSalt: Data?
     public let label: String?
     public let policy: SecretPolicy
     public let createdAt: Date
@@ -25,6 +26,7 @@ public struct EncryptedRecord: Codable, Sendable, Equatable {
         wrappedDataKey: Data,
         wrappedDataKeyNonce: Data,
         wrappedDataKeyTag: Data,
+        keyDerivationSalt: Data? = nil,
         label: String?,
         policy: SecretPolicy,
         createdAt: Date,
@@ -39,6 +41,7 @@ public struct EncryptedRecord: Codable, Sendable, Equatable {
         self.wrappedDataKey = wrappedDataKey
         self.wrappedDataKeyNonce = wrappedDataKeyNonce
         self.wrappedDataKeyTag = wrappedDataKeyTag
+        self.keyDerivationSalt = keyDerivationSalt
         self.label = label
         self.policy = policy
         self.createdAt = createdAt

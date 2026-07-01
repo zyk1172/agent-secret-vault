@@ -44,6 +44,33 @@ import Testing
     #expect(await recoveryStore.loadCount == 0)
 }
 
+@Test func copiedWrappedMasterKeyFailsWithDifferentLocalDeviceKey() async throws {
+    let originalLocalKey = Data(repeating: 0x31, count: 32)
+    let otherMachineLocalKey = Data(repeating: 0x32, count: 32)
+    let recoveryKey = Data(repeating: 0x33, count: 32)
+    let expectedMasterKey = Data(repeating: 0x34, count: 32)
+    let originalStore = MemoryWrappedMasterKeyStore()
+    let originalCoordinator = MasterKeyCoordinator(
+        deviceKeyStore: FixedDeviceKeyStore(key: originalLocalKey),
+        recoveryKeyStore: MemoryRecoveryKeyStore(key: recoveryKey),
+        wrappedStore: originalStore,
+        randomMasterKey: { expectedMasterKey }
+    )
+
+    #expect(try await originalCoordinator.unlock(reason: "Create vault") == expectedMasterKey)
+    let copiedWrappedSet = try #require(await originalStore.current)
+    let copiedStore = MemoryWrappedMasterKeyStore(initial: copiedWrappedSet)
+    let otherMachineCoordinator = MasterKeyCoordinator(
+        deviceKeyStore: FixedDeviceKeyStore(key: otherMachineLocalKey),
+        recoveryKeyStore: MemoryRecoveryKeyStore(key: nil),
+        wrappedStore: copiedStore
+    )
+
+    await expectMasterKeyError(.integrityFailed) {
+        _ = try await otherMachineCoordinator.unlock(reason: "Open copied vault")
+    }
+}
+
 @Test func recoveryUnavailableWhenOnlyRecoveryWrapperExistsButRecoveryKeyIsMissing() async throws {
     let recoveryKey = Data(repeating: 0x55, count: 32)
     let masterKey = Data(repeating: 0x66, count: 32)
@@ -119,6 +146,60 @@ import Testing
     #expect(await recoveryStore.loadOrCreateCount == 0)
 }
 
+@Test func fileWrappedMasterKeyStoreRoundTripsWrappedSet() async throws {
+    let tempRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AgentSecretVaultTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+    let fileURL = tempRoot
+        .appendingPathComponent("vault", isDirectory: true)
+        .appendingPathComponent(".agent-secret-vault", isDirectory: true)
+        .appendingPathComponent("master-key.json")
+    let store = FileWrappedMasterKeyStore(fileURL: fileURL)
+    let masterKey = Data(repeating: 0x41, count: 32)
+    let localKey = Data(repeating: 0x42, count: 32)
+    let recoveryKey = Data(repeating: 0x43, count: 32)
+    let wrapped = try WrappedMasterKeySet(
+        local: .seal(masterKey, using: localKey),
+        recovery: .seal(masterKey, using: recoveryKey)
+    )
+
+    #expect(try await store.loadWrappedMasterKeySet() == nil)
+    try await store.saveWrappedMasterKeySet(wrapped)
+
+    let loaded = try #require(try await store.loadWrappedMasterKeySet())
+    #expect(loaded == wrapped)
+    #expect(try loaded.local?.open(using: localKey) == masterKey)
+    #expect(try loaded.recovery?.open(using: recoveryKey) == masterKey)
+}
+
+@Test func fileWrappedMasterKeyStoreRejectsSymlinkTargetBeforeWriting() async throws {
+    let tempRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AgentSecretVaultTests-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+    let targetURL = tempRoot.appendingPathComponent("target.json")
+    let symlinkURL = tempRoot.appendingPathComponent("master-key.json")
+    let originalTargetData = Data("do-not-overwrite".utf8)
+    try originalTargetData.write(to: targetURL)
+    try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: targetURL)
+
+    let store = FileWrappedMasterKeyStore(fileURL: symlinkURL)
+    let wrapped = try WrappedMasterKeySet(
+        local: .seal(Data(repeating: 0x51, count: 32), using: Data(repeating: 0x52, count: 32)),
+        recovery: nil
+    )
+
+    await expectFileWrappedStoreError(.symlinkRejected) {
+        _ = try await store.loadWrappedMasterKeySet()
+    }
+    await expectFileWrappedStoreError(.symlinkRejected) {
+        try await store.saveWrappedMasterKeySet(wrapped)
+    }
+    #expect(try Data(contentsOf: targetURL) == originalTargetData)
+}
+
 private func expectMasterKeyError(
     _ expected: MasterKeyCoordinatorError,
     performing operation: () async throws -> Void
@@ -127,6 +208,20 @@ private func expectMasterKeyError(
         try await operation()
         Issue.record("Expected \(expected), but operation succeeded.")
     } catch let error as MasterKeyCoordinatorError {
+        #expect(error == expected)
+    } catch {
+        Issue.record("Expected \(expected), but caught \(error).")
+    }
+}
+
+private func expectFileWrappedStoreError(
+    _ expected: FileWrappedMasterKeyStoreError,
+    performing operation: () async throws -> Void
+) async {
+    do {
+        try await operation()
+        Issue.record("Expected \(expected), but operation succeeded.")
+    } catch let error as FileWrappedMasterKeyStoreError {
         #expect(error == expected)
     } catch {
         Issue.record("Expected \(expected), but caught \(error).")

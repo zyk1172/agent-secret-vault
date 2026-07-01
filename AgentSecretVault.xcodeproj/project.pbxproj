@@ -66,6 +66,7 @@
 		7FE86D50BE116091F855CCAC /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30AE4B82C55D540C574C7429 /* SmokeTests.swift */; };
 		8178653BA2E48771E9BD5772 /* AuthorizationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D516329714201C601649E90 /* AuthorizationSession.swift */; };
 		82433E41F82B46F6F532FB69 /* EncryptedAuditLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9243F2FEAAE6DA1B97F3A51E /* EncryptedAuditLog.swift */; };
+		838ED542AC3EAF12D7CD9BDF /* FileWrappedMasterKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB2E3EC1B936CBCD2FD713C1 /* FileWrappedMasterKeyStore.swift */; };
 		855D4EAB807F3C6D9E6D2B3F /* DeviceKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230A0104310147543F599824 /* DeviceKeyStoreTests.swift */; };
 		882EF92F36F74E446840EEA6 /* VaultRecordResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A4FFD5F474C300B6EA94777 /* VaultRecordResolverTests.swift */; };
 		88315EA1D915BBE9858154B5 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -455,6 +456,7 @@
 		D4FEB24A0D31161000986EA2 /* VaultCipherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipherTests.swift; sourceTree = "<group>"; };
 		D7AA48DC206059E2CDE253F4 /* SetupGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideView.swift; sourceTree = "<group>"; };
 		D831E7756436FCD1CD661FC0 /* AppIPCController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIPCController.swift; sourceTree = "<group>"; };
+		DB2E3EC1B936CBCD2FD713C1 /* FileWrappedMasterKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileWrappedMasterKeyStore.swift; sourceTree = "<group>"; };
 		DBFAD3C60A94D0736DFC3FEE /* MasterKeyCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyCoordinatorTests.swift; sourceTree = "<group>"; };
 		E04047C45EAF89A929CD9BDF /* EncryptedAuditLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedAuditLogTests.swift; sourceTree = "<group>"; };
 		E81F90A2EE40F7F8684F983A /* InstructionStepCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstructionStepCard.swift; sourceTree = "<group>"; };
@@ -644,6 +646,7 @@
 				3D516329714201C601649E90 /* AuthorizationSession.swift */,
 				41D8E80AB31BB877B700B09E /* BiometricAuthorizing.swift */,
 				17906FCCA92001E35B05C859 /* DeviceKeyStore.swift */,
+				DB2E3EC1B936CBCD2FD713C1 /* FileWrappedMasterKeyStore.swift */,
 				7416E0E120A257AAFC8D8EB1 /* LocalAuthenticator.swift */,
 				44F6255CBDC64D728D47A0DF /* MasterKeyCoordinator.swift */,
 				70C84A29C4675B2DC09B4411 /* RecoveryKeyStore.swift */,
@@ -1237,6 +1240,7 @@
 				8178653BA2E48771E9BD5772 /* AuthorizationSession.swift in Sources */,
 				0C10F85F60D5002DD22ABBC3 /* BiometricAuthorizing.swift in Sources */,
 				6121EC1FDA447E4DA09E0EEC /* DeviceKeyStore.swift in Sources */,
+				838ED542AC3EAF12D7CD9BDF /* FileWrappedMasterKeyStore.swift in Sources */,
 				13D5B5D46C7995CFABB452A3 /* LocalAuthenticator.swift in Sources */,
 				F23629CE7ADF68B2F5B11B94 /* MasterKeyCoordinator.swift in Sources */,
 				A32D3D9C633F8718F4CB18EC /* RecoveryKeyStore.swift in Sources */,

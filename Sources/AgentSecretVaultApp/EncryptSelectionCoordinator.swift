@@ -11,7 +11,7 @@ public enum EncryptSelectionResult: Equatable, Sendable {
 public enum EncryptSelectionError: Error, Equatable, Sendable {
     case emptyPlaintext
     case labelContainsPlaintext
-    case invalidDeviceKeySize(Int)
+    case invalidMasterKeySize(Int)
 }
 
 public protocol SecretIDGenerating: Sendable {
@@ -29,7 +29,7 @@ public protocol EncryptSelectionCoordinating: Sendable {
 public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEncrypting {
     private let recordStore: any RecordStore
     private let selectionReplacer: any SelectionReplacing
-    private let deviceKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data
+    private let masterKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data
     private let idGenerator: any SecretIDGenerating
     private let cipher: VaultCipher
 
@@ -42,7 +42,7 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEnc
     ) {
         self.recordStore = recordStore
         self.selectionReplacer = selectionReplacer
-        self.deviceKeyProvider = { policy, reason in
+        self.masterKeyProvider = { _, reason in
             try await deviceKeyStore.deviceKey(reason: reason)
         }
         self.idGenerator = idGenerator
@@ -52,13 +52,13 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEnc
     public init(
         recordStore: any RecordStore,
         selectionReplacer: any SelectionReplacing,
-        deviceKeyProvider: @escaping @Sendable (SecretPolicy, String) async throws -> Data,
+        masterKeyProvider: @escaping @Sendable (SecretPolicy, String) async throws -> Data,
         idGenerator: any SecretIDGenerating = RandomSecretIDGenerator(),
         cipher: VaultCipher = VaultCipher()
     ) {
         self.recordStore = recordStore
         self.selectionReplacer = selectionReplacer
-        self.deviceKeyProvider = deviceKeyProvider
+        self.masterKeyProvider = masterKeyProvider
         self.idGenerator = idGenerator
         self.cipher = cipher
     }
@@ -93,9 +93,9 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEnc
 
         let id = try idGenerator.nextID()
         let reference = try SecretReference("secret://\(id)")
-        let keyData = try await deviceKeyProvider(policy, "Encrypt selected secret")
+        let keyData = try await masterKeyProvider(policy, "Encrypt selected secret")
         guard keyData.count == 32 else {
-            throw EncryptSelectionError.invalidDeviceKeySize(keyData.count)
+            throw EncryptSelectionError.invalidMasterKeySize(keyData.count)
         }
 
         let record = try cipher.encrypt(

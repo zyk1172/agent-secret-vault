@@ -1,0 +1,62 @@
+# Crypto hardening notes
+
+This document records the current encryption boundary for maintainers and agent
+integrators.
+
+## Current v2 record format
+
+New encrypted records use `VaultFormat.current == 2`.
+
+Each record still uses envelope encryption:
+
+1. Generate a random 256-bit data key per record.
+2. Encrypt plaintext with AES-GCM using the data key.
+3. Derive a per-record wrapping key with HKDF-SHA256 from:
+   - the vault master key,
+   - a random per-record derivation salt,
+   - authenticated record metadata.
+4. Wrap the data key with AES-GCM using the derived wrapping key.
+
+The authenticated metadata includes format version, secret id, record version,
+label, policy, creation time, and update time. Tampering with these fields must
+fail closed during decryption.
+
+## Vault master key
+
+The app runtime must not use the Keychain device key directly as the record
+master key.
+
+Current runtime path:
+
+1. The local device key authorizes and wraps the vault master key.
+2. The wrapped vault master key set is stored under the app vault directory at
+   `.agent-secret-vault/master-key.json`.
+3. Record encryption and decryption use the unwrapped vault master key.
+4. Copying the wrapped vault data to a different local device key must not
+   decrypt the vault.
+
+Regression coverage:
+
+- `copiedWrappedMasterKeyFailsWithDifferentLocalDeviceKey`
+- `fileWrappedMasterKeyStoreRoundTripsWrappedSet`
+- `fileWrappedMasterKeyStoreRejectsSymlinkTargetBeforeWriting`
+
+## Legacy v1 records
+
+Legacy v1 records remain decryptable with the correct vault master key.
+
+Migration logic decrypts the previous valid record and writes the next version
+using the current v2 format. Failed migration must preserve the prior
+decryptable version.
+
+Regression coverage:
+
+- `decryptsLegacyV1RecordAfterFormatBump`
+- `successfulMigrationCreatesNextDecryptableVersion`
+- `migrationFailureLeavesPriorVersionDecryptable`
+
+## Not yet complete
+
+User-entered passphrase as an additional high-protection factor is not currently
+exposed in the app UI or MCP flow. Do not claim passphrase protection in release
+notes until there is an end-to-end setting, unlock path, and migration test.

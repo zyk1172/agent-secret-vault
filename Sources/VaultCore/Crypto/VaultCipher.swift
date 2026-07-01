@@ -4,6 +4,7 @@ import Foundation
 public enum VaultCryptoError: Error, Equatable, Sendable {
     case integrityFailed
     case randomGenerationFailed
+    case unsupportedFormatVersion(Int)
 }
 
 public struct VaultCipher: Sendable {
@@ -15,13 +16,19 @@ public struct VaultCipher: Sendable {
         version: Int,
         label: String?,
         policy: SecretPolicy,
-        masterKey: SymmetricKey
+        masterKey: SymmetricKey,
+        formatVersion: Int = VaultFormat.current
     ) throws -> EncryptedRecord {
+        guard formatVersion == VaultFormat.legacyV1 || formatVersion == VaultFormat.current else {
+            throw VaultCryptoError.unsupportedFormatVersion(formatVersion)
+        }
+
         let dataKeyBytes = try RandomBytes.generate(count: 32)
         let dataKey = SymmetricKey(data: dataKeyBytes)
         let now = Date()
+        let keyDerivationSalt = formatVersion >= 2 ? try RandomBytes.generate(count: 32) : nil
         let authenticatedData = Self.authenticatedData(
-            formatVersion: VaultFormat.current,
+            formatVersion: formatVersion,
             id: id,
             recordVersion: version,
             label: label,
@@ -35,14 +42,20 @@ public struct VaultCipher: Sendable {
             using: dataKey,
             authenticating: authenticatedData
         )
+        let wrappingKey = try Self.dataKeyWrappingKey(
+            masterKey: masterKey,
+            formatVersion: formatVersion,
+            keyDerivationSalt: keyDerivationSalt,
+            authenticatedData: authenticatedData
+        )
         let wrappedDataKey = try AES.GCM.seal(
             dataKeyBytes,
-            using: masterKey,
+            using: wrappingKey,
             authenticating: authenticatedData
         )
 
         return EncryptedRecord(
-            formatVersion: VaultFormat.current,
+            formatVersion: formatVersion,
             id: id,
             recordVersion: version,
             ciphertext: sealedPlaintext.ciphertext,
@@ -51,6 +64,7 @@ public struct VaultCipher: Sendable {
             wrappedDataKey: wrappedDataKey.ciphertext,
             wrappedDataKeyNonce: wrappedDataKey.nonce.data,
             wrappedDataKeyTag: wrappedDataKey.tag,
+            keyDerivationSalt: keyDerivationSalt,
             label: label,
             policy: policy,
             createdAt: now,
@@ -62,8 +76,8 @@ public struct VaultCipher: Sendable {
         _ record: EncryptedRecord,
         masterKey: SymmetricKey
     ) throws -> Data {
-        guard record.formatVersion == VaultFormat.current else {
-            throw VaultCryptoError.integrityFailed
+        guard record.formatVersion == VaultFormat.legacyV1 || record.formatVersion == VaultFormat.current else {
+            throw VaultCryptoError.unsupportedFormatVersion(record.formatVersion)
         }
 
         let authenticatedData = Self.authenticatedData(
@@ -82,9 +96,15 @@ public struct VaultCipher: Sendable {
                 ciphertext: record.wrappedDataKey,
                 tag: record.wrappedDataKeyTag
             )
+            let wrappingKey = try Self.dataKeyWrappingKey(
+                masterKey: masterKey,
+                formatVersion: record.formatVersion,
+                keyDerivationSalt: record.keyDerivationSalt,
+                authenticatedData: authenticatedData
+            )
             let dataKeyBytes = try AES.GCM.open(
                 wrappedBox,
-                using: masterKey,
+                using: wrappingKey,
                 authenticating: authenticatedData
             )
             let dataKey = SymmetricKey(data: dataKeyBytes)
@@ -113,7 +133,9 @@ public struct VaultCipher: Sendable {
         createdAt: Date,
         updatedAt: Date
     ) -> Data {
-        var data = Data("VaultCipher.EncryptedRecord.AAD.v1".utf8)
+        var data = Data((formatVersion == VaultFormat.legacyV1
+            ? "VaultCipher.EncryptedRecord.AAD.v1"
+            : "VaultCipher.EncryptedRecord.AAD.v2").utf8)
         data.appendLengthPrefixed(Data(String(formatVersion).utf8))
         data.appendLengthPrefixed(Data(id.utf8))
         data.appendLengthPrefixed(Data(String(recordVersion).utf8))
@@ -122,6 +144,33 @@ public struct VaultCipher: Sendable {
         data.appendLengthPrefixed(Data(String(createdAt.timeIntervalSinceReferenceDate.bitPattern).utf8))
         data.appendLengthPrefixed(Data(String(updatedAt.timeIntervalSinceReferenceDate.bitPattern).utf8))
         return data
+    }
+
+    private static func dataKeyWrappingKey(
+        masterKey: SymmetricKey,
+        formatVersion: Int,
+        keyDerivationSalt: Data?,
+        authenticatedData: Data
+    ) throws -> SymmetricKey {
+        if formatVersion == VaultFormat.legacyV1 {
+            return masterKey
+        }
+        guard formatVersion == VaultFormat.current,
+              let keyDerivationSalt,
+              keyDerivationSalt.count >= 16
+        else {
+            throw VaultCryptoError.integrityFailed
+        }
+
+        var info = Data("AgentSecretVault.RecordWrappingKey.v2".utf8)
+        info.append(authenticatedData)
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: masterKey,
+            salt: keyDerivationSalt,
+            info: info,
+            outputByteCount: 32
+        )
     }
 }
 

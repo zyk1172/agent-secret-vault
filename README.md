@@ -140,7 +140,8 @@ must never be returned to the agent.
   app-owned clipboard value if nothing else has replaced it.
 - Bulk plaintext export is intentionally unsupported.
 
-See [docs/security/threat-model.md](docs/security/threat-model.md) and
+See [docs/security/threat-model.md](docs/security/threat-model.md),
+[docs/security/crypto-hardening.md](docs/security/crypto-hardening.md), and
 [docs/security/release-checklist.md](docs/security/release-checklist.md).
 
 ## Recovery

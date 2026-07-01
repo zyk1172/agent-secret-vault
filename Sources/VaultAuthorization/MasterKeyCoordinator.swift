@@ -124,17 +124,22 @@ public struct MasterKeyCoordinator: Sendable {
     }
 
     public func unlock(reason: String) async throws -> Data {
+        let localKey = try await validatedDeviceKey(reason: reason)
+        return try await unlock(reason: reason, localWrappingKey: localKey)
+    }
+
+    public func unlock(reason: String, localWrappingKey: Data) async throws -> Data {
+        try validateKeySize(localWrappingKey)
         guard let wrapped = try await wrappedStore.loadWrappedMasterKeySet() else {
-            return try await createNewVault(reason: reason)
+            return try await createNewVault(reason: reason, localWrappingKey: localWrappingKey)
         }
 
         guard let local = wrapped.local else {
             throw MasterKeyCoordinatorError.recoveryUnavailable
         }
 
-        let localKey = try await validatedDeviceKey(reason: reason)
         do {
-            return try local.open(using: localKey)
+            return try local.open(using: localWrappingKey)
         } catch {
             throw MasterKeyCoordinatorError.integrityFailed
         }
@@ -156,8 +161,8 @@ public struct MasterKeyCoordinator: Sendable {
         try validateKeySize(recoveryKey)
 
         let masterKey = try recoveryWrapper.open(using: recoveryKey)
-        let localKey = try await validatedDeviceKey(reason: reason)
-        let newLocalWrapper = try WrappedMasterKey.seal(masterKey, using: localKey)
+        let localWrappingKey = try await validatedDeviceKey(reason: reason)
+        let newLocalWrapper = try WrappedMasterKey.seal(masterKey, using: localWrappingKey)
         try await wrappedStore.saveWrappedMasterKeySet(WrappedMasterKeySet(
             local: newLocalWrapper,
             recovery: wrapped.recovery
@@ -166,18 +171,23 @@ public struct MasterKeyCoordinator: Sendable {
     }
 
     private func createNewVault(reason: String) async throws -> Data {
+        let localKey = try await validatedDeviceKey(reason: reason)
+        return try await createNewVault(reason: reason, localWrappingKey: localKey)
+    }
+
+    private func createNewVault(reason: String, localWrappingKey: Data) async throws -> Data {
         guard try await recoveryKeyStore.supportsRequiredKeychainControls() else {
             throw MasterKeyCoordinatorError.unsupportedRequiredKeychainControls
         }
 
         let masterKey = try randomMasterKey()
         try validateKeySize(masterKey)
-        let localKey = try await validatedDeviceKey(reason: reason)
+        try validateKeySize(localWrappingKey)
         let recoveryKey = try await recoveryKeyStore.loadOrCreateRecoveryKeyData()
         try validateKeySize(recoveryKey)
 
         let wrapped = try WrappedMasterKeySet(
-            local: .seal(masterKey, using: localKey),
+            local: .seal(masterKey, using: localWrappingKey),
             recovery: .seal(masterKey, using: recoveryKey)
         )
         try await wrappedStore.saveWrappedMasterKeySet(wrapped)

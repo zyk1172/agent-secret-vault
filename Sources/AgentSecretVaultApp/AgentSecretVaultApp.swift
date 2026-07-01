@@ -168,12 +168,23 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let auditLog = EncryptedAuditLog(directoryURL: auditRoot)
         let deviceKeyStore = DeviceKeyStore()
         let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
+        let wrappedMasterKeyStore = FileWrappedMasterKeyStore(
+            fileURL: root
+                .appendingPathComponent(".agent-secret-vault", isDirectory: true)
+                .appendingPathComponent("master-key.json")
+        )
+        let masterKeyCoordinator = MasterKeyCoordinator(
+            deviceKeyStore: deviceKeyStore,
+            wrappedStore: wrappedMasterKeyStore
+        )
+        let vaultMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data = { policy, reason in
+            let localWrappingKey = try await protectionKeyStore.deviceKey(for: policy, reason: reason)
+            return try await masterKeyCoordinator.unlock(reason: reason, localWrappingKey: localWrappingKey)
+        }
         let encryptor = EncryptSelectionCoordinator(
             recordStore: recordStore,
             selectionReplacer: NoopSelectionReplacer(),
-            deviceKeyProvider: { policy, reason in
-                try await protectionKeyStore.deviceKey(for: policy, reason: reason)
-            }
+            masterKeyProvider: vaultMasterKeyProvider
         )
         let services = VaultAppServices(
             textEncryptor: encryptor,
@@ -181,7 +192,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             recordLister: recordStore,
             recordResolver: VaultRecordResolver(recordStore: recordStore),
             masterKeyProvider: { policy, reason in
-                SymmetricKey(data: try await protectionKeyStore.deviceKey(for: policy, reason: reason))
+                SymmetricKey(data: try await vaultMasterKeyProvider(policy, reason))
             },
             isUnlockedProvider: {
                 await protectionKeyStore.isLowProtectionUnlocked

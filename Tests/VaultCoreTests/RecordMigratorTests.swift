@@ -17,8 +17,10 @@ func migrationFailureLeavesPriorVersionDecryptable(stage: RecordMigrationFailure
         version: 1,
         label: "prior",
         policy: .credential,
-        masterKey: masterKey
+        masterKey: masterKey,
+        formatVersion: VaultFormat.legacyV1
     )
+    #expect(priorRecord.formatVersion == VaultFormat.legacyV1)
     try await store.save(priorRecord)
 
     let migrator = RecordMigrator(baseDirectory: baseDirectory) { currentStage in
@@ -58,7 +60,8 @@ func migrationFailureLeavesPriorVersionDecryptable(stage: RecordMigrationFailure
         version: 1,
         label: "prior",
         policy: .credential,
-        masterKey: masterKey
+        masterKey: masterKey,
+        formatVersion: VaultFormat.legacyV1
     )
     try await store.save(priorRecord)
 
@@ -75,6 +78,8 @@ func migrationFailureLeavesPriorVersionDecryptable(stage: RecordMigrationFailure
     }
 
     #expect(migrated.recordVersion == 2)
+    #expect(migrated.formatVersion == VaultFormat.current)
+    #expect(migrated.keyDerivationSalt?.count == 32)
     #expect(try await store.versions(id: migrationRecordID) == [1, 2])
     #expect(try cipher.decrypt(try await store.latest(id: migrationRecordID), masterKey: masterKey) == Data("migrated plaintext".utf8))
 }
