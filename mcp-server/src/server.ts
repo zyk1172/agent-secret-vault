@@ -965,7 +965,7 @@ export function createVaultToolDefinitions(
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "agent-secret-vault",
-    version: "0.1.0"
+    version: "0.1.1"
   });
 
   registerVaultTools(server, client);
@@ -979,10 +979,18 @@ export function registerVaultTools(server: McpServer, client: VaultIpcClient): v
       {
         title: tool.title,
         description: tool.description,
-        inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema
+        inputSchema: tool.inputSchema
       },
-      async (input) => tool.handler(input)
+      async (input) => {
+        const result = await tool.handler(input);
+        if (!result.isError) {
+          if (result.structuredContent === undefined) {
+            throw new Error(`Tool ${tool.name} returned no structuredContent`);
+          }
+          await tool.outputSchema.parseAsync(result.structuredContent);
+        }
+        return result;
+      }
     );
   }
 }

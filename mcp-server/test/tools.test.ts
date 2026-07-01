@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { type IpcRequest, type IpcResponse } from "../src/protocol.js";
 import {
+  createMcpServer,
   createVaultToolDefinitions,
   defaultSecretLocalActionPolicy,
   type SecretBrowserLoginRunner,
@@ -39,6 +42,54 @@ describe("MCP tool contracts", () => {
     ]);
     for (const tool of tools) {
       expect(tool.description).toMatch(/plaintext is never returned/i);
+    }
+  });
+
+  it("serves MCP tool calls without SDK Zod output-schema failures", async () => {
+    const mcpServer = createMcpServer(
+      new FakeClient([
+        { type: "status", locked: false },
+        {
+          type: "referenceMetadata",
+          metadata: {
+            reference: validReference,
+            policy: "read",
+            label: "NAS credential",
+            createdAt: 1,
+            updatedAt: 2
+          }
+        }
+      ])
+    );
+    const mcpClient = new Client({ name: "hermes-compat-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([
+        mcpClient.connect(clientTransport),
+        mcpServer.connect(serverTransport)
+      ]);
+
+      const tools = await mcpClient.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toContain("vault_status");
+
+      const status = await mcpClient.callTool({ name: "vault_status", arguments: {} });
+      expect(status.isError).not.toBe(true);
+      expect(status.structuredContent).toEqual({ locked: false });
+
+      const metadata = await mcpClient.callTool({
+        name: "secret_inspect_reference",
+        arguments: { reference: validReference }
+      });
+      expect(metadata.isError).not.toBe(true);
+      expect(metadata.structuredContent).toMatchObject({
+        reference: validReference,
+        policy: "read",
+        label: "NAS credential"
+      });
+      expect(JSON.stringify([status, metadata])).not.toContain("_zod");
+    } finally {
+      await Promise.allSettled([mcpClient.close(), mcpServer.close()]);
     }
   });
 
