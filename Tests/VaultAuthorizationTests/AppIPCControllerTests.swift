@@ -49,12 +49,34 @@ private actor ControllerSpyWorkbenchService: WorkbenchServicing {
         WorkbenchStatus(locked: false, ipcAvailable: true, activeKnowledgeBaseRoot: nil, pluginConnected: false)
     }
 
+    func inspectReference(_ reference: String) async throws -> SecretReferenceMetadata {
+        SecretReferenceMetadata(
+            reference: reference,
+            policy: .read,
+            label: nil,
+            createdAt: Date(timeIntervalSinceReferenceDate: 1),
+            updatedAt: Date(timeIntervalSinceReferenceDate: 2)
+        )
+    }
+
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String {
         "secret://0123456789ABCDEFGHJKMNPQRS"
     }
 
     func openRevealSession(references: [String], context: RevealContext) async throws -> String {
         "session-1"
+    }
+
+    func restoreReferences(references: [String], context: RevealContext) async throws -> String {
+        "restored plaintext"
+    }
+
+    func exportResolvedText(
+        references: [String],
+        context: RevealContext,
+        destinationPath: String
+    ) async throws -> String {
+        destinationPath
     }
 
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {

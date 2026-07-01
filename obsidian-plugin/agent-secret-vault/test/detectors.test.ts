@@ -76,6 +76,83 @@ describe("detectSensitiveText", () => {
     expect(JSON.stringify(findings)).not.toContain("correct-horse-battery-staple");
   });
 
+  it("ignores existing encrypted secret references during scans", () => {
+    const encryptedReference = "secret://0123456789ABCDEFGHJKMNPQRS";
+    const text = [
+      `密码：${encryptedReference}`,
+      `token="${encryptedReference}"`,
+      `password = ${encryptedReference}`,
+      `访问令牌：${encryptedReference}。`
+    ].join("\n");
+
+    expect(detectSensitiveText(text)).toEqual([]);
+  });
+
+  it("detects Chinese secret assignments used in personal knowledge bases", () => {
+    const text = "服务器密码：correct-horse-battery-staple\n访问令牌 = ghp_1234567890abcdefghijklmnopqrstuvwxyz";
+
+    const findings = detectSensitiveText(text);
+
+    expect(findings.map((finding) => finding.ruleId)).toEqual([
+      "chinese-secret-assignment",
+      "github-token"
+    ]);
+    expect(findings[0]).toMatchObject({
+      start: 6,
+      end: 34,
+      confidence: "medium",
+      redactedPreview: "correct-…aple"
+    });
+    expect(JSON.stringify(findings)).not.toContain("correct-horse-battery-staple");
+  });
+
+  it("detects generic API, token, access key, and client secret assignments", () => {
+    const text = [
+      "api_key = abcdefghijklmnopqrstuvwxyz123456",
+      "client_secret: \"secret-value-1234567890\"",
+      "access-key = AKIAIOSFODNN7EXAMPLE"
+    ].join("\n");
+
+    const findings = detectSensitiveText(text);
+
+    expect(findings.map((finding) => finding.ruleId)).toEqual([
+      "generic-secret-assignment",
+      "generic-secret-assignment",
+      "generic-secret-assignment"
+    ]);
+    expect(JSON.stringify(findings)).not.toContain("abcdefghijklmnopqrstuvwxyz123456");
+    expect(JSON.stringify(findings)).not.toContain("secret-value-1234567890");
+    expect(JSON.stringify(findings)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+
+  it("detects JWT and URL query secret parameters", () => {
+    const text = [
+      "jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+      "https://example.com/callback?token=abcdefghijklmnopqrstuvwxyz123456&safe=ok"
+    ].join("\n");
+
+    const findings = detectSensitiveText(text);
+
+    expect(findings.map((finding) => finding.ruleId)).toEqual([
+      "jwt",
+      "url-secret-parameter"
+    ]);
+  });
+
+  it("detects common personal identifiers as medium-confidence review candidates", () => {
+    const text = "联系邮箱 user@example.com，手机号 13800138000，身份证 11010519491231002X，银行卡 6222020202020202020";
+
+    const findings = detectSensitiveText(text);
+
+    expect(findings.map((finding) => finding.ruleId)).toEqual([
+      "email-address",
+      "phone-number",
+      "china-id-card",
+      "bank-card"
+    ]);
+    expect(findings.every((finding) => finding.confidence === "medium")).toBe(true);
+  });
+
   it("detects private key blocks and redacts the block preview", () => {
     const text = [
       "before",

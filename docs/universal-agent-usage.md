@@ -1,0 +1,287 @@
+# Agent Secret Vault 通用 Agent 使用文档
+
+本文面向 Codex、Claude、Hermes 以及其他支持 MCP 的本地或桌面 Agent。目标是让 Agent 在对话中使用 `secret://...` 密文引用，而不是接触密码、token、cookie、私钥等明文。
+
+## 1. Agent 必须理解的边界
+
+Agent Secret Vault 的正确使用方式是：
+
+1. 聊天、笔记、任务描述里只保留 `secret://...`。
+2. Agent 不要求用户粘贴明文。
+3. Agent 不把解密后的密码、token、Authorization header、cookie、session key、填充后的敏感字段返回聊天。
+4. 需要本机使用秘密时，Agent 调用 Agent Secret Vault MCP 工具。
+5. 明文只短暂存在于本机 macOS App、MCP server 内部或专用本地 runner 中。
+
+Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明引用。
+
+## 2. 本机安装
+
+### 2.1 构建 macOS App
+
+```bash
+cd /Users/zhengyunkai/agent-secret-vault
+export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+xcodegen generate
+xcodebuild build -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -configuration Debug
+```
+
+启动 App：
+
+```bash
+open ~/Library/Developer/Xcode/DerivedData/AgentSecretVault-*/Build/Products/Debug/AgentSecretVault.app
+```
+
+如果路径匹配多个 DerivedData 目录，可在 Xcode 里直接运行 `AgentSecretVault` scheme。
+
+### 2.2 构建 MCP server
+
+```bash
+cd /Users/zhengyunkai/agent-secret-vault/mcp-server
+npm install
+npm run build
+```
+
+MCP server 入口是：
+
+```text
+/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js
+```
+
+## 3. 通用 MCP 配置
+
+任何支持 stdio MCP 的 Agent，都使用下面配置：
+
+```json
+{
+  "mcpServers": {
+    "agent-secret-vault": {
+      "command": "node",
+      "args": [
+        "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js"
+      ]
+    }
+  }
+}
+```
+
+如果客户端是表单配置：
+
+- Name：`agent-secret-vault`
+- Command：`node`
+- Args：`/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js`
+- Transport：`stdio`
+
+配置完成后重启或刷新 Agent 客户端。
+
+## 4. Codex 安装方式
+
+### 4.1 安装 Codex skill
+
+```bash
+cd /Users/zhengyunkai/agent-secret-vault
+./scripts/install-codex-skill.sh
+```
+
+然后重启 Codex 或刷新 skills。
+
+### 4.2 使用项目内 Codex plugin
+
+项目内插件目录：
+
+```text
+/Users/zhengyunkai/agent-secret-vault/plugins/agent-secret-vault
+```
+
+插件包含：
+
+- `.codex-plugin/plugin.json`
+- `.mcp.json`
+- `skills/agent-secret-vault/SKILL.md`
+- `hooks/validate_secret_output.js`
+
+如果 Codex 支持从本地目录加载插件，选择上述目录。加载后，Codex 应能看到：
+
+- MCP server：`agent-secret-vault`
+- Skill：`agent-secret-vault`
+- Hook：`validate-secret-output`
+
+## 5. Claude / Hermes / 其他 Agent 安装方式
+
+Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
+
+1. 安装 MCP server，使用第 3 节的 MCP 配置。
+2. 把第 6 节的“Agent 运行规则”加入该客户端的系统提示、项目规则、profile instruction 或 workspace instruction。
+3. 重启客户端。
+4. 让 Agent 先调用 `vault_status`，再调用 `agent_secret_usage_policy`。
+
+## 6. Agent 运行规则
+
+把下面这段交给任何 Agent：
+
+```text
+当任务、文件、笔记或工具输出中出现 secret:// 引用、密码、token、API key、cookie、私钥、本地登录、SSH、SFTP/SCP、数据库连接、API 请求或需要本机使用秘密的动作时，自动使用 agent-secret-vault MCP 工具。
+
+规则：
+1. 把 secret:// 当作不透明引用，不要推断、摘要或改写背后的真实值。
+2. 不要求用户把明文密码、token、cookie、私钥贴到聊天。
+3. 不把解密后的明文、Authorization header、cookie、session key、填充后的敏感字段返回聊天。
+4. 普通文本里有 secret:// 时，优先调用 secret_auto_handle_text。
+5. 需要本机执行动作时，优先调用 secret_action_router 或对应的具体工具。
+6. 工具返回失败、锁定、不可用或隔离时，只报告状态码和非敏感下一步，不降级为索要明文。
+7. 没有合适安全工具时停止，请求新增更窄的 allowlisted MCP 工具。
+```
+
+## 7. Agent 启动自检
+
+Agent 接入后先做：
+
+1. 调用 `vault_status`
+2. 调用 `agent_secret_usage_policy`
+
+预期：
+
+- `vault_status` 返回 App 可用状态或锁定状态。
+- `agent_secret_usage_policy` 返回可用工具和安全规则。
+
+如果 App 未运行，先打开 Agent Secret Vault App。
+
+## 8. 工具选择规则
+
+| 场景 | 工具 | Agent 输入秘密的方式 |
+| --- | --- | --- |
+| 文本、笔记片段或工具输出里有 `secret://` | `secret_auto_handle_text` | 原文中保留引用 |
+| 查看单个秘密给用户本人 | `secret_reveal_request` | `reference` |
+| 本地显示整段解密文本 | `paragraph_reveal_request` | `references` + `template` |
+| 导出填充后的敏感文本到本地文件 | `export_resolved_text_to_local_file` | `references` + `template` + `destinationPath` |
+| SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选 `usernameRef` |
+| 本地/内网 HTTP Basic Auth | `local_http_request_with_secret` | `passwordRef`，可选 `usernameRef` |
+| API token 请求 | `api_request_with_token` | `tokenRef` |
+| 数据库只读查询 | `database_query_with_secret` | `passwordRef`，可选 `usernameRef` |
+| SFTP/SCP | `sftp_transfer_with_secret` | `passwordRef`，可选 `usernameRef` |
+| 本地/内网页登录填充 | `browser_web_login_with_secret` | `passwordRef`，可选 `usernameRef` |
+| 本地 App 表单填充 | `local_app_form_fill_with_secret` | 字段 `valueRef` |
+| 自动路由本机动作 | `secret_action_router` | 按 intent 传引用 |
+
+## 9. `secret_action_router` intent
+
+`secret_action_router` 支持：
+
+- `ssh_command`
+- `local_http_request`
+- `api_request`
+- `database_query`
+- `sftp_transfer`
+- `browser_web_login`
+- `local_app_form_fill`
+- `export_resolved_text`
+
+Agent 不确定用哪个具体工具时，优先使用 router；已经明确场景时，直接使用具体工具。
+
+## 10. 常用输入示例
+
+### 10.1 SSH
+
+```json
+{
+  "host": "192.168.2.240",
+  "username": "zyk",
+  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "command": "hostname && whoami && uptime",
+  "risk": "read"
+}
+```
+
+### 10.2 API token
+
+```json
+{
+  "url": "http://192.168.2.240:8080/api/status",
+  "tokenRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "includeBodyPreview": true
+}
+```
+
+不要把 token 放进 URL query、header 字符串或聊天。
+
+### 10.3 数据库只读查询
+
+```json
+{
+  "engine": "postgres",
+  "host": "192.168.2.240",
+  "database": "app",
+  "username": "readonly_user",
+  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "query": "select current_user",
+  "maxRows": 20
+}
+```
+
+只允许单条只读 SQL。不要执行 `insert`、`update`、`delete`、`drop`、`alter`、`copy` 等。
+
+### 10.4 SFTP list
+
+```json
+{
+  "operation": "list",
+  "host": "192.168.2.240",
+  "username": "zyk",
+  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "remotePath": "/share"
+}
+```
+
+路径必须明确，不能使用 `..`、glob 或 shell 字符。
+
+### 10.5 本地网页登录填充
+
+```json
+{
+  "url": "http://192.168.2.240/login",
+  "username": "zyk",
+  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "usernameSelector": "#user",
+  "passwordSelector": "#password",
+  "submitSelector": "button[type=submit]",
+  "submit": true
+}
+```
+
+如果返回 `SAFE_AUTOFILL_UNAVAILABLE`，说明当前客户端没有安全浏览器 runner。不要让用户粘贴明文，不要用剪贴板绕过。
+
+## 11. 失败处理
+
+| 状态 | Agent 应该怎么做 |
+| --- | --- |
+| `APP_UNAVAILABLE` | 让用户打开 Agent Secret Vault App 后重试。 |
+| `URL_NOT_ALLOWED` / `HOST_NOT_ALLOWED` | 目标不是 localhost、`.local`、私有 IP 或显式 allowlist。请用户确认目标。 |
+| `URL_CREDENTIALS_NOT_ALLOWED` | URL 里包含用户名或密码。改用 `usernameRef` / `passwordRef`。 |
+| `URL_TOKEN_NOT_ALLOWED` | URL query 里出现 token/key/password 等敏感参数。改用 `tokenRef`。 |
+| `COMMAND_NOT_ALLOWED` | SSH 命令超出只读安全边界。换成更窄命令或新增专用工具。 |
+| `QUERY_NOT_ALLOWED` | SQL 不是单条只读语句。改成只读查询。 |
+| `PATH_NOT_ALLOWED` | SFTP/SCP 路径不安全。改成确定路径。 |
+| `SAFE_AUTOFILL_UNAVAILABLE` | 浏览器或本地 App 安全填充 runner 尚不可用。不要降级为明文。 |
+| `*_REQUEST_FAILED` | 报告非敏感失败状态，建议检查服务、网络、权限或 App 状态。 |
+
+## 12. 验证安装是否成功
+
+在 Agent 中发起：
+
+```text
+请调用 agent-secret-vault 的 vault_status，并读取 agent_secret_usage_policy。
+```
+
+通过标准：
+
+- Agent 不要求你粘贴密码。
+- Agent 能看到 MCP 工具列表。
+- Agent 能复述“secret:// 是不透明引用”。
+- Agent 不返回任何明文秘密。
+
+## 13. 安全注意事项
+
+- 不要把 `secret://` 对应的明文写入知识库、issue、PR、聊天记录或日志。
+- 不要把 bearer token、basic auth、cookie、session id 打印到工具结果。
+- 不要把数据库敏感列返回聊天。
+- 不要使用通用 shell、curl、剪贴板或浏览器自动填表绕过 MCP 安全工具。
+- 对公网发送、删除、改密码、数据库写入等高风险动作，必须新增更窄的专用 allowlisted 工具。

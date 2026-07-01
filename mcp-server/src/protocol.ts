@@ -46,6 +46,15 @@ export const OrphanScanResult = z.object({
 }).strict();
 export type OrphanScanResult = z.infer<typeof OrphanScanResult>;
 
+export const SecretReferenceMetadata = z.object({
+  reference: SecretReference,
+  policy: SecretPolicy,
+  label: z.string().nullable(),
+  createdAt: z.union([z.string().min(1), z.number()]),
+  updatedAt: z.union([z.string().min(1), z.number()])
+}).strict();
+export type SecretReferenceMetadata = z.infer<typeof SecretReferenceMetadata>;
+
 export const RiskClass = z.union([z.literal(0), z.literal(1), z.literal(2)]);
 export type RiskClass = z.infer<typeof RiskClass>;
 
@@ -65,6 +74,12 @@ export type ExecutionRequest = z.infer<typeof ExecutionRequest>;
 export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("status") }).strict(),
   z.object({ type: z.literal("workbenchStatus") }).strict(),
+  z
+    .object({
+      type: z.literal("inspectReference"),
+      reference: SecretReference
+    })
+    .strict(),
   z
     .object({
       type: z.literal("reveal"),
@@ -92,6 +107,21 @@ export const IpcRequest = z.discriminatedUnion("type", [
       type: z.literal("revealReferences"),
       references: z.array(SecretReference).min(1),
       context: RevealContext
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("restoreReferences"),
+      references: z.array(SecretReference).min(1),
+      context: RevealContext
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("exportResolvedText"),
+      references: z.array(SecretReference).min(1),
+      context: RevealContext,
+      destinationPath: z.string().min(1)
     })
     .strict(),
   z
@@ -162,6 +192,12 @@ export const IpcResponse = z.discriminatedUnion("type", [
       status: WorkbenchStatus
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("referenceMetadata"),
+      metadata: SecretReferenceMetadata
+    })
+    .strict(),
   z.object({ type: z.literal("displayedToUser") }).strict(),
   z
     .object({
@@ -170,6 +206,8 @@ export const IpcResponse = z.discriminatedUnion("type", [
     })
     .strict(),
   RevealSessionOpened,
+  z.object({ type: z.literal("restoredText"), text: z.string() }).strict(),
+  z.object({ type: z.literal("exported"), path: z.string().min(1) }).strict(),
   z
     .object({
       type: z.literal("orphanScan"),

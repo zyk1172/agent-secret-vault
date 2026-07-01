@@ -1,5 +1,7 @@
 # Agent Secret Vault
 
+![Agent Secret Vault app icon](AppAssets/AppIcon-source.png)
+
 Agent Secret Vault is a macOS app plus local MCP adapter for letting agents such
 as Codex work with sensitive knowledge-base material without receiving
 plaintext secrets.
@@ -34,6 +36,41 @@ ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh buil
 git diff --check
 ```
 
+## Agent installation
+
+For Codex, Claude, Hermes, or another MCP-capable agent, follow
+[docs/universal-agent-usage.md](docs/universal-agent-usage.md).
+
+Short version:
+
+```bash
+cd /Users/zhengyunkai/agent-secret-vault/mcp-server
+npm install
+npm run build
+```
+
+Use this MCP server entry:
+
+```json
+{
+  "mcpServers": {
+    "agent-secret-vault": {
+      "command": "node",
+      "args": [
+        "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js"
+      ]
+    }
+  }
+}
+```
+
+For Codex skill installation:
+
+```bash
+cd /Users/zhengyunkai/agent-secret-vault
+./scripts/install-codex-skill.sh
+```
+
 ## Obsidian workflow
 
 1. Open Agent Secret Vault.
@@ -50,6 +87,29 @@ git diff --check
 MCP `secret_create_request` and `secure_execute` are first-release compatibility
 endpoints. They return non-sensitive unavailable statuses until the app-side
 selection and execution bridges are enabled.
+
+## Agent local-use tools
+
+For Codex, Claude, Hermes, or another MCP-capable agent, keep `secret://`
+references in the conversation and use narrow MCP tools when plaintext must be
+used locally:
+
+- `ssh_command_with_secret` for restricted local/private-network SSH.
+- `local_http_request_with_secret` for restricted local/private HTTP(S)
+  GET/HEAD checks with Basic Auth.
+- `api_request_with_token` for restricted allowlisted API requests with a token.
+- `database_query_with_secret` for restricted read-only database queries through
+  a purpose-built runner.
+- `sftp_transfer_with_secret` for restricted SFTP/SCP list/download/upload
+  through a purpose-built runner.
+- `browser_web_login_with_secret` for specific local/private browser login form
+  fills.
+- `local_app_form_fill_with_secret` for specific macOS app form fills.
+
+These tools restore `secret://` values only inside the local MCP process or a
+purpose-built local runner. Results are status/metadata/sanitized previews only;
+plaintext credentials, Authorization headers, cookies, and filled field values
+must never be returned to the agent.
 
 ## Security model
 

@@ -29,7 +29,7 @@ public protocol EncryptSelectionCoordinating: Sendable {
 public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEncrypting {
     private let recordStore: any RecordStore
     private let selectionReplacer: any SelectionReplacing
-    private let deviceKeyStore: any DeviceKeyStoring
+    private let deviceKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data
     private let idGenerator: any SecretIDGenerating
     private let cipher: VaultCipher
 
@@ -42,7 +42,23 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEnc
     ) {
         self.recordStore = recordStore
         self.selectionReplacer = selectionReplacer
-        self.deviceKeyStore = deviceKeyStore
+        self.deviceKeyProvider = { policy, reason in
+            try await deviceKeyStore.deviceKey(reason: reason)
+        }
+        self.idGenerator = idGenerator
+        self.cipher = cipher
+    }
+
+    public init(
+        recordStore: any RecordStore,
+        selectionReplacer: any SelectionReplacing,
+        deviceKeyProvider: @escaping @Sendable (SecretPolicy, String) async throws -> Data,
+        idGenerator: any SecretIDGenerating = RandomSecretIDGenerator(),
+        cipher: VaultCipher = VaultCipher()
+    ) {
+        self.recordStore = recordStore
+        self.selectionReplacer = selectionReplacer
+        self.deviceKeyProvider = deviceKeyProvider
         self.idGenerator = idGenerator
         self.cipher = cipher
     }
@@ -77,7 +93,7 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEnc
 
         let id = try idGenerator.nextID()
         let reference = try SecretReference("secret://\(id)")
-        let keyData = try await deviceKeyStore.deviceKey(reason: "Encrypt selected secret")
+        let keyData = try await deviceKeyProvider(policy, "Encrypt selected secret")
         guard keyData.count == 32 else {
             throw EncryptSelectionError.invalidDeviceKeySize(keyData.count)
         }

@@ -1,5 +1,10 @@
 import SwiftUI
 
+public enum RevealSessionWindowLayout {
+    public static let contentSize = CGSize(width: 560, height: 320)
+    public static let minimumSize = CGSize(width: 480, height: 240)
+}
+
 public struct RevealSessionWindow: View {
     let resolvedParagraph: String
     let close: () -> Void
@@ -10,20 +15,35 @@ public struct RevealSessionWindow: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Temporary reveal · 临时解密显示")
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "eye.fill")
+                    .foregroundStyle(.blue)
+                Text("临时解密显示")
+            }
                 .font(.title2.weight(.semibold))
-            Text("Plaintext stays in the Mac app. 明文只在 Mac App 内显示。")
+            Text("明文只在本机窗口显示，关闭后会清除。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Text(resolvedParagraph)
-                .textSelection(.disabled)
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            Button("Close and clear · 关闭并清除", action: close)
+            ScrollView {
+                Text(resolvedParagraph)
+                    .textSelection(.disabled)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            HStack {
+                Spacer()
+                Button("关闭并清除", action: close)
+                    .keyboardShortcut(.cancelAction)
+            }
         }
         .padding(22)
-        .frame(minWidth: 520, alignment: .leading)
+        .frame(
+            width: RevealSessionWindowLayout.contentSize.width,
+            height: RevealSessionWindowLayout.contentSize.height,
+            alignment: .leading
+        )
     }
 }

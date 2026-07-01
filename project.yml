@@ -84,13 +84,18 @@ targets:
     platform: macOS
     deploymentTarget: "14.0"
     productName: AgentSecretVault
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     sources:
       - Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift
+      - AppAssets/Assets.xcassets
     info:
       path: Config/Info.plist
     dependencies:
       - target: AgentSecretVaultApp
       - target: VaultIPC
+      - target: VaultExecution
       - target: VaultCore
       - target: VaultAuthorization
 

@@ -16,7 +16,7 @@ public struct OrphanReviewView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
             header
 
             if let result {
@@ -29,34 +29,32 @@ public struct OrphanReviewView: View {
                 notScannedState
             }
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .confirmationDialog(
-            "Permanently delete all versions?",
+            "确认删除这条加密记录？",
             isPresented: $isConfirmingDeletion,
             titleVisibility: .visible
         ) {
             if let referencePendingDeletion {
-                Button("Request highest-risk authorization", role: .destructive) {
+                Button("请求高风险授权", role: .destructive) {
                     requestPermanentDelete(referencePendingDeletion)
                 }
             }
 
-            Button("Cancel", role: .cancel) {}
+            Button("取消", role: .cancel) {}
         } message: {
             if let referencePendingDeletion {
-                Text("This only requests deletion authorization for \(referencePendingDeletion). The caller must complete highest-risk authorization before deleting any encrypted record.")
+                Text("这里只会为 \(referencePendingDeletion) 请求删除授权。真正删除前仍必须完成本机高风险授权。")
             }
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Orphan Review · 孤立记录检查", systemImage: "tray.full")
-                .font(.largeTitle.weight(.bold))
-            Text(VaultUICopy.orphanReviewSafety.english)
-                .foregroundStyle(.secondary)
+            Label("记录维护", systemImage: "tray.full")
+                .font(.title3.weight(.semibold))
             Text(VaultUICopy.orphanReviewSafety.chinese)
                 .foregroundStyle(.secondary)
             statusText
@@ -67,11 +65,11 @@ public struct OrphanReviewView: View {
     private var statusText: some View {
         if let result {
             let issueCount = result.missingRecords.count + result.unreferencedRecords.count
-            Text("\(issueCount) issue\(issueCount == 1 ? "" : "s") found")
+            Text(issueCount == 0 ? "未发现问题" : "发现 \(issueCount) 个需要检查的项目")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(issueCount == 0 ? .green : .orange)
         } else {
-            Text("Scan has not run")
+            Text("尚未扫描")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
@@ -79,31 +77,31 @@ public struct OrphanReviewView: View {
 
     private var notScannedState: some View {
         ContentUnavailableView(
-            "No scan results yet",
+            "暂无扫描结果",
             systemImage: "magnifyingglass",
-            description: Text("Run an orphan scan from the plugin to compare Markdown references with encrypted records. 请先从插件发起扫描。")
+            description: Text("请先在 Obsidian 插件中发起扫描，用来比对笔记引用和本机加密记录。")
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 120)
     }
 
     private var emptyState: some View {
         ContentUnavailableView(
-            "No orphan issues",
+            "没有发现孤立记录",
             systemImage: "checkmark.shield",
-            description: Text("No Markdown references are missing records, and no encrypted records are unreferenced by Markdown.")
+            description: Text("笔记中的密文引用都有对应记录，本机加密记录也都被笔记引用。")
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 120)
     }
 
     private func resultList(_ result: OrphanScanResult) -> some View {
         List {
             if !result.missingRecords.isEmpty {
-                Section("Missing record referenced in Markdown") {
+                Section("笔记引用缺少本机记录") {
                     ForEach(result.missingRecords, id: \.self) { reference in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(reference)
                                 .font(.system(.body, design: .monospaced))
-                            Text("Markdown contains this reference, but the encrypted record is not present.")
+                            Text("笔记里存在这个密文引用，但本机没有对应加密记录。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -113,19 +111,19 @@ public struct OrphanReviewView: View {
             }
 
             if !result.unreferencedRecords.isEmpty {
-                Section("Encrypted record not referenced by Markdown") {
+                Section("本机记录未被笔记引用") {
                     ForEach(result.unreferencedRecords, id: \.self) { reference in
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(alignment: .firstTextBaseline) {
                                 Text(reference)
                                     .font(.system(.body, design: .monospaced))
                                 Spacer()
-                                Button("Request highest-risk authorization", role: .destructive) {
+                                Button("请求删除授权", role: .destructive) {
                                     referencePendingDeletion = reference
                                     isConfirmingDeletion = true
                                 }
                             }
-                            Text("Deletion is not performed here. It requires separate highest-risk authorization. 此处不会直接删除；删除前必须单独完成最高风险授权。")
+                            Text("这里不会直接删除；删除前必须单独完成本机高风险授权。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -134,6 +132,7 @@ public struct OrphanReviewView: View {
                 }
             }
         }
+        .frame(minHeight: 180, maxHeight: 320)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }

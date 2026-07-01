@@ -27,6 +27,11 @@ export const IpcRequest = z.discriminatedUnion("type", [
     context: RevealContext
   }).strict(),
   z.object({
+    type: z.literal("restoreReferences"),
+    references: z.array(SecretReference).min(1),
+    context: RevealContext
+  }).strict(),
+  z.object({
     type: z.literal("scanOrphans"),
     markdownReferences: z.array(SecretReference)
   }).strict()
@@ -56,6 +61,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
   }).strict(),
   z.object({ type: z.literal("created"), reference: SecretReference }).strict(),
   z.object({ type: z.literal("revealSessionOpened"), sessionID: z.string().min(1) }).strict(),
+  z.object({ type: z.literal("restoredText"), text: z.string() }).strict(),
   z.object({
     type: z.literal("orphanScan"),
     result: OrphanScanResult

@@ -89,6 +89,198 @@ import VaultIPC
     #expect(await presenter.presentedParagraphs == ["Token: ASV_CANARY_REVEAL_SERVICE"])
 }
 
+@Test func vaultAppServicesRestoreReturnsResolvedParagraphForExplicitWriteBack() async throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let recordStore = FileRecordStore(baseDirectory: directory)
+    let cipher = VaultCipher()
+    let key = SymmetricKey(data: Data(repeating: 0x32, count: 32))
+    let record = try cipher.encrypt(
+        Data("ASV_CANARY_RESTORE_SERVICE".utf8),
+        id: "ABCDEFGHJKMNPQRSTVWXYZ0123",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    try await recordStore.save(record)
+
+    let presenter = SpyRevealSessionPresenter()
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
+        masterKey: key,
+        revealSessionStore: RevealSessionStore(),
+        revealSessionPresenter: presenter
+    )
+
+    let restored = try await services.restoreReferences(
+        references: ["secret://ABCDEFGHJKMNPQRSTVWXYZ0123"],
+        context: RevealContext(
+            reason: "Restore current paragraph",
+            template: "Token: {{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+
+    #expect(restored == "Token: ASV_CANARY_RESTORE_SERVICE")
+    #expect(await presenter.presentedSessionIDs == [])
+}
+
+@Test func vaultAppServicesAuditRecordsDoNotContainResolvedPlaintext() async throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let recordStore = FileRecordStore(baseDirectory: directory)
+    let cipher = VaultCipher()
+    let key = SymmetricKey(data: Data(repeating: 0x34, count: 32))
+    let record = try cipher.encrypt(
+        Data("ASV_CANARY_AUDIT_SECRET".utf8),
+        id: "0123456789ABCDEFGHJKMNPQRS",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    try await recordStore.save(record)
+
+    let auditCollector = AuditCollector()
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
+        masterKey: key,
+        revealSessionStore: RevealSessionStore(),
+        revealSessionPresenter: SpyRevealSessionPresenter(),
+        auditObserver: { entry in
+            await auditCollector.append(entry)
+        }
+    )
+
+    let restored = try await services.restoreReferences(
+        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        context: RevealContext(
+            reason: "Use SSH password for local device",
+            template: "Token: {{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+
+    #expect(restored == "Token: ASV_CANARY_AUDIT_SECRET")
+    let entries = await auditCollector.entries
+    #expect(entries.count == 1)
+    let auditText = entries.map { "\($0.action) \($0.target) \($0.result)" }.joined(separator: "\n")
+    #expect(!auditText.contains("ASV_CANARY_AUDIT_SECRET"))
+    #expect(auditText.contains("本机脱密使用"))
+}
+
+@Test func vaultAppServicesPersistsEncryptedAgentAutomationAudit() async throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let auditDirectory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: auditDirectory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.removeItem(at: auditDirectory)
+    }
+
+    let recordStore = FileRecordStore(baseDirectory: directory)
+    let auditLog = EncryptedAuditLog(directoryURL: auditDirectory)
+    let cipher = VaultCipher()
+    let key = SymmetricKey(data: Data(repeating: 0x35, count: 32))
+    let record = try cipher.encrypt(
+        Data("ASV_CANARY_PERSISTED_AUDIT_SECRET".utf8),
+        id: "0123456789ABCDEFGHJKMNPQRS",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    try await recordStore.save(record)
+
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
+        masterKey: key,
+        revealSessionStore: RevealSessionStore(),
+        revealSessionPresenter: SpyRevealSessionPresenter(),
+        auditLog: auditLog
+    )
+
+    _ = try await services.restoreReferences(
+        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        context: RevealContext(
+            reason: "Use SSH password for local device",
+            template: "Token: {{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+
+    let events = try await auditLog.export(masterKey: key)
+    #expect(events.count == 1)
+    #expect(events[0].integration == "agent-secret-vault-mcp")
+    #expect(events[0].operation == .reveal)
+    #expect(events[0].declaredTarget == "Use SSH password for local device")
+    let persisted = try allFileBytes(under: auditDirectory)
+    #expect(!persisted.contains(Data("ASV_CANARY_PERSISTED_AUDIT_SECRET".utf8)))
+    #expect(!persisted.contains(Data("Use SSH password for local device".utf8)))
+}
+
+@Test func vaultAppServicesExportsResolvedTextToAllowedLocalFileWithoutRevealSession() async throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let exportDirectory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.removeItem(at: exportDirectory)
+    }
+
+    let recordStore = FileRecordStore(baseDirectory: directory)
+    let cipher = VaultCipher()
+    let key = SymmetricKey(data: Data(repeating: 0x33, count: 32))
+    let record = try cipher.encrypt(
+        Data("ASV_CANARY_EXPORT_SERVICE".utf8),
+        id: "0123456789ABCDEFGHJKMNPQRS",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    try await recordStore.save(record)
+
+    let presenter = SpyRevealSessionPresenter()
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
+        masterKey: key,
+        revealSessionStore: RevealSessionStore(),
+        revealSessionPresenter: presenter,
+        exportDirectory: exportDirectory
+    )
+    let destination = exportDirectory.appendingPathComponent("nas.md")
+
+    let exportedPath = try await services.exportResolvedText(
+        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        context: RevealContext(
+            reason: "Export resolved local file",
+            template: "Token: {{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        ),
+        destinationPath: destination.path
+    )
+
+    #expect(exportedPath == destination.path)
+    #expect(try String(contentsOf: destination, encoding: .utf8) == "Token: ASV_CANARY_EXPORT_SERVICE")
+    #expect(await presenter.presentedSessionIDs == [])
+}
+
 @Test func vaultAppServicesRejectsDuplicatePlaceholderContextBeforeResolverAvailability() async {
     let services = VaultAppServices(
         textEncryptor: UnusedTextEncryptor(),
@@ -126,6 +318,24 @@ private actor ClearFlag {
 
     func markCleared() {
         wasCleared = true
+    }
+}
+
+private actor AuditCollector {
+    private(set) var entries: [AgentAutomationAuditEntry] = []
+
+    func append(_ entry: AgentAutomationAuditEntry) {
+        entries.append(entry)
+    }
+}
+
+private func allFileBytes(under directory: URL) throws -> Data {
+    let urls = try FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+    )
+    return try urls.reduce(into: Data()) { partial, url in
+        partial.append(try Data(contentsOf: url))
     }
 }
 

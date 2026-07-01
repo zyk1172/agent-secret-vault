@@ -81,6 +81,22 @@ function choosePlaceholder(index: number, paragraph: string, usedPlaceholders: S
 }
 
 export function buildParagraphRevealRequest(paragraph: string): IpcRequest {
+  const request = buildReferenceResolutionRequest(paragraph);
+  return {
+    ...request,
+    type: "revealReferences"
+  };
+}
+
+export function buildParagraphRestoreRequest(paragraph: string): IpcRequest {
+  const request = buildReferenceResolutionRequest(paragraph);
+  return {
+    ...request,
+    type: "restoreReferences"
+  };
+}
+
+function buildReferenceResolutionRequest(paragraph: string): Extract<IpcRequest, { type: "revealReferences" | "restoreReferences" }> {
   const matches = extractReferenceMatches(paragraph);
   if (matches.length === 0) {
     throw new Error("NO_SECRET_REFERENCES");

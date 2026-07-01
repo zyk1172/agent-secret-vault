@@ -42,9 +42,21 @@ describe("IPC response schema", () => {
           pluginConnected: true
         }
       },
+      {
+        type: "referenceMetadata",
+        metadata: {
+          reference: validReference,
+          policy: "read",
+          label: "NAS password",
+          createdAt: 1,
+          updatedAt: 2
+        }
+      },
       { type: "displayedToUser" },
       { type: "created", reference: validReference },
       { type: "revealSessionOpened", sessionID: "session-1" },
+      { type: "restoredText", text: "ASV_CANARY_RESTORED_FOR_MCP_INTERNAL_USE" },
+      { type: "exported", path: "/Users/example/Desktop/NAS.md" },
       { type: "orphanScan", result: { missingRecords: [], unreferencedRecords: [] } },
       {
         type: "execution",
@@ -99,6 +111,7 @@ describe("IPC request schema", () => {
     const fixtures = [
       { type: "status" },
       { type: "workbenchStatus" },
+      { type: "inspectReference", reference: validReference },
       { type: "reveal", reference: validReference, reason: "show to user" },
       { type: "encrypt", label: "api token", policy: "externalSend" },
       {
@@ -113,6 +126,25 @@ describe("IPC request schema", () => {
         context: {
           reason: "Paragraph reveal",
           template: "Token: {{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      },
+      {
+        type: "restoreReferences",
+        references: [validReference],
+        context: {
+          reason: "MCP internal local operation",
+          template: "{{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      },
+      {
+        type: "exportResolvedText",
+        references: [validReference],
+        destinationPath: "/Users/example/Desktop/NAS.md",
+        context: {
+          reason: "App writes local file",
+          template: "NAS password: {{0}}",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       },
@@ -156,6 +188,7 @@ describe("authenticated IPC request schema", () => {
   it("accepts authenticated workbench request cases", () => {
     const requests = [
       { type: "workbenchStatus" },
+      { type: "inspectReference", reference: validReference },
       {
         type: "encryptText",
         plaintext: "local-only plaintext",
@@ -168,6 +201,25 @@ describe("authenticated IPC request schema", () => {
         context: {
           reason: "Paragraph reveal",
           template: "Token: {{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      },
+      {
+        type: "restoreReferences",
+        references: [validReference],
+        context: {
+          reason: "MCP internal local operation",
+          template: "{{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      },
+      {
+        type: "exportResolvedText",
+        references: [validReference],
+        destinationPath: "/Users/example/Desktop/NAS.md",
+        context: {
+          reason: "App writes local file",
+          template: "NAS password: {{0}}",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       },

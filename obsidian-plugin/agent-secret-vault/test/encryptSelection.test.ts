@@ -186,6 +186,34 @@ describe("encrypt selection", () => {
     }]);
   });
 
+  it("sends read policy for low-protection selection encryption", async () => {
+    obsidianMock.notices = [];
+    const editor = new TestEditor("token = ASV_CANARY_PLUGIN", 8, 25);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      encryptSelection: (editor: TestEditor, policy?: "credential" | "externalSend" | "read") => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return {
+          type: "created",
+          reference: "secret://0123456789ABCDEFGHJKMNPQRS"
+        };
+      }
+    });
+
+    await plugin.encryptSelection(editor, "read");
+
+    expect(requests[0]).toMatchObject({
+      type: "encryptText",
+      plaintext: "ASV_CANARY_PLUGIN",
+      policy: "read"
+    });
+    expect(editor.text).toBe("token = secret://0123456789ABCDEFGHJKMNPQRS");
+  });
+
   it("does not replace the selection when the editor text changes before IPC returns", async () => {
     obsidianMock.notices = [];
     const editor = new TestEditor("token = ASV_CANARY_PLUGIN", 8, 25);
@@ -209,5 +237,65 @@ describe("encrypt selection", () => {
     expect(editor.setValueCalls).toBe(0);
     expect(editor.replaceCalls).toEqual([]);
     expect(obsidianMock.notices).toContain("Agent Secret Vault: note changed before encryption completed; leaving text unchanged.");
+  });
+
+  it("encrypts only detected sensitive snippets in the current paragraph", async () => {
+    obsidianMock.notices = [];
+    const editor = new TestEditor("context before\n\nlogin password = hunter2 for server\n\ncontext after", 24, 24);
+    const plaintexts: string[] = [];
+    const plugin = new AgentSecretVaultPlugin({
+      workspace: {
+        getActiveFile: () => ({ path: "Secrets.md" })
+      }
+    } as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      encryptCurrentParagraph: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: { plaintext: string }) => {
+        plaintexts.push(request.plaintext);
+        return {
+          type: "created",
+          reference: "secret://0123456789ABCDEFGHJKMNPQRS"
+        };
+      }
+    });
+
+    await plugin.encryptCurrentParagraph(editor);
+
+    expect(plaintexts).toEqual(["hunter2"]);
+    expect(editor.text).toBe("context before\n\nlogin password = secret://0123456789ABCDEFGHJKMNPQRS for server\n\ncontext after");
+    expect(editor.replaceCalls).toEqual([{
+      replacement: "login password = secret://0123456789ABCDEFGHJKMNPQRS for server",
+      from: { line: 0, ch: 16 },
+      to: { line: 0, ch: 51 },
+      origin: "agent-secret-vault"
+    }]);
+  });
+
+  it("restores secret references in the current paragraph through explicit write-back IPC", async () => {
+    obsidianMock.notices = [];
+    const editor = new TestEditor("token = secret://0123456789ABCDEFGHJKMNPQRS for server", 10, 10);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      restoreCurrentParagraph: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "restoredText", text: "token = hunter2 for server" };
+      }
+    });
+
+    await plugin.restoreCurrentParagraph(editor);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ type: "restoreReferences" });
+    expect(editor.text).toBe("token = hunter2 for server");
+    expect(editor.replaceCalls[0]).toMatchObject({
+      replacement: "token = hunter2 for server",
+      origin: "agent-secret-vault-restore"
+    });
   });
 });

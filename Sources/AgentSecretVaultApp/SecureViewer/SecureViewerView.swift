@@ -25,26 +25,24 @@ public struct SecureViewerView: View {
             model.close()
         }
         .confirmationDialog(
-            "Copy plaintext to the clipboard?",
+            "确认复制明文到剪贴板？",
             isPresented: $isConfirmingCopy,
             titleVisibility: .visible
         ) {
-            Button("Copy plaintext") {
+            Button("复制明文") {
                 model.copyFor60SecondsAfterConfirmation()
             }
 
-            Button("Cancel", role: .cancel) {}
+            Button("取消", role: .cancel) {}
         } message: {
-            Text("Copy only when you are ready to paste immediately. Plaintext will be placed on the system clipboard; clear or overwrite it when finished. 只在准备立即粘贴时复制。明文会进入系统剪贴板；完成后请清除或覆盖它。")
+            Text("只在准备立即粘贴时复制。明文会进入系统剪贴板；完成后请清除或覆盖它。")
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Reveal Secret · 查看明文", systemImage: "eye")
+            Label("查看明文", systemImage: "eye")
                 .font(.largeTitle.weight(.bold))
-            Text("Plaintext appears here only after local authorization, and clears on focus loss, sleep, close, or app exit.")
-                .foregroundStyle(.secondary)
             Text("完成本机授权后，明文才会显示在这里；失焦、睡眠、关闭或退出都会清除。")
                 .foregroundStyle(.secondary)
         }
@@ -59,24 +57,20 @@ public struct SecureViewerView: View {
                     .frame(width: 56)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(VaultUICopy.secureViewerEmptyTitle.english)
-                        .font(.title2.weight(.semibold))
                     Text(VaultUICopy.secureViewerEmptyTitle.chinese)
                         .font(.title3.weight(.semibold))
-                    Text(VaultUICopy.secureViewerOpenReferenceHint.english)
-                        .foregroundStyle(.secondary)
                     Text(VaultUICopy.secureViewerOpenReferenceHint.chinese)
                         .foregroundStyle(.secondary)
                 }
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("How to open a secret · 如何打开密文")
+                Text("如何打开密文")
                     .font(.headline)
-                Text("1. Ask the agent to keep or send only the secret:// reference.")
-                Text("2. Open the reference through this app when plaintext is needed.")
-                Text("3. Authorize locally, then close the viewer when finished.")
-                Text("Example: secret://0123456789ABCDEFGHJKMNPQRS")
+                Text("1. 对话和笔记中只保留 secret:// 引用。")
+                Text("2. 需要查看明文时，通过本应用打开引用。")
+                Text("3. 完成本机授权，用完后关闭窗口。")
+                Text("示例：secret://0123456789ABCDEFGHJKMNPQRS")
                     .font(.system(.body, design: .monospaced))
                     .textSelection(.disabled)
                     .padding(10)
@@ -90,7 +84,7 @@ public struct SecureViewerView: View {
 
     private func loadedPlaintext(_ displayText: String) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Plaintext visible · 明文正在显示", systemImage: "exclamationmark.triangle")
+            Label("明文正在显示", systemImage: "exclamationmark.triangle")
                 .font(.headline)
                 .foregroundStyle(.orange)
 
@@ -110,19 +104,16 @@ public struct SecureViewerView: View {
             }
 
             HStack {
-                Button("Copy plaintext · 复制明文") {
+                Button("复制明文") {
                     isConfirmingCopy = true
                 }
 
-                Button("Close and clear plaintext · 关闭并清除明文") {
+                Button("关闭并清除明文") {
                     model.close()
                 }
                 .keyboardShortcut(.cancelAction)
             }
 
-            Text("Copy only when ready to paste immediately. Plaintext copied to the system clipboard remains available until you clear or overwrite it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             Text("只在准备立即粘贴时复制。复制到系统剪贴板的明文会保留到你清除或覆盖它。")
                 .font(.caption)
                 .foregroundStyle(.secondary)

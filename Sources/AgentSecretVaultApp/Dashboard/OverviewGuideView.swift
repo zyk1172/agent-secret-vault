@@ -17,21 +17,14 @@ public struct OverviewGuideView: View {
 
     private var hero: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Overview · 总览", systemImage: "lock.shield")
+            Label("总览", systemImage: "lock.shield")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            Text(VaultUICopy.overviewPromise.english)
+            Text(VaultUICopy.overviewPromise.chinese)
                 .font(.system(size: 34, weight: .bold, design: .default))
                 .lineLimit(3)
                 .minimumScaleFactor(0.8)
-
-            Text(VaultUICopy.overviewPromise.chinese)
-                .font(.title2.weight(.semibold))
-
-            Text(VaultUICopy.overviewSubtitle.english)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             Text(VaultUICopy.overviewSubtitle.chinese)
                 .foregroundStyle(.secondary)
@@ -44,7 +37,7 @@ public struct OverviewGuideView: View {
 
     private var usageGuide: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("How it works · 使用方法")
+            Text("使用方法")
                 .font(.title3.weight(.semibold))
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
@@ -57,7 +50,7 @@ public struct OverviewGuideView: View {
 
     private var securityBoundaries: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Safety boundaries · 安全边界")
+            Text("安全边界")
                 .font(.title3.weight(.semibold))
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {

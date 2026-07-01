@@ -3,7 +3,7 @@ import Testing
 
 @Test func bilingualProductPromiseIsNativeAndSpecific() {
     #expect(VaultUICopy.overviewPromise.english == "Let agents work with secrets without seeing plaintext.")
-    #expect(VaultUICopy.overviewPromise.chinese == "让 Agent 使用敏感信息，但不接触明文。")
+    #expect(VaultUICopy.overviewPromise.chinese == "让智能体使用敏感信息，但不接触明文。")
 }
 
 @Test func overviewGuideContainsExactlyFourUsageSteps() {
@@ -14,14 +14,16 @@ import Testing
         "Select sensitive text",
         "Encrypt into a reference",
         "Let the agent use the reference",
-        "Reveal or send locally"
+        "Reveal, send, or restore locally"
     ])
     #expect(steps.map(\.chineseTitle) == [
         "选择敏感文本",
         "加密为引用",
-        "让 Agent 使用引用",
-        "在本机查看或发送"
+        "让智能体使用引用",
+        "在本机查看、发送或还原"
     ])
+    #expect(steps.map(\.chineseBody).joined().contains("Mac App") == false)
+    #expect(steps.map(\.chineseBody).joined().contains("Agent ") == false)
 }
 
 @Test func safetyBoundariesStayHonestAboutExcludedThreats() {
@@ -32,10 +34,12 @@ import Testing
         .map { "\($0.chineseTitle) \($0.chineseBody)" }
         .joined(separator: "\n")
 
-    #expect(allEnglish.contains("Agents never receive decrypted values."))
+    #expect(allEnglish.contains("Temporary reveal does not return decrypted values to the plugin."))
+    #expect(allEnglish.contains("Restore is explicit"))
     #expect(allEnglish.contains("same macOS user"))
     #expect(allEnglish.contains("administrator or root"))
-    #expect(allChinese.contains("Agent 不会收到解密后的值。"))
+    #expect(allChinese.contains("临时解密不会把明文返回给插件。"))
+    #expect(allChinese.contains("还原是显式操作"))
     #expect(allChinese.contains("同一 macOS 用户"))
     #expect(allChinese.contains("管理员或 root"))
 }
@@ -46,7 +50,7 @@ import Testing
     #expect(clipboardBoundary.englishBody.contains("system clipboard"))
     #expect(clipboardBoundary.chineseBody.contains("系统剪贴板"))
     #expect(clipboardBoundary.englishBody.contains("The app clears") == false)
-    #expect(clipboardBoundary.chineseBody.contains("App 只会") == false)
+    #expect(clipboardBoundary.chineseBody.contains("App") == false)
 }
 
 @Test func secureViewerEmptyStateGivesActionableGuidance() {

@@ -41,4 +41,26 @@ describe("security documentation", () => {
       expect(checklist).toMatch(new RegExp(`^${criterion}\\.\\s`, "m"));
     }
   });
+
+  it("documents generic Codex Claude Hermes MCP usage without device-brand coupling", async () => {
+    const integration = await readFile(
+      path.join(repositoryRoot, "docs/agent-integration.md"),
+      "utf8"
+    );
+
+    for (const phrase of [
+      "Codex",
+      "Claude",
+      "Hermes",
+      "agent_secret_usage_policy",
+      "secret://",
+      "secret_auto_handle_text",
+      "local_http_request_with_secret",
+      "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js",
+      "不要让我粘贴明文"
+    ]) {
+      expect(integration).toContain(phrase);
+    }
+    expect(integration).not.toMatch(/qnap/i);
+  });
 });

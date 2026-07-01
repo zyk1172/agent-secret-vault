@@ -66,6 +66,10 @@ function parseIpcResponse(json: string): IpcResponse {
     return { type: "revealSessionOpened", sessionID: parsed.sessionID };
   }
 
+  if (parsed.type === "restoredText" && typeof parsed.text === "string") {
+    return { type: "restoredText", text: parsed.text };
+  }
+
   if (parsed.type === "workbenchStatus" && isRecord(parsed.status)) {
     const status = parsed.status;
     if (

@@ -4,8 +4,11 @@ import VaultCore
 public protocol WorkbenchServicing: Sendable {
     func recordPluginActivity() async
     func status() async -> WorkbenchStatus
+    func inspectReference(_ reference: String) async throws -> SecretReferenceMetadata
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
     func openRevealSession(references: [String], context: RevealContext) async throws -> String
+    func restoreReferences(references: [String], context: RevealContext) async throws -> String
+    func exportResolvedText(references: [String], context: RevealContext, destinationPath: String) async throws -> String
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult
 }
 
@@ -31,6 +34,8 @@ public struct IPCRequestHandler: Sendable {
             return .status(locked: await service.status().locked)
         case .workbenchStatus:
             return .workbenchStatus(await service.status())
+        case let .inspectReference(reference):
+            return .referenceMetadata(try await service.inspectReference(reference))
         case let .reveal(reference, reason):
             _ = try await service.openRevealSession(
                 references: [reference],
@@ -49,6 +54,15 @@ public struct IPCRequestHandler: Sendable {
         case let .revealReferences(references, context):
             let sessionID = try await service.openRevealSession(references: references, context: context)
             return .revealSessionOpened(sessionID: sessionID)
+        case let .restoreReferences(references, context):
+            return .restoredText(try await service.restoreReferences(references: references, context: context))
+        case let .exportResolvedText(references, context, destinationPath):
+            let path = try await service.exportResolvedText(
+                references: references,
+                context: context,
+                destinationPath: destinationPath
+            )
+            return .exported(path: path)
         case let .scanOrphans(markdownReferences):
             return .orphanScan(try await service.scanOrphans(markdownReferences: markdownReferences))
         case .execute:

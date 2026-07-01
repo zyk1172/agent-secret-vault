@@ -16,14 +16,9 @@ public struct InstructionStepCard: View {
                 .background(Circle().fill(Color.accentColor))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(step.englishTitle)
-                    .font(.headline)
                 Text(step.chineseTitle)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.headline)
                     .foregroundStyle(.primary)
-                Text(step.englishBody)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Text(step.chineseBody)
                     .font(.caption)
                     .foregroundStyle(.secondary)

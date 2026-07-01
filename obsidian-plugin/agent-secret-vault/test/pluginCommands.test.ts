@@ -1,12 +1,58 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const obsidianMock = vi.hoisted(() => ({
-  registeredCommands: [] as Array<{ id: string; callback?: () => void }>,
+  registeredCommands: [] as Array<{ id: string; name: string; callback?: () => void; editorCallback?: (editor: unknown) => void }>,
+  registeredEvents: [] as unknown[],
+  workspaceEvents: [] as Array<{ name: string; callback: (...args: unknown[]) => void }>,
+  menuItems: [] as Array<{ title?: string; icon?: string; onClick?: (event?: unknown) => void }>,
+  submenuItems: [] as Array<{ title?: string; icon?: string; onClick?: (event?: unknown) => void }>,
+  shownMenus: [] as Array<{ x: number; y: number }>,
+  useNativeMenuCalls: [] as boolean[],
   notices: [] as string[],
   statusItems: [] as HTMLElement[]
 }));
 
 vi.mock("obsidian", () => ({
+  Menu: class MenuTestDouble {
+    constructor(private readonly targetItems = obsidianMock.menuItems) {}
+
+    addItem(callback: (item: {
+      setTitle: (title: string) => unknown;
+      setIcon: (icon: string) => unknown;
+      setSubmenu: () => unknown;
+      onClick: (handler: () => void) => unknown;
+    }) => void): void {
+      const item: { title?: string; icon?: string; onClick?: (event?: unknown) => void } = {};
+      const fluentItem = {
+        setTitle: (title: string) => {
+          item.title = title;
+          return fluentItem;
+        },
+        setIcon: (icon: string) => {
+          item.icon = icon;
+          return fluentItem;
+        },
+        setSubmenu: () => new MenuTestDouble(obsidianMock.submenuItems),
+        onClick: (handler: () => void) => {
+          item.onClick = handler;
+          return fluentItem;
+        }
+      };
+      callback(fluentItem);
+      this.targetItems.push(item);
+    }
+
+    addSeparator(): void {}
+
+    setUseNativeMenu(useNativeMenu: boolean): this {
+      obsidianMock.useNativeMenuCalls.push(useNativeMenu);
+      return this;
+    }
+
+    showAtPosition(position: { x: number; y: number }): void {
+      obsidianMock.shownMenus.push(position);
+    }
+  },
   Notice: class NoticeTestDouble {
     constructor(message: string) {
       obsidianMock.notices.push(message);
@@ -33,18 +79,40 @@ vi.mock("obsidian", () => ({
       return element;
     }
 
-    addCommand(command: { id: string; callback?: () => void }): { id: string; callback?: () => void } {
+    addCommand(command: { id: string; name: string; callback?: () => void; editorCallback?: (editor: unknown) => void }): { id: string; name: string; callback?: () => void; editorCallback?: (editor: unknown) => void } {
       obsidianMock.registeredCommands.push(command);
       return command;
+    }
+
+    registerEvent(eventRef: unknown): void {
+      obsidianMock.registeredEvents.push(eventRef);
     }
   }
 }));
 
 import AgentSecretVaultPlugin, { commandDefinitions } from "../src/main";
 
+function makeApp() {
+  return {
+    workspace: {
+      on: (name: string, callback: (...args: unknown[]) => void) => {
+        const eventRef = { name, callback };
+        obsidianMock.workspaceEvents.push(eventRef);
+        return eventRef;
+      }
+    }
+  };
+}
+
 describe("plugin commands", () => {
   beforeEach(() => {
     obsidianMock.registeredCommands = [];
+    obsidianMock.registeredEvents = [];
+    obsidianMock.workspaceEvents = [];
+    obsidianMock.menuItems = [];
+    obsidianMock.submenuItems = [];
+    obsidianMock.shownMenus = [];
+    obsidianMock.useNativeMenuCalls = [];
     obsidianMock.notices = [];
     obsidianMock.statusItems = [];
   });
@@ -52,16 +120,41 @@ describe("plugin commands", () => {
   it("registers core workbench commands", () => {
     expect(commandDefinitions.map((command) => command.id)).toEqual([
       "encrypt-selection",
+      "encrypt-selection-low-protection",
       "encrypt-current-paragraph",
+      "encrypt-current-paragraph-low-protection",
       "scan-current-note",
+      "scan-current-note-low-protection",
       "scan-vault",
+      "scan-vault-low-protection",
       "scan-orphans",
-      "reveal-current-paragraph"
+      "reveal-selection",
+      "reveal-current-paragraph",
+      "restore-selection",
+      "restore-current-paragraph"
+    ]);
+  });
+
+  it("uses Chinese command names in the command palette", () => {
+    expect(commandDefinitions.map((command) => command.name)).toEqual([
+      "加密选中文本",
+      "低保护加密选中文本",
+      "加密当前段落敏感信息",
+      "低保护加密当前段落敏感信息",
+      "扫描当前笔记中的敏感信息",
+      "低保护扫描当前笔记中的敏感信息",
+      "扫描整个知识库中的敏感信息",
+      "低保护扫描整个知识库中的敏感信息",
+      "扫描孤立密文引用",
+      "在 Agent Secret Vault 中临时解密选中文本",
+      "在 Agent Secret Vault 中临时解密当前段落",
+      "还原选中文本中的密文引用",
+      "还原当前段落中的密文引用"
     ]);
   });
 
   it("shows a visible not-connected notice for placeholder commands", async () => {
-    const plugin = new AgentSecretVaultPlugin({} as never, {} as never);
+    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never);
 
     await plugin.onload();
     obsidianMock.registeredCommands[0].callback?.();
@@ -72,7 +165,7 @@ describe("plugin commands", () => {
   });
 
   it("updates the status bar from live workbench status", async () => {
-    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never) as unknown as {
       createVaultClient: () => unknown;
       onload: () => Promise<void>;
     };
@@ -91,5 +184,32 @@ describe("plugin commands", () => {
     await plugin.onload();
 
     expect(obsidianMock.statusItems[0]?.textContent).toBe("ASV: connected, unlocked");
+  });
+
+  it("adds a second-level Agent Secret Vault menu to the Obsidian right-click menu", async () => {
+    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never);
+
+    await plugin.onload();
+    obsidianMock.workspaceEvents.find((event) => event.name === "editor-menu")?.callback(new (await import("obsidian")).Menu(), {} as never);
+
+    expect(obsidianMock.menuItems.map((item) => item.title)).toEqual(["Agent Secret Vault"]);
+    expect(obsidianMock.registeredEvents).toHaveLength(1);
+
+    expect(obsidianMock.shownMenus).toEqual([]);
+    expect(obsidianMock.submenuItems.map((item) => item.title)).toEqual([
+      "加密选中文本",
+      "低保护加密选中文本",
+      "加密当前段落敏感信息",
+      "低保护加密当前段落敏感信息",
+      "扫描当前笔记并加密",
+      "低保护扫描当前笔记并加密",
+      "临时解密选中文本",
+      "临时解密当前段落",
+      "还原选中文本",
+      "还原当前段落",
+      "扫描整个知识库",
+      "低保护扫描整个知识库",
+      "扫描孤立密文引用"
+    ]);
   });
 });

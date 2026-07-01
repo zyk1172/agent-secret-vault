@@ -9,8 +9,26 @@ import VaultExecution
 @Test func requestJSONRoundTripsEveryCase() throws {
     let requests: [IPCRequest] = [
         .status,
+        .inspectReference(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
         .reveal(reference: "secret://0123456789ABCDEFGHJKMNPQRS", reason: "show to user"),
         .encrypt(label: "api token", policy: .externalSend),
+        .restoreReferences(
+            references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+            context: RevealContext(
+                reason: "restore",
+                template: "{{0}}",
+                ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+            )
+        ),
+        .exportResolvedText(
+            references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+            context: RevealContext(
+                reason: "export",
+                template: "Token: {{0}}",
+                ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+            ),
+            destinationPath: "/Users/example/Desktop/token.md"
+        ),
         .execute(ExecutionRequest(
             templateID: "send-message",
             executable: "/usr/bin/printf",
@@ -33,8 +51,17 @@ import VaultExecution
 @Test func responseJSONRoundTripsEveryCase() throws {
     let responses: [IPCResponse] = [
         .status(locked: false),
+        .referenceMetadata(SecretReferenceMetadata(
+            reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+            policy: .read,
+            label: "NAS password",
+            createdAt: Date(timeIntervalSinceReferenceDate: 1),
+            updatedAt: Date(timeIntervalSinceReferenceDate: 2)
+        )),
         .displayedToUser,
         .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
+        .restoredText("restored value"),
+        .exported(path: "/Users/example/Desktop/token.md"),
         .execution(.completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "")),
         .execution(.quarantined(reason: .binaryOutput)),
         .failure(code: "APP_UNAVAILABLE")
@@ -51,8 +78,16 @@ import VaultExecution
 @Test func encodedResponsesNeverContainPlaintextShapedKeys() throws {
     let responses: [IPCResponse] = [
         .status(locked: true),
+        .referenceMetadata(SecretReferenceMetadata(
+            reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+            policy: .read,
+            label: "NAS password",
+            createdAt: Date(timeIntervalSinceReferenceDate: 1),
+            updatedAt: Date(timeIntervalSinceReferenceDate: 2)
+        )),
         .displayedToUser,
         .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
+        .exported(path: "/Users/example/Desktop/token.md"),
         .execution(.completed(exitCode: 0, stdout: "sanitized", stderr: "")),
         .execution(.quarantined(reason: .encodedSecretVariantDetected)),
         .failure(code: "DENIED")

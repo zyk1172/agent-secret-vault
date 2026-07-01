@@ -88,6 +88,28 @@ import Testing
     }
 }
 
+@Test func keychainMaterialStoreFallsBackWhenAccessControlEntitlementIsMissing() async throws {
+    let expectedKey = Data(repeating: 0x44, count: 32)
+    let keychain = FakeKeychainClient(
+        copyResults: [(errSecItemNotFound, nil)],
+        addResults: [errSecMissingEntitlement, errSecSuccess]
+    )
+    let store = KeychainDeviceKeyMaterialStore(
+        service: "com.agent-secret-vault.test",
+        account: "device-wrapping-key",
+        keychain: keychain,
+        randomKeyData: { expectedKey }
+    )
+
+    let actualKey = try await store.loadOrCreateDeviceKeyData()
+
+    #expect(actualKey == expectedKey)
+    #expect(keychain.addedAttributes.count == 2)
+    #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] != nil)
+    #expect(keychain.addedAttributes[1][kSecAttrAccessControl as String] == nil)
+    #expect((keychain.addedAttributes[1][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
+}
+
 private func expectBiometricError(
     _ expected: BiometricAuthorizationError,
     performing operation: () async throws -> Void
@@ -153,5 +175,25 @@ private struct FakeLocalAuthenticationEvaluator: LocalAuthenticationEvaluating {
         case let .laError(code):
             throw NSError(domain: LAError.errorDomain, code: code)
         }
+    }
+}
+
+private final class FakeKeychainClient: KeychainClient, @unchecked Sendable {
+    private var copyResults: [(OSStatus, Data?)]
+    private var addResults: [OSStatus]
+    private(set) var addedAttributes: [[String: Any]] = []
+
+    init(copyResults: [(OSStatus, Data?)], addResults: [OSStatus]) {
+        self.copyResults = copyResults
+        self.addResults = addResults
+    }
+
+    func copyMatching(_ query: [String: Any]) -> (status: OSStatus, data: Data?) {
+        copyResults.removeFirst()
+    }
+
+    func add(_ attributes: [String: Any]) -> OSStatus {
+        addedAttributes.append(attributes)
+        return addResults.removeFirst()
     }
 }

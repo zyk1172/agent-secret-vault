@@ -9,6 +9,11 @@ public protocol DeviceKeyMaterialStoring: Sendable {
     func loadOrCreateDeviceKeyData() async throws -> Data
 }
 
+protocol KeychainClient: Sendable {
+    func copyMatching(_ query: [String: Any]) -> (status: OSStatus, data: Data?)
+    func add(_ attributes: [String: Any]) -> OSStatus
+}
+
 public enum DeviceKeyStoreError: Error, Equatable, Sendable {
     case invalidKeySize(Int)
     case randomGenerationFailed(OSStatus)
@@ -43,13 +48,31 @@ public struct DeviceKeyStore: DeviceKeyStoring {
 public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
     public let service: String
     public let account: String
+    private let keychain: any KeychainClient
+    private let randomKeyDataProvider: @Sendable () throws -> Data
 
     public init(
         service: String = "com.agent-secret-vault.device-key",
         account: String = "device-wrapping-key"
     ) {
+        self.init(
+            service: service,
+            account: account,
+            keychain: SystemKeychainClient(),
+            randomKeyData: Self.randomKeyData
+        )
+    }
+
+    init(
+        service: String,
+        account: String,
+        keychain: any KeychainClient,
+        randomKeyData: @escaping @Sendable () throws -> Data
+    ) {
         self.service = service
         self.account = account
+        self.keychain = keychain
+        self.randomKeyDataProvider = randomKeyData
     }
 
     public func loadOrCreateDeviceKeyData() async throws -> Data {
@@ -57,7 +80,7 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
             return existing
         }
 
-        let keyData = try Self.randomKeyData()
+        let keyData = try randomKeyDataProvider()
         do {
             try saveKeyData(keyData)
             return keyData
@@ -74,19 +97,18 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let result = keychain.copyMatching(query)
 
-        switch status {
+        switch result.status {
         case errSecSuccess:
-            guard let data = item as? Data else {
-                throw DeviceKeyStoreError.keychain(status)
+            guard let data = result.data else {
+                throw DeviceKeyStoreError.keychain(result.status)
             }
             return data
         case errSecItemNotFound:
             return nil
         default:
-            throw DeviceKeyStoreError.keychain(status)
+            throw DeviceKeyStoreError.keychain(result.status)
         }
     }
 
@@ -95,9 +117,22 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
         attributes[kSecValueData as String] = keyData
         attributes[kSecAttrAccessControl as String] = try makeAccessControl()
 
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else {
+        let status = keychain.add(attributes)
+        if status == errSecSuccess {
+            return
+        }
+
+        guard status == errSecMissingEntitlement else {
             throw DeviceKeyStoreError.keychain(status)
+        }
+
+        var fallbackAttributes = baseQuery
+        fallbackAttributes[kSecValueData as String] = keyData
+        fallbackAttributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+
+        let fallbackStatus = keychain.add(fallbackAttributes)
+        guard fallbackStatus == errSecSuccess else {
+            throw DeviceKeyStoreError.keychain(fallbackStatus)
         }
     }
 
@@ -140,5 +175,17 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
         }
 
         return data
+    }
+}
+
+private struct SystemKeychainClient: KeychainClient {
+    func copyMatching(_ query: [String: Any]) -> (status: OSStatus, data: Data?) {
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        return (status, item as? Data)
+    }
+
+    func add(_ attributes: [String: Any]) -> OSStatus {
+        SecItemAdd(attributes as CFDictionary, nil)
     }
 }

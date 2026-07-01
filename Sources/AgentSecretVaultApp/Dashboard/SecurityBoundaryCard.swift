@@ -15,13 +15,8 @@ public struct SecurityBoundaryCard: View {
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(boundary.englishTitle)
-                    .font(.headline)
                 Text(boundary.chineseTitle)
-                    .font(.subheadline.weight(.semibold))
-                Text(boundary.englishBody)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.headline)
                 Text(boundary.chineseBody)
                     .font(.caption)
                     .foregroundStyle(.secondary)

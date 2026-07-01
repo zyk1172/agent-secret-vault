@@ -26,6 +26,26 @@ describe("IPC protocol", () => {
     });
   });
 
+  it("allows explicit restore responses for write-back only", () => {
+    expect(IpcRequest.parse({
+      type: "restoreReferences",
+      references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+      context: {
+        reason: "Restore current paragraph",
+        template: "token={{0}}",
+        ranges: [{ index: 0, placeholder: "{{0}}" }]
+      }
+    })).toBeTruthy();
+
+    expect(IpcResponse.parse({
+      type: "restoredText",
+      text: "token=plaintext-for-write-back"
+    })).toEqual({
+      type: "restoredText",
+      text: "token=plaintext-for-write-back"
+    });
+  });
+
   it("parses Swift-shaped workbench status responses", () => {
     expect(IpcResponse.parse({
       type: "workbenchStatus",

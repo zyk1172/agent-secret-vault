@@ -58,10 +58,13 @@ public struct CapabilityToken: Codable, Equatable, Sendable {
 public enum IPCRequest: Codable, Equatable, Sendable {
     case status
     case workbenchStatus
+    case inspectReference(reference: String)
     case reveal(reference: String, reason: String)
     case encrypt(label: String?, policy: SecretPolicy)
     case encryptText(plaintext: String, label: String?, policy: SecretPolicy)
     case revealReferences(references: [String], context: RevealContext)
+    case restoreReferences(references: [String], context: RevealContext)
+    case exportResolvedText(references: [String], context: RevealContext, destinationPath: String)
     case scanOrphans(markdownReferences: [String])
     case execute(ExecutionRequest)
 
@@ -74,6 +77,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case label
         case policy
         case context
+        case destinationPath
         case markdownReferences
         case request
     }
@@ -81,10 +85,13 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     private enum RequestType: String, Codable {
         case status
         case workbenchStatus
+        case inspectReference
         case reveal
         case encrypt
         case encryptText
         case revealReferences
+        case restoreReferences
+        case exportResolvedText
         case scanOrphans
         case execute
     }
@@ -96,6 +103,10 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .status
         case .workbenchStatus:
             self = .workbenchStatus
+        case .inspectReference:
+            self = .inspectReference(
+                reference: try container.decode(String.self, forKey: .reference)
+            )
         case .reveal:
             self = .reveal(
                 reference: try container.decode(String.self, forKey: .reference),
@@ -117,6 +128,17 @@ public enum IPCRequest: Codable, Equatable, Sendable {
                 references: try container.decode([String].self, forKey: .references),
                 context: try container.decode(RevealContext.self, forKey: .context)
             )
+        case .restoreReferences:
+            self = .restoreReferences(
+                references: try container.decode([String].self, forKey: .references),
+                context: try container.decode(RevealContext.self, forKey: .context)
+            )
+        case .exportResolvedText:
+            self = .exportResolvedText(
+                references: try container.decode([String].self, forKey: .references),
+                context: try container.decode(RevealContext.self, forKey: .context),
+                destinationPath: try container.decode(String.self, forKey: .destinationPath)
+            )
         case .scanOrphans:
             self = .scanOrphans(
                 markdownReferences: try container.decode([String].self, forKey: .markdownReferences)
@@ -133,6 +155,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.status, forKey: .type)
         case .workbenchStatus:
             try container.encode(RequestType.workbenchStatus, forKey: .type)
+        case let .inspectReference(reference):
+            try container.encode(RequestType.inspectReference, forKey: .type)
+            try container.encode(reference, forKey: .reference)
         case let .reveal(reference, reason):
             try container.encode(RequestType.reveal, forKey: .type)
             try container.encode(reference, forKey: .reference)
@@ -150,6 +175,15 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.revealReferences, forKey: .type)
             try container.encode(references, forKey: .references)
             try container.encode(context, forKey: .context)
+        case let .restoreReferences(references, context):
+            try container.encode(RequestType.restoreReferences, forKey: .type)
+            try container.encode(references, forKey: .references)
+            try container.encode(context, forKey: .context)
+        case let .exportResolvedText(references, context, destinationPath):
+            try container.encode(RequestType.exportResolvedText, forKey: .type)
+            try container.encode(references, forKey: .references)
+            try container.encode(context, forKey: .context)
+            try container.encode(destinationPath, forKey: .destinationPath)
         case let .scanOrphans(markdownReferences):
             try container.encode(RequestType.scanOrphans, forKey: .type)
             try container.encode(markdownReferences, forKey: .markdownReferences)
@@ -230,12 +264,37 @@ public struct OrphanScanResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
+    public let reference: String
+    public let policy: SecretPolicy
+    public let label: String?
+    public let createdAt: Date
+    public let updatedAt: Date
+
+    public init(
+        reference: String,
+        policy: SecretPolicy,
+        label: String?,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.reference = reference
+        self.policy = policy
+        self.label = label
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
 public enum IPCResponse: Codable, Equatable, Sendable {
     case status(locked: Bool)
     case workbenchStatus(WorkbenchStatus)
+    case referenceMetadata(SecretReferenceMetadata)
     case displayedToUser
     case created(reference: String)
     case revealSessionOpened(sessionID: String)
+    case restoredText(String)
+    case exported(path: String)
     case orphanScan(OrphanScanResult)
     case execution(SanitizedExecutionResult)
     case failure(code: String)
@@ -244,8 +303,11 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case type
         case locked
         case status
+        case metadata
         case reference
         case sessionID
+        case text
+        case path
         case result
         case code
     }
@@ -253,9 +315,12 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     private enum ResponseType: String, Codable {
         case status
         case workbenchStatus
+        case referenceMetadata
         case displayedToUser
         case created
         case revealSessionOpened
+        case restoredText
+        case exported
         case orphanScan
         case execution
         case failure
@@ -268,12 +333,18 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .status(locked: try container.decode(Bool.self, forKey: .locked))
         case .workbenchStatus:
             self = .workbenchStatus(try container.decode(WorkbenchStatus.self, forKey: .status))
+        case .referenceMetadata:
+            self = .referenceMetadata(try container.decode(SecretReferenceMetadata.self, forKey: .metadata))
         case .displayedToUser:
             self = .displayedToUser
         case .created:
             self = .created(reference: try container.decode(String.self, forKey: .reference))
         case .revealSessionOpened:
             self = .revealSessionOpened(sessionID: try container.decode(String.self, forKey: .sessionID))
+        case .restoredText:
+            self = .restoredText(try container.decode(String.self, forKey: .text))
+        case .exported:
+            self = .exported(path: try container.decode(String.self, forKey: .path))
         case .orphanScan:
             self = .orphanScan(try container.decode(OrphanScanResult.self, forKey: .result))
         case .execution:
@@ -292,6 +363,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .workbenchStatus(status):
             try container.encode(ResponseType.workbenchStatus, forKey: .type)
             try container.encode(status, forKey: .status)
+        case let .referenceMetadata(metadata):
+            try container.encode(ResponseType.referenceMetadata, forKey: .type)
+            try container.encode(metadata, forKey: .metadata)
         case .displayedToUser:
             try container.encode(ResponseType.displayedToUser, forKey: .type)
         case let .created(reference):
@@ -300,6 +374,12 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .revealSessionOpened(sessionID):
             try container.encode(ResponseType.revealSessionOpened, forKey: .type)
             try container.encode(sessionID, forKey: .sessionID)
+        case let .restoredText(text):
+            try container.encode(ResponseType.restoredText, forKey: .type)
+            try container.encode(text, forKey: .text)
+        case let .exported(path):
+            try container.encode(ResponseType.exported, forKey: .type)
+            try container.encode(path, forKey: .path)
         case let .orphanScan(result):
             try container.encode(ResponseType.orphanScan, forKey: .type)
             try container.encode(result, forKey: .result)

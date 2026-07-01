@@ -17,9 +17,9 @@ public struct VaultDashboardView: View {
             .navigationSplitViewColumnWidth(min: 210, ideal: 230)
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Agent Secret Vault")
+                    Text("知识库密文保险箱")
                         .font(.headline)
-                    Text("Local-only secret bridge")
+                    Text("明文只在本机处理")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -39,26 +39,23 @@ public struct VaultDashboardView: View {
             OverviewGuideView()
         case .encryptText:
             WorkflowInfoView(
-                title: "Encrypt Text · 加密文本",
+                title: "加密文本",
                 systemImage: "text.badge.lock",
-                englishBody: "Select sensitive text in your knowledge base and replace it with a secret:// reference.",
-                chineseBody: "在知识库中选择敏感文本，并把它替换为 secret:// 引用。"
+                description: "在知识库中选择敏感文本，并把它替换为 secret:// 引用。"
             )
         case .revealSecret:
             SecureViewerView(model: secureViewerModel)
         case .agentSend:
             WorkflowInfoView(
-                title: "Agent Send · Agent 发送",
+                title: "智能体发送",
                 systemImage: "paperplane",
-                englishBody: "External-send actions require fresh authorization and sanitized outputs.",
-                chineseBody: "对外发送需要重新授权，并且返回内容会经过脱敏处理。"
+                description: "对外发送需要重新授权，并且返回内容会经过脱敏处理。"
             )
         case .orphanReview:
             WorkflowInfoView(
-                title: "Orphan Review · 孤立记录检查",
+                title: "孤立记录检查",
                 systemImage: "tray.full",
-                englishBody: "Run an orphan scan before reviewing encrypted records. Scanning only finds candidates; deletion still requires separate highest-risk authorization.",
-                chineseBody: "先运行孤立记录扫描，再查看候选加密记录。扫描只会找出候选项；删除仍然需要单独完成最高风险级别授权。"
+                description: "先运行孤立记录扫描，再查看候选加密记录。扫描只会找出候选项；删除仍然需要单独完成最高风险级别授权。"
             )
         case .securityModel:
             SecurityModelSummaryView()
@@ -78,12 +75,12 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
 
     public var title: String {
         switch self {
-        case .overview: "Overview"
-        case .encryptText: "Encrypt Text"
-        case .revealSecret: "Reveal Secret"
-        case .agentSend: "Agent Send"
-        case .orphanReview: "Orphan Review"
-        case .securityModel: "Security Model"
+        case .overview: "总览"
+        case .encryptText: "加密文本"
+        case .revealSecret: "查看明文"
+        case .agentSend: "智能体发送"
+        case .orphanReview: "记录检查"
+        case .securityModel: "安全边界"
         }
     }
 
@@ -102,18 +99,15 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
 private struct WorkflowInfoView: View {
     let title: String
     let systemImage: String
-    let englishBody: String
-    let chineseBody: String
+    let description: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label(title, systemImage: systemImage)
                 .font(.largeTitle.weight(.bold))
-            Text(englishBody)
+            Text(description)
                 .foregroundStyle(.secondary)
-            Text(chineseBody)
-                .foregroundStyle(.secondary)
-            Text("Guide only. This page is not a connected encryption tool.")
+            Text("这是说明页，不会直接执行加密操作。")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
@@ -126,7 +120,7 @@ private struct SecurityModelSummaryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Security Model · 安全模型")
+                Text("安全边界")
                     .font(.largeTitle.weight(.bold))
                 ForEach(VaultUICopy.securityBoundaries) { boundary in
                     SecurityBoundaryCard(boundary: boundary)

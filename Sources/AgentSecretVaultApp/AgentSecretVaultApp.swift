@@ -14,7 +14,14 @@ struct AgentSecretVaultApplication: App {
 
     var body: some Scene {
         WindowGroup {
-            VaultWorkbenchView(status: runtime.status, orphanScanResult: runtime.orphanScanResult)
+            VaultWorkbenchView(
+                status: runtime.status,
+                orphanScanResult: runtime.orphanScanResult,
+                auditEntries: runtime.auditEntries,
+                restoreParagraph: { text in
+                    try await runtime.restoreParagraph(text)
+                }
+            )
                 .task {
                     await runtime.start()
                 }
@@ -40,7 +47,46 @@ struct AgentSecretVaultApplication: App {
         }
         .commands {
             CommandGroup(replacing: .pasteboard) {}
+            CommandMenu("导航") {
+                Button("控制台") {
+                    navigateWorkbench(to: .overview)
+                }
+                .keyboardShortcut("1", modifiers: [.command])
+
+                Button("使用教程") {
+                    navigateWorkbench(to: .tutorial)
+                }
+                .keyboardShortcut("2", modifiers: [.command])
+
+                Button("段落解密") {
+                    navigateWorkbench(to: .paragraph)
+                }
+                .keyboardShortcut("3", modifiers: [.command])
+
+                Button("记录维护") {
+                    navigateWorkbench(to: .records)
+                }
+                .keyboardShortcut("4", modifiers: [.command])
+
+                Button("智能体自动化") {
+                    navigateWorkbench(to: .automation)
+                }
+                .keyboardShortcut("5", modifiers: [.command])
+
+                Button("安全边界") {
+                    navigateWorkbench(to: .security)
+                }
+                .keyboardShortcut("6", modifiers: [.command])
+            }
         }
+    }
+
+    private func navigateWorkbench(to section: VaultWorkbenchSection) {
+        NotificationCenter.default.post(
+            name: .vaultWorkbenchNavigate,
+            object: nil,
+            userInfo: ["section": section.rawValue]
+        )
     }
 }
 
@@ -53,8 +99,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         pluginConnected: false
     )
     @Published var orphanScanResult: OrphanScanResult?
+    @Published var auditEntries: [AgentAutomationAuditEntry] = []
 
     private var controller: AppIPCController?
+    private var services: VaultAppServices?
     private var started = false
 
     func start() async {
@@ -65,7 +113,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
         do {
             let runtime = try makeRuntime()
+            try? await runtime.protectionKeyStore.unlockLowProtection()
             controller = runtime.controller
+            services = runtime.services
             try runtime.controller.start()
             status = await runtime.services.status()
         } catch {
@@ -82,7 +132,22 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         RevealSessionLifecycle.clearAll()
     }
 
-    private func makeRuntime() throws -> (controller: AppIPCController, services: VaultAppServices) {
+    func restoreParagraph(_ text: String) async throws -> String {
+        guard let services else {
+            throw AgentSecretVaultRuntimeError.notStarted
+        }
+        let request = try ParagraphRestoreBuilder.build(from: text)
+        return try await services.restoreReferences(
+            references: request.references,
+            context: request.context
+        )
+    }
+
+    private func makeRuntime() throws -> (
+        controller: AppIPCController,
+        services: VaultAppServices,
+        protectionKeyStore: AppProtectionKeyStore
+    ) {
         let fileManager = FileManager.default
         let appSupport = try fileManager.url(
             for: .applicationSupportDirectory,
@@ -93,22 +158,33 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let root = appSupport
             .appendingPathComponent("AgentSecretVault", isDirectory: true)
             .appendingPathComponent("Vault", isDirectory: true)
+        let auditRoot = appSupport
+            .appendingPathComponent("AgentSecretVault", isDirectory: true)
+            .appendingPathComponent("Audit", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: auditRoot, withIntermediateDirectories: true)
 
         let recordStore = FileRecordStore(baseDirectory: root)
+        let auditLog = EncryptedAuditLog(directoryURL: auditRoot)
         let deviceKeyStore = DeviceKeyStore()
+        let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
         let encryptor = EncryptSelectionCoordinator(
             recordStore: recordStore,
             selectionReplacer: NoopSelectionReplacer(),
-            deviceKeyStore: deviceKeyStore
+            deviceKeyProvider: { policy, reason in
+                try await protectionKeyStore.deviceKey(for: policy, reason: reason)
+            }
         )
         let services = VaultAppServices(
             textEncryptor: encryptor,
             activeRoot: root,
             recordLister: recordStore,
             recordResolver: VaultRecordResolver(recordStore: recordStore),
-            masterKeyProvider: {
-                SymmetricKey(data: try await deviceKeyStore.deviceKey(reason: "Reveal paragraph"))
+            masterKeyProvider: { policy, reason in
+                SymmetricKey(data: try await protectionKeyStore.deviceKey(for: policy, reason: reason))
+            },
+            isUnlockedProvider: {
+                await protectionKeyStore.isLowProtectionUnlocked
             },
             revealSessionStore: RevealSessionStore(defaultTTLSeconds: 60),
             orphanScanObserver: { [weak self] result in
@@ -120,15 +196,32 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 await MainActor.run {
                     self?.status = status
                 }
-            }
+            },
+            auditObserver: { [weak self] entry in
+                await MainActor.run {
+                    self?.recordAudit(entry)
+                }
+            },
+            auditLog: auditLog
         )
         let server = try UnixSocketServer(configuration: .defaultConfiguration())
         let controller = AppIPCController(
             server: server,
             handler: IPCRequestHandler(service: services)
         )
-        return (controller, services)
+        return (controller, services, protectionKeyStore)
     }
+
+    private func recordAudit(_ entry: AgentAutomationAuditEntry) {
+        auditEntries.insert(entry, at: 0)
+        if auditEntries.count > 20 {
+            auditEntries.removeLast(auditEntries.count - 20)
+        }
+    }
+}
+
+private enum AgentSecretVaultRuntimeError: Error {
+    case notStarted
 }
 
 private struct NoopSelectionReplacer: SelectionReplacing {

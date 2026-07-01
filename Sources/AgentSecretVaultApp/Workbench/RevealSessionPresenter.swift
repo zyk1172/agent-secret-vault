@@ -41,8 +41,16 @@ private final class RevealSessionWindowRegistry {
         let view = RevealSessionWindow(resolvedParagraph: paragraph) {
             closeAction?()
         }
-        let hostingController = NSHostingController(rootView: view)
-        let window = NSWindow(contentViewController: hostingController)
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = CGRect(origin: .zero, size: RevealSessionWindowLayout.contentSize)
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: RevealSessionWindowLayout.contentSize),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.minSize = RevealSessionWindowLayout.minimumSize
         let controller = RevealSessionWindowController(
             sessionID: sessionID,
             store: store,
@@ -94,8 +102,7 @@ private final class RevealSessionWindowController: NSObject, NSWindowDelegate {
         self.onClosed = onClosed
         super.init()
 
-        window.title = "Agent Secret Vault Reveal"
-        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.title = "临时解密显示"
         window.isReleasedWhenClosed = false
         window.delegate = self
     }
