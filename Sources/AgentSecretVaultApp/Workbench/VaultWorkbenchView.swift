@@ -16,18 +16,21 @@ public enum VaultWorkbenchCopy {
         "3. 需要查看整段时，在这里粘贴段落，点“解密整个段落”。"
     ]
 
-    public static let mcpConfig = """
-    {
-      "mcpServers": {
-        "agent-secret-vault": {
-          "command": "node",
-          "args": [
-            "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js"
-          ]
+    public static var mcpConfig: String {
+        """
+        {
+          "mcpServers": {
+            "agent-secret-vault": {
+              "command": "/bin/zsh",
+              "args": [
+                "-lc",
+                "exec node \\\"$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js\\\""
+              ]
+            }
+          }
         }
-      }
+        """
     }
-    """
 
     public static let agentPrompt = """
     看到 secret:// 就自动使用 agent-secret-vault；不要让我粘贴明文。

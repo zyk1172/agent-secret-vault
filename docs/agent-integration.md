@@ -8,29 +8,35 @@ Agent Secret Vault 面向 Codex、Claude、Hermes 和其他 MCP-capable agents�
 
 ## MCP server
 
-先构建 MCP server：
+普通用户安装 release 包后，MCP server 固定安装在：
 
-```bash
-cd /Users/zhengyunkai/agent-secret-vault/mcp-server
-npm run build
+```text
+~/Library/Application Support/AgentSecretVault/MCP/dist/server.js
 ```
 
-在任何 MCP-capable agent 中使用这个 server entry：
+安装脚本会生成完整 MCP 配置：
+
+```text
+~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+```
+
+在任何 MCP-capable agent 中使用类似配置：
 
 ```json
 {
   "mcpServers": {
     "agent-secret-vault": {
-      "command": "node",
+      "command": "/bin/zsh",
       "args": [
-        "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js"
+        "-lc",
+        "exec node \"$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js\""
       ]
     }
   }
 }
 ```
 
-Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启动同一个 `node .../dist/server.js` 进程。
+Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启动同一个本机 MCP server。
 
 ## Agent 必须遵守
 
@@ -120,6 +126,6 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 ## 本地预期
 
 - Agent Secret Vault app 已安装并运行。
-- MCP server 已通过 `npm run build` 构建。
-- agent 的 MCP entry 指向 `/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js`。
+- MCP server 已安装到 `~/Library/Application Support/AgentSecretVault/MCP`。
+- agent 的 MCP entry 指向安装后的 `MCP/dist/server.js`。
 - 现有笔记和任务中的敏感值以 `secret://...` 保存，不保存明文。

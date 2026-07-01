@@ -29,7 +29,11 @@ import Testing
 
 @Test func workbenchCopyProvidesCopyableMcpConfigAndPrompt() {
     #expect(VaultWorkbenchCopy.mcpConfig.contains("\"agent-secret-vault\""))
-    #expect(VaultWorkbenchCopy.mcpConfig.contains("/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js"))
+    #expect(VaultWorkbenchCopy.mcpConfig.contains("\"command\": \"/bin/zsh\""))
+    #expect(VaultWorkbenchCopy.mcpConfig.contains("\"-lc\""))
+    #expect(VaultWorkbenchCopy.mcpConfig.contains("$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js"))
+    #expect(VaultWorkbenchCopy.mcpConfig.contains("Library/Application Support/AgentSecretVault/MCP/dist/server.js"))
+    #expect(!VaultWorkbenchCopy.mcpConfig.contains("/Users/zhengyunkai/"))
     #expect(VaultWorkbenchCopy.agentPrompt.contains("secret://"))
     #expect(VaultWorkbenchCopy.agentPrompt.contains("不要让我粘贴明文"))
     #expect(!VaultWorkbenchCopy.agentPrompt.localizedLowercase.contains("qnap"))

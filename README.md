@@ -14,19 +14,41 @@ opaque references such as:
 secret://0123456789ABCDEFGHJKMNPQRS
 ```
 
-## Setup
+## Normal installation
 
-Required local tooling:
+For people who only use the app, do not run Xcode. Use the release zip:
+
+1. Unzip `AgentSecretVault-release.zip`.
+2. Double-click `install.command`. If macOS blocks it, right-click it and choose
+   Open. Terminal users can run `install.sh`.
+3. Open Agent Secret Vault.
+4. Copy the generated MCP config from:
+
+```text
+~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+```
+
+The installer places:
+
+- App: `/Applications/AgentSecretVault.app` or `~/Applications/AgentSecretVault.app`
+- MCP server: `~/Library/Application Support/AgentSecretVault/MCP`
+- MCP config: `~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json`
+
+The user only needs Node.js 24 or newer for the MCP server. Xcode is not needed
+for normal use.
+
+## Developer build
+
+Required local tooling for development only:
 
 - macOS 14 or newer.
-- Xcode beta at `/Applications/Xcode-beta.app`.
+- Xcode or Xcode beta.
 - XcodeGen.
-- Node.js 24 or newer for `mcp-server`.
+- Node.js 24 or newer.
 
-Build and test:
+Build, package, and test:
 
 ```bash
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
 xcodegen generate
 xcodebuild test -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
 cd mcp-server && npm test && npm run typecheck && npm run build
@@ -36,6 +58,12 @@ ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh buil
 git diff --check
 ```
 
+Create a distributable zip:
+
+```bash
+./scripts/package-release.sh
+```
+
 ## Agent installation
 
 For Codex, Claude, Hermes, or another MCP-capable agent, follow
@@ -43,31 +71,15 @@ For Codex, Claude, Hermes, or another MCP-capable agent, follow
 
 Short version:
 
-```bash
-cd /Users/zhengyunkai/agent-secret-vault/mcp-server
-npm install
-npm run build
-```
+Use the generated MCP config:
 
-Use this MCP server entry:
-
-```json
-{
-  "mcpServers": {
-    "agent-secret-vault": {
-      "command": "node",
-      "args": [
-        "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js"
-      ]
-    }
-  }
-}
+```text
+~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
 ```
 
 For Codex skill installation:
 
 ```bash
-cd /Users/zhengyunkai/agent-secret-vault
 ./scripts/install-codex-skill.sh
 ```
 

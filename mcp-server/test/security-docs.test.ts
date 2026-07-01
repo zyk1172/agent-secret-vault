@@ -56,11 +56,13 @@ describe("security documentation", () => {
       "secret://",
       "secret_auto_handle_text",
       "local_http_request_with_secret",
-      "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js",
+      "~/Library/Application Support/AgentSecretVault/MCP/dist/server.js",
+      "$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js",
       "不要让我粘贴明文"
     ]) {
       expect(integration).toContain(phrase);
     }
+    expect(integration).not.toContain("/Users/zhengyunkai/");
     expect(integration).not.toMatch(/qnap/i);
   });
 });

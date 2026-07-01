@@ -14,50 +14,43 @@ Agent Secret Vault 的正确使用方式是：
 
 Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明引用。
 
-## 2. 本机安装
+## 2. 普通用户本机安装
 
-### 2.1 构建 macOS App
+普通用户不需要 Xcode，也不需要打开项目源码。
 
-```bash
-cd /Users/zhengyunkai/agent-secret-vault
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
-xcodegen generate
-xcodebuild build -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -configuration Debug
-```
+安装方式：
 
-启动 App：
+1. 解压 `AgentSecretVault-release.zip`。
+2. 双击里面的 `install.command`。如果 macOS 拦截，右键点它再选“打开”。终端用户可以运行 `install.sh`。
+3. 安装脚本会打开 Agent Secret Vault。
+4. 安装脚本会生成 MCP 配置文件。
 
-```bash
-open ~/Library/Developer/Xcode/DerivedData/AgentSecretVault-*/Build/Products/Debug/AgentSecretVault.app
-```
+安装后的固定位置：
 
-如果路径匹配多个 DerivedData 目录，可在 Xcode 里直接运行 `AgentSecretVault` scheme。
+- App：`/Applications/AgentSecretVault.app` 或 `~/Applications/AgentSecretVault.app`
+- MCP server：`~/Library/Application Support/AgentSecretVault/MCP`
+- MCP 配置：`~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json`
 
-### 2.2 构建 MCP server
-
-```bash
-cd /Users/zhengyunkai/agent-secret-vault/mcp-server
-npm install
-npm run build
-```
-
-MCP server 入口是：
-
-```text
-/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js
-```
+普通用户只需要安装 Node.js 24 或更新版本，用来运行 MCP server。不需要安装 Xcode。
 
 ## 3. 通用 MCP 配置
 
-任何支持 stdio MCP 的 Agent，都使用下面配置：
+安装完成后，打开这个文件：
+
+```text
+~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+```
+
+它的内容类似：
 
 ```json
 {
   "mcpServers": {
     "agent-secret-vault": {
-      "command": "node",
+      "command": "/bin/zsh",
       "args": [
-        "/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js"
+        "-lc",
+        "exec node \"$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js\""
       ]
     }
   }
@@ -67,8 +60,9 @@ MCP server 入口是：
 如果客户端是表单配置：
 
 - Name：`agent-secret-vault`
-- Command：`node`
-- Args：`/Users/zhengyunkai/agent-secret-vault/mcp-server/dist/server.js`
+- Command：`/bin/zsh`
+- Args 第一项：`-lc`
+- Args 第二项：`exec node "$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js"`
 - Transport：`stdio`
 
 配置完成后重启或刷新 Agent 客户端。
@@ -77,8 +71,11 @@ MCP server 入口是：
 
 ### 4.1 安装 Codex skill
 
+如果用户拿到的是 release 包，不需要这一步；直接把第 3 节 MCP 配置粘贴到 Codex 即可。
+
+如果用户是从源码仓库安装 Codex skill：
+
 ```bash
-cd /Users/zhengyunkai/agent-secret-vault
 ./scripts/install-codex-skill.sh
 ```
 
@@ -89,7 +86,7 @@ cd /Users/zhengyunkai/agent-secret-vault
 项目内插件目录：
 
 ```text
-/Users/zhengyunkai/agent-secret-vault/plugins/agent-secret-vault
+plugins/agent-secret-vault
 ```
 
 插件包含：
