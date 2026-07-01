@@ -242,6 +242,34 @@ describe("MCP tool contracts", () => {
     expectForbiddenKeysAbsent(result.structuredContent);
   });
 
+  it("paragraph_reveal_request accepts raw text with repeated secret references", async () => {
+    const client = new FakeClient([{ type: "revealSessionOpened", sessionID: "session-1" }]);
+    const tool = getTool(client, "paragraph_reveal_request");
+
+    const result = await tool.handler({
+      text: `主密码 ${validReference}，确认密码 ${validReference}`,
+      reason: "本机显示重复引用段落"
+    });
+
+    expect(client.requests).toEqual([
+      {
+        type: "revealReferences",
+        references: [validReference, validReference],
+        context: {
+          reason: "本机显示重复引用段落",
+          template: "主密码 {{0}}，确认密码 {{1}}",
+          ranges: [
+            { index: 0, placeholder: "{{0}}" },
+            { index: 1, placeholder: "{{1}}" }
+          ]
+        }
+      }
+    ]);
+    expect(result.structuredContent).toEqual({ status: "DISPLAYED_TO_USER" });
+    expect(JSON.stringify(result)).not.toContain("LOCAL_PASSWORD_CANARY");
+    expectForbiddenKeysAbsent(result.structuredContent);
+  });
+
   it("export_resolved_text_to_local_file asks the app to write locally and returns only path", async () => {
     const references = [validReference];
     const destinationPath = "/Users/example/Desktop/NAS.md";
@@ -263,6 +291,34 @@ describe("MCP tool contracts", () => {
         context: {
           reason: "用户明确要求由 App 写入本地文件",
           template: "NAS password: {{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      }
+    ]);
+    expect(result.structuredContent).toEqual({ status: "EXPORTED", path: destinationPath });
+    expect(JSON.stringify(result)).not.toContain("LOCAL_PASSWORD_CANARY");
+    expectForbiddenKeysAbsent(result.structuredContent);
+  });
+
+  it("export_resolved_text_to_local_file accepts raw text with secret references", async () => {
+    const destinationPath = "/Users/example/Desktop/nas-test.md";
+    const client = new FakeClient([{ type: "exported", path: destinationPath }]);
+    const tool = getTool(client, "export_resolved_text_to_local_file");
+
+    const result = await tool.handler({
+      text: `NAS 密码：${validReference}`,
+      reason: "用户明确要求由 App 写入本地文件",
+      destinationPath
+    });
+
+    expect(client.requests).toEqual([
+      {
+        type: "exportResolvedText",
+        references: [validReference],
+        destinationPath,
+        context: {
+          reason: "用户明确要求由 App 写入本地文件",
+          template: "NAS 密码：{{0}}",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       }

@@ -415,20 +415,28 @@ const RevealInput = z
 
 const ParagraphRevealInput = z
   .object({
-    references: z.array(SecretReference).min(1),
-    template: z.string().min(1),
+    text: z.string().min(1).optional(),
+    references: z.array(SecretReference).min(1).optional(),
+    template: z.string().min(1).optional(),
     reason: z.string().min(1)
   })
-  .strict();
+  .strict()
+  .refine((value) => value.text !== undefined || (value.references !== undefined && value.template !== undefined), {
+    message: "Provide either text containing secret:// references, or references plus a {{0}} template."
+  });
 
 const ExportResolvedTextInput = z
   .object({
-    references: z.array(SecretReference).min(1),
-    template: z.string().min(1),
+    text: z.string().min(1).optional(),
+    references: z.array(SecretReference).min(1).optional(),
+    template: z.string().min(1).optional(),
     reason: z.string().min(1),
     destinationPath: z.string().min(1)
   })
-  .strict();
+  .strict()
+  .refine((value) => value.text !== undefined || (value.references !== undefined && value.template !== undefined), {
+    message: "Provide either text containing secret:// references, or references plus a {{0}} template."
+  });
 
 const CreateInput = z
   .object({
@@ -443,7 +451,7 @@ const ExecuteInput = ExecutionRequest.describe(
 
 const InspectInput = z
   .object({
-    reference: SecretReference
+    reference: SecretReference.describe("The secret:// reference to inspect. Do not pass metadata or label.")
   })
   .strict();
 
@@ -707,14 +715,14 @@ export function createVaultToolDefinitions(
           });
         }
 
-        const revealContext = buildRevealContextFromText(parsed.text, references);
+        const revealRequest = buildRevealRequestFromText(parsed.text);
         const response = await client.request({
           type: "revealReferences",
-          references,
+          references: revealRequest.references,
           context: {
             reason: parsed.reason ?? "Automatic local reveal for secret:// references",
-            template: revealContext.template,
-            ranges: revealContext.ranges
+            template: revealRequest.context.template,
+            ranges: revealRequest.context.ranges
           }
         });
 
@@ -756,7 +764,7 @@ export function createVaultToolDefinitions(
       name: "secret_inspect_reference",
       title: "Inspect Secret Reference",
       description:
-        "Returns only non-sensitive metadata for a secret reference. Plaintext is never returned.",
+        "Returns only non-sensitive metadata for one secret:// reference. Input must be { reference }. Do not pass metadata or label. Plaintext is never returned.",
       inputSchema: InspectInput,
       outputSchema: InspectOutput,
       async handler(input) {
@@ -795,21 +803,19 @@ export function createVaultToolDefinitions(
       name: "paragraph_reveal_request",
       title: "Request Paragraph Reveal",
       description:
-        "Asks the macOS app to display a paragraph locally with referenced secrets filled in. Plaintext is never returned.",
+        "Asks the macOS app to display a paragraph locally with referenced secrets filled in. Prefer input { text, reason } where text contains secret:// references; advanced callers may pass { references, template, reason } with {{0}} placeholders. Plaintext is never returned.",
       inputSchema: ParagraphRevealInput,
       outputSchema: RevealOutput,
       async handler(input) {
         const parsed = ParagraphRevealInput.parse(input);
+        const revealRequest = revealRequestFromParagraphInput(parsed);
         const response = await client.request({
           type: "revealReferences",
-          references: parsed.references,
+          references: revealRequest.references,
           context: {
             reason: parsed.reason,
-            template: parsed.template,
-            ranges: parsed.references.map((_, index) => ({
-              index,
-              placeholder: `{{${index}}}`
-            }))
+            template: revealRequest.context.template,
+            ranges: revealRequest.context.ranges
           }
         });
         if (response.type === "revealSessionOpened") {
@@ -822,7 +828,7 @@ export function createVaultToolDefinitions(
       name: "export_resolved_text_to_local_file",
       title: "Export Resolved Text To Local File",
       description:
-        "Asks the macOS app to resolve secret:// references and write the filled text to an allowed local file. Plaintext is never returned.",
+        "Asks the macOS app to resolve secret:// references and write the filled text to a new .md or .txt file on the user's Desktop. Prefer input { text, reason, destinationPath }. Plaintext is never returned.",
       inputSchema: ExportResolvedTextInput,
       outputSchema: ExportOutput,
       async handler(input) {
@@ -965,7 +971,7 @@ export function createVaultToolDefinitions(
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "agent-secret-vault",
-    version: "0.1.1"
+    version: "0.1.2"
   });
 
   registerVaultTools(server, client);
@@ -1040,17 +1046,15 @@ async function handleExportResolvedText(
   client: VaultIpcClient,
   parsed: z.infer<typeof ExportResolvedTextInput>
 ): Promise<CallToolResult> {
+  const revealRequest = revealRequestFromExportInput(parsed);
   const response = await client.request({
     type: "exportResolvedText",
-    references: parsed.references,
+    references: revealRequest.references,
     destinationPath: parsed.destinationPath,
     context: {
       reason: parsed.reason,
-      template: parsed.template,
-      ranges: parsed.references.map((_, index) => ({
-        index,
-        placeholder: `{{${index}}}`
-      }))
+      template: revealRequest.context.template,
+      ranges: revealRequest.context.ranges
     }
   });
   if (response.type === "exported") {
@@ -1586,17 +1590,73 @@ function redactSecretReferences(text: string): string {
   return text.replace(/secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g, "[SECRET_REFERENCE]");
 }
 
-function buildRevealContextFromText(text: string, references: string[]): {
-  template: string;
-  ranges: Array<{ index: number; placeholder: string }>;
+function buildRevealRequestFromText(text: string): {
+  references: string[];
+  context: {
+    template: string;
+    ranges: Array<{ index: number; placeholder: string }>;
+  };
 } {
-  let template = text;
-  const ranges = references.map((reference, index) => {
+  const references: string[] = [];
+  const ranges: Array<{ index: number; placeholder: string }> = [];
+  const template = text.replace(/secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g, (reference) => {
+    const index = references.length;
     const placeholder = `{{${index}}}`;
-    template = template.split(reference).join(placeholder);
-    return { index, placeholder };
+    references.push(reference);
+    ranges.push({ index, placeholder });
+    return placeholder;
   });
-  return { template, ranges };
+  return {
+    references,
+    context: { template, ranges }
+  };
+}
+
+function revealRequestFromParagraphInput(parsed: z.infer<typeof ParagraphRevealInput>): {
+  references: string[];
+  context: {
+    template: string;
+    ranges: Array<{ index: number; placeholder: string }>;
+  };
+} {
+  return parsed.text !== undefined
+    ? buildRevealRequestFromText(parsed.text)
+    : buildRevealRequestFromTemplate(parsed.references ?? [], parsed.template ?? "");
+}
+
+function revealRequestFromExportInput(parsed: z.infer<typeof ExportResolvedTextInput>): {
+  references: string[];
+  context: {
+    template: string;
+    ranges: Array<{ index: number; placeholder: string }>;
+  };
+} {
+  return parsed.text !== undefined
+    ? buildRevealRequestFromText(parsed.text)
+    : buildRevealRequestFromTemplate(parsed.references ?? [], parsed.template ?? "");
+}
+
+function buildRevealRequestFromTemplate(references: string[], template: string): {
+  references: string[];
+  context: {
+    template: string;
+    ranges: Array<{ index: number; placeholder: string }>;
+  };
+} {
+  const rawTextRequest = buildRevealRequestFromText(template);
+  if (rawTextRequest.references.length > 0) {
+    return rawTextRequest;
+  }
+  return {
+    references,
+    context: {
+      template,
+      ranges: references.map((_, index) => ({
+        index,
+        placeholder: `{{${index}}}`
+      }))
+    }
+  };
 }
 
 async function resolveSingleSecret(
