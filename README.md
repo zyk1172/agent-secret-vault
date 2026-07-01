@@ -69,6 +69,8 @@ Create a distributable zip:
 For Codex, Claude, Hermes, or another MCP-capable agent, follow
 [docs/universal-agent-usage.md](docs/universal-agent-usage.md).
 
+中文使用教程见 [docs/zh-CN.md](docs/zh-CN.md).
+
 Short version:
 
 Use the generated MCP config:

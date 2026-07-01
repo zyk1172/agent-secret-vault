@@ -44,6 +44,7 @@ cp "$ROOT_DIR/mcp-server/package-lock.json" "$MCP_STAGING/package-lock.json"
 cp -R "$ROOT_DIR/mcp-server/dist" "$MCP_STAGING/dist"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.sh"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.command"
+cp "$ROOT_DIR/docs/zh-CN.md" "$STAGING_DIR/中文使用教程.md"
 chmod +x "$STAGING_DIR/install.sh"
 chmod +x "$STAGING_DIR/install.command"
 
@@ -58,6 +59,8 @@ Agent Secret Vault 安装方式
 4. 安装脚本会生成可复制的 MCP 配置：
    ~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
 5. 打开 Agent Secret Vault，再把 MCP 配置粘贴到 Codex / Claude / Hermes。
+
+完整教程见：中文使用教程.md
 
 注意：本版本需要本机已安装 Node.js 24 或更新版本，用于运行 MCP server。
 TEXT
