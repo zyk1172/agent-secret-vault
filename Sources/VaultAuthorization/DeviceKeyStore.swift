@@ -178,7 +178,7 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
     }
 }
 
-private struct SystemKeychainClient: KeychainClient {
+struct SystemKeychainClient: KeychainClient {
     func copyMatching(_ query: [String: Any]) -> (status: OSStatus, data: Data?) {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)

@@ -17,13 +17,31 @@ public enum RecoveryKeyStoreError: Error, Equatable, Sendable {
 public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
     public let service: String
     public let account: String
+    private let keychain: any KeychainClient
+    private let randomKeyDataProvider: @Sendable () throws -> Data
 
     public init(
         service: String = "com.agent-secret-vault.recovery-key",
         account: String = "icloud-recovery-wrapping-key"
     ) {
+        self.init(
+            service: service,
+            account: account,
+            keychain: SystemKeychainClient(),
+            randomKeyData: Self.randomKeyData
+        )
+    }
+
+    init(
+        service: String,
+        account: String,
+        keychain: any KeychainClient,
+        randomKeyData: @escaping @Sendable () throws -> Data
+    ) {
         self.service = service
         self.account = account
+        self.keychain = keychain
+        self.randomKeyDataProvider = randomKeyData
     }
 
     public func supportsRequiredKeychainControls() async throws -> Bool {
@@ -46,13 +64,12 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let result = keychain.copyMatching(query)
 
-        switch status {
+        switch result.status {
         case errSecSuccess:
-            guard let data = item as? Data else {
-                throw RecoveryKeyStoreError.keychain(status)
+            guard let data = result.data else {
+                throw RecoveryKeyStoreError.keychain(result.status)
             }
             guard data.count == 32 else {
                 throw RecoveryKeyStoreError.invalidKeySize(data.count)
@@ -61,7 +78,7 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
         case errSecItemNotFound:
             return nil
         default:
-            throw RecoveryKeyStoreError.keychain(status)
+            throw RecoveryKeyStoreError.keychain(result.status)
         }
     }
 
@@ -70,7 +87,7 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
             return existing
         }
 
-        let keyData = try Self.randomKeyData()
+        let keyData = try randomKeyDataProvider()
         do {
             try saveKeyData(keyData)
             return keyData
@@ -100,9 +117,22 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
         attributes[kSecValueData as String] = keyData
         attributes[kSecAttrAccessControl as String] = try makeAccessControl()
 
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else {
+        let status = keychain.add(attributes)
+        if status == errSecSuccess {
+            return
+        }
+
+        guard status == errSecParam || status == errSecMissingEntitlement else {
             throw RecoveryKeyStoreError.keychain(status)
+        }
+
+        var fallbackAttributes = baseQuery
+        fallbackAttributes[kSecValueData as String] = keyData
+        fallbackAttributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+
+        let fallbackStatus = keychain.add(fallbackAttributes)
+        guard fallbackStatus == errSecSuccess else {
+            throw RecoveryKeyStoreError.keychain(fallbackStatus)
         }
     }
 

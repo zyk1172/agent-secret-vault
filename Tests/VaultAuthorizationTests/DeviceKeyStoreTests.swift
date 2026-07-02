@@ -110,6 +110,30 @@ import Testing
     #expect((keychain.addedAttributes[1][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 }
 
+@Test func recoveryKeyStoreFallsBackWhenSynchronizableAccessControlIsRejected() async throws {
+    let expectedKey = Data(repeating: 0x45, count: 32)
+    let keychain = FakeKeychainClient(
+        copyResults: [(errSecItemNotFound, nil)],
+        addResults: [errSecParam, errSecSuccess]
+    )
+    let store = KeychainRecoveryKeyStore(
+        service: "com.agent-secret-vault.test.recovery",
+        account: "icloud-recovery-wrapping-key",
+        keychain: keychain,
+        randomKeyData: { expectedKey }
+    )
+
+    let actualKey = try await store.loadOrCreateRecoveryKeyData()
+
+    #expect(actualKey == expectedKey)
+    #expect(keychain.addedAttributes.count == 2)
+    #expect((keychain.addedAttributes[0][kSecAttrSynchronizable as String] as? Bool) == true)
+    #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] != nil)
+    #expect((keychain.addedAttributes[1][kSecAttrSynchronizable as String] as? Bool) == true)
+    #expect(keychain.addedAttributes[1][kSecAttrAccessControl as String] == nil)
+    #expect((keychain.addedAttributes[1][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlocked as String))
+}
+
 private func expectBiometricError(
     _ expected: BiometricAuthorizationError,
     performing operation: () async throws -> Void
