@@ -37,6 +37,13 @@ public enum VaultWorkbenchCopy {
     """
 }
 
+public enum VaultWorkbenchRenderingPolicy {
+    public static let usesStableRendering = true
+    public static let usesRepeatingAnimations = false
+    public static let usesBlurredBackgrounds = false
+    public static let usesMaterialBackgrounds = false
+}
+
 public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
     case overview
     case tutorial
@@ -109,7 +116,6 @@ public struct VaultWorkbenchView: View {
     let auditEntries: [AgentAutomationAuditEntry]
     let restoreParagraph: ((String) async throws -> String)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
-    @State private var animateAccent = false
 
     public init(
         status: WorkbenchStatus,
@@ -128,21 +134,13 @@ public struct VaultWorkbenchView: View {
             sidebar
         } detail: {
             ZStack {
-                WorkbenchBackground(animate: animateAccent)
+                WorkbenchBackground()
                 selectedContent
                     .id(selectedSection)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .leading).combined(with: .opacity)
-                    ))
             }
-            .animation(.spring(response: 0.34, dampingFraction: 0.86), value: selectedSection)
         }
         .navigationTitle(selectedSection.title)
         .frame(minWidth: 1080, minHeight: 720)
-        .onAppear {
-            animateAccent = true
-        }
         .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchNavigate)) { notification in
             guard
                 let rawValue = notification.userInfo?["section"] as? String,
@@ -172,7 +170,7 @@ public struct VaultWorkbenchView: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 14)
         }
-        .background(.bar)
+        .background(Color(nsColor: .windowBackgroundColor))
         .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
     }
 
@@ -218,7 +216,7 @@ public struct VaultWorkbenchView: View {
                 } else {
                     ContentUnavailableView("段落解密暂不可用", systemImage: "lock.trianglebadge.exclamationmark", description: Text("本机服务启动完成后会启用这个功能。"))
                         .frame(maxWidth: .infinity, minHeight: 240)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
             }
         case .records:
@@ -241,7 +239,7 @@ public struct VaultWorkbenchView: View {
             HeroCard(
                 title: "让智能体使用密文引用",
                 subtitle: "Codex、Claude、Hermes 在聊天里只处理 secret://；真正的解密、填充和本机使用都在这台 Mac 上完成。",
-                animate: animateAccent
+                animate: false
             )
 
             LazyVGrid(columns: [
@@ -284,23 +282,18 @@ public struct VaultWorkbenchView: View {
 }
 
 private struct WorkbenchBackground: View {
-    let animate: Bool
-
     var body: some View {
         ZStack {
             Color(nsColor: .windowBackgroundColor)
-            Circle()
-                .fill(.blue.opacity(0.16))
-                .frame(width: 360, height: 360)
-                .blur(radius: 80)
-                .offset(x: animate ? 280 : 210, y: animate ? -250 : -190)
-                .animation(.easeInOut(duration: 5.5).repeatForever(autoreverses: true), value: animate)
-            Circle()
-                .fill(.purple.opacity(0.10))
-                .frame(width: 320, height: 320)
-                .blur(radius: 90)
-                .offset(x: animate ? -280 : -220, y: animate ? 260 : 210)
-                .animation(.easeInOut(duration: 6.4).repeatForever(autoreverses: true), value: animate)
+            LinearGradient(
+                colors: [
+                    Color.blue.opacity(0.08),
+                    Color.purple.opacity(0.04),
+                    Color.clear
+                ],
+                startPoint: .topTrailing,
+                endPoint: .bottomLeading
+            )
         }
         .ignoresSafeArea()
     }
@@ -373,22 +366,21 @@ private struct HeroCard: View {
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
                     .fill(.blue.opacity(0.12))
                     .frame(width: 150, height: 150)
-                    .rotationEffect(.degrees(animate ? 8 : -8))
+                    .rotationEffect(.degrees(-6))
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 70, weight: .semibold))
                     .foregroundStyle(
                         LinearGradient(colors: [.blue, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing)
                     )
-                    .scaleEffect(animate ? 1.06 : 0.96)
+                    .scaleEffect(1.0)
             }
-            .animation(.easeInOut(duration: 3.8).repeatForever(autoreverses: true), value: animate)
         }
         .padding(28)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(.white.opacity(0.20))
+                .stroke(.quaternary)
         )
     }
 }
@@ -424,13 +416,12 @@ private struct QuickMenuCard: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, minHeight: 210, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(isHovering ? tint.opacity(0.35) : .white.opacity(0.12))
+                .stroke(isHovering ? tint.opacity(0.35) : Color.secondary.opacity(0.12))
         )
         .scaleEffect(isHovering ? 1.015 : 1)
-        .animation(.spring(response: 0.24, dampingFraction: 0.82), value: isHovering)
         .onHover { isHovering = $0 }
     }
 }
@@ -448,7 +439,7 @@ private struct SidebarStatusStrip: View {
         .font(.caption.weight(.medium))
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -486,7 +477,7 @@ private struct SecurityBoundaryPanel: View {
         }
         .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 }
 
@@ -553,7 +544,7 @@ private struct AgentAutomationAuditCard: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private func iconName(for action: String) -> String {

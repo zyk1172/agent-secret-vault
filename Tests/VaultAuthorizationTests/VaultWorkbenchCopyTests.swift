@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import AgentSecretVaultApp
 
 @Test func workbenchCopyDoesNotPretendDisconnectedToolsAreReady() {
@@ -67,4 +68,21 @@ import Testing
     #expect(VaultWorkbenchSection.tutorial.subtitle.contains("安装"))
     #expect(VaultWorkbenchSection.paragraph.subtitle.contains("一次解密"))
     #expect(VaultWorkbenchSection.allCases.allSatisfy { !$0.systemImage.isEmpty })
+}
+
+@Test func workbenchUsesStableRenderingForBetaMacOSCompatibility() {
+    #expect(VaultWorkbenchRenderingPolicy.usesStableRendering)
+    #expect(!VaultWorkbenchRenderingPolicy.usesRepeatingAnimations)
+    #expect(!VaultWorkbenchRenderingPolicy.usesBlurredBackgrounds)
+    #expect(!VaultWorkbenchRenderingPolicy.usesMaterialBackgrounds)
+}
+
+@Test func numericTelemetryLabelsRespondToStringSelectorsOnMacOS27() {
+    if #available(macOS 27.0, *) {
+        let number = NSNumber(value: 42)
+        #expect(number.responds(to: NSSelectorFromString("length")))
+        #expect(number.responds(to: NSSelectorFromString("getCString:maxLength:encoding:")))
+        #expect(number.responds(to: NSSelectorFromString("_getCString:maxLength:encoding:")))
+        #expect(number.responds(to: NSSelectorFromString("UTF8String")))
+    }
 }
