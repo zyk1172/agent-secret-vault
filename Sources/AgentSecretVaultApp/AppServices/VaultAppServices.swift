@@ -233,15 +233,22 @@ public actor VaultAppServices: WorkbenchServicing {
         guard let recordResolver else {
             throw VaultAppServicesRevealError.revealUnavailable
         }
+
+        var metadata: [SecretReferenceMetadata] = []
+        metadata.reserveCapacity(validatedReferences.count)
+        for reference in validatedReferences {
+            metadata.append(try await recordResolver.metadata(reference: reference))
+        }
+        let operationPolicy = authorizationPolicy(for: metadata.map(\.policy))
+        let operationMasterKey = try await resolvedMasterKey(
+            for: operationPolicy,
+            reason: context.reason
+        )
+
         var plaintexts: [String] = []
         plaintexts.reserveCapacity(validatedReferences.count)
         for reference in validatedReferences {
-            let data = try await recordResolver.resolve(reference: reference) { policy in
-                try await resolvedMasterKey(
-                    for: policy,
-                    reason: context.reason
-                )
-            }
+            let data = try await recordResolver.resolve(reference: reference, masterKey: operationMasterKey)
             guard let plaintext = String(data: data, encoding: .utf8) else {
                 throw VaultAppServicesRevealError.invalidResolvedPlaintext
             }
@@ -249,6 +256,16 @@ public actor VaultAppServices: WorkbenchServicing {
         }
 
         return try resolveTemplate(context.template, ranges: context.ranges, plaintexts: plaintexts)
+    }
+
+    private func authorizationPolicy(for policies: [SecretPolicy]) -> SecretPolicy {
+        if policies.contains(.credential) {
+            return .credential
+        }
+        if policies.contains(.externalSend) {
+            return .externalSend
+        }
+        return .read
     }
 
     private func resolvedMasterKey(for policy: SecretPolicy, reason: String) async throws -> SymmetricKey {

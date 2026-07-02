@@ -128,6 +128,68 @@ import VaultIPC
     #expect(await presenter.presentedSessionIDs == [])
 }
 
+@Test func vaultAppServicesReusesAuthorizationForMultipleReferencesInOneRevealOperation() async throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let recordStore = FileRecordStore(baseDirectory: directory)
+    let cipher = VaultCipher()
+    let key = SymmetricKey(data: Data(repeating: 0x36, count: 32))
+    let first = try cipher.encrypt(
+        Data("ASV_CANARY_FIRST".utf8),
+        id: "0123456789ABCDEFGHJKMNPQRS",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    let second = try cipher.encrypt(
+        Data("ASV_CANARY_SECOND".utf8),
+        id: "ABCDEFGHJKMNPQRSTVWXYZ0123",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    try await recordStore.save(first)
+    try await recordStore.save(second)
+
+    let provider = CountingMasterKeyProvider(key: key)
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
+        masterKeyProvider: { policy, reason in
+            await provider.masterKey(policy: policy, reason: reason)
+        },
+        revealSessionStore: RevealSessionStore(),
+        revealSessionPresenter: SpyRevealSessionPresenter()
+    )
+
+    let restored = try await services.restoreReferences(
+        references: [
+            "secret://0123456789ABCDEFGHJKMNPQRS",
+            "secret://ABCDEFGHJKMNPQRSTVWXYZ0123"
+        ],
+        context: RevealContext(
+            reason: "Reveal NAS credentials once",
+            template: "first={{0}}\nsecond={{1}}",
+            ranges: [
+                ReferenceRange(index: 0, placeholder: "{{0}}"),
+                ReferenceRange(index: 1, placeholder: "{{1}}")
+            ]
+        )
+    )
+
+    #expect(restored == "first=ASV_CANARY_FIRST\nsecond=ASV_CANARY_SECOND")
+    #expect(await provider.calls == [
+        MasterKeyProviderCall(policy: .credential, reason: "Reveal NAS credentials once")
+    ])
+}
+
 @Test func vaultAppServicesAuditRecordsDoNotContainResolvedPlaintext() async throws {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -326,6 +388,25 @@ private actor AuditCollector {
 
     func append(_ entry: AgentAutomationAuditEntry) {
         entries.append(entry)
+    }
+}
+
+private struct MasterKeyProviderCall: Equatable, Sendable {
+    let policy: SecretPolicy
+    let reason: String
+}
+
+private actor CountingMasterKeyProvider {
+    private let key: SymmetricKey
+    private(set) var calls: [MasterKeyProviderCall] = []
+
+    init(key: SymmetricKey) {
+        self.key = key
+    }
+
+    func masterKey(policy: SecretPolicy, reason: String) -> SymmetricKey {
+        calls.append(MasterKeyProviderCall(policy: policy, reason: reason))
+        return key
     }
 }
 
