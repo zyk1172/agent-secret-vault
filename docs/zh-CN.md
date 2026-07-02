@@ -29,6 +29,24 @@ Agent Secret Vault 用来把知识库、笔记和对话里的敏感信息替换�
 - App：`/Applications/AgentSecretVault.app` 或 `~/Applications/AgentSecretVault.app`
 - MCP server：`~/Library/Application Support/AgentSecretVault/MCP`
 - MCP 配置：`~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json`
+- Obsidian 插件：release 包内的 `ObsidianPlugin/agent-secret-vault`
+
+Obsidian 插件安装方式：
+
+- 如果你的 Vault 位于 `~/Documents/obsidian` 下且只检测到一个 Vault，安装脚本会自动安装插件。
+- 如果需要指定 Vault，打开终端进入解压后的 release 目录，运行：
+
+```bash
+./install.sh "/你的/Obsidian/Vault/路径"
+```
+
+- 也可以手动复制 `ObsidianPlugin/agent-secret-vault` 到：
+
+```text
+你的 Vault/.obsidian/plugins/agent-secret-vault
+```
+
+安装后，在 Obsidian 设置 → 第三方插件 中启用 Agent Secret Vault。
 
 ## 3. 连接 Codex / Claude / Hermes
 

@@ -20,7 +20,12 @@ export interface IpcPaths {
 export interface LocalIpcClientOptions {
   socketPath?: string;
   tokenPath?: string;
+  unavailableRetryCount?: number;
+  unavailableRetryDelayMs?: number;
 }
+
+const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
+const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
 
 export function appSupportIpcPaths(): IpcPaths {
   const directory = path.join(
@@ -41,11 +46,15 @@ export function appSupportIpcPaths(): IpcPaths {
 export class LocalIpcClient {
   private readonly socketPath: string;
   private readonly tokenPath: string;
+  private readonly unavailableRetryCount: number;
+  private readonly unavailableRetryDelayMs: number;
 
   constructor(options: LocalIpcClientOptions = {}) {
     const defaults = appSupportIpcPaths();
     this.socketPath = options.socketPath ?? defaults.socket;
     this.tokenPath = options.tokenPath ?? defaults.token;
+    this.unavailableRetryCount = options.unavailableRetryCount ?? DEFAULT_UNAVAILABLE_RETRY_COUNT;
+    this.unavailableRetryDelayMs = options.unavailableRetryDelayMs ?? DEFAULT_UNAVAILABLE_RETRY_DELAY_MS;
   }
 
   static async readCapabilityToken(tokenPath: string): Promise<CapabilityToken> {
@@ -65,6 +74,22 @@ export class LocalIpcClient {
 
   async request(request: IpcRequest): Promise<IpcResponse> {
     const parsedRequest = IpcRequest.parse(request);
+    for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
+      const response = await this.requestOnce(parsedRequest);
+      if (
+        response.type !== "failure" ||
+        response.code !== "APP_UNAVAILABLE" ||
+        attempt >= this.unavailableRetryCount
+      ) {
+        return response;
+      }
+      await delay(this.unavailableRetryDelayMs);
+    }
+
+    return { type: "failure", code: "APP_UNAVAILABLE" };
+  }
+
+  private async requestOnce(parsedRequest: IpcRequest): Promise<IpcResponse> {
     let token: CapabilityToken;
     try {
       token = await LocalIpcClient.readCapabilityToken(this.tokenPath);
@@ -93,6 +118,10 @@ export class LocalIpcClient {
       throw error;
     }
   }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function sendFramedRequest(socketPath: string, requestFrame: Buffer): Promise<Buffer> {

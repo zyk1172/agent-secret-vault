@@ -60,12 +60,26 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
     }
 
     public func loadRecoveryKeyData() async throws -> Data? {
-        var query = baseQuery
-        query[kSecReturnData as String] = kCFBooleanTrue
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        let synchronizedResult = keychain.copyMatching(loadQuery(from: synchronizedBaseQuery))
+        switch try recoveryKeyData(from: synchronizedResult) {
+        case let .found(data):
+            return data
+        case .notFound:
+            break
+        case .unsupported:
+            break
+        }
 
-        let result = keychain.copyMatching(query)
+        let localResult = keychain.copyMatching(loadQuery(from: localFallbackBaseQuery))
+        switch try recoveryKeyData(from: localResult) {
+        case let .found(data):
+            return data
+        case .notFound, .unsupported:
+            return nil
+        }
+    }
 
+    private func recoveryKeyData(from result: (status: OSStatus, data: Data?)) throws -> RecoveryKeyLoadResult {
         switch result.status {
         case errSecSuccess:
             guard let data = result.data else {
@@ -74,9 +88,11 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
             guard data.count == 32 else {
                 throw RecoveryKeyStoreError.invalidKeySize(data.count)
             }
-            return data
+            return .found(data)
         case errSecItemNotFound:
-            return nil
+            return .notFound
+        case errSecParam, errSecMissingEntitlement:
+            return .unsupported
         default:
             throw RecoveryKeyStoreError.keychain(result.status)
         }
@@ -99,7 +115,7 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
         }
     }
 
-    private var baseQuery: [String: Any] {
+    private var synchronizedBaseQuery: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -108,12 +124,27 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
         ]
     }
 
+    private var localFallbackBaseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+    }
+
+    private func loadQuery(from baseQuery: [String: Any]) -> [String: Any] {
+        var query = baseQuery
+        query[kSecReturnData as String] = kCFBooleanTrue
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        return query
+    }
+
     private func saveKeyData(_ keyData: Data) throws {
         guard keyData.count == 32 else {
             throw RecoveryKeyStoreError.invalidKeySize(keyData.count)
         }
 
-        var attributes = baseQuery
+        var attributes = synchronizedBaseQuery
         attributes[kSecValueData as String] = keyData
         attributes[kSecAttrAccessControl as String] = try makeAccessControl()
 
@@ -126,7 +157,7 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
             throw RecoveryKeyStoreError.keychain(status)
         }
 
-        var fallbackAttributes = baseQuery
+        var fallbackAttributes = localFallbackBaseQuery
         fallbackAttributes[kSecValueData as String] = keyData
         fallbackAttributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
 
@@ -166,4 +197,10 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
         }
         return data
     }
+}
+
+private enum RecoveryKeyLoadResult {
+    case found(Data)
+    case notFound
+    case unsupported
 }

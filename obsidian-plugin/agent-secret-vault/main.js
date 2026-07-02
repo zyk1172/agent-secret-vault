@@ -94,6 +94,8 @@ async function encryptTextRange(input) {
 // src/ipc/client.ts
 var MAX_FRAME_BYTES = 1048576;
 var DEFAULT_REQUEST_TIMEOUT_MS = 1e4;
+var DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
+var DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
 var SECRET_REFERENCE_PATTERN = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
 async function loadRuntimeNet() {
   const runtimeRequire = Function("return typeof require === 'function' ? require : undefined")();
@@ -175,15 +177,35 @@ var LocalVaultClient = class {
   netModule;
   fsModule;
   tokenPath;
+  unavailableRetryCount;
+  unavailableRetryDelayMs;
   constructor(socketPath, options = {}) {
     this.socketPath = socketPath;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.unavailableRetryCount = options.unavailableRetryCount ?? DEFAULT_UNAVAILABLE_RETRY_COUNT;
+    this.unavailableRetryDelayMs = options.unavailableRetryDelayMs ?? DEFAULT_UNAVAILABLE_RETRY_DELAY_MS;
     this.netModule = options.netModule;
     this.fsModule = options.fsModule;
     this.tokenPath = options.tokenPath ?? socketPath.replace(/agent-secret-vault\.sock$/, "capability.token");
   }
   socketPath;
   async request(request) {
+    for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
+      try {
+        return await this.requestOnce(request);
+      } catch (error) {
+        if (!isUnavailableError(error) || attempt >= this.unavailableRetryCount) {
+          if (isUnavailableError(error)) {
+            return { type: "failure", code: "APP_UNAVAILABLE" };
+          }
+          throw error;
+        }
+        await delay(this.unavailableRetryDelayMs);
+      }
+    }
+    return { type: "failure", code: "APP_UNAVAILABLE" };
+  }
+  async requestOnce(request) {
     const net = this.netModule ?? await loadRuntimeNet();
     const fs = this.fsModule ?? await loadRuntimeFs();
     const authenticatedRequest = {
@@ -258,6 +280,16 @@ var LocalVaultClient = class {
     return fs.readFileSync(this.tokenPath, "utf8").trim();
   }
 };
+function isUnavailableError(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const code = error.code;
+  return code === "ENOENT" || code === "ECONNREFUSED" || code === "ENOTSOCK" || code === "EACCES";
+}
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
 // src/pairing/pairing.ts
 function interpretWorkbenchStatus(input) {

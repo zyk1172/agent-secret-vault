@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 import VaultIPC
 
 public enum AppIPCControllerError: Error, Equatable, Sendable {
@@ -7,6 +8,8 @@ public enum AppIPCControllerError: Error, Equatable, Sendable {
 }
 
 public final class AppIPCController: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "AgentSecretVault", category: "IPC")
+
     public struct EndpointMetadata: Codable, Equatable, Sendable {
         public let socketPath: String
     }
@@ -133,7 +136,29 @@ public final class AppIPCController: @unchecked Sendable {
         } catch IPCRequestHandlerError.unsupportedRequest {
             return try IPCFrameCodec.encode(IPCResponse.failure(code: "UNSUPPORTED_REQUEST"))
         } catch {
+            Self.logger.error("IPC request failed: \(String(describing: error), privacy: .public)")
+            Self.writeDiagnosticError(error)
             return try IPCFrameCodec.encode(IPCResponse.failure(code: "REQUEST_FAILED"))
+        }
+    }
+
+    private static func writeDiagnosticError(_ error: Error) {
+        do {
+            let appSupport = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let directory = appSupport
+                .appendingPathComponent("AgentSecretVault", isDirectory: true)
+                .appendingPathComponent("IPC", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let fileURL = directory.appendingPathComponent("last-error.log")
+            let line = "\(Date()) \(String(reflecting: type(of: error))) \(String(describing: error))\n"
+            try line.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            // Best-effort diagnostics only. IPC callers still receive REQUEST_FAILED.
         }
     }
 

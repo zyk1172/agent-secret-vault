@@ -113,8 +113,11 @@ import Testing
 @Test func recoveryKeyStoreFallsBackWhenSynchronizableAccessControlIsRejected() async throws {
     let expectedKey = Data(repeating: 0x45, count: 32)
     let keychain = FakeKeychainClient(
-        copyResults: [(errSecItemNotFound, nil)],
-        addResults: [errSecParam, errSecSuccess]
+        copyResults: [
+            (errSecMissingEntitlement, nil),
+            (errSecItemNotFound, nil)
+        ],
+        addResults: [errSecMissingEntitlement, errSecSuccess]
     )
     let store = KeychainRecoveryKeyStore(
         service: "com.agent-secret-vault.test.recovery",
@@ -129,9 +132,34 @@ import Testing
     #expect(keychain.addedAttributes.count == 2)
     #expect((keychain.addedAttributes[0][kSecAttrSynchronizable as String] as? Bool) == true)
     #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] != nil)
-    #expect((keychain.addedAttributes[1][kSecAttrSynchronizable as String] as? Bool) == true)
+    #expect(keychain.addedAttributes[1][kSecAttrSynchronizable as String] == nil)
     #expect(keychain.addedAttributes[1][kSecAttrAccessControl as String] == nil)
     #expect((keychain.addedAttributes[1][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlocked as String))
+}
+
+@Test func recoveryKeyStoreLoadsLocalFallbackWhenSynchronizableQueryIsRejected() async throws {
+    let expectedKey = Data(repeating: 0x46, count: 32)
+    let keychain = FakeKeychainClient(
+        copyResults: [
+            (errSecMissingEntitlement, nil),
+            (errSecSuccess, expectedKey)
+        ],
+        addResults: []
+    )
+    let store = KeychainRecoveryKeyStore(
+        service: "com.agent-secret-vault.test.recovery",
+        account: "icloud-recovery-wrapping-key",
+        keychain: keychain,
+        randomKeyData: {
+            Issue.record("Recovery key should have loaded from local fallback.")
+            return Data(repeating: 0x00, count: 32)
+        }
+    )
+
+    let actualKey = try await store.loadOrCreateRecoveryKeyData()
+
+    #expect(actualKey == expectedKey)
+    #expect(keychain.addedAttributes.isEmpty)
 }
 
 private func expectBiometricError(

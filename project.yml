@@ -92,6 +92,9 @@ targets:
       - AppAssets/Assets.xcassets
     info:
       path: Config/Info.plist
+      properties:
+        CFBundleShortVersionString: 0.1.5
+        CFBundleVersion: 5
     dependencies:
       - target: AgentSecretVaultApp
       - target: VaultIPC

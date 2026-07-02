@@ -288,6 +288,37 @@ describe("local IPC client", () => {
     });
   });
 
+  it("retries while the app socket is starting", async () => {
+    const directory = await makeTempDirectory();
+    const socketPath = path.join(directory, "agent-secret-vault.sock");
+    const tokenPath = path.join(directory, "capability.token");
+    await writeFile(tokenPath, validToken, { mode: 0o600 });
+    await chmod(tokenPath, 0o600);
+
+    const server = net.createServer((socket) => {
+      socket.on("data", () => {
+        socket.end(IpcFrameCodec.encode({ type: "status", locked: false }));
+        server.close();
+      });
+    });
+
+    setTimeout(() => {
+      server.listen(socketPath);
+    }, 25);
+
+    const client = new LocalIpcClient({
+      socketPath,
+      tokenPath,
+      unavailableRetryCount: 10,
+      unavailableRetryDelayMs: 10
+    });
+
+    await expect(client.request({ type: "status" })).resolves.toEqual({
+      type: "status",
+      locked: false
+    });
+  });
+
   it("sends authenticated framed requests and validates framed responses", async () => {
     const directory = await makeTempDirectory();
     const socketPath = path.join(directory, "agent-secret-vault.sock");

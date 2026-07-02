@@ -154,6 +154,49 @@ describe("LocalVaultClient", () => {
     await expect(client.request({ type: "workbenchStatus" })).rejects.toThrow("IPC request timed out");
   });
 
+  it("retries while the app socket is starting", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "asv-client-test-"));
+    temporaryDirectories.push(directory);
+    const socketPath = join(directory, "agent-secret-vault.sock");
+    const server = net.createServer((socket) => {
+      openSockets.push(socket);
+      socket.on("data", () => {
+        socket.end(encodeFrame({
+          type: "workbenchStatus",
+          status: {
+            locked: false,
+            ipcAvailable: true,
+            activeKnowledgeBaseRoot: null,
+            pluginConnected: true
+          }
+        }));
+        server.close();
+      });
+    });
+    openServers.push(server);
+
+    setTimeout(() => {
+      server.listen(socketPath);
+    }, 25);
+
+    const client = new LocalVaultClient(socketPath, {
+      netModule: net,
+      fsModule,
+      unavailableRetryCount: 10,
+      unavailableRetryDelayMs: 10
+    });
+
+    await expect(client.request({ type: "workbenchStatus" })).resolves.toEqual({
+      type: "workbenchStatus",
+      status: {
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: null,
+        pluginConnected: true
+      }
+    });
+  });
+
   it("rejects world-readable capability tokens before connecting", async () => {
     const socketPath = await createSocketServer(() => {});
     const client = new LocalVaultClient(socketPath, {

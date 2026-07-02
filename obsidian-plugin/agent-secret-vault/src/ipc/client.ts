@@ -2,6 +2,8 @@ import type { AuthenticatedIpcRequest, IpcRequest, IpcResponse } from "./protoco
 
 const MAX_FRAME_BYTES = 1_048_576;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
+const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
 const SECRET_REFERENCE_PATTERN = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
 
 type NetModule = Pick<typeof import("node:net"), "createConnection">;
@@ -13,6 +15,8 @@ interface FsModule {
 
 export interface LocalVaultClientOptions {
   requestTimeoutMs?: number;
+  unavailableRetryCount?: number;
+  unavailableRetryDelayMs?: number;
   netModule?: NetModule;
   fsModule?: FsModule;
   tokenPath?: string;
@@ -123,10 +127,14 @@ export class LocalVaultClient {
   private readonly netModule?: NetModule;
   private readonly fsModule?: FsModule;
   private readonly tokenPath: string;
+  private readonly unavailableRetryCount: number;
+  private readonly unavailableRetryDelayMs: number;
 
   constructor(socketPath: string, options: LocalVaultClientOptions = {}) {
     this.socketPath = socketPath;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.unavailableRetryCount = options.unavailableRetryCount ?? DEFAULT_UNAVAILABLE_RETRY_COUNT;
+    this.unavailableRetryDelayMs = options.unavailableRetryDelayMs ?? DEFAULT_UNAVAILABLE_RETRY_DELAY_MS;
     this.netModule = options.netModule;
     this.fsModule = options.fsModule;
     this.tokenPath = options.tokenPath ?? socketPath.replace(/agent-secret-vault\.sock$/, "capability.token");
@@ -135,6 +143,24 @@ export class LocalVaultClient {
   private readonly socketPath: string;
 
   async request(request: IpcRequest): Promise<IpcResponse> {
+    for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
+      try {
+        return await this.requestOnce(request);
+      } catch (error) {
+        if (!isUnavailableError(error) || attempt >= this.unavailableRetryCount) {
+          if (isUnavailableError(error)) {
+            return { type: "failure", code: "APP_UNAVAILABLE" };
+          }
+          throw error;
+        }
+        await delay(this.unavailableRetryDelayMs);
+      }
+    }
+
+    return { type: "failure", code: "APP_UNAVAILABLE" };
+  }
+
+  private async requestOnce(request: IpcRequest): Promise<IpcResponse> {
     const net = this.netModule ?? await loadRuntimeNet();
     const fs = this.fsModule ?? await loadRuntimeFs();
     const authenticatedRequest: AuthenticatedIpcRequest = {
@@ -219,4 +245,17 @@ export class LocalVaultClient {
 
     return fs.readFileSync(this.tokenPath, "utf8").trim();
   }
+}
+
+function isUnavailableError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ECONNREFUSED" || code === "ENOTSOCK" || code === "EACCES";
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

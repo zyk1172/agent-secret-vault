@@ -6,14 +6,18 @@ DIST_DIR="$ROOT_DIR/dist"
 BUILD_DIR="$ROOT_DIR/build/release"
 STAGING_DIR="$DIST_DIR/AgentSecretVault-release"
 MCP_STAGING="$STAGING_DIR/MCP"
+OBSIDIAN_PLUGIN_STAGING="$STAGING_DIR/ObsidianPlugin/agent-secret-vault"
 
 cd "$ROOT_DIR"
 
 rm -rf "$BUILD_DIR" "$STAGING_DIR"
-mkdir -p "$DIST_DIR" "$BUILD_DIR" "$MCP_STAGING"
+mkdir -p "$DIST_DIR" "$BUILD_DIR" "$MCP_STAGING" "$OBSIDIAN_PLUGIN_STAGING"
 
 echo "==> Building MCP server"
 (cd "$ROOT_DIR/mcp-server" && npm ci && npm run build)
+
+echo "==> Building Obsidian plugin"
+(cd "$ROOT_DIR/obsidian-plugin/agent-secret-vault" && npm ci && npm run build)
 
 echo "==> Building macOS app"
 if command -v xcodegen >/dev/null 2>&1; then
@@ -42,6 +46,8 @@ cp -R "$APP_SOURCE" "$STAGING_DIR/AgentSecretVault.app"
 cp "$ROOT_DIR/mcp-server/package.json" "$MCP_STAGING/package.json"
 cp "$ROOT_DIR/mcp-server/package-lock.json" "$MCP_STAGING/package-lock.json"
 cp -R "$ROOT_DIR/mcp-server/dist" "$MCP_STAGING/dist"
+cp "$ROOT_DIR/obsidian-plugin/agent-secret-vault/main.js" "$OBSIDIAN_PLUGIN_STAGING/main.js"
+cp "$ROOT_DIR/obsidian-plugin/agent-secret-vault/manifest.json" "$OBSIDIAN_PLUGIN_STAGING/manifest.json"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.sh"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.command"
 cp "$ROOT_DIR/docs/zh-CN.md" "$STAGING_DIR/USER_GUIDE_zh-CN.md"
@@ -58,7 +64,11 @@ Agent Secret Vault 安装方式
    ~/Library/Application Support/AgentSecretVault/MCP
 4. 安装脚本会生成可复制的 MCP 配置：
    ~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
-5. 打开 Agent Secret Vault，再把 MCP 配置粘贴到 Codex / Claude / Hermes。
+5. release 包内包含 Obsidian 插件：
+   ObsidianPlugin/agent-secret-vault
+   安装脚本会在能唯一识别 Vault 时自动安装。也可以指定：
+   ./install.sh "/你的/Obsidian/Vault/路径"
+6. 打开 Agent Secret Vault，再把 MCP 配置粘贴到 Codex / Claude / Hermes。
 
 完整中文教程见：USER_GUIDE_zh-CN.md
 
