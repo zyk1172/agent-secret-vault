@@ -179,6 +179,15 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         )
         let vaultMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data = { policy, reason in
             let localWrappingKey = try await protectionKeyStore.deviceKey(for: policy, reason: reason)
+            if try await wrappedMasterKeyStore.loadWrappedMasterKeySet() == nil,
+               !(try await recordStore.recordIDs()).isEmpty
+            {
+                return try await masterKeyCoordinator.adoptExistingVault(
+                    reason: reason,
+                    localWrappingKey: localWrappingKey,
+                    existingMasterKey: localWrappingKey
+                )
+            }
             return try await masterKeyCoordinator.unlock(reason: reason, localWrappingKey: localWrappingKey)
         }
         let encryptor = EncryptSelectionCoordinator(

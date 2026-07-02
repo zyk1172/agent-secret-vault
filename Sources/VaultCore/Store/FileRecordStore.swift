@@ -9,7 +9,7 @@ public enum FileRecordStoreError: Error, Equatable, Sendable {
     case verificationFailed
 }
 
-public struct FileRecordStore: RecordStore, RecordListing {
+public struct FileRecordStore: RecordStore, RecordListing, Sendable {
     private let baseDirectory: URL
 
     public init(baseDirectory: URL) {

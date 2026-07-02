@@ -145,6 +145,23 @@ public struct MasterKeyCoordinator: Sendable {
         }
     }
 
+    public func adoptExistingVault(
+        reason: String,
+        localWrappingKey: Data,
+        existingMasterKey: Data
+    ) async throws -> Data {
+        try validateKeySize(localWrappingKey)
+        try validateKeySize(existingMasterKey)
+        guard try await wrappedStore.loadWrappedMasterKeySet() == nil else {
+            return try await unlock(reason: reason, localWrappingKey: localWrappingKey)
+        }
+        return try await createNewVault(
+            reason: reason,
+            localWrappingKey: localWrappingKey,
+            masterKey: existingMasterKey
+        )
+    }
+
     public func recover(reason: String) async throws -> Data {
         guard try await recoveryKeyStore.supportsRequiredKeychainControls() else {
             throw MasterKeyCoordinatorError.unsupportedRequiredKeychainControls
@@ -176,11 +193,22 @@ public struct MasterKeyCoordinator: Sendable {
     }
 
     private func createNewVault(reason: String, localWrappingKey: Data) async throws -> Data {
+        try await createNewVault(
+            reason: reason,
+            localWrappingKey: localWrappingKey,
+            masterKey: randomMasterKey()
+        )
+    }
+
+    private func createNewVault(
+        reason: String,
+        localWrappingKey: Data,
+        masterKey: Data
+    ) async throws -> Data {
         guard try await recoveryKeyStore.supportsRequiredKeychainControls() else {
             throw MasterKeyCoordinatorError.unsupportedRequiredKeychainControls
         }
 
-        let masterKey = try randomMasterKey()
         try validateKeySize(masterKey)
         try validateKeySize(localWrappingKey)
         let recoveryKey = try await recoveryKeyStore.loadOrCreateRecoveryKeyData()

@@ -71,6 +71,51 @@ import Testing
     }
 }
 
+@Test func adoptExistingVaultWrapsLegacyMasterKeyWithoutReplacingIt() async throws {
+    let legacyLocalAndMasterKey = Data(repeating: 0x35, count: 32)
+    let recoveryKey = Data(repeating: 0x36, count: 32)
+    let store = MemoryWrappedMasterKeyStore()
+    let coordinator = MasterKeyCoordinator(
+        deviceKeyStore: FixedDeviceKeyStore(key: legacyLocalAndMasterKey),
+        recoveryKeyStore: MemoryRecoveryKeyStore(key: recoveryKey),
+        wrappedStore: store,
+        randomMasterKey: { Data(repeating: 0x37, count: 32) }
+    )
+
+    let adopted = try await coordinator.adoptExistingVault(
+        reason: "Adopt existing vault",
+        localWrappingKey: legacyLocalAndMasterKey,
+        existingMasterKey: legacyLocalAndMasterKey
+    )
+
+    #expect(adopted == legacyLocalAndMasterKey)
+    let saved = try #require(await store.current)
+    #expect(try saved.local?.open(using: legacyLocalAndMasterKey) == legacyLocalAndMasterKey)
+    #expect(try saved.recovery?.open(using: recoveryKey) == legacyLocalAndMasterKey)
+}
+
+@Test func adoptExistingVaultDoesNotOverwriteExistingWrappedMasterKey() async throws {
+    let localKey = Data(repeating: 0x38, count: 32)
+    let existingMasterKey = Data(repeating: 0x39, count: 32)
+    let attemptedLegacyMasterKey = Data(repeating: 0x3A, count: 32)
+    let wrapped = try WrappedMasterKeySet(local: .seal(existingMasterKey, using: localKey), recovery: nil)
+    let store = MemoryWrappedMasterKeyStore(initial: wrapped)
+    let coordinator = MasterKeyCoordinator(
+        deviceKeyStore: FixedDeviceKeyStore(key: localKey),
+        recoveryKeyStore: MemoryRecoveryKeyStore(key: nil),
+        wrappedStore: store
+    )
+
+    let unlocked = try await coordinator.adoptExistingVault(
+        reason: "Do not replace existing vault",
+        localWrappingKey: localKey,
+        existingMasterKey: attemptedLegacyMasterKey
+    )
+
+    #expect(unlocked == existingMasterKey)
+    #expect(await store.current == wrapped)
+}
+
 @Test func recoveryUnavailableWhenOnlyRecoveryWrapperExistsButRecoveryKeyIsMissing() async throws {
     let recoveryKey = Data(repeating: 0x55, count: 32)
     let masterKey = Data(repeating: 0x66, count: 32)
