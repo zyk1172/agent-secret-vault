@@ -739,33 +739,17 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   }
   registerEditorMenu() {
     this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor) => {
-      let hasNativeSubmenu = false;
       menu.addItem((item) => {
         item.setTitle("Agent Secret Vault").setIcon("shield-check");
         const submenu = this.tryCreateSubmenu(item);
         if (submenu) {
-          hasNativeSubmenu = true;
           this.populateEditorActionMenu(submenu, editor);
           return;
         }
-        item.setTitle("Agent Secret Vault\uFF1A\u52A0\u5BC6\u9009\u4E2D\u6587\u672C").setIcon("lock").onClick(async () => {
-          await this.encryptSelection(editor);
+        item.onClick((event) => {
+          this.showEditorActionMenu(event, editor);
         });
       });
-      if (!hasNativeSubmenu) {
-        menu.addItem((item) => item.setTitle("Agent Secret Vault\uFF1A\u52A0\u5BC6\u5F53\u524D\u6BB5\u843D\u654F\u611F\u4FE1\u606F").setIcon("lock-keyhole").onClick(async () => {
-          await this.encryptCurrentParagraph(editor);
-        }));
-        menu.addItem((item) => item.setTitle("Agent Secret Vault\uFF1A\u4F4E\u4FDD\u62A4\u52A0\u5BC6\u5F53\u524D\u6BB5\u843D").setIcon("shield").onClick(async () => {
-          await this.encryptCurrentParagraph(editor, "read");
-        }));
-        menu.addItem((item) => item.setTitle("Agent Secret Vault\uFF1A\u4E34\u65F6\u89E3\u5BC6\u5F53\u524D\u6BB5\u843D").setIcon("eye").onClick(async () => {
-          await this.revealCurrentParagraph(editor);
-        }));
-        menu.addItem((item) => item.setTitle("Agent Secret Vault\uFF1A\u8FD8\u539F\u5F53\u524D\u6BB5\u843D").setIcon("rotate-ccw").onClick(async () => {
-          await this.restoreCurrentParagraph(editor);
-        }));
-      }
     }));
   }
   tryCreateSubmenu(item) {
@@ -774,6 +758,16 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       return null;
     }
     return maybeItem.setSubmenu();
+  }
+  showEditorActionMenu(event, editor) {
+    const actionMenu = new import_obsidian2.Menu();
+    actionMenu.setUseNativeMenu(false);
+    this.populateEditorActionMenu(actionMenu, editor);
+    if ("clientX" in event && "clientY" in event) {
+      actionMenu.showAtMouseEvent(event);
+      return;
+    }
+    actionMenu.showAtPosition({ x: 0, y: 0 });
   }
   populateEditorActionMenu(menu, editor) {
     menu.addItem((item) => {

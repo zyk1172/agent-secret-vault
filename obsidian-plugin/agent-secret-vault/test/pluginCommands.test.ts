@@ -4,9 +4,11 @@ const obsidianMock = vi.hoisted(() => ({
   registeredCommands: [] as Array<{ id: string; name: string; callback?: () => void; editorCallback?: (editor: unknown) => void }>,
   registeredEvents: [] as unknown[],
   workspaceEvents: [] as Array<{ name: string; callback: (...args: unknown[]) => void }>,
+  supportsSubmenu: true,
   menuItems: [] as Array<{ title?: string; icon?: string; onClick?: (event?: unknown) => void }>,
   submenuItems: [] as Array<{ title?: string; icon?: string; onClick?: (event?: unknown) => void }>,
   shownMenus: [] as Array<{ x: number; y: number }>,
+  shownMouseEvents: [] as unknown[],
   useNativeMenuCalls: [] as boolean[],
   notices: [] as string[],
   statusItems: [] as HTMLElement[]
@@ -19,8 +21,8 @@ vi.mock("obsidian", () => ({
     addItem(callback: (item: {
       setTitle: (title: string) => unknown;
       setIcon: (icon: string) => unknown;
-      setSubmenu: () => unknown;
-      onClick: (handler: () => void) => unknown;
+      setSubmenu?: () => unknown;
+      onClick: (handler: (event?: unknown) => void) => unknown;
     }) => void): void {
       const item: { title?: string; icon?: string; onClick?: (event?: unknown) => void } = {};
       const fluentItem = {
@@ -32,12 +34,14 @@ vi.mock("obsidian", () => ({
           item.icon = icon;
           return fluentItem;
         },
-        setSubmenu: () => new MenuTestDouble(obsidianMock.submenuItems),
         onClick: (handler: () => void) => {
           item.onClick = handler;
           return fluentItem;
         }
       };
+      if (obsidianMock.supportsSubmenu) {
+        (fluentItem as typeof fluentItem & { setSubmenu: () => MenuTestDouble }).setSubmenu = () => new MenuTestDouble(obsidianMock.submenuItems);
+      }
       callback(fluentItem);
       this.targetItems.push(item);
     }
@@ -51,6 +55,10 @@ vi.mock("obsidian", () => ({
 
     showAtPosition(position: { x: number; y: number }): void {
       obsidianMock.shownMenus.push(position);
+    }
+
+    showAtMouseEvent(event: unknown): void {
+      obsidianMock.shownMouseEvents.push(event);
     }
   },
   Notice: class NoticeTestDouble {
@@ -109,9 +117,11 @@ describe("plugin commands", () => {
     obsidianMock.registeredCommands = [];
     obsidianMock.registeredEvents = [];
     obsidianMock.workspaceEvents = [];
+    obsidianMock.supportsSubmenu = true;
     obsidianMock.menuItems = [];
     obsidianMock.submenuItems = [];
     obsidianMock.shownMenus = [];
+    obsidianMock.shownMouseEvents = [];
     obsidianMock.useNativeMenuCalls = [];
     obsidianMock.notices = [];
     obsidianMock.statusItems = [];
@@ -197,6 +207,39 @@ describe("plugin commands", () => {
 
     expect(obsidianMock.shownMenus).toEqual([]);
     expect(obsidianMock.submenuItems.map((item) => item.title)).toEqual([
+      "加密选中文本",
+      "低保护加密选中文本",
+      "加密当前段落敏感信息",
+      "低保护加密当前段落敏感信息",
+      "扫描当前笔记并加密",
+      "低保护扫描当前笔记并加密",
+      "临时解密选中文本",
+      "临时解密当前段落",
+      "还原选中文本",
+      "还原当前段落",
+      "扫描整个知识库",
+      "低保护扫描整个知识库",
+      "扫描孤立密文引用"
+    ]);
+  });
+
+  it("keeps one top-level menu item when native submenu is unavailable", async () => {
+    obsidianMock.supportsSubmenu = false;
+    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never);
+
+    await plugin.onload();
+    obsidianMock.workspaceEvents.find((event) => event.name === "editor-menu")?.callback(new (await import("obsidian")).Menu(), {} as never);
+
+    expect(obsidianMock.menuItems.map((item) => item.title)).toEqual(["Agent Secret Vault"]);
+    expect(obsidianMock.submenuItems).toEqual([]);
+
+    const clickEvent = { clientX: 42, clientY: 24 };
+    obsidianMock.menuItems[0].onClick?.(clickEvent);
+
+    expect(obsidianMock.useNativeMenuCalls).toEqual([false]);
+    expect(obsidianMock.shownMouseEvents).toEqual([clickEvent]);
+    expect(obsidianMock.menuItems.map((item) => item.title)).toEqual([
+      "Agent Secret Vault",
       "加密选中文本",
       "低保护加密选中文本",
       "加密当前段落敏感信息",

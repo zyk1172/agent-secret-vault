@@ -155,35 +155,18 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private registerEditorMenu(): void {
     this.registerEvent(this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor) => {
-      let hasNativeSubmenu = false;
       menu.addItem((item) => {
         item.setTitle("Agent Secret Vault").setIcon("shield-check");
         const submenu = this.tryCreateSubmenu(item);
         if (submenu) {
-          hasNativeSubmenu = true;
           this.populateEditorActionMenu(submenu, editor);
           return;
         }
 
-        item.setTitle("Agent Secret Vault：加密选中文本").setIcon("lock").onClick(async () => {
-          await this.encryptSelection(editor);
+        item.onClick((event) => {
+          this.showEditorActionMenu(event, editor);
         });
       });
-
-      if (!hasNativeSubmenu) {
-        menu.addItem((item) => item.setTitle("Agent Secret Vault：加密当前段落敏感信息").setIcon("lock-keyhole").onClick(async () => {
-          await this.encryptCurrentParagraph(editor);
-        }));
-        menu.addItem((item) => item.setTitle("Agent Secret Vault：低保护加密当前段落").setIcon("shield").onClick(async () => {
-          await this.encryptCurrentParagraph(editor, "read");
-        }));
-        menu.addItem((item) => item.setTitle("Agent Secret Vault：临时解密当前段落").setIcon("eye").onClick(async () => {
-          await this.revealCurrentParagraph(editor);
-        }));
-        menu.addItem((item) => item.setTitle("Agent Secret Vault：还原当前段落").setIcon("rotate-ccw").onClick(async () => {
-          await this.restoreCurrentParagraph(editor);
-        }));
-      }
     }));
   }
 
@@ -193,6 +176,19 @@ export default class AgentSecretVaultPlugin extends Plugin {
       return null;
     }
     return maybeItem.setSubmenu();
+  }
+
+  private showEditorActionMenu(event: MouseEvent | KeyboardEvent, editor: Editor): void {
+    const actionMenu = new Menu();
+    actionMenu.setUseNativeMenu(false);
+    this.populateEditorActionMenu(actionMenu, editor);
+
+    if ("clientX" in event && "clientY" in event) {
+      actionMenu.showAtMouseEvent(event as MouseEvent);
+      return;
+    }
+
+    actionMenu.showAtPosition({ x: 0, y: 0 });
   }
 
   private populateEditorActionMenu(menu: Menu, editor: Editor): void {
