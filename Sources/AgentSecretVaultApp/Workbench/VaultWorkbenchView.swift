@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
 import VaultIPC
 
 public enum VaultWorkbenchCopy {
+    public static let documentationURL = URL(string: "https://github.com/zyk1172/agent-secret-vault")!
+
     public static let disconnected = (
         status: "Obsidian 插件未连接",
         primaryAction: "先安装并启用 Obsidian 插件。"
@@ -46,7 +49,6 @@ public enum VaultWorkbenchRenderingPolicy {
 
 public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
     case overview
-    case tutorial
     case paragraph
     case records
     case automation
@@ -58,8 +60,6 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview:
             return "控制台"
-        case .tutorial:
-            return "使用教程"
         case .paragraph:
             return "段落解密"
         case .records:
@@ -75,8 +75,6 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview:
             return "状态、快捷入口和最近动作"
-        case .tutorial:
-            return "安装、加密、解密和智能体配置"
         case .paragraph:
             return "一次解密段落内全部密文引用"
         case .records:
@@ -92,8 +90,6 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview:
             return "square.grid.2x2.fill"
-        case .tutorial:
-            return "book.closed.fill"
         case .paragraph:
             return "text.quote"
         case .records:
@@ -202,12 +198,8 @@ public struct VaultWorkbenchView: View {
     private var selectedContent: some View {
         switch selectedSection {
         case .overview:
-            WorkbenchPage(title: "控制台", subtitle: "常用功能和当前连接状态放在这里，不需要从头滚到底。", systemImage: selectedSection.systemImage) {
+            WorkbenchPage(title: "控制台", subtitle: "状态、常用动作和最近记录", systemImage: selectedSection.systemImage, compact: true) {
                 overviewPage
-            }
-        case .tutorial:
-            WorkbenchPage(title: "使用教程", subtitle: "安装、Obsidian 右键加密、段落解密和智能体配置集中到这一页。", systemImage: selectedSection.systemImage) {
-                SetupGuideView(status: status)
             }
         case .paragraph:
             WorkbenchPage(title: "段落解密", subtitle: "把包含 secret:// 的整段内容粘贴进来，一次还原其中全部密文。", systemImage: selectedSection.systemImage) {
@@ -235,33 +227,31 @@ public struct VaultWorkbenchView: View {
     }
 
     private var overviewPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HeroCard(
-                title: "让智能体使用密文引用",
-                subtitle: "Codex、Claude、Hermes 在聊天里只处理 secret://；真正的解密、填充和本机使用都在这台 Mac 上完成。",
-                animate: false
-            )
+        VStack(alignment: .leading, spacing: 12) {
+            OverviewStatusStrip(status: status)
 
             LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: 16),
-                GridItem(.flexible(), spacing: 16)
-            ], spacing: 16) {
-                ConnectionStatusCard(status: status)
+                GridItem(.flexible(), spacing: 12),
+                GridItem(.flexible(), spacing: 12),
+                GridItem(.flexible(), spacing: 12)
+            ], spacing: 12) {
                 QuickMenuCard(
-                    title: "开始使用",
-                    detail: "打开教程页，按步骤完成 Obsidian 插件、右键加密和 MCP 配置。",
-                    systemImage: "book.closed.fill",
+                    title: "GitHub 文档",
+                    detail: "安装、Obsidian 插件、MCP 配置和完整教程放在仓库文档里，App 内只保留日常操作。",
+                    systemImage: "arrow.up.right.square.fill",
                     tint: .blue,
-                    actionTitle: "查看教程"
+                    actionTitle: "打开 GitHub",
+                    compact: true
                 ) {
-                    selectedSection = .tutorial
+                    NSWorkspace.shared.open(VaultWorkbenchCopy.documentationURL)
                 }
                 QuickMenuCard(
                     title: "段落解密",
                     detail: "一段话里有多个 secret:// 时，在这里一次性解密显示。",
                     systemImage: "text.quote",
                     tint: .purple,
-                    actionTitle: "打开解密"
+                    actionTitle: "打开解密",
+                    compact: true
                 ) {
                     selectedSection = .paragraph
                 }
@@ -270,13 +260,14 @@ public struct VaultWorkbenchView: View {
                     detail: "检查笔记引用和本机记录是否匹配，避免孤立密文或失效引用。",
                     systemImage: "tray.full.fill",
                     tint: .orange,
-                    actionTitle: "查看维护"
+                    actionTitle: "查看维护",
+                    compact: true
                 ) {
                     selectedSection = .records
                 }
             }
 
-            AgentAutomationAuditCard(entries: Array(auditEntries.prefix(3)))
+            CompactAuditPreviewCard(entries: Array(auditEntries.prefix(2)))
         }
     }
 }
@@ -303,85 +294,128 @@ private struct WorkbenchPage<Content: View>: View {
     let title: String
     let subtitle: String
     let systemImage: String
+    let compact: Bool
     @ViewBuilder let content: Content
+
+    init(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        compact: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+        self.compact = compact
+        self.content = content()
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: compact ? 12 : 20) {
                 HStack(alignment: .center, spacing: 16) {
                     Image(systemName: systemImage)
-                        .font(.system(size: 28, weight: .semibold))
+                        .font(.system(size: compact ? 20 : 28, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: 54, height: 54)
+                        .frame(width: compact ? 40 : 54, height: compact ? 40 : 54)
                         .background(
                             LinearGradient(colors: [.blue, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing),
-                            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            in: RoundedRectangle(cornerRadius: compact ? 13 : 18, style: .continuous)
                         )
 
                     VStack(alignment: .leading, spacing: 5) {
                         Text(title)
-                            .font(.largeTitle.weight(.bold))
+                            .font(compact ? .title.weight(.bold) : .largeTitle.weight(.bold))
                         Text(subtitle)
-                            .font(.title3)
+                            .font(compact ? .callout : .title3)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                 }
-                .padding(.top, 4)
+                .padding(.top, compact ? 0 : 4)
 
                 content
             }
-            .padding(30)
+            .padding(compact ? 22 : 30)
         }
         .scrollIndicators(.automatic)
     }
 }
 
-private struct HeroCard: View {
-    let title: String
-    let subtitle: String
-    let animate: Bool
+private struct OverviewStatusStrip: View {
+    let status: WorkbenchStatus
 
     var body: some View {
-        HStack(alignment: .center, spacing: 22) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(title)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                Text(subtitle)
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(4)
-                HStack(spacing: 10) {
-                    Label("密文引用", systemImage: "link")
-                    Label("本机授权", systemImage: "touchid")
-                    Label("脱敏审计", systemImage: "checkmark.shield")
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                OverviewMetricTile(
+                    title: "插件",
+                    value: status.pluginConnected ? "已连接" : "未连接",
+                    systemImage: status.pluginConnected ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
+                    tint: status.pluginConnected ? .green : .orange
+                )
+                OverviewMetricTile(
+                    title: "保险箱",
+                    value: status.locked ? "已锁定" : "已解锁",
+                    systemImage: status.locked ? "lock.fill" : "lock.open.fill",
+                    tint: status.locked ? .gray : .blue
+                )
+                OverviewMetricTile(
+                    title: "本机通道",
+                    value: status.ipcAvailable ? "可用" : "未就绪",
+                    systemImage: status.ipcAvailable ? "bolt.horizontal.circle.fill" : "bolt.slash.circle.fill",
+                    tint: status.ipcAvailable ? .green : .orange
+                )
             }
 
-            Spacer()
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(.blue.opacity(0.12))
-                    .frame(width: 150, height: 150)
-                    .rotationEffect(.degrees(-6))
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 70, weight: .semibold))
-                    .foregroundStyle(
-                        LinearGradient(colors: [.blue, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-                    .scaleEffect(1.0)
+            HStack(spacing: 10) {
+                Label("知识库位置", systemImage: "folder")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(status.activeKnowledgeBaseRoot ?? "尚未选择")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
-        .padding(28)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(.quaternary)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.blue.opacity(0.18))
         )
+    }
+}
+
+private struct OverviewMetricTile: View {
+    let title: String
+    let value: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+            }
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.opacity(0.70), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -391,38 +425,111 @@ private struct QuickMenuCard: View {
     let systemImage: String
     let tint: Color
     let actionTitle: String
+    var compact = false
     let action: () -> Void
     @State private var isHovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: compact ? 8 : 14) {
             Image(systemName: systemImage)
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: compact ? 18 : 24, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 46, height: 46)
-                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .frame(width: compact ? 34 : 46, height: compact ? 34 : 46)
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: compact ? 10 : 14, style: .continuous))
 
             Text(title)
-                .font(.title3.weight(.semibold))
+                .font(compact ? .headline.weight(.semibold) : .title3.weight(.semibold))
             Text(detail)
-                .font(.callout)
+                .font(compact ? .caption : .callout)
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
+                .lineLimit(compact ? 2 : 3)
 
             Spacer(minLength: 0)
 
             Button(actionTitle, action: action)
                 .buttonStyle(.borderedProminent)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, minHeight: 210, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(compact ? 14 : 20)
+        .frame(maxWidth: .infinity, minHeight: compact ? 146 : 210, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: compact ? 18 : 22, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: compact ? 18 : 22, style: .continuous)
                 .stroke(isHovering ? tint.opacity(0.35) : Color.secondary.opacity(0.12))
         )
         .scaleEffect(isHovering ? 1.015 : 1)
         .onHover { isHovering = $0 }
+    }
+}
+
+private struct CompactAuditPreviewCard: View {
+    let entries: [AgentAutomationAuditEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("最近自动化", systemImage: "sparkles.rectangle.stack")
+                    .font(.headline.weight(.semibold))
+                Spacer()
+                Text(entries.isEmpty ? "暂无记录" : "最近 \(entries.count) 条")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            if entries.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock.badge.questionmark")
+                        .foregroundStyle(.secondary)
+                    Text("连接 MCP 后，解密显示、段落还原、本地导出等脱敏记录会出现在这里。")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(entries) { entry in
+                        HStack(spacing: 8) {
+                            Image(systemName: iconName(for: entry.action))
+                                .foregroundStyle(.blue)
+                                .frame(width: 18)
+                            Text(entry.action)
+                                .font(.callout.weight(.semibold))
+                                .lineLimit(1)
+                            Text(entry.target)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                            Text(entry.result)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 10)
+                        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func iconName(for action: String) -> String {
+        if action.contains("文件") {
+            return "doc.badge.gearshape"
+        }
+        if action.contains("显示") {
+            return "eye"
+        }
+        if action.contains("扫描") {
+            return "magnifyingglass"
+        }
+        if action.contains("连接") {
+            return "cable.connector"
+        }
+        return "bolt.horizontal.circle"
     }
 }
 

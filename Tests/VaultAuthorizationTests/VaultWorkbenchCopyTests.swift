@@ -17,15 +17,8 @@ import Foundation
     #expect(!boundary.contains("Temporary reveal"))
 }
 
-@Test func workbenchCopyProvidesSimpleUserWorkflow() {
-    #expect(VaultWorkbenchCopy.simpleUsageSteps.count == 3)
-    #expect(VaultWorkbenchCopy.simpleUsageSteps[0].contains("右键"))
-    #expect(VaultWorkbenchCopy.simpleUsageSteps[1].contains("secret://"))
-    #expect(VaultWorkbenchCopy.simpleUsageSteps[1].contains("Codex"))
-    #expect(VaultWorkbenchCopy.simpleUsageSteps[1].contains("Claude"))
-    #expect(VaultWorkbenchCopy.simpleUsageSteps[1].contains("Hermes"))
-    #expect(VaultWorkbenchCopy.simpleUsageSteps[1].contains("自动识别"))
-    #expect(VaultWorkbenchCopy.simpleUsageSteps[2].contains("解密整个段落"))
+@Test func workbenchCopyProvidesExternalDocumentationLink() {
+    #expect(VaultWorkbenchCopy.documentationURL.absoluteString == "https://github.com/zyk1172/agent-secret-vault")
 }
 
 @Test func workbenchCopyProvidesCopyableMcpConfigAndPrompt() {
@@ -45,7 +38,7 @@ import Foundation
         VaultWorkbenchCopy.disconnected.status,
         VaultWorkbenchCopy.disconnected.primaryAction,
         VaultWorkbenchCopy.securityBoundary
-    ] + VaultWorkbenchCopy.simpleUsageSteps
+    ]
 
     for text in visibleCopy {
         #expect(!text.contains(" · "))
@@ -59,15 +52,26 @@ import Foundation
 
     #expect(titles == [
         "控制台",
-        "使用教程",
         "段落解密",
         "记录维护",
         "智能体自动化",
         "安全边界"
     ])
-    #expect(VaultWorkbenchSection.tutorial.subtitle.contains("安装"))
     #expect(VaultWorkbenchSection.paragraph.subtitle.contains("一次解密"))
     #expect(VaultWorkbenchSection.allCases.allSatisfy { !$0.systemImage.isEmpty })
+}
+
+@Test func overviewKeepsStatusProminentAndCompact() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    #expect(source.contains("OverviewStatusStrip(status: status)"))
+    #expect(source.contains("CompactAuditPreviewCard(entries: Array(auditEntries.prefix(2)))"))
+    #expect(!source.contains("HeroCard("))
 }
 
 @Test func workbenchUsesStableRenderingForBetaMacOSCompatibility() {

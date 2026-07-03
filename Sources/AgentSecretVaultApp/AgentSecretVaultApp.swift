@@ -53,30 +53,25 @@ struct AgentSecretVaultApplication: App {
                 }
                 .keyboardShortcut("1", modifiers: [.command])
 
-                Button("使用教程") {
-                    navigateWorkbench(to: .tutorial)
-                }
-                .keyboardShortcut("2", modifiers: [.command])
-
                 Button("段落解密") {
                     navigateWorkbench(to: .paragraph)
                 }
-                .keyboardShortcut("3", modifiers: [.command])
+                .keyboardShortcut("2", modifiers: [.command])
 
                 Button("记录维护") {
                     navigateWorkbench(to: .records)
                 }
-                .keyboardShortcut("4", modifiers: [.command])
+                .keyboardShortcut("3", modifiers: [.command])
 
                 Button("智能体自动化") {
                     navigateWorkbench(to: .automation)
                 }
-                .keyboardShortcut("5", modifiers: [.command])
+                .keyboardShortcut("4", modifiers: [.command])
 
                 Button("安全边界") {
                     navigateWorkbench(to: .security)
                 }
-                .keyboardShortcut("6", modifiers: [.command])
+                .keyboardShortcut("5", modifiers: [.command])
             }
         }
     }

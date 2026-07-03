@@ -27,7 +27,7 @@ public struct RevealSessionWindow: View {
                 .foregroundStyle(.secondary)
             ScrollView {
                 Text(resolvedParagraph)
-                    .textSelection(.disabled)
+                    .textSelection(.enabled)
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
