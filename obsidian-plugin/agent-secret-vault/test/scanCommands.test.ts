@@ -89,15 +89,19 @@ describe("scan commands", () => {
 
   it("scans the current note and replaces reviewed findings through authenticated IPC", async () => {
     const editor = new TestEditor("password = hunter2");
+    const requests: unknown[] = [];
     const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
       createVaultClient: () => unknown;
       scanCurrentNote: (editor: TestEditor) => Promise<void>;
     };
     plugin.createVaultClient = () => ({
-      request: async (request: { plaintext: string }) => ({
-        type: "created",
-        reference: request.plaintext === "hunter2" ? makeReference(1) : makeReference(2)
-      })
+      request: async (request: { plaintext: string }) => {
+        requests.push(request);
+        return {
+          type: "created",
+          reference: request.plaintext === "hunter2" ? makeReference(1) : makeReference(2)
+        };
+      }
     });
 
     await plugin.scanCurrentNote(editor);
@@ -109,6 +113,10 @@ describe("scan commands", () => {
     expect(editor.text).toBe(`password = ${makeReference(1)}`);
     expect(editor.setValueCalls).toEqual([`password = ${makeReference(1)}`]);
     expect(obsidianMock.notices).toContain("Agent Secret Vault: encrypted 1 finding.");
+    expect(requests).toContainEqual(expect.objectContaining({
+      type: "encryptText",
+      label: "password = [[ASV_REFERENCE]]"
+    }));
   });
 
   it("scans the vault and modifies reviewed markdown files only when unchanged", async () => {

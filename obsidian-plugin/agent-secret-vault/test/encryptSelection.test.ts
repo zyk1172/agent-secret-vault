@@ -163,15 +163,19 @@ describe("encrypt selection", () => {
   it("uses replaceRange for the original selection when it is unchanged after IPC", async () => {
     obsidianMock.notices = [];
     const editor = new TestEditor("token = ASV_CANARY_PLUGIN", 8, 25);
+    const requests: unknown[] = [];
     const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
       createVaultClient: () => unknown;
       encryptSelection: (editor: TestEditor) => Promise<void>;
     };
     plugin.createVaultClient = () => ({
-      request: async () => ({
-        type: "created",
-        reference: "secret://0123456789ABCDEFGHJKMNPQRS"
-      })
+      request: async (request: unknown) => {
+        requests.push(request);
+        return {
+          type: "created",
+          reference: "secret://0123456789ABCDEFGHJKMNPQRS"
+        };
+      }
     });
 
     await plugin.encryptSelection(editor);
@@ -184,6 +188,10 @@ describe("encrypt selection", () => {
       to: { line: 0, ch: 25 },
       origin: "agent-secret-vault"
     }]);
+    expect(requests).toContainEqual(expect.objectContaining({
+      type: "encryptText",
+      label: "token = [[ASV_REFERENCE]]"
+    }));
   });
 
   it("does not replace the selection when the editor text changes before IPC returns", async () => {

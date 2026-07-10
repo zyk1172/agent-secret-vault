@@ -1,4 +1,5 @@
 import { Menu, Notice, Plugin, type Editor, type EditorPosition, type TFile } from "obsidian";
+import { buildParagraphContextTemplate } from "./encrypt/paragraphContextTemplate";
 import { encryptTextRange } from "./encrypt/encryptSelection";
 import { extractCurrentParagraph, type TextRange } from "./editor/selection";
 import { LocalVaultClient } from "./ipc/client";
@@ -284,10 +285,11 @@ export default class AgentSecretVaultPlugin extends Plugin {
     toPos: EditorPosition
   ): Promise<void> {
     try {
+      const documentText = editor.getValue();
       const result = await encryptTextRange({
-        documentText: editor.getValue(),
+        documentText,
         range,
-        label: null,
+        label: buildParagraphContextTemplate(documentText, range),
         policy: "credential",
         client: this.createVaultClient()
       });
@@ -522,7 +524,11 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const response = await client.request({
         type: "encryptText",
         plaintext,
-        label: `${finding.filePath}:${finding.ruleId}`,
+        label: buildParagraphContextTemplate(text, {
+          start: finding.start,
+          end: finding.end,
+          text: plaintext
+        }),
         policy: "credential"
       });
 
