@@ -73,7 +73,10 @@ import Foundation
 
     #expect(source.contains("SavedSecretReferencesCard(references: savedReferences"))
     #expect(source.contains("refresh: refreshSavedReferences"))
-    #expect(source.contains("复制引用"))
+    #expect(source.contains("paragraphReferenceMarker"))
+    #expect(source.contains("replacingOccurrences(of: paragraphReferenceMarker, with: metadata.reference)"))
+    #expect(source.contains("复制可用段落"))
+    #expect(source.contains("只复制段落上下文和密文引用，不复制明文。"))
     #expect(source.contains("不展示明文"))
 }
 

@@ -623,7 +623,7 @@ private struct SavedSecretReferencesCard: View {
                 }
             }
 
-            Text("这里保存使用过的敏感信息引用，只展示 secret:// 密文、标签和策略；不展示明文。复制引用后可直接交给 agent 或贴回笔记。")
+            Text("这里保存使用过的敏感信息段落模板，只展示段落上下文和 secret:// 引用，不展示明文。复制后可直接交给 agent 或贴回笔记。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -644,9 +644,9 @@ private struct SavedSecretReferencesCard: View {
                         SavedSecretReferenceRow(
                             metadata: reference,
                             isCopied: copiedReference == reference.reference
-                        ) {
+                        ) { text in
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(reference.reference, forType: .string)
+                            NSPasteboard.general.setString(text, forType: .string)
                             withAnimation(VaultWorkbenchMotion.interactive) {
                                 copiedReference = reference.reference
                             }
@@ -664,7 +664,8 @@ private struct SavedSecretReferencesCard: View {
 private struct SavedSecretReferenceRow: View {
     let metadata: SecretReferenceMetadata
     let isCopied: Bool
-    let copyReference: () -> Void
+    let copyText: (String) -> Void
+    private let paragraphReferenceMarker = "[[ASV_REFERENCE]]"
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -676,7 +677,7 @@ private struct SavedSecretReferenceRow: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text(metadata.label?.isEmpty == false ? metadata.label! : "未命名密文")
+                    Text(cardTitle)
                         .font(.headline)
                         .lineLimit(1)
                     Text(policyLabel)
@@ -691,24 +692,22 @@ private struct SavedSecretReferenceRow: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                Text(metadata.reference)
+                Text(displayText)
                     .font(.system(.callout, design: .monospaced))
                     .textSelection(.enabled)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 HStack {
-                    Text("只复制密文引用，不复制明文。")
+                    Text("只复制段落上下文和密文引用，不复制明文。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button {
-                        copyReference()
+                        copyText(displayText)
                     } label: {
-                        Label(isCopied ? "已复制" : "复制引用", systemImage: isCopied ? "checkmark" : "doc.on.doc")
+                        Label(isCopied ? "已复制" : "复制可用段落", systemImage: isCopied ? "checkmark" : "doc.on.doc")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -716,6 +715,23 @@ private struct SavedSecretReferenceRow: View {
         }
         .padding(14)
         .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var cardTitle: String {
+        guard let label = metadata.label, !label.isEmpty else {
+            return "未命名密文"
+        }
+        return label.contains(paragraphReferenceMarker) ? "可用段落" : label
+    }
+
+    private var displayText: String {
+        guard let label = metadata.label, !label.isEmpty else {
+            return metadata.reference
+        }
+        if label.contains(paragraphReferenceMarker) {
+            return label.replacingOccurrences(of: paragraphReferenceMarker, with: metadata.reference)
+        }
+        return "\(label)：\(metadata.reference)"
     }
 
     private var policyLabel: String {
