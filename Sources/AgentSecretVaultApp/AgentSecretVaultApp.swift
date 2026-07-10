@@ -18,8 +18,12 @@ struct AgentSecretVaultApplication: App {
                 status: runtime.status,
                 orphanScanResult: runtime.orphanScanResult,
                 auditEntries: runtime.auditEntries,
+                savedReferences: runtime.savedReferences,
                 restoreParagraph: { text in
                     try await runtime.restoreParagraph(text)
+                },
+                refreshSavedReferences: {
+                    await runtime.refreshSavedReferences()
                 }
             )
                 .task {
@@ -58,20 +62,25 @@ struct AgentSecretVaultApplication: App {
                 }
                 .keyboardShortcut("2", modifiers: [.command])
 
+                Button("密文库") {
+                    navigateWorkbench(to: .secrets)
+                }
+                .keyboardShortcut("3", modifiers: [.command])
+
                 Button("记录维护") {
                     navigateWorkbench(to: .records)
                 }
-                .keyboardShortcut("3", modifiers: [.command])
+                .keyboardShortcut("4", modifiers: [.command])
 
                 Button("智能体自动化") {
                     navigateWorkbench(to: .automation)
                 }
-                .keyboardShortcut("4", modifiers: [.command])
+                .keyboardShortcut("5", modifiers: [.command])
 
                 Button("安全边界") {
                     navigateWorkbench(to: .security)
                 }
-                .keyboardShortcut("5", modifiers: [.command])
+                .keyboardShortcut("6", modifiers: [.command])
             }
         }
     }
@@ -95,6 +104,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     )
     @Published var orphanScanResult: OrphanScanResult?
     @Published var auditEntries: [AgentAutomationAuditEntry] = []
+    @Published var savedReferences: [SecretReferenceMetadata] = []
 
     private var controller: AppIPCController?
     private var services: VaultAppServices?
@@ -113,6 +123,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             services = runtime.services
             try runtime.controller.start()
             status = await runtime.services.status()
+            await refreshSavedReferences()
         } catch {
             status = WorkbenchStatus(
                 locked: true,
@@ -136,6 +147,18 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             references: request.references,
             context: request.context
         )
+    }
+
+    func refreshSavedReferences() async {
+        guard let services else {
+            savedReferences = []
+            return
+        }
+        do {
+            savedReferences = try await services.savedSecretReferences()
+        } catch {
+            savedReferences = []
+        }
     }
 
     private func makeRuntime() throws -> (
@@ -215,6 +238,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             auditObserver: { [weak self] entry in
                 await MainActor.run {
                     self?.recordAudit(entry)
+                }
+            },
+            savedReferencesObserver: { [weak self] references in
+                await MainActor.run {
+                    self?.savedReferences = references
                 }
             },
             auditLog: auditLog

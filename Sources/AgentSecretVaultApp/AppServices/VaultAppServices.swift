@@ -15,6 +15,10 @@ public enum VaultAppServicesOrphanScanError: Error, Equatable, Sendable {
     case scanUnavailable
 }
 
+public enum VaultAppServicesSavedReferencesError: Error, Equatable, Sendable {
+    case listUnavailable
+}
+
 public enum VaultAppServicesExportError: Error, Equatable, Sendable {
     case invalidDestination
     case destinationNotAllowed
@@ -46,6 +50,12 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
     }
 }
 
+private struct AgentDecryptAuthorization: Sendable {
+    let key: SymmetricKey
+    let policy: SecretPolicy
+    let expiresAt: Date
+}
+
 public actor VaultAppServices: WorkbenchServicing {
     private let textEncryptor: any TextEncrypting
     private let activeRoot: URL?
@@ -56,12 +66,16 @@ public actor VaultAppServices: WorkbenchServicing {
     private let isUnlockedProvider: (@Sendable () async -> Bool)
     private let revealSessionStore: RevealSessionStore
     private let revealSessionPresenter: any RevealSessionPresenting
+    private let agentDecryptAuthorizationTTL: TimeInterval
+    private let now: @Sendable () -> Date
     private let orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)?
     private let statusObserver: (@Sendable (WorkbenchStatus) async -> Void)?
     private let auditObserver: (@Sendable (AgentAutomationAuditEntry) async -> Void)?
+    private let savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)?
     private let auditLog: EncryptedAuditLog?
     private let exportDirectory: URL
     private var pluginConnected = false
+    private var agentDecryptAuthorization: AgentDecryptAuthorization?
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -73,9 +87,12 @@ public actor VaultAppServices: WorkbenchServicing {
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
+        agentDecryptAuthorizationTTL: TimeInterval = 300,
+        now: @escaping @Sendable () -> Date = Date.init,
         orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil,
         statusObserver: (@Sendable (WorkbenchStatus) async -> Void)? = nil,
         auditObserver: (@Sendable (AgentAutomationAuditEntry) async -> Void)? = nil,
+        savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)? = nil,
         auditLog: EncryptedAuditLog? = nil,
         exportDirectory: URL? = nil
     ) {
@@ -88,9 +105,12 @@ public actor VaultAppServices: WorkbenchServicing {
         self.isUnlockedProvider = isUnlockedProvider
         self.revealSessionStore = revealSessionStore
         self.revealSessionPresenter = revealSessionPresenter
+        self.agentDecryptAuthorizationTTL = agentDecryptAuthorizationTTL
+        self.now = now
         self.orphanScanObserver = orphanScanObserver
         self.statusObserver = statusObserver
         self.auditObserver = auditObserver
+        self.savedReferencesObserver = savedReferencesObserver
         self.auditLog = auditLog
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
     }
@@ -105,9 +125,12 @@ public actor VaultAppServices: WorkbenchServicing {
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
+        agentDecryptAuthorizationTTL: TimeInterval = 300,
+        now: @escaping @Sendable () -> Date = Date.init,
         orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil,
         statusObserver: (@Sendable (WorkbenchStatus) async -> Void)? = nil,
         auditObserver: (@Sendable (AgentAutomationAuditEntry) async -> Void)? = nil,
+        savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)? = nil,
         auditLog: EncryptedAuditLog? = nil,
         exportDirectory: URL? = nil
     ) {
@@ -121,9 +144,12 @@ public actor VaultAppServices: WorkbenchServicing {
             isUnlockedProvider: isUnlockedProvider,
             revealSessionStore: revealSessionStore,
             revealSessionPresenter: revealSessionPresenter,
+            agentDecryptAuthorizationTTL: agentDecryptAuthorizationTTL,
+            now: now,
             orphanScanObserver: orphanScanObserver,
             statusObserver: statusObserver,
             auditObserver: auditObserver,
+            savedReferencesObserver: savedReferencesObserver,
             auditLog: auditLog,
             exportDirectory: exportDirectory
         )
@@ -158,6 +184,7 @@ public actor VaultAppServices: WorkbenchServicing {
             label: label,
             policy: policy
         )
+        await notifySavedReferencesChanged()
         return reference.description
     }
 
@@ -173,6 +200,23 @@ public actor VaultAppServices: WorkbenchServicing {
             result: "成功"
         )
         return metadata
+    }
+
+    public func savedSecretReferences() async throws -> [SecretReferenceMetadata] {
+        guard let recordLister, let recordResolver else {
+            throw VaultAppServicesSavedReferencesError.listUnavailable
+        }
+
+        let references = try await recordLister.recordIDs()
+            .map { "secret://\($0)" }
+            .asyncMap { try await recordResolver.metadata(reference: $0) }
+
+        return references.sorted { lhs, rhs in
+            if lhs.updatedAt == rhs.updatedAt {
+                return lhs.reference < rhs.reference
+            }
+            return lhs.updatedAt > rhs.updatedAt
+        }
     }
 
     public func openRevealSession(references: [String], context: RevealContext) async throws -> String {
@@ -242,7 +286,8 @@ public actor VaultAppServices: WorkbenchServicing {
         let operationPolicy = authorizationPolicy(for: metadata.map(\.policy))
         let operationMasterKey = try await resolvedMasterKey(
             for: operationPolicy,
-            reason: context.reason
+            reason: context.reason,
+            allowsAgentDecryptReuse: true
         )
 
         var plaintexts: [String] = []
@@ -268,14 +313,60 @@ public actor VaultAppServices: WorkbenchServicing {
         return .read
     }
 
-    private func resolvedMasterKey(for policy: SecretPolicy, reason: String) async throws -> SymmetricKey {
+    private func resolvedMasterKey(
+        for policy: SecretPolicy,
+        reason: String,
+        allowsAgentDecryptReuse: Bool = false
+    ) async throws -> SymmetricKey {
         if let masterKey {
             return masterKey
+        }
+        if allowsAgentDecryptReuse, let key = cachedAgentDecryptAuthorization(for: policy) {
+            return key
         }
         guard let masterKeyProvider else {
             throw VaultAppServicesRevealError.revealUnavailable
         }
-        return try await masterKeyProvider(policy, reason)
+        let key = try await masterKeyProvider(policy, reason)
+        if allowsAgentDecryptReuse {
+            cacheAgentDecryptAuthorization(key: key, policy: policy)
+        }
+        return key
+    }
+
+    private func cachedAgentDecryptAuthorization(for policy: SecretPolicy) -> SymmetricKey? {
+        guard let authorization = agentDecryptAuthorization else {
+            return nil
+        }
+        guard now() < authorization.expiresAt else {
+            agentDecryptAuthorization = nil
+            return nil
+        }
+        guard authorization.policy.canAuthorizeDecrypt(for: policy) else {
+            return nil
+        }
+        return authorization.key
+    }
+
+    private func cacheAgentDecryptAuthorization(key: SymmetricKey, policy: SecretPolicy) {
+        guard agentDecryptAuthorizationTTL > 0 else {
+            agentDecryptAuthorization = nil
+            return
+        }
+        agentDecryptAuthorization = AgentDecryptAuthorization(
+            key: key,
+            policy: policy,
+            expiresAt: now().addingTimeInterval(agentDecryptAuthorizationTTL)
+        )
+    }
+
+    private func notifySavedReferencesChanged() async {
+        guard let savedReferencesObserver,
+              let references = try? await savedSecretReferences()
+        else {
+            return
+        }
+        await savedReferencesObserver(references)
     }
 
     public func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {
@@ -523,5 +614,22 @@ private extension Sequence {
             try await values.append(transform(element))
         }
         return values
+    }
+}
+
+private extension SecretPolicy {
+    var decryptAuthorizationRank: Int {
+        switch self {
+        case .read:
+            return 0
+        case .externalSend:
+            return 1
+        case .credential:
+            return 2
+        }
+    }
+
+    func canAuthorizeDecrypt(for requestedPolicy: SecretPolicy) -> Bool {
+        decryptAuthorizationRank >= requestedPolicy.decryptAuthorizationRank
     }
 }

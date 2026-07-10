@@ -190,6 +190,134 @@ import VaultIPC
     ])
 }
 
+@Test func vaultAppServicesReusesAgentDecryptAuthorizationForFiveMinutes() async throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let recordStore = FileRecordStore(baseDirectory: directory)
+    let cipher = VaultCipher()
+    let key = SymmetricKey(data: Data(repeating: 0x37, count: 32))
+    let first = try cipher.encrypt(
+        Data("ASV_CANARY_FIRST_AGENT_DECRYPT".utf8),
+        id: "0123456789ABCDEFGHJKMNPQRS",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    let second = try cipher.encrypt(
+        Data("ASV_CANARY_SECOND_AGENT_DECRYPT".utf8),
+        id: "ABCDEFGHJKMNPQRSTVWXYZ0123",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    try await recordStore.save(first)
+    try await recordStore.save(second)
+
+    let clock = TestClock(Date(timeIntervalSinceReferenceDate: 1_000))
+    let provider = CountingMasterKeyProvider(key: key)
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
+        masterKeyProvider: { policy, reason in
+            await provider.masterKey(policy: policy, reason: reason)
+        },
+        revealSessionStore: RevealSessionStore(),
+        revealSessionPresenter: SpyRevealSessionPresenter(),
+        agentDecryptAuthorizationTTL: 300,
+        now: { clock.now }
+    )
+
+    let firstRestored = try await services.restoreReferences(
+        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        context: RevealContext(
+            reason: "Agent decrypt first credential",
+            template: "first={{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+    clock.now = Date(timeIntervalSinceReferenceDate: 1_299.999)
+    let secondRestored = try await services.restoreReferences(
+        references: ["secret://ABCDEFGHJKMNPQRSTVWXYZ0123"],
+        context: RevealContext(
+            reason: "Agent decrypt second credential",
+            template: "second={{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+
+    #expect(firstRestored == "first=ASV_CANARY_FIRST_AGENT_DECRYPT")
+    #expect(secondRestored == "second=ASV_CANARY_SECOND_AGENT_DECRYPT")
+    #expect(await provider.calls == [
+        MasterKeyProviderCall(policy: .credential, reason: "Agent decrypt first credential")
+    ])
+}
+
+@Test func vaultAppServicesRenewsAgentDecryptAuthorizationAfterFiveMinutes() async throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let recordStore = FileRecordStore(baseDirectory: directory)
+    let cipher = VaultCipher()
+    let key = SymmetricKey(data: Data(repeating: 0x38, count: 32))
+    let record = try cipher.encrypt(
+        Data("ASV_CANARY_AGENT_DECRYPT_RENEW".utf8),
+        id: "0123456789ABCDEFGHJKMNPQRS",
+        version: 1,
+        label: nil,
+        policy: .credential,
+        masterKey: key
+    )
+    try await recordStore.save(record)
+
+    let clock = TestClock(Date(timeIntervalSinceReferenceDate: 2_000))
+    let provider = CountingMasterKeyProvider(key: key)
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
+        masterKeyProvider: { policy, reason in
+            await provider.masterKey(policy: policy, reason: reason)
+        },
+        revealSessionStore: RevealSessionStore(),
+        revealSessionPresenter: SpyRevealSessionPresenter(),
+        agentDecryptAuthorizationTTL: 300,
+        now: { clock.now }
+    )
+
+    _ = try await services.restoreReferences(
+        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        context: RevealContext(
+            reason: "Agent decrypt before expiry",
+            template: "{{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+    clock.now = Date(timeIntervalSinceReferenceDate: 2_300)
+    _ = try await services.restoreReferences(
+        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        context: RevealContext(
+            reason: "Agent decrypt after expiry",
+            template: "{{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+
+    #expect(await provider.calls == [
+        MasterKeyProviderCall(policy: .credential, reason: "Agent decrypt before expiry"),
+        MasterKeyProviderCall(policy: .credential, reason: "Agent decrypt after expiry")
+    ])
+}
+
 @Test func vaultAppServicesAuditRecordsDoNotContainResolvedPlaintext() async throws {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -407,6 +535,28 @@ private actor CountingMasterKeyProvider {
     func masterKey(policy: SecretPolicy, reason: String) -> SymmetricKey {
         calls.append(MasterKeyProviderCall(policy: policy, reason: reason))
         return key
+    }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedNow: Date
+
+    init(_ now: Date) {
+        self.storedNow = now
+    }
+
+    var now: Date {
+        get {
+            lock.withLock {
+                storedNow
+            }
+        }
+        set {
+            lock.withLock {
+                storedNow = newValue
+            }
+        }
     }
 }
 

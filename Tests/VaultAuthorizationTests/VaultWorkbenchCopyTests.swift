@@ -53,12 +53,28 @@ import Foundation
     #expect(titles == [
         "控制台",
         "段落解密",
+        "密文库",
         "记录维护",
         "智能体自动化",
         "安全边界"
     ])
     #expect(VaultWorkbenchSection.paragraph.subtitle.contains("一次解密"))
+    #expect(VaultWorkbenchSection.secrets.subtitle.contains("secret://"))
     #expect(VaultWorkbenchSection.allCases.allSatisfy { !$0.systemImage.isEmpty })
+}
+
+@Test func workbenchShowsSavedSecretReferencesWithoutPlaintext() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    #expect(source.contains("SavedSecretReferencesCard(references: savedReferences"))
+    #expect(source.contains("refresh: refreshSavedReferences"))
+    #expect(source.contains("复制引用"))
+    #expect(source.contains("不展示明文"))
 }
 
 @Test func overviewKeepsStatusProminentAndCompact() throws {
@@ -74,11 +90,22 @@ import Foundation
     #expect(!source.contains("HeroCard("))
 }
 
-@Test func workbenchUsesStableRenderingForBetaMacOSCompatibility() {
+@Test func workbenchUsesStableRenderingForBetaMacOSCompatibility() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
     #expect(VaultWorkbenchRenderingPolicy.usesStableRendering)
     #expect(!VaultWorkbenchRenderingPolicy.usesRepeatingAnimations)
     #expect(!VaultWorkbenchRenderingPolicy.usesBlurredBackgrounds)
     #expect(!VaultWorkbenchRenderingPolicy.usesMaterialBackgrounds)
+    #expect(VaultWorkbenchRenderingPolicy.usesTransientAnimations)
+    #expect(source.contains("VaultWorkbenchMotion.interactive"))
+    #expect(source.contains("withAnimation(VaultWorkbenchMotion.interactive)"))
+    #expect(source.contains(".animation(VaultWorkbenchMotion.interactive, value: isHovering)"))
 }
 
 @Test func numericTelemetryLabelsRespondToStringSelectorsOnMacOS27() {

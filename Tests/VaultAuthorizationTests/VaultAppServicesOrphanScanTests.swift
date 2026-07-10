@@ -63,6 +63,57 @@ private let missingReferencedID = "01J44444444444444444444444"
     #expect(await observer.statuses.map(\.pluginConnected) == [true])
 }
 
+@Test func vaultAppServicesListsSavedSecretReferencesWithoutDecryptingPlaintext() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("VaultAppServicesSavedReferencesTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = FileRecordStore(baseDirectory: directory)
+    try await store.save(makeSavedReferenceRecord(
+        id: storedReferencedID,
+        version: 1,
+        label: "NAS password",
+        policy: .credential,
+        updatedAt: Date(timeIntervalSinceReferenceDate: 4_000_100)
+    ))
+    try await store.save(makeSavedReferenceRecord(
+        id: storedUnreferencedID,
+        version: 1,
+        label: "API token",
+        policy: .externalSend,
+        updatedAt: Date(timeIntervalSinceReferenceDate: 4_000_200)
+    ))
+
+    let services = VaultAppServices(
+        textEncryptor: UnusedOrphanScanTextEncryptor(),
+        activeRoot: directory,
+        recordLister: store,
+        recordResolver: VaultRecordResolver(recordStore: store)
+    )
+
+    let references = try await services.savedSecretReferences()
+
+    #expect(references == [
+        SecretReferenceMetadata(
+            reference: "secret://\(storedUnreferencedID)",
+            policy: .externalSend,
+            label: "API token",
+            createdAt: Date(timeIntervalSinceReferenceDate: 4_000_000),
+            updatedAt: Date(timeIntervalSinceReferenceDate: 4_000_200)
+        ),
+        SecretReferenceMetadata(
+            reference: "secret://\(storedReferencedID)",
+            policy: .credential,
+            label: "NAS password",
+            createdAt: Date(timeIntervalSinceReferenceDate: 4_000_000),
+            updatedAt: Date(timeIntervalSinceReferenceDate: 4_000_100)
+        )
+    ])
+}
+
 private struct UnusedOrphanScanTextEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         try SecretReference("secret://\(storedReferencedID)")
@@ -92,5 +143,29 @@ private func makeOrphanScanRecord(id: String, version: Int) -> EncryptedRecord {
         policy: .credential,
         createdAt: Date(timeIntervalSinceReferenceDate: 3_000_000),
         updatedAt: Date(timeIntervalSinceReferenceDate: 3_000_000 + Double(version))
+    )
+}
+
+private func makeSavedReferenceRecord(
+    id: String,
+    version: Int,
+    label: String,
+    policy: SecretPolicy,
+    updatedAt: Date
+) -> EncryptedRecord {
+    EncryptedRecord(
+        formatVersion: VaultFormat.current,
+        id: id,
+        recordVersion: version,
+        ciphertext: Data([0x60, UInt8(version)]),
+        nonce: Data([0x61, UInt8(version)]),
+        tag: Data([0x62, UInt8(version)]),
+        wrappedDataKey: Data([0x63, UInt8(version)]),
+        wrappedDataKeyNonce: Data([0x64, UInt8(version)]),
+        wrappedDataKeyTag: Data([0x65, UInt8(version)]),
+        label: label,
+        policy: policy,
+        createdAt: Date(timeIntervalSinceReferenceDate: 4_000_000),
+        updatedAt: updatedAt
     )
 }

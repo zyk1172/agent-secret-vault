@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VaultCore
 import VaultIPC
 
 public enum VaultWorkbenchCopy {
@@ -43,13 +44,19 @@ public enum VaultWorkbenchCopy {
 public enum VaultWorkbenchRenderingPolicy {
     public static let usesStableRendering = true
     public static let usesRepeatingAnimations = false
+    public static let usesTransientAnimations = true
     public static let usesBlurredBackgrounds = false
     public static let usesMaterialBackgrounds = false
+}
+
+public enum VaultWorkbenchMotion {
+    public static let interactive = Animation.easeInOut(duration: 0.18)
 }
 
 public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
     case overview
     case paragraph
+    case secrets
     case records
     case automation
     case security
@@ -62,6 +69,8 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
             return "控制台"
         case .paragraph:
             return "段落解密"
+        case .secrets:
+            return "密文库"
         case .records:
             return "记录维护"
         case .automation:
@@ -77,6 +86,8 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
             return "状态、快捷入口和最近动作"
         case .paragraph:
             return "一次解密段落内全部密文引用"
+        case .secrets:
+            return "保存用过的 secret:// 引用，下次直接复制使用"
         case .records:
             return "扫描孤立引用和本机记录"
         case .automation:
@@ -92,6 +103,8 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
             return "square.grid.2x2.fill"
         case .paragraph:
             return "text.quote"
+        case .secrets:
+            return "key.viewfinder"
         case .records:
             return "tray.full.fill"
         case .automation:
@@ -110,19 +123,25 @@ public struct VaultWorkbenchView: View {
     let status: WorkbenchStatus
     let orphanScanResult: OrphanScanResult?
     let auditEntries: [AgentAutomationAuditEntry]
+    let savedReferences: [SecretReferenceMetadata]
     let restoreParagraph: ((String) async throws -> String)?
+    let refreshSavedReferences: (() async -> Void)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
 
     public init(
         status: WorkbenchStatus,
         orphanScanResult: OrphanScanResult? = nil,
         auditEntries: [AgentAutomationAuditEntry] = [],
-        restoreParagraph: ((String) async throws -> String)? = nil
+        savedReferences: [SecretReferenceMetadata] = [],
+        restoreParagraph: ((String) async throws -> String)? = nil,
+        refreshSavedReferences: (() async -> Void)? = nil
     ) {
         self.status = status
         self.orphanScanResult = orphanScanResult
         self.auditEntries = auditEntries
+        self.savedReferences = savedReferences
         self.restoreParagraph = restoreParagraph
+        self.refreshSavedReferences = refreshSavedReferences
     }
 
     public var body: some View {
@@ -133,6 +152,9 @@ public struct VaultWorkbenchView: View {
                 WorkbenchBackground()
                 selectedContent
                     .id(selectedSection)
+                    .transaction { transaction in
+                        transaction.animation = nil
+                    }
             }
         }
         .navigationTitle(selectedSection.title)
@@ -144,7 +166,7 @@ public struct VaultWorkbenchView: View {
             else {
                 return
             }
-            selectedSection = section
+            selectSection(section)
         }
     }
 
@@ -211,6 +233,10 @@ public struct VaultWorkbenchView: View {
                         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
             }
+        case .secrets:
+            WorkbenchPage(title: "密文库", subtitle: "保存使用过的敏感信息引用，只展示密文，不展示明文。", systemImage: selectedSection.systemImage) {
+                SavedSecretReferencesCard(references: savedReferences, refresh: refreshSavedReferences)
+            }
         case .records:
             WorkbenchPage(title: "记录维护", subtitle: "检查笔记引用和本机加密记录是否一致。", systemImage: selectedSection.systemImage) {
                 OrphanReviewView(result: orphanScanResult) { _ in }
@@ -233,6 +259,7 @@ public struct VaultWorkbenchView: View {
             LazyVGrid(columns: [
                 GridItem(.flexible(), spacing: 12),
                 GridItem(.flexible(), spacing: 12),
+                GridItem(.flexible(), spacing: 12),
                 GridItem(.flexible(), spacing: 12)
             ], spacing: 12) {
                 QuickMenuCard(
@@ -253,7 +280,17 @@ public struct VaultWorkbenchView: View {
                     actionTitle: "打开解密",
                     compact: true
                 ) {
-                    selectedSection = .paragraph
+                    selectSection(.paragraph)
+                }
+                QuickMenuCard(
+                    title: "密文库",
+                    detail: "查看本机已保存的 secret:// 引用，复制后可直接给 agent 或笔记使用。",
+                    systemImage: "key.viewfinder",
+                    tint: .green,
+                    actionTitle: "打开密文库",
+                    compact: true
+                ) {
+                    selectSection(.secrets)
                 }
                 QuickMenuCard(
                     title: "记录维护",
@@ -263,11 +300,17 @@ public struct VaultWorkbenchView: View {
                     actionTitle: "查看维护",
                     compact: true
                 ) {
-                    selectedSection = .records
+                    selectSection(.records)
                 }
             }
 
             CompactAuditPreviewCard(entries: Array(auditEntries.prefix(2)))
+        }
+    }
+
+    private func selectSection(_ section: VaultWorkbenchSection) {
+        withAnimation(VaultWorkbenchMotion.interactive) {
+            selectedSection = section
         }
     }
 }
@@ -458,6 +501,7 @@ private struct QuickMenuCard: View {
         )
         .scaleEffect(isHovering ? 1.015 : 1)
         .onHover { isHovering = $0 }
+        .animation(VaultWorkbenchMotion.interactive, value: isHovering)
     }
 }
 
@@ -547,6 +591,153 @@ private struct SidebarStatusStrip: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct SavedSecretReferencesCard: View {
+    let references: [SecretReferenceMetadata]
+    let refresh: (() async -> Void)?
+    @State private var copiedReference: String?
+    @State private var isRefreshing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center) {
+                Label("已保存密文", systemImage: "key.viewfinder")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Text("共 \(references.count) 条")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                if let refresh {
+                    Button {
+                        Task {
+                            isRefreshing = true
+                            await refresh()
+                            isRefreshing = false
+                        }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isRefreshing)
+                }
+            }
+
+            Text("这里保存使用过的敏感信息引用，只展示 secret:// 密文、标签和策略；不展示明文。复制引用后可直接交给 agent 或贴回笔记。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if references.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "tray")
+                        .foregroundStyle(.secondary)
+                    Text("还没有保存的密文。通过 Obsidian 插件加密敏感信息后，引用会出现在这里。")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.callout)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(references, id: \.reference) { reference in
+                        SavedSecretReferenceRow(
+                            metadata: reference,
+                            isCopied: copiedReference == reference.reference
+                        ) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(reference.reference, forType: .string)
+                            withAnimation(VaultWorkbenchMotion.interactive) {
+                                copiedReference = reference.reference
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+private struct SavedSecretReferenceRow: View {
+    let metadata: SecretReferenceMetadata
+    let isCopied: Bool
+    let copyReference: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "lock.doc.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(policyColor)
+                .frame(width: 34, height: 34)
+                .background(policyColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text(metadata.label?.isEmpty == false ? metadata.label! : "未命名密文")
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(policyLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(policyColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(policyColor.opacity(0.10), in: Capsule())
+                    Spacer()
+                    Text(metadata.updatedAt.formatted(date: .numeric, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Text(metadata.reference)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                HStack {
+                    Text("只复制密文引用，不复制明文。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        copyReference()
+                    } label: {
+                        Label(isCopied ? "已复制" : "复制引用", systemImage: isCopied ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(14)
+        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var policyLabel: String {
+        switch metadata.policy {
+        case .read:
+            return "读取"
+        case .externalSend:
+            return "外发"
+        case .credential:
+            return "凭据"
+        }
+    }
+
+    private var policyColor: Color {
+        switch metadata.policy {
+        case .read:
+            return .blue
+        case .externalSend:
+            return .orange
+        case .credential:
+            return .purple
+        }
     }
 }
 
