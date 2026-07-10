@@ -15,6 +15,7 @@ Make each saved secret usable as a paragraph-level context template so the Vault
 
 - Do not store the original paragraph as record metadata.
 - Replace the selected secret with the reference marker and replace every other detector-recognized sensitive match with `已隐藏` before the label is sent to the Mac app.
+- If a manual selection covers only part of a detector-recognized match, replace the unselected portions of that match with `已隐藏` as well.
 - Preserve paragraph structure and non-sensitive context only. Do not infer a secret's meaning beyond the source paragraph.
 - The resulting label is authenticated record metadata, not ciphertext. This intentionally preserves operational semantics in the local Vault and copied snippet, as explicitly requested.
 - Existing labels and records remain valid: if a label does not contain the marker, display and copy it with its reference as a separate line.

@@ -74,6 +74,146 @@ function replaceRange(documentText, range, replacement) {
   return `${documentText.slice(0, range.start)}${replacement}${documentText.slice(range.end)}`;
 }
 
+// src/replace/transactionalReplace.ts
+function compareFromEnd(left, right) {
+  return right.start - left.start || right.end - left.end;
+}
+function validateReplacements(text, replacements) {
+  const ascendingReplacements = [...replacements].sort((left, right) => left.start - right.start || left.end - right.end);
+  for (const replacement of ascendingReplacements) {
+    if (replacement.start < 0 || replacement.end < replacement.start || replacement.end > text.length) {
+      throw new RangeError("Replacement range is outside the original text.");
+    }
+  }
+  for (let index = 1; index < ascendingReplacements.length; index += 1) {
+    if (ascendingReplacements[index].start < ascendingReplacements[index - 1].end) {
+      throw new RangeError("Replacement ranges overlap.");
+    }
+  }
+}
+function applyReplacements(text, replacements) {
+  validateReplacements(text, replacements);
+  return [...replacements].sort(compareFromEnd).reduce(
+    (updatedText, replacement) => `${updatedText.slice(0, replacement.start)}${replacement.replacementText}${updatedText.slice(replacement.end)}`,
+    text
+  );
+}
+
+// src/scan/detectors.ts
+var existingSecretReferencePattern = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
+var existingSecretReferenceTailPattern = /^\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
+var trailingReferencePunctuationPattern = /[.,，。；;:：)）\]}】>]+$/u;
+function redactValue(value) {
+  if (value.length <= 10) {
+    return "********";
+  }
+  return `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
+}
+function isExistingSecretReference(value) {
+  const normalizedValue = value.replace(trailingReferencePunctuationPattern, "");
+  return existingSecretReferencePattern.test(normalizedValue) || existingSecretReferenceTailPattern.test(normalizedValue);
+}
+function collectMatches(text, regex, ruleId, confidence) {
+  const matches = [];
+  for (const match of text.matchAll(regex)) {
+    const value = match.slice(1).find((capture) => capture !== void 0) ?? match[0];
+    const matchStart = match.index ?? 0;
+    const valueOffset = match[0].indexOf(value);
+    const start = matchStart + valueOffset;
+    matches.push({
+      start,
+      end: start + value.length,
+      value,
+      ruleId,
+      confidence
+    });
+  }
+  return matches;
+}
+var rulePriority = {
+  "private-key": 0,
+  "openai-api-key": 1,
+  "github-token": 2,
+  "jwt": 3,
+  "bearer-token": 4,
+  "url-secret-parameter": 5,
+  "generic-secret-assignment": 6,
+  "chinese-secret-assignment": 7,
+  "password-assignment": 8,
+  "china-id-card": 9,
+  "bank-card": 10,
+  "phone-number": 11,
+  "email-address": 12
+};
+function confidencePriority(confidence) {
+  return confidence === "high" ? 0 : 1;
+}
+function overlaps(left, right) {
+  return left.start < right.end && right.start < left.end;
+}
+function compareFindingPriority(left, right) {
+  return confidencePriority(left.confidence) - confidencePriority(right.confidence) || right.end - right.start - (left.end - left.start) || rulePriority[left.ruleId] - rulePriority[right.ruleId] || left.start - right.start || left.end - right.end;
+}
+function suppressOverlaps(matches) {
+  const accepted = [];
+  for (const candidate of [...matches].sort(compareFindingPriority)) {
+    if (!accepted.some((finding) => overlaps(finding, candidate))) {
+      accepted.push(candidate);
+    }
+  }
+  return accepted.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+function detectSensitiveText(text) {
+  const matches = [
+    ...collectMatches(text, /sk-proj-[A-Za-z0-9_-]{20,}/g, "openai-api-key", "high"),
+    ...collectMatches(text, /gh[pousr]_[A-Za-z0-9_]{20,}/g, "github-token", "high"),
+    ...collectMatches(text, /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "private-key", "high"),
+    ...collectMatches(text, /\bBearer\s+([A-Za-z0-9._~+/=-]{10,})/g, "bearer-token", "high"),
+    ...collectMatches(text, /\b(?:password|passwd|pwd)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/gi, "password-assignment", "medium"),
+    ...collectMatches(text, /(?:密码|口令|令牌|密钥|秘钥|访问密钥|api\s*key|API\s*Key|token|secret)\s*[:：=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`，。；;]+))/gi, "chinese-secret-assignment", "medium"),
+    ...collectMatches(text, /\b(?:api[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|auth[_-]?token|refresh[_-]?token|token|secret)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z0-9._~+/=-]{10,}))/gi, "generic-secret-assignment", "medium"),
+    ...collectMatches(text, /\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})\b/g, "jwt", "high"),
+    ...collectMatches(text, /[?&](?:token|access_token|refresh_token|api_key|apikey|key|secret|client_secret)=([A-Za-z0-9._~+/=-]{10,})/gi, "url-secret-parameter", "high"),
+    ...collectMatches(text, /\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, "email-address", "medium"),
+    ...collectMatches(text, /(?<!\d)(1[3-9]\d{9})(?!\d)/g, "phone-number", "medium"),
+    ...collectMatches(text, /(?<!\d)([1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx])(?![0-9Xx])/g, "china-id-card", "medium"),
+    ...collectMatches(text, /(?<!\d)([1-9]\d{15,18})(?!\d)/g, "bank-card", "medium")
+  ];
+  return suppressOverlaps(matches.filter(({ value }) => !isExistingSecretReference(value))).map(({ start, end, ruleId, confidence, value }) => ({
+    start,
+    end,
+    ruleId,
+    confidence,
+    redactedPreview: redactValue(value)
+  }));
+}
+
+// src/encrypt/paragraphContextTemplate.ts
+var PARAGRAPH_REFERENCE_MARKER = "[[ASV_REFERENCE]]";
+function buildParagraphContextTemplate(documentText, target) {
+  const paragraph = extractCurrentParagraph(documentText, target.start);
+  const targetStart = Math.max(0, target.start - paragraph.start);
+  const targetEnd = Math.min(paragraph.text.length, Math.max(targetStart, target.end - paragraph.start));
+  const replacements = [{
+    start: targetStart,
+    end: targetEnd,
+    replacementText: PARAGRAPH_REFERENCE_MARKER
+  }];
+  for (const finding of detectSensitiveText(paragraph.text)) {
+    if (finding.end <= targetStart || finding.start >= targetEnd) {
+      replacements.push({ start: finding.start, end: finding.end, replacementText: "\u5DF2\u9690\u85CF" });
+      continue;
+    }
+    if (finding.start < targetStart) {
+      replacements.push({ start: finding.start, end: targetStart, replacementText: "\u5DF2\u9690\u85CF" });
+    }
+    if (targetEnd < finding.end) {
+      replacements.push({ start: targetEnd, end: finding.end, replacementText: "\u5DF2\u9690\u85CF" });
+    }
+  }
+  return applyReplacements(paragraph.text, replacements);
+}
+
 // src/encrypt/encryptSelection.ts
 async function encryptTextRange(input) {
   const response = await input.client.request({
@@ -305,31 +445,6 @@ function interpretWorkbenchStatus(input) {
   return { canOperate: true, message: "Agent Secret Vault is ready." };
 }
 
-// src/replace/transactionalReplace.ts
-function compareFromEnd(left, right) {
-  return right.start - left.start || right.end - left.end;
-}
-function validateReplacements(text, replacements) {
-  const ascendingReplacements = [...replacements].sort((left, right) => left.start - right.start || left.end - right.end);
-  for (const replacement of ascendingReplacements) {
-    if (replacement.start < 0 || replacement.end < replacement.start || replacement.end > text.length) {
-      throw new RangeError("Replacement range is outside the original text.");
-    }
-  }
-  for (let index = 1; index < ascendingReplacements.length; index += 1) {
-    if (ascendingReplacements[index].start < ascendingReplacements[index - 1].end) {
-      throw new RangeError("Replacement ranges overlap.");
-    }
-  }
-}
-function applyReplacements(text, replacements) {
-  validateReplacements(text, replacements);
-  return [...replacements].sort(compareFromEnd).reduce(
-    (updatedText, replacement) => `${updatedText.slice(0, replacement.start)}${replacement.replacementText}${updatedText.slice(replacement.end)}`,
-    text
-  );
-}
-
 // src/reveal/paragraphReveal.ts
 var SECRET_SCHEME = "secret://";
 var SECRET_ID_LENGTH = 26;
@@ -435,95 +550,6 @@ function buildReferenceResolutionRequest(paragraph) {
       ranges
     }
   };
-}
-
-// src/scan/detectors.ts
-var existingSecretReferencePattern = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
-var existingSecretReferenceTailPattern = /^\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
-var trailingReferencePunctuationPattern = /[.,，。；;:：)）\]}】>]+$/u;
-function redactValue(value) {
-  if (value.length <= 10) {
-    return "********";
-  }
-  return `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
-}
-function isExistingSecretReference(value) {
-  const normalizedValue = value.replace(trailingReferencePunctuationPattern, "");
-  return existingSecretReferencePattern.test(normalizedValue) || existingSecretReferenceTailPattern.test(normalizedValue);
-}
-function collectMatches(text, regex, ruleId, confidence) {
-  const matches = [];
-  for (const match of text.matchAll(regex)) {
-    const value = match.slice(1).find((capture) => capture !== void 0) ?? match[0];
-    const matchStart = match.index ?? 0;
-    const valueOffset = match[0].indexOf(value);
-    const start = matchStart + valueOffset;
-    matches.push({
-      start,
-      end: start + value.length,
-      value,
-      ruleId,
-      confidence
-    });
-  }
-  return matches;
-}
-var rulePriority = {
-  "private-key": 0,
-  "openai-api-key": 1,
-  "github-token": 2,
-  "jwt": 3,
-  "bearer-token": 4,
-  "url-secret-parameter": 5,
-  "generic-secret-assignment": 6,
-  "chinese-secret-assignment": 7,
-  "password-assignment": 8,
-  "china-id-card": 9,
-  "bank-card": 10,
-  "phone-number": 11,
-  "email-address": 12
-};
-function confidencePriority(confidence) {
-  return confidence === "high" ? 0 : 1;
-}
-function overlaps(left, right) {
-  return left.start < right.end && right.start < left.end;
-}
-function compareFindingPriority(left, right) {
-  return confidencePriority(left.confidence) - confidencePriority(right.confidence) || right.end - right.start - (left.end - left.start) || rulePriority[left.ruleId] - rulePriority[right.ruleId] || left.start - right.start || left.end - right.end;
-}
-function suppressOverlaps(matches) {
-  const accepted = [];
-  for (const candidate of [...matches].sort(compareFindingPriority)) {
-    if (!accepted.some((finding) => overlaps(finding, candidate))) {
-      accepted.push(candidate);
-    }
-  }
-  return accepted.sort((left, right) => left.start - right.start || left.end - right.end);
-}
-function detectSensitiveText(text) {
-  const matches = [
-    ...collectMatches(text, /sk-proj-[A-Za-z0-9_-]{20,}/g, "openai-api-key", "high"),
-    ...collectMatches(text, /gh[pousr]_[A-Za-z0-9_]{20,}/g, "github-token", "high"),
-    ...collectMatches(text, /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "private-key", "high"),
-    ...collectMatches(text, /\bBearer\s+([A-Za-z0-9._~+/=-]{10,})/g, "bearer-token", "high"),
-    ...collectMatches(text, /\b(?:password|passwd|pwd)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/gi, "password-assignment", "medium"),
-    ...collectMatches(text, /(?:密码|口令|令牌|密钥|秘钥|访问密钥|api\s*key|API\s*Key|token|secret)\s*[:：=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`，。；;]+))/gi, "chinese-secret-assignment", "medium"),
-    ...collectMatches(text, /\b(?:api[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|auth[_-]?token|refresh[_-]?token|token|secret)\s*[:=]\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z0-9._~+/=-]{10,}))/gi, "generic-secret-assignment", "medium"),
-    ...collectMatches(text, /\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})\b/g, "jwt", "high"),
-    ...collectMatches(text, /[?&](?:token|access_token|refresh_token|api_key|apikey|key|secret|client_secret)=([A-Za-z0-9._~+/=-]{10,})/gi, "url-secret-parameter", "high"),
-    ...collectMatches(text, /\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, "email-address", "medium"),
-    ...collectMatches(text, /(?<!\d)(1[3-9]\d{9})(?!\d)/g, "phone-number", "medium"),
-    ...collectMatches(text, /(?<!\d)([1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx])(?![0-9Xx])/g, "china-id-card", "medium"),
-    ...collectMatches(text, /(?<!\d)([1-9]\d{15,18})(?!\d)/g, "bank-card", "medium")
-  ];
-  return suppressOverlaps(matches.filter(({ value }) => !isExistingSecretReference(value))).map(({ start, end, ruleId, confidence, value }) => ({
-    start,
-    end,
-    ruleId,
-    confidence,
-    redactedPreview: redactValue(value)
-  }));
 }
 
 // src/scan/vaultScanner.ts
@@ -827,10 +853,11 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   }
   async encryptRange(editor, range, fromPos, toPos) {
     try {
+      const documentText = editor.getValue();
       const result = await encryptTextRange({
-        documentText: editor.getValue(),
+        documentText,
         range,
-        label: null,
+        label: buildParagraphContextTemplate(documentText, range),
         policy: "credential",
         client: this.createVaultClient()
       });
@@ -1024,7 +1051,11 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       const response = await client.request({
         type: "encryptText",
         plaintext,
-        label: `${finding.filePath}:${finding.ruleId}`,
+        label: buildParagraphContextTemplate(text, {
+          start: finding.start,
+          end: finding.end,
+          text: plaintext
+        }),
         policy: "credential"
       });
       if (response.type !== "created") {
