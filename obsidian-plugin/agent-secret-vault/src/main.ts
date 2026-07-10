@@ -12,7 +12,6 @@ import { ReviewModal } from "./ui/reviewModal";
 import { updateStatusBar } from "./ui/statusBar";
 
 const DEFAULT_SOCKET_PATH = `${process.env.HOME ?? ""}/Library/Application Support/AgentSecretVault/IPC/agent-secret-vault.sock`;
-type SecretPolicyName = "credential" | "externalSend" | "read";
 
 function clonePosition(position: EditorPosition): EditorPosition {
   return { line: position.line, ch: position.ch };
@@ -20,13 +19,9 @@ function clonePosition(position: EditorPosition): EditorPosition {
 
 export const commandDefinitions = [
   { id: "encrypt-selection", name: "加密选中文本" },
-  { id: "encrypt-selection-low-protection", name: "低保护加密选中文本" },
   { id: "encrypt-current-paragraph", name: "加密当前段落敏感信息" },
-  { id: "encrypt-current-paragraph-low-protection", name: "低保护加密当前段落敏感信息" },
   { id: "scan-current-note", name: "扫描当前笔记中的敏感信息" },
-  { id: "scan-current-note-low-protection", name: "低保护扫描当前笔记中的敏感信息" },
   { id: "scan-vault", name: "扫描整个知识库中的敏感信息" },
-  { id: "scan-vault-low-protection", name: "低保护扫描整个知识库中的敏感信息" },
   { id: "scan-orphans", name: "扫描孤立密文引用" },
   { id: "reveal-selection", name: "在 Agent Secret Vault 中临时解密选中文本" },
   { id: "reveal-current-paragraph", name: "在 Agent Secret Vault 中临时解密当前段落" },
@@ -61,25 +56,11 @@ export default class AgentSecretVaultPlugin extends Plugin {
             await this.encryptSelection(editor);
           }
         });
-      } else if (definition.id === "encrypt-selection-low-protection") {
-        this.addCommand({
-          ...command,
-          editorCallback: async (editor: Editor) => {
-            await this.encryptSelection(editor, "read");
-          }
-        });
       } else if (definition.id === "encrypt-current-paragraph") {
         this.addCommand({
           ...command,
           editorCallback: async (editor: Editor) => {
             await this.encryptCurrentParagraph(editor);
-          }
-        });
-      } else if (definition.id === "encrypt-current-paragraph-low-protection") {
-        this.addCommand({
-          ...command,
-          editorCallback: async (editor: Editor) => {
-            await this.encryptCurrentParagraph(editor, "read");
           }
         });
       } else if (definition.id === "reveal-current-paragraph") {
@@ -117,25 +98,11 @@ export default class AgentSecretVaultPlugin extends Plugin {
             await this.scanCurrentNote(editor);
           }
         });
-      } else if (definition.id === "scan-current-note-low-protection") {
-        this.addCommand({
-          ...command,
-          editorCallback: async (editor: Editor) => {
-            await this.scanCurrentNote(editor, "read");
-          }
-        });
       } else if (definition.id === "scan-vault") {
         this.addCommand({
           ...command,
           callback: async () => {
             await this.scanVault();
-          }
-        });
-      } else if (definition.id === "scan-vault-low-protection") {
-        this.addCommand({
-          ...command,
-          callback: async () => {
-            await this.scanVault("read");
           }
         });
       } else if (definition.id === "scan-orphans") {
@@ -203,46 +170,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     menu.addItem((item) => {
       item
-        .setTitle("低保护加密选中文本")
-        .setIcon("shield")
-        .onClick(async () => {
-          await this.encryptSelection(editor, "read");
-        });
-    });
-
-    menu.addItem((item) => {
-      item
-        .setTitle("加密当前段落敏感信息")
-        .setIcon("lock-keyhole")
-        .onClick(async () => {
-          await this.encryptCurrentParagraph(editor);
-        });
-    });
-
-    menu.addItem((item) => {
-      item
-        .setTitle("低保护加密当前段落敏感信息")
-        .setIcon("shield")
-        .onClick(async () => {
-          await this.encryptCurrentParagraph(editor, "read");
-        });
-    });
-
-    menu.addItem((item) => {
-      item
         .setTitle("扫描当前笔记并加密")
         .setIcon("scan-search")
         .onClick(async () => {
           await this.scanCurrentNote(editor);
-        });
-    });
-
-    menu.addItem((item) => {
-      item
-        .setTitle("低保护扫描当前笔记并加密")
-        .setIcon("shield")
-        .onClick(async () => {
-          await this.scanCurrentNote(editor, "read");
         });
     });
 
@@ -259,17 +190,6 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     menu.addItem((item) => {
       item
-        .setTitle("临时解密当前段落")
-        .setIcon("eye")
-        .onClick(async () => {
-          await this.revealCurrentParagraph(editor);
-        });
-    });
-
-    menu.addSeparator();
-
-    menu.addItem((item) => {
-      item
         .setTitle("还原选中文本")
         .setIcon("rotate-ccw")
         .onClick(async () => {
@@ -279,30 +199,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     menu.addItem((item) => {
       item
-        .setTitle("还原当前段落")
-        .setIcon("rotate-ccw")
-        .onClick(async () => {
-          await this.restoreCurrentParagraph(editor);
-        });
-    });
-
-    menu.addSeparator();
-
-    menu.addItem((item) => {
-      item
         .setTitle("扫描整个知识库")
         .setIcon("folder-search")
         .onClick(async () => {
           await this.scanVault();
-        });
-    });
-
-    menu.addItem((item) => {
-      item
-        .setTitle("低保护扫描整个知识库")
-        .setIcon("shield")
-        .onClick(async () => {
-          await this.scanVault("read");
         });
     });
 
@@ -331,7 +231,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
   }
 
-  private async encryptSelection(editor: Editor, policy: SecretPolicyName = "credential"): Promise<void> {
+  private async encryptSelection(editor: Editor): Promise<void> {
     const text = editor.getSelection();
     if (text.length === 0) {
       new Notice("Agent Secret Vault: select text to encrypt.");
@@ -344,10 +244,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
       start: editor.posToOffset(from),
       end: editor.posToOffset(to),
       text
-    }, clonePosition(from), clonePosition(to), policy);
+    }, clonePosition(from), clonePosition(to));
   }
 
-  private async encryptCurrentParagraph(editor: Editor, policy: SecretPolicyName = "credential"): Promise<void> {
+  private async encryptCurrentParagraph(editor: Editor): Promise<void> {
     const documentText = editor.getValue();
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     if (range.text.trim().length === 0) {
@@ -362,7 +262,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
 
     try {
-      const updatedText = await this.encryptFindingsInText(range.text, findings, policy);
+      const updatedText = await this.encryptFindingsInText(range.text, findings);
       const fromPos = editor.offsetToPos(range.start);
       const toPos = editor.offsetToPos(range.end);
       if (editor.getRange(fromPos, toPos) !== range.text) {
@@ -381,15 +281,14 @@ export default class AgentSecretVaultPlugin extends Plugin {
     editor: Editor,
     range: TextRange,
     fromPos: EditorPosition,
-    toPos: EditorPosition,
-    policy: SecretPolicyName = "credential"
+    toPos: EditorPosition
   ): Promise<void> {
     try {
       const result = await encryptTextRange({
         documentText: editor.getValue(),
         range,
         label: null,
-        policy,
+        policy: "credential",
         client: this.createVaultClient()
       });
 
@@ -498,7 +397,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
   }
 
-  private async scanCurrentNote(editor: Editor, policy: SecretPolicyName = "credential"): Promise<void> {
+  private async scanCurrentNote(editor: Editor): Promise<void> {
     const originalText = editor.getValue();
     const activeFilePath = this.app.workspace?.getActiveFile()?.path ?? "current-note.md";
     const findings = scanMarkdownFile(activeFilePath, originalText);
@@ -509,7 +408,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
           return;
         }
 
-        const updatedText = await this.encryptFindingsInText(originalText, selectedFindings, policy);
+        const updatedText = await this.encryptFindingsInText(originalText, selectedFindings);
         editor.setValue(updatedText);
         new Notice(`Agent Secret Vault: encrypted ${selectedFindings.length} finding${selectedFindings.length === 1 ? "" : "s"}.`);
       } catch (error) {
@@ -519,7 +418,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }).open();
   }
 
-  private async scanVault(policy: SecretPolicyName = "credential"): Promise<void> {
+  private async scanVault(): Promise<void> {
     const files = this.app.vault.getMarkdownFiles();
     const filesByPath = new Map(files.map((file) => [file.path, file]));
     const snapshots = new Map<string, string>();
@@ -533,7 +432,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
       try {
-        const result = await this.applyVaultFindings(selectedFindings, filesByPath, snapshots, policy);
+        const result = await this.applyVaultFindings(selectedFindings, filesByPath, snapshots);
         new Notice(this.replacementSummary(result.appliedCount, result.skippedCount));
       } catch (error) {
         const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
@@ -569,8 +468,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
   private async applyVaultFindings(
     selectedFindings: ScanFindingState[],
     filesByPath: Map<string, TFile>,
-    snapshots: Map<string, string>,
-    policy: SecretPolicyName = "credential"
+    snapshots: Map<string, string>
   ): Promise<{ appliedCount: number; skippedCount: number }> {
     const findingsByPath = new Map<string, ScanFindingState[]>();
     let appliedCount = 0;
@@ -596,7 +494,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         continue;
       }
 
-      const updatedText = await this.encryptFindingsInText(originalText, findings, policy);
+      const updatedText = await this.encryptFindingsInText(originalText, findings);
       await this.app.vault.modify(file, updatedText);
       appliedCount += findings.length;
     }
@@ -614,8 +512,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async encryptFindingsInText(
     text: string,
-    findings: ScanFindingState[],
-    policy: SecretPolicyName = "credential"
+    findings: ScanFindingState[]
   ): Promise<string> {
     const client = this.createVaultClient();
     const replacements: PlannedReplacement[] = [];
@@ -626,7 +523,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         type: "encryptText",
         plaintext,
         label: `${finding.filePath}:${finding.ruleId}`,
-        policy
+        policy: "credential"
       });
 
       if (response.type !== "created") {

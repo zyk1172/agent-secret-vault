@@ -186,34 +186,6 @@ describe("encrypt selection", () => {
     }]);
   });
 
-  it("sends read policy for low-protection selection encryption", async () => {
-    obsidianMock.notices = [];
-    const editor = new TestEditor("token = ASV_CANARY_PLUGIN", 8, 25);
-    const requests: unknown[] = [];
-    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
-      createVaultClient: () => unknown;
-      encryptSelection: (editor: TestEditor, policy?: "credential" | "externalSend" | "read") => Promise<void>;
-    };
-    plugin.createVaultClient = () => ({
-      request: async (request: unknown) => {
-        requests.push(request);
-        return {
-          type: "created",
-          reference: "secret://0123456789ABCDEFGHJKMNPQRS"
-        };
-      }
-    });
-
-    await plugin.encryptSelection(editor, "read");
-
-    expect(requests[0]).toMatchObject({
-      type: "encryptText",
-      plaintext: "ASV_CANARY_PLUGIN",
-      policy: "read"
-    });
-    expect(editor.text).toBe("token = secret://0123456789ABCDEFGHJKMNPQRS");
-  });
-
   it("does not replace the selection when the editor text changes before IPC returns", async () => {
     obsidianMock.notices = [];
     const editor = new TestEditor("token = ASV_CANARY_PLUGIN", 8, 25);

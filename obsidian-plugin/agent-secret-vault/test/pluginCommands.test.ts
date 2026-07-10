@@ -130,13 +130,9 @@ describe("plugin commands", () => {
   it("registers core workbench commands", () => {
     expect(commandDefinitions.map((command) => command.id)).toEqual([
       "encrypt-selection",
-      "encrypt-selection-low-protection",
       "encrypt-current-paragraph",
-      "encrypt-current-paragraph-low-protection",
       "scan-current-note",
-      "scan-current-note-low-protection",
       "scan-vault",
-      "scan-vault-low-protection",
       "scan-orphans",
       "reveal-selection",
       "reveal-current-paragraph",
@@ -148,13 +144,9 @@ describe("plugin commands", () => {
   it("uses Chinese command names in the command palette", () => {
     expect(commandDefinitions.map((command) => command.name)).toEqual([
       "加密选中文本",
-      "低保护加密选中文本",
       "加密当前段落敏感信息",
-      "低保护加密当前段落敏感信息",
       "扫描当前笔记中的敏感信息",
-      "低保护扫描当前笔记中的敏感信息",
       "扫描整个知识库中的敏感信息",
-      "低保护扫描整个知识库中的敏感信息",
       "扫描孤立密文引用",
       "在 Agent Secret Vault 中临时解密选中文本",
       "在 Agent Secret Vault 中临时解密当前段落",
@@ -208,17 +200,10 @@ describe("plugin commands", () => {
     expect(obsidianMock.shownMenus).toEqual([]);
     expect(obsidianMock.submenuItems.map((item) => item.title)).toEqual([
       "加密选中文本",
-      "低保护加密选中文本",
-      "加密当前段落敏感信息",
-      "低保护加密当前段落敏感信息",
       "扫描当前笔记并加密",
-      "低保护扫描当前笔记并加密",
       "临时解密选中文本",
-      "临时解密当前段落",
       "还原选中文本",
-      "还原当前段落",
       "扫描整个知识库",
-      "低保护扫描整个知识库",
       "扫描孤立密文引用"
     ]);
   });
@@ -241,18 +226,46 @@ describe("plugin commands", () => {
     expect(obsidianMock.menuItems.map((item) => item.title)).toEqual([
       "Agent Secret Vault",
       "加密选中文本",
-      "低保护加密选中文本",
-      "加密当前段落敏感信息",
-      "低保护加密当前段落敏感信息",
       "扫描当前笔记并加密",
-      "低保护扫描当前笔记并加密",
       "临时解密选中文本",
-      "临时解密当前段落",
       "还原选中文本",
-      "还原当前段落",
       "扫描整个知识库",
-      "低保护扫描整个知识库",
       "扫描孤立密文引用"
     ]);
+  });
+
+  it("uses credential encryption and current-note scanning from the simplified editor menu", async () => {
+    const editor = {
+      getSelection: () => "sensitive-value",
+      getCursor: (which?: "from" | "to") => ({ line: 0, ch: which === "to" ? 15 : 0 }),
+      posToOffset: (position: { ch: number }) => position.ch,
+      getValue: () => "sensitive-value",
+      getRange: () => "sensitive-value",
+      replaceRange: () => undefined
+    };
+    const requests: unknown[] = [];
+    let scannedEditor: unknown;
+    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      scanCurrentNote: (value: unknown) => Promise<void>;
+      onload: () => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "created", reference: "secret://0123456789ABCDEFGHJKMNPQRS" };
+      }
+    });
+    plugin.scanCurrentNote = async (value) => {
+      scannedEditor = value;
+    };
+
+    await plugin.onload();
+    obsidianMock.workspaceEvents.find((event) => event.name === "editor-menu")?.callback(new (await import("obsidian")).Menu(), editor);
+    await obsidianMock.submenuItems[0]?.onClick?.();
+    await obsidianMock.submenuItems[1]?.onClick?.();
+
+    expect(requests).toContainEqual(expect.objectContaining({ type: "encryptText", policy: "credential" }));
+    expect(scannedEditor).toBe(editor);
   });
 });
