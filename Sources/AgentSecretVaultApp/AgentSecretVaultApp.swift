@@ -13,7 +13,7 @@ struct AgentSecretVaultApplication: App {
     @StateObject private var runtime = AgentSecretVaultRuntime()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: MenuBarPresentation.mainWindowID) {
             VaultWorkbenchView(
                 status: runtime.status,
                 orphanScanResult: runtime.orphanScanResult,
@@ -49,40 +49,62 @@ struct AgentSecretVaultApplication: App {
                     runtime.clearRevealSessions()
                 }
         }
-        .commands {
-            CommandGroup(replacing: .pasteboard) {}
-            CommandMenu("导航") {
-                Button("控制台") {
-                    navigateWorkbench(to: .overview)
-                }
-                .keyboardShortcut("1", modifiers: [.command])
+            .commands {
+                CommandGroup(replacing: .pasteboard) {}
+                CommandGroup(replacing: .appTermination) {}
+                CommandMenu("导航") {
+                    Button("控制台") {
+                        navigateWorkbench(to: .overview)
+                    }
+                    .keyboardShortcut("1", modifiers: [.command])
 
-                Button("段落解密") {
-                    navigateWorkbench(to: .paragraph)
-                }
-                .keyboardShortcut("2", modifiers: [.command])
+                    Button("段落解密") {
+                        navigateWorkbench(to: .paragraph)
+                    }
+                    .keyboardShortcut("2", modifiers: [.command])
 
-                Button("密文库") {
-                    navigateWorkbench(to: .secrets)
-                }
-                .keyboardShortcut("3", modifiers: [.command])
+                    Button("密文库") {
+                        navigateWorkbench(to: .secrets)
+                    }
+                    .keyboardShortcut("3", modifiers: [.command])
 
-                Button("记录维护") {
-                    navigateWorkbench(to: .records)
-                }
-                .keyboardShortcut("4", modifiers: [.command])
+                    Button("记录维护") {
+                        navigateWorkbench(to: .records)
+                    }
+                    .keyboardShortcut("4", modifiers: [.command])
 
-                Button("智能体自动化") {
-                    navigateWorkbench(to: .automation)
-                }
-                .keyboardShortcut("5", modifiers: [.command])
+                    Button("智能体自动化") {
+                        navigateWorkbench(to: .automation)
+                    }
+                    .keyboardShortcut("5", modifiers: [.command])
 
-                Button("安全边界") {
-                    navigateWorkbench(to: .security)
+                    Button("安全边界") {
+                        navigateWorkbench(to: .security)
+                    }
+                    .keyboardShortcut("6", modifiers: [.command])
                 }
-                .keyboardShortcut("6", modifiers: [.command])
+            }
+
+        MenuBarExtra("Agent Secret Vault", systemImage: MenuBarPresentation.statusItemSymbol) {
+            MenuBarVaultPanel(
+                status: runtime.status,
+                orphanScanResult: runtime.orphanScanResult,
+                auditEntries: runtime.auditEntries,
+                savedReferences: runtime.savedReferences,
+                restoreParagraph: { text in
+                    try await runtime.restoreParagraph(text)
+                },
+                refreshSavedReferences: {
+                    await runtime.refreshSavedReferences()
+                },
+                clearRevealSessions: { runtime.clearRevealSessions() },
+                requestTermination: { appDelegate.requestMenuBarTermination() }
+            )
+            .task {
+                await runtime.start()
             }
         }
+        .menuBarExtraStyle(.window)
     }
 
     private func navigateWorkbench(to section: VaultWorkbenchSection) {
@@ -278,11 +300,27 @@ private enum NoopSelectionReplacerError: Error {
 }
 
 final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
+    private var permitsTermination = false
+
     func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
         false
     }
 
     func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool {
         false
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func requestMenuBarTermination() {
+        RevealSessionLifecycle.clearAll()
+        permitsTermination = true
+        NSApp.terminate(nil)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        permitsTermination ? .terminateNow : .terminateCancel
     }
 }
