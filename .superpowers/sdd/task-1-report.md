@@ -122,3 +122,29 @@ Result: passed. Swift Testing ran 87 tests with zero issues, including
 `compactRestoreStateDoesNotSurfaceLateErrorAfterSensitiveOutputIsCleared()`.
 The separate XCTest summary still reports zero tests because this target uses
 Swift Testing.
+
+## Final Task 1 Test Coverage Follow-Up
+
+### Changed Paths
+
+- `Tests/VaultAuthorizationTests/MenuBarPresentationTests.swift`
+  - Added deterministic suspended-action coverage for late
+    `noSecretReferences`, `invalidReference`, and generic errors.
+  - Each case clears sensitive output before resuming and asserts
+    `restoredText` remains empty and `errorText` remains `nil`.
+  - Refactored the controlled throwing-gate timing and assertions into one
+    test-only helper.
+
+### Verification
+
+Ran the complete `VaultAuthorizationTests` target with Xcode-beta:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+  xcodebuild -project AgentSecretVault.xcodeproj -scheme VaultAuthorization \
+  -destination 'platform=macOS' \
+  -only-testing:VaultAuthorizationTests test
+```
+
+Result: passed. Swift Testing ran 89 tests with zero issues, including all
+three final suspended-action error cases. No lifecycle UI binding was changed.

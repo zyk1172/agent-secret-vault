@@ -37,7 +37,24 @@ import Testing
     #expect(state.errorText == nil)
 }
 
-@Test @MainActor func compactRestoreStateDoesNotSurfaceLateErrorAfterSensitiveOutputIsCleared() async {
+@Test @MainActor func compactRestoreStateDoesNotSurfaceLateNoSecretReferencesAfterSensitiveOutputIsCleared() async {
+    await assertLateRestoreErrorAfterSensitiveOutputIsCleared(
+        ParagraphRestoreBuilderError.noSecretReferences
+    )
+}
+
+@Test @MainActor func compactRestoreStateDoesNotSurfaceLateInvalidReferenceAfterSensitiveOutputIsCleared() async {
+    await assertLateRestoreErrorAfterSensitiveOutputIsCleared(
+        ParagraphRestoreBuilderError.invalidReference
+    )
+}
+
+@Test @MainActor func compactRestoreStateDoesNotSurfaceLateGenericErrorAfterSensitiveOutputIsCleared() async {
+    await assertLateRestoreErrorAfterSensitiveOutputIsCleared(TestRestoreError.generic)
+}
+
+@MainActor
+private func assertLateRestoreErrorAfterSensitiveOutputIsCleared(_ error: Error) async {
     let state = MenuBarParagraphRestoreState()
     let controlledRestore = ControlledRestore()
     state.inputText = "secret://example"
@@ -50,11 +67,15 @@ import Testing
 
     await controlledRestore.waitForStart()
     state.clearSensitiveOutput()
-    await controlledRestore.resume(throwing: ParagraphRestoreBuilderError.invalidReference)
+    await controlledRestore.resume(throwing: error)
     await restoreTask.value
 
     #expect(state.restoredText.isEmpty)
     #expect(state.errorText == nil)
+}
+
+private enum TestRestoreError: Error {
+    case generic
 }
 
 private actor ControlledRestore {
