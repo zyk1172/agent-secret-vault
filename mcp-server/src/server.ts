@@ -971,7 +971,7 @@ export function createVaultToolDefinitions(
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "agent-secret-vault",
-    version: "0.1.8"
+    version: "0.1.9"
   });
 
   registerVaultTools(server, client);

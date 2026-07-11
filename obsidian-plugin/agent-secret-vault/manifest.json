@@ -1,7 +1,7 @@
 {
   "id": "agent-secret-vault",
   "name": "Agent Secret Vault",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "minAppVersion": "1.8.0",
   "description": "Encrypt sensitive knowledge-base text into local Agent Secret Vault references.",
   "author": "Agent Secret Vault",
