@@ -94,3 +94,31 @@
   configuration, so verification uses the complete `VaultAuthorizationTests`
   target. The first XCTest summary's zero count is separate from the Swift
   Testing run, which executed all 86 cases.
+
+## P1 Review Follow-Up: Invalidate Suspended Restore Errors
+
+### Changed Paths
+
+- `Tests/VaultAuthorizationTests/MenuBarPresentationTests.swift`
+  - Added deterministic throwing-gate coverage: start restore, wait until the
+    action is suspended, clear sensitive output, resume with
+    `ParagraphRestoreBuilderError.invalidReference`, then assert
+    `restoredText` is empty and `errorText` is nil.
+  - Reused the existing controlled actor gate for both late-success and
+    late-error paths; no production test hook was required.
+
+### Verification
+
+Ran the complete authorization test target:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+  xcodebuild -project AgentSecretVault.xcodeproj -scheme VaultAuthorization \
+  -destination 'platform=macOS' \
+  -only-testing:VaultAuthorizationTests test
+```
+
+Result: passed. Swift Testing ran 87 tests with zero issues, including
+`compactRestoreStateDoesNotSurfaceLateErrorAfterSensitiveOutputIsCleared()`.
+The separate XCTest summary still reports zero tests because this target uses
+Swift Testing.

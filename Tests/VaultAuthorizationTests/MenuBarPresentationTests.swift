@@ -24,7 +24,7 @@ import Testing
 
     let restoreTask = Task { @MainActor in
         await state.restore { _ in
-            await controlledRestore.restore()
+            try await controlledRestore.restore()
         }
     }
 
@@ -37,13 +37,33 @@ import Testing
     #expect(state.errorText == nil)
 }
 
+@Test @MainActor func compactRestoreStateDoesNotSurfaceLateErrorAfterSensitiveOutputIsCleared() async {
+    let state = MenuBarParagraphRestoreState()
+    let controlledRestore = ControlledRestore()
+    state.inputText = "secret://example"
+
+    let restoreTask = Task { @MainActor in
+        await state.restore { _ in
+            try await controlledRestore.restore()
+        }
+    }
+
+    await controlledRestore.waitForStart()
+    state.clearSensitiveOutput()
+    await controlledRestore.resume(throwing: ParagraphRestoreBuilderError.invalidReference)
+    await restoreTask.value
+
+    #expect(state.restoredText.isEmpty)
+    #expect(state.errorText == nil)
+}
+
 private actor ControlledRestore {
     private var hasStarted = false
     private var startContinuation: CheckedContinuation<Void, Never>?
-    private var resultContinuation: CheckedContinuation<String, Never>?
+    private var resultContinuation: CheckedContinuation<String, Error>?
 
-    func restore() async -> String {
-        await withCheckedContinuation { continuation in
+    func restore() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
             resultContinuation = continuation
             hasStarted = true
             startContinuation?.resume()
@@ -61,6 +81,11 @@ private actor ControlledRestore {
 
     func resume(returning text: String) {
         resultContinuation?.resume(returning: text)
+        resultContinuation = nil
+    }
+
+    func resume(throwing error: Error) {
+        resultContinuation?.resume(throwing: error)
         resultContinuation = nil
     }
 }
