@@ -665,7 +665,6 @@ private struct SavedSecretReferenceRow: View {
     let metadata: SecretReferenceMetadata
     let isCopied: Bool
     let copyText: (String) -> Void
-    private let paragraphReferenceMarker = "[[ASV_REFERENCE]]"
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -677,7 +676,7 @@ private struct SavedSecretReferenceRow: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text(cardTitle)
+                    Text(SavedReferenceDisplay.title(for: metadata))
                         .font(.headline)
                         .lineLimit(1)
                     Text(policyLabel)
@@ -692,7 +691,7 @@ private struct SavedSecretReferenceRow: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                Text(displayText)
+                Text(SavedReferenceDisplay.text(for: metadata))
                     .font(.system(.callout, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(8)
@@ -705,7 +704,7 @@ private struct SavedSecretReferenceRow: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button {
-                        copyText(displayText)
+                        copyText(SavedReferenceDisplay.text(for: metadata))
                     } label: {
                         Label(isCopied ? "已复制" : "复制可用段落", systemImage: isCopied ? "checkmark" : "doc.on.doc")
                     }
@@ -717,14 +716,19 @@ private struct SavedSecretReferenceRow: View {
         .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private var cardTitle: String {
+}
+
+enum SavedReferenceDisplay {
+    static let paragraphReferenceMarker = "[[ASV_REFERENCE]]"
+
+    static func title(for metadata: SecretReferenceMetadata) -> String {
         guard let label = metadata.label, !label.isEmpty else {
             return "未命名密文"
         }
         return label.contains(paragraphReferenceMarker) ? "可用段落" : label
     }
 
-    private var displayText: String {
+    static func text(for metadata: SecretReferenceMetadata) -> String {
         guard let label = metadata.label, !label.isEmpty else {
             return metadata.reference
         }
@@ -734,7 +738,10 @@ private struct SavedSecretReferenceRow: View {
         return "\(label)：\(metadata.reference)"
     }
 
-    private var policyLabel: String {
+}
+
+private extension SavedSecretReferenceRow {
+    var policyLabel: String {
         switch metadata.policy {
         case .read:
             return "读取"
