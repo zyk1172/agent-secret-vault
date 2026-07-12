@@ -13,7 +13,7 @@ struct AgentSecretVaultApplication: App {
     @StateObject private var runtime = AgentSecretVaultRuntime()
 
     var body: some Scene {
-        WindowGroup(id: MenuBarPresentation.mainWindowID) {
+        Window("Agent Secret Vault", id: MenuBarPresentation.mainWindowID) {
             VaultWorkbenchView(
                 status: runtime.status,
                 orphanScanResult: runtime.orphanScanResult,
@@ -31,22 +31,22 @@ struct AgentSecretVaultApplication: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                     secureViewerModel.handleFocusChanged(isFocused: false)
-                    runtime.clearRevealSessions()
+                    Task { await runtime.clearRevealSessions() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    runtime.clearRevealSessions()
+                    Task { await runtime.clearRevealSessions() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.willSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    runtime.clearRevealSessions()
+                    Task { await runtime.clearRevealSessions() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
                     secureViewerModel.handleLockNotification()
-                    runtime.clearRevealSessions()
+                    Task { await runtime.clearRevealSessions() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    runtime.clearRevealSessions()
+                    Task { await runtime.clearRevealSessions() }
                 }
         }
             .commands {
@@ -97,8 +97,10 @@ struct AgentSecretVaultApplication: App {
                 refreshSavedReferences: {
                     await runtime.refreshSavedReferences()
                 },
-                clearRevealSessions: { runtime.clearRevealSessions() },
-                requestTermination: { appDelegate.requestMenuBarTermination() }
+                clearRevealSessions: { await runtime.clearRevealSessions() },
+                requestTermination: {
+                    await appDelegate.requestMenuBarTermination(cleanup: runtime.clearRevealSessions)
+                }
             )
             .task {
                 await runtime.start()
@@ -130,6 +132,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     private var controller: AppIPCController?
     private var services: VaultAppServices?
+    private var lifecycleMonitor: VaultLifecycleMonitor?
     private var started = false
 
     func start() async {
@@ -144,6 +147,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             controller = runtime.controller
             services = runtime.services
             try runtime.controller.start()
+            lifecycleMonitor = VaultLifecycleMonitor { [weak self] in
+                await self?.clearRevealSessions()
+            }
+            lifecycleMonitor?.start()
             status = await runtime.services.status()
             await refreshSavedReferences()
         } catch {
@@ -156,8 +163,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func clearRevealSessions() {
+    func clearRevealSessions() async {
         RevealSessionLifecycle.clearAll()
+        await services?.clearRevealSessions()
     }
 
     func restoreParagraph(_ text: String) async throws -> String {
@@ -299,8 +307,10 @@ private enum NoopSelectionReplacerError: Error {
     case unavailable
 }
 
+@MainActor
 final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
     private var permitsTermination = false
+    private var terminationRequestPending = false
 
     func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
         false
@@ -314,8 +324,14 @@ final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    func requestMenuBarTermination() {
-        RevealSessionLifecycle.clearAll()
+    func requestMenuBarTermination(
+        cleanup: @escaping @MainActor () async -> Void
+    ) async {
+        guard !terminationRequestPending else {
+            return
+        }
+        terminationRequestPending = true
+        await cleanup()
         permitsTermination = true
         NSApp.terminate(nil)
     }

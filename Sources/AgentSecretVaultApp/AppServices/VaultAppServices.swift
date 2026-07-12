@@ -178,6 +178,10 @@ public actor VaultAppServices: WorkbenchServicing {
         )
     }
 
+    public func clearRevealSessions() async {
+        await revealSessionStore.clearAll()
+    }
+
     public func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String {
         let reference = try await textEncryptor.encryptText(
             plaintext,

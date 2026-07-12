@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F30000000000000000000001 /* VaultLifecycleMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30000000000000000000002 /* VaultLifecycleMonitor.swift */; };
 		071BBE9CB5C9A71181C9FCB5 /* VaultAppServicesOrphanScanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2931E5DCC5087045845D41D /* VaultAppServicesOrphanScanTests.swift */; };
 		0C10F85F60D5002DD22ABBC3 /* BiometricAuthorizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D8E80AB31BB877B700B09E /* BiometricAuthorizing.swift */; };
 		0EA762CFF629300107D2C1A7 /* EncryptSelectionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9475BA82BE21180CC54725D5 /* EncryptSelectionCoordinatorTests.swift */; };
@@ -376,6 +377,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		F30000000000000000000002 /* VaultLifecycleMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultLifecycleMonitor.swift; sourceTree = "<group>"; };
 		0047E32E5D06B11C5797C871 /* SecretReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretReference.swift; sourceTree = "<group>"; };
 		00E92A9526712032B801FB78 /* FileRecordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRecordStore.swift; sourceTree = "<group>"; };
 		0134F352B0F19B51E3360E86 /* OverviewGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewGuideView.swift; sourceTree = "<group>"; };
@@ -769,6 +771,7 @@
 				76A374A3B775DDD702CFE607 /* AppProtectionKeyStore.swift */,
 				21CDAEB48D5C096256FE989D /* RevealSessionStore.swift */,
 				2B9D7A0D796109480BF744A3 /* VaultAppServices.swift */,
+				F30000000000000000000002 /* VaultLifecycleMonitor.swift */,
 				BF9CAA1FFD027870696F96CD /* VaultRecordResolver.swift */,
 			);
 			path = AppServices;
@@ -1329,6 +1332,7 @@
 				2365B1B2DDA6F66F66B6AD72 /* SelectionReplacing.swift in Sources */,
 				21045F6295440D7C678600C2 /* SetupGuideView.swift in Sources */,
 				E6A964A48E233C3CF56623AF /* VaultAppServices.swift in Sources */,
+				F30000000000000000000001 /* VaultLifecycleMonitor.swift in Sources */,
 				542AF74629B540D62E93397A /* VaultDashboardView.swift in Sources */,
 				E6585EC3A90B42818C0401C1 /* VaultRecordResolver.swift in Sources */,
 				55EADB7D403B83D62C4499EB /* VaultUICopy.swift in Sources */,

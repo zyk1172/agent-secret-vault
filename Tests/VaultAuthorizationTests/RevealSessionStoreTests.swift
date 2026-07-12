@@ -46,6 +46,21 @@ import VaultIPC
     #expect(await store.paragraph(id: secondID) == nil)
 }
 
+@Test func vaultAppServicesClearRevealSessionsAwaitsStoreClear() async {
+    let sessionStore = RevealSessionStore()
+    let sessionID = await sessionStore.create(resolvedParagraph: "ASV_CANARY_SERVICE_CLEAR")
+    let services = VaultAppServices(
+        textEncryptor: UnusedTextEncryptor(),
+        activeRoot: nil,
+        revealSessionStore: sessionStore,
+        revealSessionPresenter: SpyRevealSessionPresenter()
+    )
+
+    await services.clearRevealSessions()
+
+    #expect(await sessionStore.paragraph(id: sessionID) == nil)
+}
+
 @Test func vaultAppServicesRevealStoresResolvedParagraphAndReturnsOnlySessionID() async throws {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -11,15 +11,15 @@ public struct MenuBarVaultPanel: View {
     let savedReferences: [SecretReferenceMetadata]
     let restoreParagraph: (String) async throws -> String
     let refreshSavedReferences: () async -> Void
-    let clearRevealSessions: () -> Void
-    let requestTermination: () -> Void
+    let clearRevealSessions: () async -> Void
+    let requestTermination: () async -> Void
     @Environment(\.openWindow) private var openWindow
     @State private var selectedSection: VaultWorkbenchSection = .overview
     @State private var restoreState = MenuBarParagraphRestoreState()
     @State private var copiedReference: String?
     @State private var isRefreshing = false
 
-    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], restoreParagraph: @escaping (String) async throws -> String, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () -> Void, requestTermination: @escaping () -> Void) {
+    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], restoreParagraph: @escaping (String) async throws -> String, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestTermination: @escaping () async -> Void) {
         self.status = status; self.orphanScanResult = orphanScanResult; self.auditEntries = auditEntries; self.savedReferences = savedReferences
         self.restoreParagraph = restoreParagraph; self.refreshSavedReferences = refreshSavedReferences; self.clearRevealSessions = clearRevealSessions; self.requestTermination = requestTermination
     }
@@ -45,7 +45,7 @@ public struct MenuBarVaultPanel: View {
             HStack {
                 Button("打开主窗口") { NSApp.activate(ignoringOtherApps: true); openWindow(id: MenuBarPresentation.mainWindowID) }
                 Spacer()
-                Button("退出") { requestTermination() }
+                Button("退出") { Task { await requestTermination() } }
             }.buttonStyle(.borderless).padding(12)
         }
         .frame(width: MenuBarPresentation.panelSize.width, height: MenuBarPresentation.panelSize.height)
@@ -85,5 +85,5 @@ public struct MenuBarVaultPanel: View {
     private func fact(_ title: String, _ detail: String) -> some View { VStack(alignment: .leading, spacing: 2) { Text(title).font(.caption.weight(.semibold)); Text(detail).font(.caption).foregroundStyle(.secondary) } }
     private var statusSummary: String { !status.ipcAvailable ? "本机通道未就绪" : (status.locked ? "保险箱已锁定" : (status.pluginConnected ? "本机通道和插件可用" : "等待 Obsidian 插件连接")) }
     private func copy(_ text: String, for reference: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); copiedReference = reference }
-    private func clearSensitiveState() { restoreState.clearSensitiveOutput(); clearRevealSessions() }
+    private func clearSensitiveState() { restoreState.clearSensitiveOutput(); Task { await clearRevealSessions() } }
 }
