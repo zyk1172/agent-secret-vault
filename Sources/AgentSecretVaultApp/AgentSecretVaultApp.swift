@@ -309,8 +309,9 @@ private enum NoopSelectionReplacerError: Error {
 
 @MainActor
 final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
-    private var permitsTermination = false
-    private var terminationRequestPending = false
+    private let terminationCoordinator = MenuBarTerminationCoordinator {
+        NSApp.terminate(nil)
+    }
 
     func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
         false
@@ -327,16 +328,10 @@ final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
     func requestMenuBarTermination(
         cleanup: @escaping @MainActor () async -> Void
     ) async {
-        guard !terminationRequestPending else {
-            return
-        }
-        terminationRequestPending = true
-        await cleanup()
-        permitsTermination = true
-        NSApp.terminate(nil)
+        await terminationCoordinator.requestTermination(cleanup: cleanup)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        permitsTermination ? .terminateNow : .terminateCancel
+        terminationCoordinator.permitsTermination ? .terminateNow : .terminateCancel
     }
 }

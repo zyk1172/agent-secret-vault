@@ -109,3 +109,54 @@ Additional verification: `git diff --cached --check` passed before the implement
 
 - No interactive GUI automation was run to visually exercise repeated Open Main Window and menu-bar Quit. The singleton scene and async termination wiring compile in the full app scheme and are covered by deterministic source/behavior tests.
 - Xcode beta emitted its existing IDE launch-session diagnostic warning during command-line tests; the xcresult summary contained no runtime warnings and all tests passed.
+
+---
+
+## Task 3 Remediation Review Follow-up
+
+### Status
+
+Completed on 2026-07-12. Menu-bar termination order is now covered by deterministic async behavior tests rather than only source inspection.
+
+### RED
+
+Command:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild -project AgentSecretVault.xcodeproj -scheme VaultAuthorization -destination 'platform=macOS' test
+```
+
+Result: exit 65. The new tests failed to compile because `MenuBarTerminationCoordinator` did not exist.
+
+### GREEN
+
+The same target-level command passed with 103 tests and 0 failures. It covers termination denial while cleanup is suspended, granting the permit and invoking the injected termination callback after cleanup, and suppressing duplicate Quit requests. The lifecycle-monitor test now drains a fixed number of main-actor turns before asserting, so a missing callback cannot leave it waiting on an unbounded continuation.
+
+Full-scheme command:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS' test
+```
+
+Result: exit 0, `TEST SUCCEEDED`. The xcresult summary reported 145 tests, 0 failures, 0 skipped, and no runtime warnings.
+
+### Implementation
+
+- Added `MenuBarTerminationCoordinator` to the testable app framework. It receives an injected termination callback, awaits the menu cleanup once, grants its permit only afterward, and rejects duplicate requests while pending.
+- The application delegate now supplies `NSApp.terminate(nil)` to that coordinator and retains the existing menu-only request entry point and ordinary-termination denial.
+
+### Changed Paths
+
+- `AgentSecretVault.xcodeproj/project.pbxproj`
+- `Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift`
+- `Sources/AgentSecretVaultApp/AppServices/MenuBarTerminationCoordinator.swift`
+- `Tests/VaultAuthorizationTests/MenuBarLifecycleTests.swift`
+- `.superpowers/sdd/task-3-report.md`
+
+### Commit
+
+- `fix: verify menu bar termination lifecycle`
+
+### Remaining Concern
+
+- No interactive GUI automation exercised the actual menu-bar Quit control; the termination state machine is covered with injected callbacks in the authorization target.

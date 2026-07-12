@@ -28,21 +28,21 @@ import Testing
     #expect(source.contains("CommandGroup(replacing: .appTermination) {}"))
 }
 
-@Test func runtimeOwnsLifecycleMonitorAndMenuQuitAwaitsCleanup() throws {
+@Test func runtimeOwnsLifecycleMonitorAndMenuQuitUsesTerminationCoordinator() throws {
     let source = try appSource()
 
     #expect(source.contains("private var lifecycleMonitor: VaultLifecycleMonitor?"))
     #expect(source.contains("lifecycleMonitor = VaultLifecycleMonitor"))
     #expect(source.contains("func clearRevealSessions() async"))
     #expect(source.contains("requestMenuBarTermination(cleanup: runtime.clearRevealSessions)"))
-    #expect(source.contains("cleanup: @escaping @MainActor () async -> Void"))
-    #expect(source.contains("await cleanup()"))
+    #expect(source.contains("private let terminationCoordinator = MenuBarTerminationCoordinator"))
+    #expect(source.contains("await terminationCoordinator.requestTermination(cleanup: cleanup)"))
 }
 
 @Test @MainActor func lifecycleMonitorHandlesEachSecurityBoundaryOnce() async {
     let applicationCenter = NotificationCenter()
     let workspaceCenter = NotificationCenter()
-    let counter = LifecycleClearCounter(expectedCount: 5)
+    let counter = LifecycleClearCounter()
     let monitor = VaultLifecycleMonitor(
         applicationNotificationCenter: applicationCenter,
         workspaceNotificationCenter: workspaceCenter
@@ -58,8 +58,91 @@ import Testing
     workspaceCenter.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
     applicationCenter.post(name: NSApplication.willTerminateNotification, object: nil)
 
-    await counter.waitForExpectedCount()
+    await drainMainActorTasks(until: { await counter.count == 5 })
     #expect(await counter.count == 5)
+}
+
+@Test @MainActor func menuTerminationRemainsDeniedWhileCleanupIsSuspended() async {
+    let cleanup = SuspendedCleanup()
+    let termination = TerminationRecorder()
+    let coordinator = MenuBarTerminationCoordinator {
+        termination.recordTermination()
+    }
+
+    let request = Task { @MainActor in
+        await coordinator.requestTermination {
+            await cleanup.run()
+        }
+    }
+
+    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
+
+    #expect(!coordinator.permitsTermination)
+    #expect(termination.count == 0)
+
+    cleanup.finish()
+    await drainMainActorTasks(until: { termination.count == 1 })
+
+    #expect(coordinator.permitsTermination)
+    #expect(termination.count == 1)
+    _ = request
+}
+
+@Test @MainActor func menuTerminationPermitsAndTerminatesAfterCleanupCompletes() async {
+    let cleanup = SuspendedCleanup()
+    let termination = TerminationRecorder()
+    let coordinator = MenuBarTerminationCoordinator {
+        termination.recordTermination()
+    }
+
+    let request = Task { @MainActor in
+        await coordinator.requestTermination {
+            await cleanup.run()
+        }
+    }
+
+    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
+    cleanup.finish()
+    await drainMainActorTasks(until: { termination.count == 1 })
+
+    #expect(coordinator.permitsTermination)
+    #expect(cleanup.invocationCount == 1)
+    #expect(termination.count == 1)
+    _ = request
+}
+
+@Test @MainActor func duplicateMenuTerminationRequestsCleanUpAndTerminateOnce() async {
+    let cleanup = SuspendedCleanup()
+    let termination = TerminationRecorder()
+    let coordinator = MenuBarTerminationCoordinator {
+        termination.recordTermination()
+    }
+
+    let firstRequest = Task { @MainActor in
+        await coordinator.requestTermination {
+            await cleanup.run()
+        }
+    }
+
+    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
+
+    let duplicateRequest = Task { @MainActor in
+        await coordinator.requestTermination {
+            await cleanup.run()
+        }
+    }
+    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
+
+    #expect(cleanup.invocationCount == 1)
+    #expect(termination.count == 0)
+
+    cleanup.finish()
+    await drainMainActorTasks(until: { termination.count == 1 })
+
+    #expect(cleanup.invocationCount == 1)
+    #expect(termination.count == 1)
+    _ = firstRequest
+    _ = duplicateRequest
 }
 
 private func appSource() throws -> String {
@@ -73,27 +156,44 @@ private func appSource() throws -> String {
 
 private actor LifecycleClearCounter {
     private(set) var count = 0
-    private let expectedCount: Int
-    private var waiter: CheckedContinuation<Void, Never>?
-
-    init(expectedCount: Int) {
-        self.expectedCount = expectedCount
-    }
-
     func increment() {
         count += 1
-        if count == expectedCount {
-            waiter?.resume()
-            waiter = nil
+    }
+}
+
+@MainActor
+private func drainMainActorTasks(until condition: () async -> Bool) async {
+    for _ in 0..<100 {
+        if await condition() {
+            return
+        }
+        await Task.yield()
+    }
+}
+
+@MainActor
+private final class SuspendedCleanup {
+    private var finishContinuation: CheckedContinuation<Void, Never>?
+    private(set) var invocationCount = 0
+
+    func run() async {
+        invocationCount += 1
+        await withCheckedContinuation { continuation in
+            finishContinuation = continuation
         }
     }
 
-    func waitForExpectedCount() async {
-        guard count < expectedCount else {
-            return
-        }
-        await withCheckedContinuation { continuation in
-            waiter = continuation
-        }
+    func finish() {
+        finishContinuation?.resume()
+        finishContinuation = nil
+    }
+}
+
+@MainActor
+private final class TerminationRecorder {
+    private(set) var count = 0
+
+    func recordTermination() {
+        count += 1
     }
 }
