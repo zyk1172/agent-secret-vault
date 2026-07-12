@@ -18,6 +18,30 @@ import VaultIPC
     #expect(source.contains(".help(section.title)"))
 }
 
+@Test func compactPanelInvalidatesRestoreStateAtEverySecurityBoundary() throws {
+    let source = try menuBarSource(named: "MenuBarVaultPanel.swift")
+
+    #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)"))
+    #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)"))
+    #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)"))
+    #expect(source.contains("Button(\"退出\") { clearSensitiveState(); Task { await requestTermination() } }"))
+}
+
+@Test func compactPanelPreservesTheProtectedDeleteRequestPath() throws {
+    let source = try menuBarSource(named: "MenuBarVaultPanel.swift")
+
+    #expect(source.contains("let requestPermanentDelete: (String) -> Void"))
+    #expect(source.contains(".confirmationDialog("))
+    #expect(source.contains("requestPermanentDelete(referencePendingDeletion)"))
+    #expect(source.contains("请求高风险授权"))
+}
+
+@Test func compactPanelAnnouncesTheSelectedNavigationItem() throws {
+    let source = try menuBarSource(named: "MenuBarVaultPanel.swift")
+
+    #expect(source.contains(".accessibilityValue(selectedSection == section ? \"已选中\" : \"未选中\")"))
+}
+
 @Test func savedReferenceDisplaySubstitutesTheCurrentReferenceIntoParagraphTemplates() {
     let metadata = SecretReferenceMetadata(
         reference: "secret://current-reference",

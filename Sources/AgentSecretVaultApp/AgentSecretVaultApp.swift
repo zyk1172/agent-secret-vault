@@ -98,6 +98,11 @@ struct AgentSecretVaultApplication: App {
                     await runtime.refreshSavedReferences()
                 },
                 clearRevealSessions: { await runtime.clearRevealSessions() },
+                requestPermanentDelete: { _ in
+                    Task {
+                        await runtime.requestPermanentDeleteAuthorization()
+                    }
+                },
                 requestTermination: {
                     await appDelegate.requestMenuBarTermination(cleanup: runtime.clearRevealSessions)
                 }
@@ -132,6 +137,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     private var controller: AppIPCController?
     private var services: VaultAppServices?
+    private var protectionKeyStore: AppProtectionKeyStore?
     private var lifecycleMonitor: VaultLifecycleMonitor?
     private var started = false
 
@@ -146,6 +152,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             try? await runtime.protectionKeyStore.unlockLowProtection()
             controller = runtime.controller
             services = runtime.services
+            protectionKeyStore = runtime.protectionKeyStore
             try runtime.controller.start()
             lifecycleMonitor = VaultLifecycleMonitor { [weak self] in
                 await self?.clearRevealSessions()
@@ -166,6 +173,17 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     func clearRevealSessions() async {
         RevealSessionLifecycle.clearAll()
         await services?.clearRevealSessions()
+    }
+
+    func requestPermanentDeleteAuthorization() async {
+        guard let protectionKeyStore else {
+            return
+        }
+
+        _ = try? await protectionKeyStore.deviceKey(
+            for: .credential,
+            reason: "请求删除本机加密记录"
+        )
     }
 
     func restoreParagraph(_ text: String) async throws -> String {

@@ -12,16 +12,19 @@ public struct MenuBarVaultPanel: View {
     let restoreParagraph: (String) async throws -> String
     let refreshSavedReferences: () async -> Void
     let clearRevealSessions: () async -> Void
+    let requestPermanentDelete: (String) -> Void
     let requestTermination: () async -> Void
     @Environment(\.openWindow) private var openWindow
     @State private var selectedSection: VaultWorkbenchSection = .overview
     @State private var restoreState = MenuBarParagraphRestoreState()
     @State private var copiedReference: String?
     @State private var isRefreshing = false
+    @State private var referencePendingDeletion: String?
+    @State private var isConfirmingDeletion = false
 
-    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], restoreParagraph: @escaping (String) async throws -> String, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestTermination: @escaping () async -> Void) {
+    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], restoreParagraph: @escaping (String) async throws -> String, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestPermanentDelete: @escaping (String) -> Void, requestTermination: @escaping () async -> Void) {
         self.status = status; self.orphanScanResult = orphanScanResult; self.auditEntries = auditEntries; self.savedReferences = savedReferences
-        self.restoreParagraph = restoreParagraph; self.refreshSavedReferences = refreshSavedReferences; self.clearRevealSessions = clearRevealSessions; self.requestTermination = requestTermination
+        self.restoreParagraph = restoreParagraph; self.refreshSavedReferences = refreshSavedReferences; self.clearRevealSessions = clearRevealSessions; self.requestPermanentDelete = requestPermanentDelete; self.requestTermination = requestTermination
     }
 
     public var body: some View {
@@ -36,7 +39,9 @@ public struct MenuBarVaultPanel: View {
                     Button { selectedSection = section } label: { Image(systemName: section.systemImage).frame(width: 30, height: 28).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(selectedSection == section ? Color.accentColor : Color.secondary)
                         .background(selectedSection == section ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .accessibilityLabel(section.title).help(section.title)
+                        .accessibilityLabel(section.title)
+                        .accessibilityValue(selectedSection == section ? "已选中" : "未选中")
+                        .help(section.title)
                 }
             }.frame(maxWidth: .infinity).padding(.horizontal, 12).padding(.bottom, 10)
             Divider()
@@ -45,12 +50,32 @@ public struct MenuBarVaultPanel: View {
             HStack {
                 Button("打开主窗口") { NSApp.activate(ignoringOtherApps: true); openWindow(id: MenuBarPresentation.mainWindowID) }
                 Spacer()
-                Button("退出") { Task { await requestTermination() } }
+                Button("退出") { clearSensitiveState(); Task { await requestTermination() } }
             }.buttonStyle(.borderless).padding(12)
         }
         .frame(width: MenuBarPresentation.panelSize.width, height: MenuBarPresentation.panelSize.height)
         .onDisappear { clearSensitiveState() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in clearSensitiveState() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in clearSensitiveState() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in clearSensitiveState() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in clearSensitiveState() }
+        .confirmationDialog(
+            "确认删除这条加密记录？",
+            isPresented: $isConfirmingDeletion,
+            titleVisibility: .visible
+        ) {
+            if let referencePendingDeletion {
+                Button("请求高风险授权", role: .destructive) {
+                    requestPermanentDelete(referencePendingDeletion)
+                }
+            }
+
+            Button("取消", role: .cancel) {}
+        } message: {
+            if let referencePendingDeletion {
+                Text("这里只会为 \(referencePendingDeletion) 请求删除授权。真正删除前仍必须完成本机高风险授权。")
+            }
+        }
     }
 
     @ViewBuilder private var compactContent: some View {
@@ -78,7 +103,52 @@ public struct MenuBarVaultPanel: View {
         HStack { Text("已保存密文").font(.headline); Spacer(); Button { Task { isRefreshing = true; await refreshSavedReferences(); isRefreshing = false } } label: { Label("刷新", systemImage: "arrow.clockwise") }.disabled(isRefreshing) }
         if savedReferences.isEmpty { Text("还没有保存的密文。").font(.callout).foregroundStyle(.secondary) } else { ForEach(savedReferences, id: \.reference) { metadata in VStack(alignment: .leading, spacing: 7) { Text(SavedReferenceDisplay.title(for: metadata)).font(.callout.weight(.semibold)); Text(SavedReferenceDisplay.text(for: metadata)).font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(3); HStack { Spacer(); Button(copiedReference == metadata.reference ? "已复制" : "复制") { copy(SavedReferenceDisplay.text(for: metadata), for: metadata.reference) }.buttonStyle(.bordered) } }.padding(10).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous)) } }
     } }
-    private var recordsView: some View { let missing = orphanScanResult?.missingRecords.count ?? 0; let unreferenced = orphanScanResult?.unreferencedRecords.count ?? 0; return VStack(alignment: .leading, spacing: 12) { Text("记录维护").font(.headline); HStack(spacing: 8) { countValue("缺少本机记录", missing); countValue("未被笔记引用", unreferenced) }; Text(orphanScanResult == nil ? "尚未扫描。请先在 Obsidian 插件中发起扫描。" : "这里不会直接删除；删除前必须单独完成本机高风险授权。").font(.callout).foregroundStyle(.secondary) } }
+    private var recordsView: some View {
+        let missing = orphanScanResult?.missingRecords.count ?? 0
+        let unreferenced = orphanScanResult?.unreferencedRecords.count ?? 0
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("记录维护").font(.headline)
+            HStack(spacing: 8) {
+                countValue("缺少本机记录", missing)
+                countValue("未被笔记引用", unreferenced)
+            }
+
+            if let result = orphanScanResult {
+                ForEach(result.missingRecords, id: \.self) { reference in
+                    recordRow(reference, detail: "笔记中存在引用，但本机没有对应记录。")
+                }
+
+                ForEach(result.unreferencedRecords, id: \.self) { reference in
+                    VStack(alignment: .leading, spacing: 7) {
+                        recordRow(reference, detail: "本机记录未被笔记引用。")
+                        HStack {
+                            Spacer()
+                            Button("请求删除授权", role: .destructive) {
+                                referencePendingDeletion = reference
+                                isConfirmingDeletion = true
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            } else {
+                Text("尚未扫描。请先在 Obsidian 插件中发起扫描。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+    private func recordRow(_ reference: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(reference).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
     private func countValue(_ title: String, _ count: Int) -> some View { VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text("\(count)").font(.title3.weight(.semibold)) }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous)) }
     private func auditView(entries: [AgentAutomationAuditEntry]) -> some View { VStack(alignment: .leading, spacing: 8) { if entries.isEmpty { Text("还没有脱敏后的本机使用记录。").font(.callout).foregroundStyle(.secondary) } else { ForEach(entries) { entry in VStack(alignment: .leading, spacing: 3) { HStack { Text(entry.action).font(.callout.weight(.semibold)); Spacer(); Text(entry.result).font(.caption).foregroundStyle(.secondary) }; Text(entry.target).font(.caption).foregroundStyle(.secondary).lineLimit(2) }.padding(9).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous)) } } } }
     private var securityView: some View { VStack(alignment: .leading, spacing: 10) { Text("安全边界").font(.headline); fact("聊天中允许", "secret:// 引用和非敏感上下文"); fact("明文位置", "仅在本机授权后的窗口短暂显示"); fact("智能体禁止", "密码、token 和 Authorization header"); fact("高风险动作", "删除和外发都需要本机授权") } }

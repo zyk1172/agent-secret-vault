@@ -39,6 +39,15 @@ import Testing
     #expect(source.contains("await terminationCoordinator.requestTermination(cleanup: cleanup)"))
 }
 
+@Test func menuBarProtectedDeleteRequestUsesFreshLocalAuthorization() throws {
+    let source = try appSource()
+
+    #expect(source.contains("runtime.requestPermanentDeleteAuthorization()"))
+    #expect(source.contains("func requestPermanentDeleteAuthorization() async"))
+    #expect(source.contains("for: .credential"))
+    #expect(source.contains("请求删除本机加密记录"))
+}
+
 @Test @MainActor func lifecycleMonitorHandlesEachSecurityBoundaryOnce() async {
     let applicationCenter = NotificationCenter()
     let workspaceCenter = NotificationCenter()
