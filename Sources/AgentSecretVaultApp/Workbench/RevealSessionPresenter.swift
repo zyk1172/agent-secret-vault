@@ -38,7 +38,7 @@ private final class RevealSessionWindowRegistry {
         }
 
         var closeAction: (() -> Void)?
-        let view = RevealSessionWindow(resolvedParagraph: restoredParagraph.text) {
+        let view = RevealSessionWindow(restoredParagraph: restoredParagraph) {
             closeAction?()
         }
         let hostingView = NSHostingView(rootView: view)

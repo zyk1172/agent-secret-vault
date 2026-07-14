@@ -24,7 +24,8 @@ import Testing
 
     let restoreTask = Task { @MainActor in
         await state.restore { _ in
-            try await controlledRestore.restore()
+            let text = try await controlledRestore.restore()
+            return RestoredParagraph(text: text, values: [text])
         }
     }
 
@@ -61,7 +62,8 @@ private func assertLateRestoreErrorAfterSensitiveOutputIsCleared(_ error: Error)
 
     let restoreTask = Task { @MainActor in
         await state.restore { _ in
-            try await controlledRestore.restore()
+            let text = try await controlledRestore.restore()
+            return RestoredParagraph(text: text, values: [text])
         }
     }
 

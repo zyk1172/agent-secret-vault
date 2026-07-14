@@ -9,7 +9,7 @@ public struct MenuBarVaultPanel: View {
     let orphanScanResult: OrphanScanResult?
     let auditEntries: [AgentAutomationAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
-    let restoreParagraph: (String) async throws -> String
+    let restoreParagraph: (String) async throws -> RestoredParagraph
     let refreshSavedReferences: () async -> Void
     let clearRevealSessions: () async -> Void
     let requestPermanentDelete: (String) -> Void
@@ -22,7 +22,7 @@ public struct MenuBarVaultPanel: View {
     @State private var referencePendingDeletion: String?
     @State private var isConfirmingDeletion = false
 
-    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], restoreParagraph: @escaping (String) async throws -> String, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestPermanentDelete: @escaping (String) -> Void, requestTermination: @escaping () async -> Void) {
+    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], restoreParagraph: @escaping (String) async throws -> RestoredParagraph, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestPermanentDelete: @escaping (String) -> Void, requestTermination: @escaping () async -> Void) {
         self.status = status; self.orphanScanResult = orphanScanResult; self.auditEntries = auditEntries; self.savedReferences = savedReferences
         self.restoreParagraph = restoreParagraph; self.refreshSavedReferences = refreshSavedReferences; self.clearRevealSessions = clearRevealSessions; self.requestPermanentDelete = requestPermanentDelete; self.requestTermination = requestTermination
     }

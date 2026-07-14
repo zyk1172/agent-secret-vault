@@ -237,7 +237,7 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func restoreReferences(references: [String], context: RevealContext) async throws -> String {
-        let restored = try await restoreReferencesWithValues(references: references, context: context)
+        let restored = try await resolveReferencesWithValues(references: references, context: context)
         await emitAudit(
             action: "本机脱密使用",
             target: sanitizedReason(context.reason),
