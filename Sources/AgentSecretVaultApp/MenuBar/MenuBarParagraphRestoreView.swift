@@ -3,9 +3,9 @@ import SwiftUI
 
 public struct MenuBarParagraphRestoreView: View {
     let state: MenuBarParagraphRestoreState
-    let restoreParagraph: (String) async throws -> String
+    let restoreParagraph: (String) async throws -> RestoredParagraph
 
-    public init(state: MenuBarParagraphRestoreState, restoreParagraph: @escaping (String) async throws -> String) {
+    public init(state: MenuBarParagraphRestoreState, restoreParagraph: @escaping (String) async throws -> RestoredParagraph) {
         self.state = state
         self.restoreParagraph = restoreParagraph
     }
@@ -48,6 +48,17 @@ public struct MenuBarParagraphRestoreView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    if let restoredParagraph = state.restoredParagraph {
+                        HStack(spacing: 6) {
+                            ForEach(Array(restoredParagraph.values.enumerated()), id: \.offset) { index, value in
+                                Button("复制密文 \(index + 1)") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(value, forType: .string)
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
             } else {
                 Text("等待输入包含 secret:// 的段落").font(.caption).foregroundStyle(.secondary)

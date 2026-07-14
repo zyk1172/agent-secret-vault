@@ -124,7 +124,7 @@ public struct VaultWorkbenchView: View {
     let orphanScanResult: OrphanScanResult?
     let auditEntries: [AgentAutomationAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
-    let restoreParagraph: ((String) async throws -> String)?
+    let restoreParagraph: ((String) async throws -> RestoredParagraph)?
     let refreshSavedReferences: (() async -> Void)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
 
@@ -133,7 +133,7 @@ public struct VaultWorkbenchView: View {
         orphanScanResult: OrphanScanResult? = nil,
         auditEntries: [AgentAutomationAuditEntry] = [],
         savedReferences: [SecretReferenceMetadata] = [],
-        restoreParagraph: ((String) async throws -> String)? = nil,
+        restoreParagraph: ((String) async throws -> RestoredParagraph)? = nil,
         refreshSavedReferences: (() async -> Void)? = nil
     ) {
         self.status = status

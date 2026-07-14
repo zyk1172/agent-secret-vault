@@ -186,12 +186,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         )
     }
 
-    func restoreParagraph(_ text: String) async throws -> String {
+    func restoreParagraph(_ text: String) async throws -> RestoredParagraph {
         guard let services else {
             throw AgentSecretVaultRuntimeError.notStarted
         }
         let request = try ParagraphRestoreBuilder.build(from: text)
-        return try await services.restoreReferences(
+        return try await services.restoreReferencesWithValues(
             references: request.references,
             context: request.context
         )

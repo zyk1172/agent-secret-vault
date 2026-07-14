@@ -567,8 +567,20 @@ function scanMarkdownFile(filePath, text) {
     ...finding,
     filePath,
     contentHash,
-    plaintextForCurrentProcessOnly: text.slice(finding.start, finding.end)
+    plaintextForCurrentProcessOnly: text.slice(finding.start, finding.end),
+    sourceExcerptForCurrentProcessOnly: sourceExcerpt(text, finding.start, finding.end)
   }));
+}
+function sourceExcerpt(text, start, end) {
+  const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+  const nextLineBreak = text.indexOf("\n", end);
+  const lineEnd = nextLineBreak === -1 ? text.length : nextLineBreak;
+  const line = text.slice(lineStart, lineEnd);
+  if (line.length <= 240) return line;
+  const matchStart = start - lineStart;
+  const excerptStart = Math.max(0, Math.min(matchStart - 100, line.length - 240));
+  const excerptEnd = Math.min(line.length, excerptStart + 240);
+  return `${excerptStart > 0 ? "..." : ""}${line.slice(excerptStart, excerptEnd)}${excerptEnd < line.length ? "..." : ""}`;
 }
 
 // src/ui/reviewModal.ts
@@ -609,7 +621,8 @@ var ReviewModal = class extends import_obsidian.Modal {
       item.createEl("div", { text: `\u6587\u4EF6\uFF1A${finding.filePath}` });
       item.createEl("div", { text: `\u89C4\u5219\uFF1A${finding.ruleId}` });
       item.createEl("div", { text: `\u7F6E\u4FE1\u5EA6\uFF1A${finding.confidence}` });
-      item.createEl("code", { text: finding.redactedPreview });
+      item.createEl("div", { text: `\u547D\u4E2D\u5185\u5BB9\uFF1A${finding.plaintextForCurrentProcessOnly ?? finding.redactedPreview}` });
+      item.createEl("div", { text: `\u6240\u5728\u5185\u5BB9\uFF1A${finding.sourceExcerptForCurrentProcessOnly ?? finding.redactedPreview}` });
     }
     if (this.applyFindings) {
       const button = contentEl.createEl("button", { text: "\u52A0\u5BC6\u9009\u4E2D\u9879" });
@@ -619,6 +632,14 @@ var ReviewModal = class extends import_obsidian.Modal {
         this.close();
       });
     }
+  }
+  onClose() {
+    for (const finding of this.findings) {
+      finding.plaintextForCurrentProcessOnly = void 0;
+      finding.sourceExcerptForCurrentProcessOnly = void 0;
+    }
+    this.findings = [];
+    this.contentEl.empty();
   }
 };
 

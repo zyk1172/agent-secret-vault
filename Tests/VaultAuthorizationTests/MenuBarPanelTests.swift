@@ -42,6 +42,17 @@ import VaultIPC
     #expect(source.contains(".accessibilityValue(selectedSection == section ? \"已选中\" : \"未选中\")"))
 }
 
+@Test func allParagraphRevealSurfacesRenderNumberedCopyControls() throws {
+    let menuBar = try menuBarSource(named: "MenuBarParagraphRestoreView.swift")
+    let workbench = try workbenchSource(named: "ParagraphRestoreView.swift")
+    let temporaryReveal = try workbenchSource(named: "RevealSessionWindow.swift")
+
+    #expect(menuBar.contains("复制密文 \\(index + 1)"))
+    #expect(workbench.contains("复制密文 \\(index + 1)"))
+    #expect(temporaryReveal.contains("复制密文 \\(index + 1)"))
+    #expect(temporaryReveal.contains("确认复制明文到剪贴板？"))
+}
+
 @Test func savedReferenceDisplaySubstitutesTheCurrentReferenceIntoParagraphTemplates() {
     let metadata = SecretReferenceMetadata(
         reference: "secret://current-reference",
@@ -74,5 +85,14 @@ private func menuBarSource(named fileName: String) throws -> String {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .appendingPathComponent("Sources/AgentSecretVaultApp/MenuBar")
+    return try String(contentsOf: sourceDirectory.appendingPathComponent(fileName), encoding: .utf8)
+}
+
+private func workbenchSource(named fileName: String) throws -> String {
+    let sourceDirectory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench")
     return try String(contentsOf: sourceDirectory.appendingPathComponent(fileName), encoding: .utf8)
 }

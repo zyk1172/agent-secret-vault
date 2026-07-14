@@ -7,15 +7,15 @@ public enum ParagraphRestoreCopy {
 }
 
 public struct ParagraphRestoreView: View {
-    private let restoreParagraph: (String) async throws -> String
+    private let restoreParagraph: (String) async throws -> RestoredParagraph
 
     @State private var inputText = ""
-    @State private var restoredText = ""
+    @State private var restoredParagraph: RestoredParagraph?
     @State private var statusText = "等待输入包含 secret:// 的段落"
     @State private var isRestoring = false
     @State private var errorText: String?
 
-    public init(restoreParagraph: @escaping (String) async throws -> String) {
+    public init(restoreParagraph: @escaping (String) async throws -> RestoredParagraph) {
         self.restoreParagraph = restoreParagraph
     }
 
@@ -61,20 +61,20 @@ public struct ParagraphRestoreView: View {
 
                 Button("清空") {
                     inputText = ""
-                    restoredText = ""
+                    restoredParagraph = nil
                     errorText = nil
                     statusText = "等待输入包含 secret:// 的段落"
                 }
-                .disabled(isRestoring || (inputText.isEmpty && restoredText.isEmpty))
+                .disabled(isRestoring || (inputText.isEmpty && restoredParagraph == nil))
 
                 Spacer()
 
                 Button("复制结果") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(restoredText, forType: .string)
+                    NSPasteboard.general.setString(restoredParagraph?.text ?? "", forType: .string)
                     statusText = "已复制还原后的段落"
                 }
-                .disabled(restoredText.isEmpty)
+                .disabled(restoredParagraph == nil)
             }
 
             if let errorText {
@@ -87,12 +87,12 @@ public struct ParagraphRestoreView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if !restoredText.isEmpty {
+            if let restoredParagraph {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("解密结果")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    TextEditor(text: $restoredText)
+                    Text(restoredParagraph.text)
                         .font(.body.monospaced())
                         .frame(minHeight: 120)
                         .padding(6)
@@ -101,6 +101,14 @@ public struct ParagraphRestoreView: View {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .stroke(.quaternary)
                         )
+                    HStack(spacing: 8) {
+                        ForEach(Array(restoredParagraph.values.enumerated()), id: \.offset) { index, value in
+                            Button("复制密文 \(index + 1)") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(value, forType: .string)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -116,17 +124,16 @@ public struct ParagraphRestoreView: View {
         statusText = "正在请求本机授权并解密段落…"
 
         do {
-            let restored = try await restoreParagraph(inputText)
-            restoredText = restored
+            restoredParagraph = try await restoreParagraph(inputText)
             statusText = "已解密段落中的全部密文引用"
         } catch ParagraphRestoreBuilderError.noSecretReferences {
-            restoredText = ""
+            restoredParagraph = nil
             errorText = "没有找到 secret:// 开头的密文引用。"
         } catch ParagraphRestoreBuilderError.invalidReference {
-            restoredText = ""
+            restoredParagraph = nil
             errorText = "段落里存在格式不合法的密文引用。"
         } catch {
-            restoredText = ""
+            restoredParagraph = nil
             errorText = "解密失败：\(error)"
         }
 

@@ -3,7 +3,7 @@ import Foundation
 public actor RevealSessionStore {
     public typealias ClearHandler = @Sendable () async -> Void
 
-    private var sessions: [String: String] = [:]
+    private var sessions: [String: RestoredParagraph] = [:]
     private var clearTasks: [String: Task<Void, Never>] = [:]
     private var clearHandlers: [String: ClearHandler] = [:]
     private let defaultTTLNanoseconds: UInt64?
@@ -16,15 +16,23 @@ public actor RevealSessionStore {
         }
     }
 
-    public func create(resolvedParagraph: String) -> String {
+    public func create(resolvedParagraph: RestoredParagraph) -> String {
         let id = "session-\(UUID().uuidString)"
         sessions[id] = resolvedParagraph
         scheduleClearIfNeeded(id: id)
         return id
     }
 
-    public func paragraph(id: String) -> String? {
+    public func create(resolvedParagraph: String) -> String {
+        create(resolvedParagraph: RestoredParagraph(text: resolvedParagraph, values: []))
+    }
+
+    public func restoredParagraph(id: String) -> RestoredParagraph? {
         sessions[id]
+    }
+
+    public func paragraph(id: String) -> String? {
+        sessions[id]?.text
     }
 
     public func setClearHandler(id: String, handler: @escaping ClearHandler) async {

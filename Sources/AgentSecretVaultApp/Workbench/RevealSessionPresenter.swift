@@ -5,14 +5,14 @@ public final class RevealSessionPresenter: RevealSessionPresenting, @unchecked S
     public init() {}
 
     public func present(sessionID: String, store: RevealSessionStore) async {
-        guard let paragraph = await store.paragraph(id: sessionID) else {
+        guard let restoredParagraph = await store.restoredParagraph(id: sessionID) else {
             return
         }
 
         await MainActor.run {
             RevealSessionWindowRegistry.shared.present(
                 sessionID: sessionID,
-                paragraph: paragraph,
+                restoredParagraph: restoredParagraph,
                 store: store
             )
         }
@@ -31,14 +31,14 @@ private final class RevealSessionWindowRegistry {
 
     private var controllers: [String: RevealSessionWindowController] = [:]
 
-    func present(sessionID: String, paragraph: String, store: RevealSessionStore) {
+    func present(sessionID: String, restoredParagraph: RestoredParagraph, store: RevealSessionStore) {
         if let existing = controllers[sessionID] {
             existing.show()
             return
         }
 
         var closeAction: (() -> Void)?
-        let view = RevealSessionWindow(resolvedParagraph: paragraph) {
+        let view = RevealSessionWindow(restoredParagraph: restoredParagraph) {
             closeAction?()
         }
         let hostingView = NSHostingView(rootView: view)
