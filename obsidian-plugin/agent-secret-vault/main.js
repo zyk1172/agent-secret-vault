@@ -225,10 +225,17 @@ async function encryptTextRange(input) {
   if (response.type !== "created") {
     throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
   }
-  return {
-    updatedText: replaceRange(input.documentText, input.range, response.reference),
-    reference: response.reference
-  };
+  const replacementText = formatMarkdownReference(input.referenceTitle, response.reference);
+  return { updatedText: replaceRange(input.documentText, input.range, replacementText), reference: response.reference, replacementText };
+}
+function inferReferenceTitle(documentText, range) {
+  const lineStart = documentText.lastIndexOf("\n", Math.max(0, range.start - 1)) + 1;
+  const prefix = documentText.slice(lineStart, range.start).replace(/[：:=]\s*$/u, "").replace(/[*_`#>-]/gu, "").trim();
+  return prefix.length > 0 ? prefix.slice(-48) : "\u654F\u611F\u4FE1\u606F";
+}
+function formatMarkdownReference(title, reference) {
+  const safeTitle = title.replace(/[\[\]\r\n]/gu, " ").trim() || "\u654F\u611F\u4FE1\u606F";
+  return `[${safeTitle}](${reference})`;
 }
 
 // src/ipc/client.ts
@@ -657,10 +664,6 @@ function clonePosition(position) {
 }
 var commandDefinitions = [
   { id: "encrypt-selection", name: "\u52A0\u5BC6\u9009\u4E2D\u6587\u672C" },
-  { id: "encrypt-current-paragraph", name: "\u52A0\u5BC6\u5F53\u524D\u6BB5\u843D\u654F\u611F\u4FE1\u606F" },
-  { id: "scan-current-note", name: "\u626B\u63CF\u5F53\u524D\u7B14\u8BB0\u4E2D\u7684\u654F\u611F\u4FE1\u606F" },
-  { id: "scan-vault", name: "\u626B\u63CF\u6574\u4E2A\u77E5\u8BC6\u5E93\u4E2D\u7684\u654F\u611F\u4FE1\u606F" },
-  { id: "scan-orphans", name: "\u626B\u63CF\u5B64\u7ACB\u5BC6\u6587\u5F15\u7528" },
   { id: "reveal-selection", name: "\u5728 Agent Secret Vault \u4E2D\u4E34\u65F6\u89E3\u5BC6\u9009\u4E2D\u6587\u672C" },
   { id: "reveal-current-paragraph", name: "\u5728 Agent Secret Vault \u4E2D\u4E34\u65F6\u89E3\u5BC6\u5F53\u524D\u6BB5\u843D" },
   { id: "restore-selection", name: "\u8FD8\u539F\u9009\u4E2D\u6587\u672C\u4E2D\u7684\u5BC6\u6587\u5F15\u7528" },
@@ -690,13 +693,6 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
             await this.encryptSelection(editor);
           }
         });
-      } else if (definition.id === "encrypt-current-paragraph") {
-        this.addCommand({
-          ...command,
-          editorCallback: async (editor) => {
-            await this.encryptCurrentParagraph(editor);
-          }
-        });
       } else if (definition.id === "reveal-current-paragraph") {
         this.addCommand({
           ...command,
@@ -723,27 +719,6 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
           ...command,
           editorCallback: async (editor) => {
             await this.restoreCurrentParagraph(editor);
-          }
-        });
-      } else if (definition.id === "scan-current-note") {
-        this.addCommand({
-          ...command,
-          editorCallback: async (editor) => {
-            await this.scanCurrentNote(editor);
-          }
-        });
-      } else if (definition.id === "scan-vault") {
-        this.addCommand({
-          ...command,
-          callback: async () => {
-            await this.scanVault();
-          }
-        });
-      } else if (definition.id === "scan-orphans") {
-        this.addCommand({
-          ...command,
-          callback: async () => {
-            await this.scanOrphans();
           }
         });
       } else {
@@ -790,11 +765,6 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         await this.encryptSelection(editor);
       });
     });
-    menu.addItem((item) => {
-      item.setTitle("\u626B\u63CF\u5F53\u524D\u7B14\u8BB0\u5E76\u52A0\u5BC6").setIcon("scan-search").onClick(async () => {
-        await this.scanCurrentNote(editor);
-      });
-    });
     menu.addSeparator();
     menu.addItem((item) => {
       item.setTitle("\u4E34\u65F6\u89E3\u5BC6\u9009\u4E2D\u6587\u672C").setIcon("eye").onClick(async () => {
@@ -804,16 +774,6 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     menu.addItem((item) => {
       item.setTitle("\u8FD8\u539F\u9009\u4E2D\u6587\u672C").setIcon("rotate-ccw").onClick(async () => {
         await this.restoreSelection(editor);
-      });
-    });
-    menu.addItem((item) => {
-      item.setTitle("\u626B\u63CF\u6574\u4E2A\u77E5\u8BC6\u5E93").setIcon("folder-search").onClick(async () => {
-        await this.scanVault();
-      });
-    });
-    menu.addItem((item) => {
-      item.setTitle("\u626B\u63CF\u5B64\u7ACB\u5BC6\u6587\u5F15\u7528").setIcon("unlink").onClick(async () => {
-        await this.scanOrphans();
       });
     });
   }
@@ -879,6 +839,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         documentText,
         range,
         label: buildParagraphContextTemplate(documentText, range),
+        referenceTitle: inferReferenceTitle(documentText, range),
         policy: "credential",
         client: this.createVaultClient()
       });
@@ -886,7 +847,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         new import_obsidian2.Notice("Agent Secret Vault: note changed before encryption completed; leaving text unchanged.");
         return;
       }
-      editor.replaceRange(result.reference, fromPos, toPos, "agent-secret-vault");
+      editor.replaceRange(result.replacementText, fromPos, toPos, "agent-secret-vault");
       new import_obsidian2.Notice("Agent Secret Vault: encrypted text into a secret reference.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
