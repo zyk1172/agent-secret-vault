@@ -114,6 +114,14 @@ struct AgentSecretVaultApplication: App {
                 orphanScanResult: runtime.orphanScanResult,
                 auditEntries: runtime.auditEntries,
                 savedReferences: runtime.savedReferences,
+                sensitiveScanRootURL: runtime.sensitiveScanRootURL,
+                sensitiveScanCandidateCount: runtime.sensitiveScanCandidates.count,
+                chooseSensitiveScanRoot: {
+                    runtime.chooseSensitiveScanRoot()
+                },
+                rescanSensitiveInformation: {
+                    await runtime.scanSensitiveInformation()
+                },
                 restoreParagraph: { text in
                     try await runtime.restoreParagraph(text)
                 },
@@ -359,6 +367,14 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                     policy: .credential
                 )
                 let parsed = try SecretReference(reference)
+                try await sensitiveIndexStore.updateMetadata(
+                    id: parsed.id,
+                    metadata: SensitiveIndexMetadata(
+                        category: candidate.category,
+                        title: candidate.title,
+                        source: candidate.source
+                    )
+                )
                 let entries = try await sensitiveIndexStore.entries()
                 guard let entry = entries.first(where: { $0.record.id == parsed.id }) else {
                     throw MarkdownSensitiveIndexStoreError.recordNotFound(parsed.id)

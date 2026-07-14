@@ -9,6 +9,10 @@ public struct MenuBarVaultPanel: View {
     let orphanScanResult: OrphanScanResult?
     let auditEntries: [AgentAutomationAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
+    let sensitiveScanRootURL: URL?
+    let sensitiveScanCandidateCount: Int
+    let chooseSensitiveScanRoot: () -> Void
+    let rescanSensitiveInformation: () async -> Void
     let restoreParagraph: (String) async throws -> RestoredParagraph
     let refreshSavedReferences: () async -> Void
     let clearRevealSessions: () async -> Void
@@ -22,8 +26,9 @@ public struct MenuBarVaultPanel: View {
     @State private var referencePendingDeletion: String?
     @State private var isConfirmingDeletion = false
 
-    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], restoreParagraph: @escaping (String) async throws -> RestoredParagraph, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestPermanentDelete: @escaping (String) -> Void, requestTermination: @escaping () async -> Void) {
+    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], sensitiveScanRootURL: URL? = nil, sensitiveScanCandidateCount: Int = 0, chooseSensitiveScanRoot: @escaping () -> Void = {}, rescanSensitiveInformation: @escaping () async -> Void = {}, restoreParagraph: @escaping (String) async throws -> RestoredParagraph, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestPermanentDelete: @escaping (String) -> Void, requestTermination: @escaping () async -> Void) {
         self.status = status; self.orphanScanResult = orphanScanResult; self.auditEntries = auditEntries; self.savedReferences = savedReferences
+        self.sensitiveScanRootURL = sensitiveScanRootURL; self.sensitiveScanCandidateCount = sensitiveScanCandidateCount; self.chooseSensitiveScanRoot = chooseSensitiveScanRoot; self.rescanSensitiveInformation = rescanSensitiveInformation
         self.restoreParagraph = restoreParagraph; self.refreshSavedReferences = refreshSavedReferences; self.clearRevealSessions = clearRevealSessions; self.requestPermanentDelete = requestPermanentDelete; self.requestTermination = requestTermination
     }
 
@@ -104,40 +109,26 @@ public struct MenuBarVaultPanel: View {
         if savedReferences.isEmpty { Text("还没有保存的密文。").font(.callout).foregroundStyle(.secondary) } else { ForEach(savedReferences, id: \.reference) { metadata in VStack(alignment: .leading, spacing: 7) { Text(SavedReferenceDisplay.title(for: metadata)).font(.callout.weight(.semibold)); Text(SavedReferenceDisplay.text(for: metadata)).font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(3); HStack { Spacer(); Button(copiedReference == metadata.reference ? "已复制" : "复制") { copy(SavedReferenceDisplay.text(for: metadata), for: metadata.reference) }.buttonStyle(.bordered) } }.padding(10).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous)) } }
     } }
     private var recordsView: some View {
-        let missing = orphanScanResult?.missingRecords.count ?? 0
-        let unreferenced = orphanScanResult?.unreferencedRecords.count ?? 0
-
         return VStack(alignment: .leading, spacing: 12) {
-            Text("记录维护").font(.headline)
-            HStack(spacing: 8) {
-                countValue("缺少本机记录", missing)
-                countValue("未被笔记引用", unreferenced)
-            }
-
-            if let result = orphanScanResult {
-                ForEach(result.missingRecords, id: \.self) { reference in
-                    recordRow(reference, detail: "笔记中存在引用，但本机没有对应记录。")
-                }
-
-                ForEach(result.unreferencedRecords, id: \.self) { reference in
-                    VStack(alignment: .leading, spacing: 7) {
-                        recordRow(reference, detail: "本机记录未被笔记引用。")
-                        HStack {
-                            Spacer()
-                            Button("请求删除授权", role: .destructive) {
-                                referencePendingDeletion = reference
-                                isConfirmingDeletion = true
-                            }
-                            .buttonStyle(.bordered)
-                        }
+            Text("本地扫描").font(.headline)
+            Text(sensitiveScanRootURL == nil ? "选择文件夹后，在主窗口确认候选。" : "当前有 \(sensitiveScanCandidateCount) 个待确认候选。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button(sensitiveScanRootURL == nil ? "选择文件夹" : "重新扫描") {
+                    if sensitiveScanRootURL == nil {
+                        chooseSensitiveScanRoot()
+                    } else {
+                        Task { await rescanSensitiveInformation() }
                     }
-                    .padding(10)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-            } else {
-                Text("尚未扫描。请先在 Obsidian 插件中发起扫描。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.bordered)
+                Spacer()
+                Button("打开确认") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: MenuBarPresentation.mainWindowID)
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
     }
