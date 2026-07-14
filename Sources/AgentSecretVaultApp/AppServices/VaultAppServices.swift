@@ -224,7 +224,7 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func openRevealSession(references: [String], context: RevealContext) async throws -> String {
-        let resolvedParagraph = try await resolveReferences(references: references, context: context)
+        let resolvedParagraph = try await resolveReferencesWithValues(references: references, context: context)
         let sessionID = await revealSessionStore.create(resolvedParagraph: resolvedParagraph)
         await revealSessionPresenter.present(sessionID: sessionID, store: revealSessionStore)
         await emitAudit(
@@ -237,7 +237,21 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func restoreReferences(references: [String], context: RevealContext) async throws -> String {
-        let restored = try await resolveReferences(references: references, context: context)
+        let restored = try await restoreReferencesWithValues(references: references, context: context)
+        await emitAudit(
+            action: "本机脱密使用",
+            target: sanitizedReason(context.reason),
+            referenceCount: references.count,
+            result: "成功"
+        )
+        return restored.text
+    }
+
+    public func restoreReferencesWithValues(
+        references: [String],
+        context: RevealContext
+    ) async throws -> RestoredParagraph {
+        let restored = try await resolveReferencesWithValues(references: references, context: context)
         await emitAudit(
             action: "本机脱密使用",
             target: sanitizedReason(context.reason),
@@ -265,6 +279,13 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     private func resolveReferences(references: [String], context: RevealContext) async throws -> String {
+        try await resolveReferencesWithValues(references: references, context: context).text
+    }
+
+    private func resolveReferencesWithValues(
+        references: [String],
+        context: RevealContext
+    ) async throws -> RestoredParagraph {
         guard !references.isEmpty else {
             throw VaultAppServicesRevealError.invalidRevealContext
         }
@@ -304,7 +325,10 @@ public actor VaultAppServices: WorkbenchServicing {
             plaintexts.append(plaintext)
         }
 
-        return try resolveTemplate(context.template, ranges: context.ranges, plaintexts: plaintexts)
+        return RestoredParagraph(
+            text: try resolveTemplate(context.template, ranges: context.ranges, plaintexts: plaintexts),
+            values: plaintexts
+        )
     }
 
     private func authorizationPolicy(for policies: [SecretPolicy]) -> SecretPolicy {

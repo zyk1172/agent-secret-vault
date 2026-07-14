@@ -15,6 +15,7 @@
 		13D5B5D46C7995CFABB452A3 /* LocalAuthenticator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7416E0E120A257AAFC8D8EB1 /* LocalAuthenticator.swift */; };
 		1572006CADBDB81555FEE30A /* AuthorizationSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DD6728F4B44BF37B56BCCC1 /* AuthorizationSessionTests.swift */; };
 		178ED6142B5C94DFB9497174 /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 152A604D4093E5ECB97E2DB0 /* VaultCore.framework */; };
+		17E5B1BE7849CE0141F9E17C /* RestoredParagraph.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857421EC9108153DC1E5F8CF /* RestoredParagraph.swift */; };
 		1B24ABB2A873F4233CFE34B1 /* MenuBarLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEA3B5552280D244C0B3912D /* MenuBarLifecycleTests.swift */; };
 		1B452D75C8772703CE489968 /* ExecutionRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE7F60B3C847EBA94E16143C /* ExecutionRequest.swift */; };
 		1DA2F44152B62472264DE5BF /* AgentSecretVaultApp.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 63F5D406A6125C21AADB774C /* AgentSecretVaultApp.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -441,6 +442,7 @@
 		7CA52CBB7B338FD5F2082702 /* IPCMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPCMessage.swift; sourceTree = "<group>"; };
 		8347118BC278FC424612FB12 /* VaultIPC.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VaultIPC.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		834AF520878C33A04878C375 /* OrphanScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrphanScanner.swift; sourceTree = "<group>"; };
+		857421EC9108153DC1E5F8CF /* RestoredParagraph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RestoredParagraph.swift; sourceTree = "<group>"; };
 		873C5E8748C746C1969B5989 /* VaultAuthorization.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VaultAuthorization.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		89E213269F2B56F80660D182 /* TemplateValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateValidator.swift; sourceTree = "<group>"; };
 		8A93F61AF6CEE02941DC56E3 /* AppIPCControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIPCControllerTests.swift; sourceTree = "<group>"; };
@@ -614,6 +616,7 @@
 				46C3CD4133726E8B882639FB /* ConnectionStatusCard.swift */,
 				14C6F9B437633B5813D93F08 /* ParagraphRestoreBuilder.swift */,
 				355A1BD1F2F5572F07356EA6 /* ParagraphRestoreView.swift */,
+				857421EC9108153DC1E5F8CF /* RestoredParagraph.swift */,
 				3BDC475D20ADAE44E8FDD9EA /* RevealSessionPresenter.swift */,
 				477A6A243F6915B5990ABA1D /* RevealSessionWindow.swift */,
 				D7AA48DC206059E2CDE253F4 /* SetupGuideView.swift */,
@@ -1327,6 +1330,7 @@
 				4230317926F7DA1EEADF5DE2 /* OverviewGuideView.swift in Sources */,
 				C4898DF45F3184B457AFBDFC /* ParagraphRestoreBuilder.swift in Sources */,
 				E090DD11530FA7E2D4762456 /* ParagraphRestoreView.swift in Sources */,
+				17E5B1BE7849CE0141F9E17C /* RestoredParagraph.swift in Sources */,
 				9664BCF20CBC6F30CF016676 /* RevealSessionPresenter.swift in Sources */,
 				AE11A6288E89567BC2902A2A /* RevealSessionStore.swift in Sources */,
 				CF02741EA5E8DADA6E62C389 /* RevealSessionWindow.swift in Sources */,

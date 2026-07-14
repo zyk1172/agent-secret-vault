@@ -5,12 +5,16 @@ import VaultCore
 import VaultIPC
 @testable import AgentSecretVaultApp
 
-@Test func revealSessionStoreStoresResolvedParagraphAndClearsIt() async {
+@Test func revealSessionStoreStoresOrderedResolvedValuesAndClearsThem() async {
     let store = RevealSessionStore()
-    let id = await store.create(resolvedParagraph: "Token: ASV_CANARY_REVEAL")
-    #expect(await store.paragraph(id: id) == "Token: ASV_CANARY_REVEAL")
+    let restored = RestoredParagraph(
+        text: "账号: ASV_CANARY_USER，密码: ASV_CANARY_PASSWORD",
+        values: ["ASV_CANARY_USER", "ASV_CANARY_PASSWORD"]
+    )
+    let id = await store.create(resolvedParagraph: restored)
+    #expect(await store.restoredParagraph(id: id) == restored)
     await store.clear(id: id)
-    #expect(await store.paragraph(id: id) == nil)
+    #expect(await store.restoredParagraph(id: id) == nil)
 }
 
 @Test func revealSessionStoreExpiresSessionsAfterTTL() async throws {
@@ -130,7 +134,7 @@ import VaultIPC
         revealSessionPresenter: presenter
     )
 
-    let restored = try await services.restoreReferences(
+    let restored = try await services.restoreReferencesWithValues(
         references: ["secret://ABCDEFGHJKMNPQRSTVWXYZ0123"],
         context: RevealContext(
             reason: "Restore current paragraph",
@@ -139,7 +143,16 @@ import VaultIPC
         )
     )
 
-    #expect(restored == "Token: ASV_CANARY_RESTORE_SERVICE")
+    #expect(restored.text == "Token: ASV_CANARY_RESTORE_SERVICE")
+    #expect(restored.values == ["ASV_CANARY_RESTORE_SERVICE"])
+    #expect(try await services.restoreReferences(
+        references: ["secret://ABCDEFGHJKMNPQRSTVWXYZ0123"],
+        context: RevealContext(
+            reason: "Restore current paragraph",
+            template: "Token: {{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    ) == restored.text)
     #expect(await presenter.presentedSessionIDs == [])
 }
 
