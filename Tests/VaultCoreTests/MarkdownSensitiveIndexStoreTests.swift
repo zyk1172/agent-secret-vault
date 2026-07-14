@@ -33,6 +33,19 @@ import Testing
     #expect(try await store.versions(id: record.id) == [1])
 }
 
+@Test func markdownIndexStoreInitializesAnEmptySelectedFile() async throws {
+    let directory = try makeMarkdownIndexTemporaryDirectory()
+    let indexURL = directory.appendingPathComponent("Sensitive Information.md")
+    try Data().write(to: indexURL)
+    let store = MarkdownSensitiveIndexStore(indexURL: indexURL)
+
+    try await store.initializeSelectedIndex()
+
+    let text = try String(contentsOf: indexURL, encoding: .utf8)
+    #expect(text.contains("# Sensitive Information Index"))
+    #expect(try await store.entries().isEmpty)
+}
+
 @Test func markdownIndexStorePreservesExistingMetadataWhenReplacingARecord() async throws {
     let directory = try makeMarkdownIndexTemporaryDirectory()
     let indexURL = directory.appendingPathComponent("Sensitive Information.md")

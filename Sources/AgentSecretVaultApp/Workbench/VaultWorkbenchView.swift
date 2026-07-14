@@ -124,8 +124,13 @@ public struct VaultWorkbenchView: View {
     let orphanScanResult: OrphanScanResult?
     let auditEntries: [AgentAutomationAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
+    let sensitiveIndexURL: URL?
+    let sensitiveIndexEntries: [IndexedEncryptedRecord]
     let restoreParagraph: ((String) async throws -> RestoredParagraph)?
     let refreshSavedReferences: (() async -> Void)?
+    let chooseSensitiveIndex: (() -> Void)?
+    let createSensitiveIndex: (() -> Void)?
+    let refreshSensitiveIndex: (() async -> Void)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
 
     public init(
@@ -133,15 +138,25 @@ public struct VaultWorkbenchView: View {
         orphanScanResult: OrphanScanResult? = nil,
         auditEntries: [AgentAutomationAuditEntry] = [],
         savedReferences: [SecretReferenceMetadata] = [],
+        sensitiveIndexURL: URL? = nil,
+        sensitiveIndexEntries: [IndexedEncryptedRecord] = [],
         restoreParagraph: ((String) async throws -> RestoredParagraph)? = nil,
-        refreshSavedReferences: (() async -> Void)? = nil
+        refreshSavedReferences: (() async -> Void)? = nil,
+        chooseSensitiveIndex: (() -> Void)? = nil,
+        createSensitiveIndex: (() -> Void)? = nil,
+        refreshSensitiveIndex: (() async -> Void)? = nil
     ) {
         self.status = status
         self.orphanScanResult = orphanScanResult
         self.auditEntries = auditEntries
         self.savedReferences = savedReferences
+        self.sensitiveIndexURL = sensitiveIndexURL
+        self.sensitiveIndexEntries = sensitiveIndexEntries
         self.restoreParagraph = restoreParagraph
         self.refreshSavedReferences = refreshSavedReferences
+        self.chooseSensitiveIndex = chooseSensitiveIndex
+        self.createSensitiveIndex = createSensitiveIndex
+        self.refreshSensitiveIndex = refreshSensitiveIndex
     }
 
     public var body: some View {
@@ -234,8 +249,14 @@ public struct VaultWorkbenchView: View {
                 }
             }
         case .secrets:
-            WorkbenchPage(title: "密文库", subtitle: "保存使用过的敏感信息引用，只展示密文，不展示明文。", systemImage: selectedSection.systemImage) {
-                SavedSecretReferencesCard(references: savedReferences, refresh: refreshSavedReferences)
+            WorkbenchPage(title: "敏感信息", subtitle: "集中维护敏感信息.md；每条记录保留可读索引和独立密文。", systemImage: selectedSection.systemImage) {
+                SensitiveIndexLibraryCard(
+                    indexURL: sensitiveIndexURL,
+                    entries: sensitiveIndexEntries,
+                    chooseIndex: chooseSensitiveIndex,
+                    createIndex: createSensitiveIndex,
+                    refresh: refreshSensitiveIndex
+                )
             }
         case .records:
             WorkbenchPage(title: "记录维护", subtitle: "检查笔记引用和本机加密记录是否一致。", systemImage: selectedSection.systemImage) {
@@ -591,6 +612,149 @@ private struct SidebarStatusStrip: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct SensitiveIndexLibraryCard: View {
+    let indexURL: URL?
+    let entries: [IndexedEncryptedRecord]
+    let chooseIndex: (() -> Void)?
+    let createIndex: (() -> Void)?
+    let refresh: (() async -> Void)?
+    @State private var copiedReference: String?
+    @State private var isRefreshing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Label("敏感信息.md", systemImage: "doc.badge.lock")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Text("\(entries.count) 条")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                if let refresh, indexURL != nil {
+                    Button {
+                        Task {
+                            isRefreshing = true
+                            await refresh()
+                            isRefreshing = false
+                        }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isRefreshing)
+                }
+            }
+
+            if let indexURL {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                    Text(indexURL.path)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("更换文件") { chooseIndex?() }
+                        .buttonStyle(.bordered)
+                }
+                .padding(10)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                if entries.isEmpty {
+                    ContentUnavailableView(
+                        "索引为空",
+                        systemImage: "doc.text",
+                        description: Text("从 Obsidian 手动加密后，记录会写入这个文件。")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 170)
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(entries, id: \.displayID) { entry in
+                            SensitiveIndexRow(entry: entry, copiedReference: copiedReference) { reference in
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(reference, forType: .string)
+                                withAnimation(VaultWorkbenchMotion.interactive) {
+                                    copiedReference = reference
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                ContentUnavailableView(
+                    "选择敏感信息.md",
+                    systemImage: "folder.badge.questionmark",
+                    description: Text("此文件是加密记录唯一来源。可选择现有索引，或在任意路径新建。")
+                )
+                .frame(maxWidth: .infinity, minHeight: 170)
+
+                HStack {
+                    Button("选择文件") { chooseIndex?() }
+                        .buttonStyle(.bordered)
+                    Button("新建索引") { createIndex?() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct SensitiveIndexRow: View {
+    let entry: IndexedEncryptedRecord
+    let copiedReference: String?
+    let copyReference: (String) -> Void
+
+    private var reference: String { "secret://\(entry.record.id)" }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(entry.displayID)
+                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .foregroundStyle(.blue)
+                .frame(width: 48, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(entry.title)
+                        .font(.headline)
+                    Text(entry.category)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let source = entry.source {
+                        Text("\(source.filePath):\(source.line)")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Text(reference)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("独立加密载荷")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Button(copiedReference == reference ? "已复制" : "复制引用") {
+                        copyReference(reference)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .padding(12)
+        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

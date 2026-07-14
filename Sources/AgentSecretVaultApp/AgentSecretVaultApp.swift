@@ -2,6 +2,7 @@ import AppKit
 import AgentSecretVaultApp
 import CryptoKit
 import SwiftUI
+import UniformTypeIdentifiers
 import VaultAuthorization
 import VaultCore
 import VaultIPC
@@ -19,11 +20,22 @@ struct AgentSecretVaultApplication: App {
                 orphanScanResult: runtime.orphanScanResult,
                 auditEntries: runtime.auditEntries,
                 savedReferences: runtime.savedReferences,
+                sensitiveIndexURL: runtime.sensitiveIndexURL,
+                sensitiveIndexEntries: runtime.sensitiveIndexEntries,
                 restoreParagraph: { text in
                     try await runtime.restoreParagraph(text)
                 },
                 refreshSavedReferences: {
                     await runtime.refreshSavedReferences()
+                },
+                chooseSensitiveIndex: {
+                    runtime.chooseSensitiveIndex()
+                },
+                createSensitiveIndex: {
+                    runtime.createSensitiveIndex()
+                },
+                refreshSensitiveIndex: {
+                    await runtime.refreshSensitiveIndex()
                 }
             )
                 .task {
@@ -134,10 +146,14 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var orphanScanResult: OrphanScanResult?
     @Published var auditEntries: [AgentAutomationAuditEntry] = []
     @Published var savedReferences: [SecretReferenceMetadata] = []
+    @Published var sensitiveIndexURL: URL?
+    @Published var sensitiveIndexEntries: [IndexedEncryptedRecord] = []
+    @Published var sensitiveIndexError: String?
 
     private var controller: AppIPCController?
     private var services: VaultAppServices?
     private var protectionKeyStore: AppProtectionKeyStore?
+    private var sensitiveIndexStore: MarkdownSensitiveIndexStore?
     private var lifecycleMonitor: VaultLifecycleMonitor?
     private var started = false
 
@@ -153,6 +169,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             controller = runtime.controller
             services = runtime.services
             protectionKeyStore = runtime.protectionKeyStore
+            sensitiveIndexStore = runtime.sensitiveIndexStore
+            sensitiveIndexURL = await runtime.sensitiveIndexStore.selectedIndexURL()
             try runtime.controller.start()
             lifecycleMonitor = VaultLifecycleMonitor { [weak self] in
                 await self?.clearRevealSessions()
@@ -160,6 +178,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             lifecycleMonitor?.start()
             status = await runtime.services.status()
             await refreshSavedReferences()
+            await refreshSensitiveIndex()
         } catch {
             status = WorkbenchStatus(
                 locked: true,
@@ -209,10 +228,77 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
+    func refreshSensitiveIndex() async {
+        guard let sensitiveIndexStore else {
+            sensitiveIndexEntries = []
+            return
+        }
+
+        do {
+            sensitiveIndexEntries = try await sensitiveIndexStore.entries()
+            sensitiveIndexError = nil
+        } catch MarkdownSensitiveIndexStoreError.noSelectedIndex {
+            sensitiveIndexEntries = []
+            sensitiveIndexError = nil
+        } catch {
+            sensitiveIndexEntries = []
+            sensitiveIndexError = "无法读取所选敏感信息.md"
+        }
+    }
+
+    func chooseSensitiveIndex() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
+        panel.message = "选择作为加密记录库的敏感信息.md"
+        panel.prompt = "选择"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        Task { await activateSensitiveIndex(at: url) }
+    }
+
+    func createSensitiveIndex() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.nameFieldStringValue = "敏感信息.md"
+        panel.message = "新建集中加密记录库"
+        panel.prompt = "新建"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        Task { await activateSensitiveIndex(at: url) }
+    }
+
+    private func activateSensitiveIndex(at url: URL) async {
+        guard let sensitiveIndexStore else {
+            return
+        }
+        let priorURL = await sensitiveIndexStore.selectedIndexURL()
+
+        do {
+            try await sensitiveIndexStore.selectIndex(at: url)
+            try await sensitiveIndexStore.initializeSelectedIndex()
+            SensitiveIndexSelectionStore.save(url)
+            sensitiveIndexURL = url
+            sensitiveIndexError = nil
+            await refreshSensitiveIndex()
+            await refreshSavedReferences()
+        } catch {
+            try? await sensitiveIndexStore.selectIndex(at: priorURL)
+            sensitiveIndexError = "所选文件不是有效的敏感信息.md"
+        }
+    }
+
     private func makeRuntime() throws -> (
         controller: AppIPCController,
         services: VaultAppServices,
-        protectionKeyStore: AppProtectionKeyStore
+        protectionKeyStore: AppProtectionKeyStore,
+        sensitiveIndexStore: MarkdownSensitiveIndexStore
     ) {
         let fileManager = FileManager.default
         let appSupport = try fileManager.url(
@@ -230,7 +316,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: auditRoot, withIntermediateDirectories: true)
 
-        let recordStore = FileRecordStore(baseDirectory: root)
+        let recordStore = MarkdownSensitiveIndexStore(indexURL: SensitiveIndexSelectionStore.selectedURL())
         let auditLog = EncryptedAuditLog(directoryURL: auditRoot)
         let deviceKeyStore = DeviceKeyStore()
         let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
@@ -246,7 +332,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let vaultMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data = { policy, reason in
             let localWrappingKey = try await protectionKeyStore.deviceKey(for: policy, reason: reason)
             if try await wrappedMasterKeyStore.loadWrappedMasterKeySet() == nil,
-               !(try await recordStore.recordIDs()).isEmpty
+               (try? await recordStore.recordIDs().isEmpty) == false
             {
                 return try await masterKeyCoordinator.adoptExistingVault(
                     reason: reason,
@@ -300,7 +386,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             server: server,
             handler: IPCRequestHandler(service: services)
         )
-        return (controller, services, protectionKeyStore)
+        return (controller, services, protectionKeyStore, recordStore)
     }
 
     private func recordAudit(_ entry: AgentAutomationAuditEntry) {

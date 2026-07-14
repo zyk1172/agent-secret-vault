@@ -40,6 +40,24 @@ public actor MarkdownSensitiveIndexStore: RecordStore, RecordListing {
         indexURL
     }
 
+    public func initializeSelectedIndex() throws {
+        let url = try requiredIndexURL()
+        if FileManager.default.fileExists(atPath: url.path) {
+            try assertSafeIndexURL(url)
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else {
+                throw MarkdownSensitiveIndexStoreError.malformedIndex
+            }
+            guard !(try Data(contentsOf: url)).isEmpty else {
+                try writeEntries([])
+                return
+            }
+            _ = try readEntries()
+            return
+        }
+        try writeEntries([])
+    }
+
     public func entries() throws -> [IndexedEncryptedRecord] {
         try readEntries()
     }
