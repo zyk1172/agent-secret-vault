@@ -70,9 +70,9 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
         case .paragraph:
             return "段落解密"
         case .secrets:
-            return "密文库"
+            return "敏感信息"
         case .records:
-            return "记录维护"
+            return "本地扫描"
         case .automation:
             return "智能体自动化"
         case .security:
@@ -87,9 +87,9 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
         case .paragraph:
             return "一次解密段落内全部密文引用"
         case .secrets:
-            return "保存用过的 secret:// 引用，下次直接复制使用"
+            return "集中索引与独立加密记录"
         case .records:
-            return "扫描孤立引用和本机记录"
+            return "本机规则候选与人工确认"
         case .automation:
             return "查看脱敏后的本机使用记录"
         case .security:
@@ -126,11 +126,16 @@ public struct VaultWorkbenchView: View {
     let savedReferences: [SecretReferenceMetadata]
     let sensitiveIndexURL: URL?
     let sensitiveIndexEntries: [IndexedEncryptedRecord]
+    let sensitiveScanRootURL: URL?
+    let sensitiveScanCandidates: [LocalSensitiveInformationCandidate]
     let restoreParagraph: ((String) async throws -> RestoredParagraph)?
     let refreshSavedReferences: (() async -> Void)?
     let chooseSensitiveIndex: (() -> Void)?
     let createSensitiveIndex: (() -> Void)?
     let refreshSensitiveIndex: (() async -> Void)?
+    let chooseSensitiveScanRoot: (() -> Void)?
+    let scanSensitiveInformation: (() async -> Void)?
+    let encryptSensitiveCandidates: ((Set<String>) async -> Void)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
 
     public init(
@@ -140,11 +145,16 @@ public struct VaultWorkbenchView: View {
         savedReferences: [SecretReferenceMetadata] = [],
         sensitiveIndexURL: URL? = nil,
         sensitiveIndexEntries: [IndexedEncryptedRecord] = [],
+        sensitiveScanRootURL: URL? = nil,
+        sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = [],
         restoreParagraph: ((String) async throws -> RestoredParagraph)? = nil,
         refreshSavedReferences: (() async -> Void)? = nil,
         chooseSensitiveIndex: (() -> Void)? = nil,
         createSensitiveIndex: (() -> Void)? = nil,
-        refreshSensitiveIndex: (() async -> Void)? = nil
+        refreshSensitiveIndex: (() async -> Void)? = nil,
+        chooseSensitiveScanRoot: (() -> Void)? = nil,
+        scanSensitiveInformation: (() async -> Void)? = nil,
+        encryptSensitiveCandidates: ((Set<String>) async -> Void)? = nil
     ) {
         self.status = status
         self.orphanScanResult = orphanScanResult
@@ -152,11 +162,16 @@ public struct VaultWorkbenchView: View {
         self.savedReferences = savedReferences
         self.sensitiveIndexURL = sensitiveIndexURL
         self.sensitiveIndexEntries = sensitiveIndexEntries
+        self.sensitiveScanRootURL = sensitiveScanRootURL
+        self.sensitiveScanCandidates = sensitiveScanCandidates
         self.restoreParagraph = restoreParagraph
         self.refreshSavedReferences = refreshSavedReferences
         self.chooseSensitiveIndex = chooseSensitiveIndex
         self.createSensitiveIndex = createSensitiveIndex
         self.refreshSensitiveIndex = refreshSensitiveIndex
+        self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
+        self.scanSensitiveInformation = scanSensitiveInformation
+        self.encryptSensitiveCandidates = encryptSensitiveCandidates
     }
 
     public var body: some View {
@@ -259,8 +274,14 @@ public struct VaultWorkbenchView: View {
                 )
             }
         case .records:
-            WorkbenchPage(title: "记录维护", subtitle: "检查笔记引用和本机加密记录是否一致。", systemImage: selectedSection.systemImage) {
-                OrphanReviewView(result: orphanScanResult) { _ in }
+            WorkbenchPage(title: "本地扫描", subtitle: "按本机规则找出候选；不会自动加密或写回。", systemImage: selectedSection.systemImage) {
+                LocalSensitiveScanCard(
+                    scanRootURL: sensitiveScanRootURL,
+                    candidates: sensitiveScanCandidates,
+                    chooseRoot: chooseSensitiveScanRoot,
+                    rescan: scanSensitiveInformation,
+                    encrypt: encryptSensitiveCandidates
+                )
             }
         case .automation:
             WorkbenchPage(title: "智能体自动化", subtitle: "只显示脱敏审计。密码、token、Authorization header 不会进入这里。", systemImage: selectedSection.systemImage) {
@@ -755,6 +776,151 @@ private struct SensitiveIndexRow: View {
         }
         .padding(12)
         .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct LocalSensitiveScanCard: View {
+    let scanRootURL: URL?
+    let candidates: [LocalSensitiveInformationCandidate]
+    let chooseRoot: (() -> Void)?
+    let rescan: (() async -> Void)?
+    let encrypt: ((Set<String>) async -> Void)?
+    @State private var selectedIDs: Set<String> = []
+    @State private var isWorking = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Label("本机规则候选", systemImage: "magnifyingglass")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Text("\(candidates.count) 项")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Button("选择文件夹") { chooseRoot?() }
+                    .buttonStyle(.bordered)
+                if scanRootURL != nil {
+                    Button("重新扫描") {
+                        Task {
+                            isWorking = true
+                            await rescan?()
+                            selectedIDs = []
+                            isWorking = false
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isWorking)
+                }
+            }
+
+            if let scanRootURL {
+                Text(scanRootURL.path)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else {
+                Text("选择任意 Markdown 文件夹。本机仅生成候选，不会自动加密。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            if candidates.isEmpty {
+                ContentUnavailableView(
+                    scanRootURL == nil ? "尚未选择文件夹" : "没有候选",
+                    systemImage: scanRootURL == nil ? "folder.badge.questionmark" : "checkmark.shield",
+                    description: Text(scanRootURL == nil ? "选择文件夹后显示可人工确认的候选。" : "已跳过含 secret:// 的段落。仍可在 Obsidian 中手动加密选中内容。")
+                )
+                .frame(maxWidth: .infinity, minHeight: 170)
+            } else {
+                HStack {
+                    Button(selectedIDs.count == candidates.count ? "取消全选" : "全选") {
+                        selectedIDs = selectedIDs.count == candidates.count ? [] : Set(candidates.map(\.id))
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                    Button("加密所选 \(selectedIDs.count) 项") {
+                        let ids = selectedIDs
+                        Task {
+                            isWorking = true
+                            await encrypt?(ids)
+                            selectedIDs = []
+                            isWorking = false
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selectedIDs.isEmpty || isWorking)
+                }
+
+                VStack(spacing: 10) {
+                    ForEach(candidates) { candidate in
+                        LocalSensitiveCandidateRow(
+                            candidate: candidate,
+                            selected: selectedIDs.contains(candidate.id)
+                        ) { enabled in
+                            if enabled {
+                                selectedIDs.insert(candidate.id)
+                            } else {
+                                selectedIDs.remove(candidate.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct LocalSensitiveCandidateRow: View {
+    let candidate: LocalSensitiveInformationCandidate
+    let selected: Bool
+    let setSelected: (Bool) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Toggle("", isOn: Binding(get: { selected }, set: setSelected))
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Text(candidate.title)
+                        .font(.headline)
+                    Text(candidate.rule)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(candidate.risk == .high ? .red : .orange)
+                    Spacer()
+                    Text("\(candidate.source.filePath):\(candidate.source.line)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                highlightedParagraph
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                Text("命中值会写入敏感信息.md，并替换为带标题的引用链接。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var highlightedParagraph: Text {
+        guard let range = candidate.paragraph.range(of: candidate.matchedValue) else {
+            return Text(candidate.paragraph)
+        }
+        return Text(candidate.paragraph[..<range.lowerBound])
+            + Text(candidate.paragraph[range]).foregroundColor(.red)
+            + Text(candidate.paragraph[range.upperBound...])
     }
 }
 

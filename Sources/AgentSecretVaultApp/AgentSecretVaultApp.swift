@@ -22,6 +22,8 @@ struct AgentSecretVaultApplication: App {
                 savedReferences: runtime.savedReferences,
                 sensitiveIndexURL: runtime.sensitiveIndexURL,
                 sensitiveIndexEntries: runtime.sensitiveIndexEntries,
+                sensitiveScanRootURL: runtime.sensitiveScanRootURL,
+                sensitiveScanCandidates: runtime.sensitiveScanCandidates,
                 restoreParagraph: { text in
                     try await runtime.restoreParagraph(text)
                 },
@@ -36,6 +38,15 @@ struct AgentSecretVaultApplication: App {
                 },
                 refreshSensitiveIndex: {
                     await runtime.refreshSensitiveIndex()
+                },
+                chooseSensitiveScanRoot: {
+                    runtime.chooseSensitiveScanRoot()
+                },
+                scanSensitiveInformation: {
+                    await runtime.scanSensitiveInformation()
+                },
+                encryptSensitiveCandidates: { candidateIDs in
+                    await runtime.encryptSensitiveCandidates(candidateIDs)
                 }
             )
                 .task {
@@ -149,6 +160,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var sensitiveIndexURL: URL?
     @Published var sensitiveIndexEntries: [IndexedEncryptedRecord] = []
     @Published var sensitiveIndexError: String?
+    @Published var sensitiveScanRootURL: URL?
+    @Published var sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = []
+    @Published var sensitiveScanError: String?
 
     private var controller: AppIPCController?
     private var services: VaultAppServices?
@@ -171,6 +185,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             protectionKeyStore = runtime.protectionKeyStore
             sensitiveIndexStore = runtime.sensitiveIndexStore
             sensitiveIndexURL = await runtime.sensitiveIndexStore.selectedIndexURL()
+            sensitiveScanRootURL = SensitiveIndexSelectionStore.selectedScanRootURL()
             try runtime.controller.start()
             lifecycleMonitor = VaultLifecycleMonitor { [weak self] in
                 await self?.clearRevealSessions()
@@ -291,6 +306,78 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         } catch {
             try? await sensitiveIndexStore.selectIndex(at: priorURL)
             sensitiveIndexError = "所选文件不是有效的敏感信息.md"
+        }
+    }
+
+    func chooseSensitiveScanRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "选择要本地检查的 Markdown 文件夹"
+        panel.prompt = "选择"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        sensitiveScanRootURL = url
+        SensitiveIndexSelectionStore.saveScanRoot(url)
+        Task { await scanSensitiveInformation() }
+    }
+
+    func scanSensitiveInformation() async {
+        guard let sensitiveScanRootURL else {
+            sensitiveScanCandidates = []
+            sensitiveScanError = "请先选择 Markdown 文件夹"
+            return
+        }
+
+        do {
+            sensitiveScanCandidates = try LocalSensitiveInformationScanner().scan(
+                directory: sensitiveScanRootURL,
+                excluding: sensitiveIndexURL
+            )
+            sensitiveScanError = nil
+        } catch {
+            sensitiveScanCandidates = []
+            sensitiveScanError = "无法读取所选文件夹"
+        }
+    }
+
+    func encryptSensitiveCandidates(_ ids: Set<String>) async {
+        guard !ids.isEmpty, let services, let sensitiveIndexStore else {
+            return
+        }
+
+        let selected = sensitiveScanCandidates.filter { ids.contains($0.id) }
+        var failed = false
+        for candidate in selected {
+            do {
+                let reference = try await services.encryptText(
+                    candidate.matchedValue,
+                    label: candidate.title,
+                    policy: .credential
+                )
+                let parsed = try SecretReference(reference)
+                let entries = try await sensitiveIndexStore.entries()
+                guard let entry = entries.first(where: { $0.record.id == parsed.id }) else {
+                    throw MarkdownSensitiveIndexStoreError.recordNotFound(parsed.id)
+                }
+                try LocalSensitiveInformationWriter.replace(
+                    candidate,
+                    displayID: entry.displayID,
+                    reference: reference
+                )
+            } catch {
+                failed = true
+            }
+        }
+
+        await refreshSensitiveIndex()
+        await refreshSavedReferences()
+        await scanSensitiveInformation()
+        if failed {
+            sensitiveScanError = "部分候选未写回：文件可能已修改，或尚未选择有效的敏感信息.md"
         }
     }
 

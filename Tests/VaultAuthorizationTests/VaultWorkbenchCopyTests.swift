@@ -53,17 +53,17 @@ import Foundation
     #expect(titles == [
         "控制台",
         "段落解密",
-        "密文库",
-        "记录维护",
+        "敏感信息",
+        "本地扫描",
         "智能体自动化",
         "安全边界"
     ])
     #expect(VaultWorkbenchSection.paragraph.subtitle.contains("一次解密"))
-    #expect(VaultWorkbenchSection.secrets.subtitle.contains("secret://"))
+    #expect(VaultWorkbenchSection.secrets.subtitle.contains("集中索引"))
     #expect(VaultWorkbenchSection.allCases.allSatisfy { !$0.systemImage.isEmpty })
 }
 
-@Test func workbenchShowsSavedSecretReferencesWithoutPlaintext() throws {
+@Test func workbenchShowsMarkdownSensitiveIndexWithoutPlaintext() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -71,13 +71,11 @@ import Foundation
         .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-    #expect(source.contains("SavedSecretReferencesCard(references: savedReferences"))
-    #expect(source.contains("refresh: refreshSavedReferences"))
-    #expect(source.contains("paragraphReferenceMarker"))
-    #expect(source.contains("replacingOccurrences(of: paragraphReferenceMarker, with: metadata.reference)"))
-    #expect(source.contains("复制可用段落"))
-    #expect(source.contains("只复制段落上下文和密文引用，不复制明文。"))
-    #expect(source.contains("不展示明文"))
+    #expect(source.contains("SensitiveIndexLibraryCard("))
+    #expect(source.contains("sensitiveIndexEntries"))
+    #expect(source.contains("独立加密载荷"))
+    #expect(source.contains("复制引用"))
+    #expect(source.contains("此文件是加密记录唯一来源"))
 }
 
 @Test func overviewKeepsStatusProminentAndCompact() throws {
