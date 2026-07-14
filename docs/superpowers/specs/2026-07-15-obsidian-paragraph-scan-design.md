@@ -1,5 +1,9 @@
 # Obsidian Paragraph Scan Design
 
+> **Superseded:** Replaced by `2026-07-15-central-sensitive-index-design.md`.
+> The new workflow uses an App-managed central encrypted index and explicit
+> user decisions instead of an Obsidian-owned scan-review flow.
+
 ## Goal
 
 Make scan review useful for deciding what to encrypt. Present each finding in

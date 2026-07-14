@@ -1,5 +1,8 @@
 # Obsidian Paragraph Scan Implementation Plan
 
+> **Superseded:** Do not execute. Replaced by the central sensitive-index
+> design in `docs/superpowers/specs/2026-07-15-central-sensitive-index-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Review scan results as complete Markdown content blocks, automatically prioritise credentials, and never offer already encrypted values for replacement.
