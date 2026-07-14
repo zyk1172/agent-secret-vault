@@ -1,6 +1,6 @@
 {
   "name": "obsidian-agent-secret-vault",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "type": "module",
   "private": true,
   "scripts": {
