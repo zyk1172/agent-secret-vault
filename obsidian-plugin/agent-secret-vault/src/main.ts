@@ -1,6 +1,6 @@
 import { Menu, Notice, Plugin, type Editor, type EditorPosition, type TFile } from "obsidian";
 import { buildParagraphContextTemplate } from "./encrypt/paragraphContextTemplate";
-import { encryptTextRange } from "./encrypt/encryptSelection";
+import { encryptTextRange, inferReferenceTitle } from "./encrypt/encryptSelection";
 import { extractCurrentParagraph, type TextRange } from "./editor/selection";
 import { LocalVaultClient } from "./ipc/client";
 import type { IpcRequest } from "./ipc/protocol";
@@ -20,10 +20,6 @@ function clonePosition(position: EditorPosition): EditorPosition {
 
 export const commandDefinitions = [
   { id: "encrypt-selection", name: "加密选中文本" },
-  { id: "encrypt-current-paragraph", name: "加密当前段落敏感信息" },
-  { id: "scan-current-note", name: "扫描当前笔记中的敏感信息" },
-  { id: "scan-vault", name: "扫描整个知识库中的敏感信息" },
-  { id: "scan-orphans", name: "扫描孤立密文引用" },
   { id: "reveal-selection", name: "在 Agent Secret Vault 中临时解密选中文本" },
   { id: "reveal-current-paragraph", name: "在 Agent Secret Vault 中临时解密当前段落" },
   { id: "restore-selection", name: "还原选中文本中的密文引用" },
@@ -57,13 +53,6 @@ export default class AgentSecretVaultPlugin extends Plugin {
             await this.encryptSelection(editor);
           }
         });
-      } else if (definition.id === "encrypt-current-paragraph") {
-        this.addCommand({
-          ...command,
-          editorCallback: async (editor: Editor) => {
-            await this.encryptCurrentParagraph(editor);
-          }
-        });
       } else if (definition.id === "reveal-current-paragraph") {
         this.addCommand({
           ...command,
@@ -90,27 +79,6 @@ export default class AgentSecretVaultPlugin extends Plugin {
           ...command,
           editorCallback: async (editor: Editor) => {
             await this.restoreCurrentParagraph(editor);
-          }
-        });
-      } else if (definition.id === "scan-current-note") {
-        this.addCommand({
-          ...command,
-          editorCallback: async (editor: Editor) => {
-            await this.scanCurrentNote(editor);
-          }
-        });
-      } else if (definition.id === "scan-vault") {
-        this.addCommand({
-          ...command,
-          callback: async () => {
-            await this.scanVault();
-          }
-        });
-      } else if (definition.id === "scan-orphans") {
-        this.addCommand({
-          ...command,
-          callback: async () => {
-            await this.scanOrphans();
           }
         });
       } else {
@@ -169,15 +137,6 @@ export default class AgentSecretVaultPlugin extends Plugin {
         });
     });
 
-    menu.addItem((item) => {
-      item
-        .setTitle("扫描当前笔记并加密")
-        .setIcon("scan-search")
-        .onClick(async () => {
-          await this.scanCurrentNote(editor);
-        });
-    });
-
     menu.addSeparator();
 
     menu.addItem((item) => {
@@ -198,23 +157,6 @@ export default class AgentSecretVaultPlugin extends Plugin {
         });
     });
 
-    menu.addItem((item) => {
-      item
-        .setTitle("扫描整个知识库")
-        .setIcon("folder-search")
-        .onClick(async () => {
-          await this.scanVault();
-        });
-    });
-
-    menu.addItem((item) => {
-      item
-        .setTitle("扫描孤立密文引用")
-        .setIcon("unlink")
-        .onClick(async () => {
-          await this.scanOrphans();
-        });
-    });
   }
 
   private async refreshStatus(status: HTMLElement): Promise<void> {
@@ -290,6 +232,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         documentText,
         range,
         label: buildParagraphContextTemplate(documentText, range),
+        referenceTitle: inferReferenceTitle(documentText, range),
         policy: "credential",
         client: this.createVaultClient()
       });
@@ -299,7 +242,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         return;
       }
 
-      editor.replaceRange(result.reference, fromPos, toPos, "agent-secret-vault");
+      editor.replaceRange(result.replacementText, fromPos, toPos, "agent-secret-vault");
       new Notice("Agent Secret Vault: encrypted text into a secret reference.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";

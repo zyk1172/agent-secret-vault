@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { encryptTextRange } from "../src/encrypt/encryptSelection";
+import { encryptTextRange, inferReferenceTitle } from "../src/encrypt/encryptSelection";
 
 const obsidianMock = vi.hoisted(() => ({
   notices: [] as string[]
@@ -100,12 +100,13 @@ class TestEditor {
 }
 
 describe("encrypt selection", () => {
-  it("replaces selected plaintext with returned reference", async () => {
+  it("replaces selected plaintext with a titled markdown reference", async () => {
     let observedRequest: unknown;
     const result = await encryptTextRange({
       documentText: "token = ASV_CANARY_PLUGIN",
       range: { start: 8, end: 25, text: "ASV_CANARY_PLUGIN" },
       label: null,
+      referenceTitle: "NAS 密码",
       policy: "credential",
       client: {
         request: async (request) => {
@@ -124,7 +125,7 @@ describe("encrypt selection", () => {
       label: null,
       policy: "credential"
     });
-    expect(result.updatedText).toBe("token = secret://0123456789ABCDEFGHJKMNPQRS");
+    expect(result.updatedText).toBe("token = [NAS 密码](secret://0123456789ABCDEFGHJKMNPQRS)");
     expect(JSON.stringify(result)).not.toContain("ASV_CANARY_PLUGIN");
   });
 
@@ -133,6 +134,7 @@ describe("encrypt selection", () => {
       documentText: "token = ASV_CANARY_PLUGIN",
       range: { start: 8, end: 25, text: "ASV_CANARY_PLUGIN" },
       label: null,
+      referenceTitle: "敏感信息",
       policy: "credential",
       client: {
         request: async () => ({ type: "failure", code: "VAULT_LOCKED" })
@@ -145,6 +147,7 @@ describe("encrypt selection", () => {
       documentText: "token = ASV_CANARY_PLUGIN",
       range: { start: 8, end: 25, text: "ASV_CANARY_PLUGIN" },
       label: null,
+      referenceTitle: "敏感信息",
       policy: "credential",
       client: {
         request: async () => ({
@@ -180,10 +183,10 @@ describe("encrypt selection", () => {
 
     await plugin.encryptSelection(editor);
 
-    expect(editor.text).toBe("token = secret://0123456789ABCDEFGHJKMNPQRS");
+    expect(editor.text).toBe("token = [token](secret://0123456789ABCDEFGHJKMNPQRS)");
     expect(editor.setValueCalls).toBe(0);
     expect(editor.replaceCalls).toEqual([{
-      replacement: "secret://0123456789ABCDEFGHJKMNPQRS",
+      replacement: "[token](secret://0123456789ABCDEFGHJKMNPQRS)",
       from: { line: 0, ch: 8 },
       to: { line: 0, ch: 25 },
       origin: "agent-secret-vault"
@@ -192,6 +195,11 @@ describe("encrypt selection", () => {
       type: "encryptText",
       label: "token = [[ASV_REFERENCE]]"
     }));
+  });
+
+  it("uses the line label before the selected value as the visible reference title", () => {
+    const text = "NAS 密码：ASV_CANARY_PLUGIN";
+    expect(inferReferenceTitle(text, { start: 7, end: text.length, text: "ASV_CANARY_PLUGIN" })).toBe("NAS 密码");
   });
 
   it("does not replace the selection when the editor text changes before IPC returns", async () => {
