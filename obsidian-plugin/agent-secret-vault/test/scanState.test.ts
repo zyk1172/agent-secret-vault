@@ -13,7 +13,8 @@ describe("scan state serialization", () => {
         ruleId: "password-assignment",
         confidence: "medium",
         redactedPreview: "********",
-        plaintextForCurrentProcessOnly: "hunter2"
+        plaintextForCurrentProcessOnly: "hunter2",
+        sourceExcerptForCurrentProcessOnly: "NAS 密码：hunter2"
       }
     ];
 
@@ -22,6 +23,7 @@ describe("scan state serialization", () => {
     expect(serialized).toContain("Secrets.md");
     expect(serialized).toContain("********");
     expect(serialized).not.toContain("hunter2");
+    expect(serialized).not.toContain("NAS 密码");
     expect(JSON.parse(serialized)).toEqual([
       {
         filePath: "Secrets.md",
@@ -51,7 +53,8 @@ describe("scanMarkdownFile", () => {
         ruleId: "password-assignment",
         confidence: "medium",
         redactedPreview: "********",
-        plaintextForCurrentProcessOnly: "hunter2"
+        plaintextForCurrentProcessOnly: "hunter2",
+        sourceExcerptForCurrentProcessOnly: "password = hunter2"
       },
       {
         filePath: "Daily.md",
@@ -61,8 +64,16 @@ describe("scanMarkdownFile", () => {
         ruleId: "bearer-token",
         confidence: "high",
         redactedPreview: "abcdefgh…wxyz",
-        plaintextForCurrentProcessOnly: "abcdefghijklmnopqrstuvwxyz"
+        plaintextForCurrentProcessOnly: "abcdefghijklmnopqrstuvwxyz",
+        sourceExcerptForCurrentProcessOnly: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
       }
     ]);
+  });
+
+  it("keeps the matched source line only in process-local scan state", () => {
+    const findings = scanMarkdownFile("Daily.md", "NAS 账号：alice，密码：hunter2\n");
+
+    expect(findings[0].sourceExcerptForCurrentProcessOnly).toBe("NAS 账号：alice，密码：hunter2");
+    expect(serializeScanState(findings)).not.toContain("NAS 账号：alice");
   });
 });

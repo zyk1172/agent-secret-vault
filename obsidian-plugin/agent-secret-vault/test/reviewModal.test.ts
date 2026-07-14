@@ -93,4 +93,20 @@ describe("ReviewModal", () => {
     expect(text).toContain("规则：chinese-secret-assignment");
     expect(text).toContain("置信度：medium");
   });
+
+  it("shows process-local exact text and clears it on close", () => {
+    const candidate = finding({
+      plaintextForCurrentProcessOnly: "hunter2",
+      sourceExcerptForCurrentProcessOnly: "NAS 密码：hunter2"
+    });
+    const modal = new ReviewModal({} as never, [candidate]);
+
+    modal.onOpen();
+
+    expect(modalMock.latestContentEl?.allText()).toContain("命中内容：hunter2");
+    expect(modalMock.latestContentEl?.allText()).toContain("所在内容：NAS 密码：hunter2");
+    modal.onClose();
+    expect(candidate.plaintextForCurrentProcessOnly).toBeUndefined();
+    expect(candidate.sourceExcerptForCurrentProcessOnly).toBeUndefined();
+  });
 });

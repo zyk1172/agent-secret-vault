@@ -5,12 +5,20 @@ export interface ScanFindingState extends SensitiveFinding {
   contentHash: string;
   reference?: string;
   plaintextForCurrentProcessOnly?: string;
+  sourceExcerptForCurrentProcessOnly?: string;
 }
 
-type PersistableScanFindingState = Omit<ScanFindingState, "plaintextForCurrentProcessOnly">;
+type PersistableScanFindingState = Omit<
+  ScanFindingState,
+  "plaintextForCurrentProcessOnly" | "sourceExcerptForCurrentProcessOnly"
+>;
 
 function omitPlaintext(finding: ScanFindingState): PersistableScanFindingState {
-  const { plaintextForCurrentProcessOnly: _plaintextForCurrentProcessOnly, ...persistable } = finding;
+  const {
+    plaintextForCurrentProcessOnly: _plaintextForCurrentProcessOnly,
+    sourceExcerptForCurrentProcessOnly: _sourceExcerptForCurrentProcessOnly,
+    ...persistable
+  } = finding;
   return persistable;
 }
 

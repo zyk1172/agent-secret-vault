@@ -4,7 +4,7 @@ import type { ScanFindingState } from "../scan/scanState";
 export class ReviewModal extends Modal {
   constructor(
     app: App,
-    private readonly findings: ScanFindingState[],
+    private findings: ScanFindingState[],
     private readonly applyFindings?: (findings: ScanFindingState[]) => Promise<void>
   ) {
     super(app);
@@ -41,7 +41,8 @@ export class ReviewModal extends Modal {
       item.createEl("div", { text: `文件：${finding.filePath}` });
       item.createEl("div", { text: `规则：${finding.ruleId}` });
       item.createEl("div", { text: `置信度：${finding.confidence}` });
-      item.createEl("code", { text: finding.redactedPreview });
+      item.createEl("div", { text: `命中内容：${finding.plaintextForCurrentProcessOnly ?? finding.redactedPreview}` });
+      item.createEl("div", { text: `所在内容：${finding.sourceExcerptForCurrentProcessOnly ?? finding.redactedPreview}` });
     }
 
     if (this.applyFindings) {
@@ -52,5 +53,14 @@ export class ReviewModal extends Modal {
         this.close();
       });
     }
+  }
+
+  override onClose(): void {
+    for (const finding of this.findings) {
+      finding.plaintextForCurrentProcessOnly = undefined;
+      finding.sourceExcerptForCurrentProcessOnly = undefined;
+    }
+    this.findings = [];
+    this.contentEl.empty();
   }
 }
