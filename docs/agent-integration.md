@@ -1,6 +1,6 @@
 # Agent Integration
 
-Agent Secret Vault 面向 Codex、Claude、Hermes 和其他 MCP-capable agents。
+SVLT 面向 Codex、Claude、Hermes 和其他 MCP-capable agents。
 
 核心规则：聊天里只保留 `secret://...` 引用。明文只允许停留在本地 macOS app，或停留在会内部解析引用并只返回脱敏结果的窄范围 MCP 工具里。
 
@@ -17,7 +17,7 @@ Agent Secret Vault 面向 Codex、Claude、Hermes 和其他 MCP-capable agents�
 安装脚本会生成完整 MCP 配置：
 
 ```text
-~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+~/Library/Application Support/AgentSecretVault/svlt.mcp.json
 ```
 
 在任何 MCP-capable agent 中使用类似配置：
@@ -25,7 +25,7 @@ Agent Secret Vault 面向 Codex、Claude、Hermes 和其他 MCP-capable agents�
 ```json
 {
   "mcpServers": {
-    "agent-secret-vault": {
+    "svlt": {
       "command": "/bin/zsh",
       "args": [
         "-lc",
@@ -120,12 +120,12 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 仅在客户端无法自动加载 skill 时使用：
 
 ```text
-看到 secret://、本地登录、SSH、HTTP 或本地文件导出需要秘密时，自动使用 agent-secret-vault 的 secret_action_router 或具体安全工具；不要让我粘贴明文，不要把明文返回聊天。
+看到 secret://、本地登录、SSH、HTTP 或本地文件导出需要秘密时，自动使用 svlt 的 secret_action_router 或具体安全工具；不要让我粘贴明文，不要把明文返回聊天。
 ```
 
 ## 本地预期
 
-- Agent Secret Vault app 已安装并运行。
+- SVLT app 已安装并运行。
 - MCP server 已安装到 `~/Library/Application Support/AgentSecretVault/MCP`。
 - agent 的 MCP entry 指向安装后的 `MCP/dist/server.js`。
 - 现有笔记和任务中的敏感值以 `secret://...` 保存，不保存明文。

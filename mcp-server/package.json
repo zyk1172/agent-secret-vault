@@ -1,10 +1,10 @@
 {
-  "name": "agent-secret-vault-mcp-server",
-  "version": "0.1.12",
+  "name": "svlt-mcp-server",
+  "version": "0.1.14",
   "private": true,
   "type": "module",
   "bin": {
-    "agent-secret-vault-mcp": "./dist/server.js"
+    "svlt-mcp": "./dist/server.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

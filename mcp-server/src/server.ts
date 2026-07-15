@@ -674,9 +674,9 @@ export function createVaultToolDefinitions(
     },
     {
       name: "agent_secret_usage_policy",
-      title: "Agent Secret Usage Policy",
+      title: "SVLT Usage Policy",
       description:
-        "Returns non-sensitive rules for using Agent Secret Vault from Codex, Claude, Hermes, or other MCP-capable agents. Plaintext is never returned.",
+        "Returns non-sensitive rules for using SVLT from Codex, Claude, Hermes, or other MCP-capable agents. Plaintext is never returned.",
       inputSchema: EmptyInput,
       outputSchema: AgentPolicyOutput,
       async handler(input) {
@@ -748,7 +748,7 @@ export function createVaultToolDefinitions(
       name: "vault_status",
       title: "Vault Status",
       description:
-        "Checks whether Agent Secret Vault is available and locked. Plaintext is never returned.",
+        "Checks whether SVLT is available and locked. Plaintext is never returned.",
       inputSchema: EmptyInput,
       outputSchema: StatusOutput,
       async handler(input) {
@@ -970,8 +970,8 @@ export function createVaultToolDefinitions(
 
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
-    name: "agent-secret-vault",
-    version: "0.1.12"
+    name: "svlt",
+    version: "0.1.14"
   });
 
   registerVaultTools(server, client);

@@ -4,22 +4,22 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const pluginRoot = path.join(repositoryRoot, "plugins", "agent-secret-vault");
+const pluginRoot = path.join(repositoryRoot, "plugins", "svlt");
 const marketplacePath = path.join(repositoryRoot, ".agents", "plugins", "marketplace.json");
 
 describe("Codex plugin package", () => {
   it("declares a repo-local marketplace entry", async () => {
     const marketplace = await readJson(marketplacePath);
     const entry = marketplace.plugins.find((candidate: { name?: string }) => {
-      return candidate.name === "agent-secret-vault";
+      return candidate.name === "svlt";
     });
 
     expect(marketplace.name).toBe("personal");
     expect(entry).toEqual({
-      name: "agent-secret-vault",
+      name: "svlt",
       source: {
         source: "local",
-        path: "./plugins/agent-secret-vault"
+        path: "./plugins/svlt"
       },
       policy: {
         installation: "AVAILABLE",
@@ -33,7 +33,7 @@ describe("Codex plugin package", () => {
     const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
     const manifest = await readJson(manifestPath);
 
-    expect(manifest.name).toBe("agent-secret-vault");
+    expect(manifest.name).toBe("svlt");
     expect(manifest.skills).toBe("./skills/");
     expect(manifest.mcpServers).toBe("./.mcp.json");
     expect(manifest).not.toHaveProperty("hooks");
@@ -47,7 +47,7 @@ describe("Codex plugin package", () => {
 
   it("configures the MCP server through PLUGIN_ROOT", async () => {
     const mcp = await readJson(path.join(pluginRoot, ".mcp.json"));
-    const server = mcp.mcpServers["agent-secret-vault"];
+    const server = mcp.mcpServers.svlt;
 
     expect(server.command).toBe("node");
     expect(server.args.join(" ")).toContain("${PLUGIN_ROOT}");
@@ -56,7 +56,7 @@ describe("Codex plugin package", () => {
 
   it("documents the non-plaintext operating rules in the bundled skill and hook", async () => {
     const skill = await readFile(
-      path.join(pluginRoot, "skills", "agent-secret-vault", "SKILL.md"),
+      path.join(pluginRoot, "skills", "svlt", "SKILL.md"),
       "utf8"
     );
     const hookConfig = await readFile(path.join(pluginRoot, "hooks", "hooks.json"), "utf8");

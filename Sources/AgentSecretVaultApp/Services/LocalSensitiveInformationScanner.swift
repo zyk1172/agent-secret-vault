@@ -1,9 +1,73 @@
 import Foundation
 import VaultCore
 
-public enum SensitiveCandidateRisk: String, Equatable, Sendable {
+public enum SensitiveCandidateRisk: String, Codable, Equatable, Sendable, CaseIterable {
     case high
     case medium
+}
+
+public struct SensitiveScanRuleDefinition: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public var name: String
+    public var labels: [String]
+    public var category: String
+    public var risk: SensitiveCandidateRisk
+    public var enabled: Bool
+
+    public init(
+        id: String = UUID().uuidString,
+        name: String,
+        labels: [String],
+        category: String,
+        risk: SensitiveCandidateRisk,
+        enabled: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.labels = labels
+        self.category = category
+        self.risk = risk
+        self.enabled = enabled
+    }
+
+    public static let defaults: [SensitiveScanRuleDefinition] = [
+        .init(id: "credential", name: "密码与口令", labels: ["密码", "密碼", "口令", "登录密码", "登入密碼", "password", "passwd", "pwd", "passcode"], category: "Credential", risk: .high),
+        .init(id: "api-key", name: "API Key 与访问密钥", labels: ["api", "api key", "apikey", "api-key", "接口密钥", "接口密鑰", "密钥", "密鑰", "access key", "access-key", "secret key", "secret-key", "client secret"], category: "API Key", risk: .high),
+        .init(id: "token", name: "Token 与令牌", labels: ["token", "access token", "access-token", "refresh token", "refresh-token", "bearer token", "令牌", "访问令牌", "刷新令牌"], category: "Token", risk: .high),
+        .init(id: "cookie", name: "Cookie 与会话", labels: ["cookie", "session", "session id", "sessionid", "会话", "会话令牌"], category: "Cookie", risk: .high),
+        .init(id: "private-key", name: "私钥与证书", labels: ["private key", "private-key", "ssh key", "ssh-key", "私钥", "私鑰", "证书", "憑證", "certificate"], category: "Private Key", risk: .high),
+        .init(id: "account", name: "账号与用户标识", labels: ["账号", "帳號", "用户名", "使用者", "username", "user", "account", "email", "邮箱", "郵箱"], category: "Identity", risk: .medium),
+        .init(id: "database", name: "数据库连接", labels: ["database url", "database-url", "db url", "db-url", "connection string", "连接字符串", "連線字串", "dsn"], category: "Database", risk: .high),
+        .init(id: "wifi", name: "网络凭据", labels: ["wifi 密码", "wifi password", "wireless password", "网络密码", "網路密碼"], category: "Credential", risk: .high)
+    ]
+}
+
+@MainActor
+public enum SensitiveScanRulePreferences {
+    private static let customRulesKey = "customSensitiveScanRules"
+    private static let ignoredCandidatesKey = "ignoredSensitiveScanCandidates"
+
+    public static func customRules(defaults: UserDefaults = .standard) -> [SensitiveScanRuleDefinition] {
+        guard let data = defaults.data(forKey: customRulesKey),
+              let decoded = try? JSONDecoder().decode([SensitiveScanRuleDefinition].self, from: data)
+        else {
+            return []
+        }
+        return decoded
+    }
+
+    public static func saveCustomRules(_ rules: [SensitiveScanRuleDefinition], defaults: UserDefaults = .standard) {
+        defaults.set(try? JSONEncoder().encode(rules), forKey: customRulesKey)
+    }
+
+    public static func ignoredCandidateIDs(defaults: UserDefaults = .standard) -> Set<String> {
+        Set(defaults.stringArray(forKey: ignoredCandidatesKey) ?? [])
+    }
+
+    public static func ignore(_ ids: Set<String>, defaults: UserDefaults = .standard) {
+        let updated = ignoredCandidateIDs(defaults: defaults).union(ids)
+        defaults.set(Array(updated).sorted(), forKey: ignoredCandidatesKey)
+    }
 }
 
 public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Sendable {
@@ -14,6 +78,7 @@ public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Senda
     public let matchedValue: String
     public let valueStartUTF16: Int
     public let valueEndUTF16: Int
+    public let replacementText: String
     public let contentFingerprint: String
     public let rule: String
     public let risk: SensitiveCandidateRisk
@@ -28,6 +93,7 @@ public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Senda
         matchedValue: String,
         valueStartUTF16: Int,
         valueEndUTF16: Int,
+        replacementText: String? = nil,
         contentFingerprint: String,
         rule: String,
         risk: SensitiveCandidateRisk,
@@ -41,16 +107,48 @@ public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Senda
         self.matchedValue = matchedValue
         self.valueStartUTF16 = valueStartUTF16
         self.valueEndUTF16 = valueEndUTF16
+        self.replacementText = replacementText ?? matchedValue
         self.contentFingerprint = contentFingerprint
         self.rule = rule
         self.risk = risk
         self.title = title
         self.category = category
     }
+
+    public func replacingValue(in text: String, reference: String) -> String {
+        guard let range = text.range(of: replacementText) else {
+            return text
+        }
+        return text.replacingCharacters(in: range, with: " \(reference)")
+    }
 }
 
 public struct LocalSensitiveInformationScanner: Sendable {
-    public init() {}
+    private let rules: [SensitiveScanRuleDefinition]
+
+    public init(rules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults) {
+        self.rules = rules.filter { $0.enabled && !$0.labels.isEmpty }
+    }
+
+    public func scan(target: URL, excluding excludedURL: URL? = nil) throws -> [LocalSensitiveInformationCandidate] {
+        let values = try target.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+        if values.isSymbolicLink == true {
+            return []
+        }
+        if values.isRegularFile == true {
+            guard target.pathExtension.lowercased() == "md",
+                  target.standardizedFileURL.path != excludedURL?.standardizedFileURL.path
+            else {
+                return []
+            }
+            let text = try String(contentsOf: target, encoding: .utf8)
+            return try scan(fileURL: target, filePath: target.lastPathComponent, text: text)
+        }
+        guard values.isDirectory == true else {
+            return []
+        }
+        return try scan(directory: target, excluding: excludedURL)
+    }
 
     public func scan(directory: URL, excluding excludedURL: URL? = nil) throws -> [LocalSensitiveInformationCandidate] {
         let root = directory.standardizedFileURL
@@ -79,7 +177,140 @@ public struct LocalSensitiveInformationScanner: Sendable {
             let displayPath = url.path.replacingOccurrences(of: root.path + "/", with: "")
             candidates.append(contentsOf: try scan(fileURL: url, filePath: displayPath, text: text))
         }
-        return candidates.sorted { left, right in
+        return Self.sorted(candidates)
+    }
+
+    public func scan(filePath: String, text: String) throws -> [LocalSensitiveInformationCandidate] {
+        try scan(fileURL: URL(fileURLWithPath: filePath), filePath: filePath, text: text)
+    }
+
+    public func scan(fileURL: URL, filePath: String, text: String) throws -> [LocalSensitiveInformationCandidate] {
+        let nsText = text as NSString
+        let fingerprint = Self.fingerprint(text)
+        var matches: [AssignmentMatch] = []
+
+        for rule in rules {
+            let expression = try assignmentExpression(for: rule.labels)
+            for result in expression.matches(in: text, range: NSRange(location: 0, length: nsText.length)) {
+                let separatorRange = result.range(at: 2)
+                guard separatorRange.location != NSNotFound,
+                      let value = Self.assignmentValue(in: nsText, after: separatorRange.location + separatorRange.length)
+                else {
+                    continue
+                }
+                let label = nsText.substring(with: result.range(at: 1))
+                matches.append(AssignmentMatch(rule: rule, label: label, value: value))
+            }
+        }
+
+        let sortedMatches = matches.sorted { left, right in
+            left.rule.risk == right.rule.risk
+                ? left.value.range.location < right.value.range.location
+                : left.rule.risk == .high
+        }
+        var acceptedRanges: [NSRange] = []
+        var candidates: [LocalSensitiveInformationCandidate] = []
+
+        for match in sortedMatches {
+            guard !acceptedRanges.contains(where: { NSIntersectionRange($0, match.value.range).length > 0 }) else {
+                continue
+            }
+            let paragraphRange = Self.paragraphRange(in: text, containingUTF16Offset: match.value.range.location)
+            let paragraph = nsText.substring(with: paragraphRange)
+            guard !paragraph.contains("secret://") else {
+                continue
+            }
+
+            acceptedRanges.append(match.value.range)
+            let line = Self.lineNumber(in: text, atUTF16Offset: match.value.range.location)
+            let title = match.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            candidates.append(
+                LocalSensitiveInformationCandidate(
+                    id: "\(fileURL.path):\(match.value.range.location):\(match.value.range.length):\(fingerprint)",
+                    fileURL: fileURL,
+                    source: SensitiveSourceLocation(filePath: filePath, line: line),
+                    paragraph: paragraph,
+                    matchedValue: match.value.plaintext,
+                    valueStartUTF16: match.value.range.location,
+                    valueEndUTF16: match.value.range.location + match.value.range.length,
+                    replacementText: nsText.substring(with: match.value.range),
+                    contentFingerprint: fingerprint,
+                    rule: match.rule.name,
+                    risk: match.rule.risk,
+                    title: title.isEmpty ? match.rule.name : title,
+                    category: match.rule.category
+                )
+            )
+        }
+        return Self.sorted(candidates)
+    }
+
+    private struct AssignmentMatch {
+        let rule: SensitiveScanRuleDefinition
+        let label: String
+        let value: ParsedValue
+    }
+
+    private struct ParsedValue {
+        let plaintext: String
+        let range: NSRange
+    }
+
+    private func assignmentExpression(for labels: [String]) throws -> NSRegularExpression {
+        let alternatives = labels
+            .sorted { $0.count > $1.count }
+            .map(NSRegularExpression.escapedPattern(for:))
+            .joined(separator: "|")
+        return try NSRegularExpression(pattern: "(?i)(?<![A-Za-z0-9_])(\(alternatives))(?![A-Za-z0-9_])\\s*([:：=＝])")
+    }
+
+    private static func assignmentValue(in text: NSString, after separatorEnd: Int) -> ParsedValue? {
+        let lineEndRange = text.range(of: "\n", options: [], range: NSRange(location: separatorEnd, length: text.length - separatorEnd))
+        let lineEnd = lineEndRange.location == NSNotFound ? text.length : lineEndRange.location
+        var cursor = separatorEnd
+        while cursor < lineEnd, isWhitespace(text, at: cursor) {
+            cursor += 1
+        }
+        guard cursor < lineEnd else {
+            return nil
+        }
+
+        let openingPairs: [(String, String)] = [("**", "**"), ("__", "__"), ("\"", "\""), ("'", "'"), ("`", "`"), ("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"), ("【", "】"), ("[", "]"), ("(", ")"), ("（", "）")]
+        let remainder = text.substring(with: NSRange(location: cursor, length: lineEnd - cursor))
+        for (opening, closing) in openingPairs where remainder.hasPrefix(opening) {
+            let contentStart = cursor + (opening as NSString).length
+            let searchable = text.substring(with: NSRange(location: contentStart, length: lineEnd - contentStart))
+            guard searchable.range(of: closing) != nil else {
+                continue
+            }
+            let closingOffset = (searchable as NSString).range(of: closing).location
+            let raw = (text.substring(with: NSRange(location: contentStart, length: closingOffset)))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else {
+                return nil
+            }
+            let end = contentStart + closingOffset + (closing as NSString).length
+            return ParsedValue(plaintext: raw, range: NSRange(location: separatorEnd, length: end - separatorEnd))
+        }
+
+        var end = cursor
+        while end < lineEnd {
+            let character = text.substring(with: NSRange(location: end, length: 1))
+            if isWhitespace(text, at: end) || [",", "，", ";", "；"].contains(character) {
+                break
+            }
+            end += 1
+        }
+        let raw = text.substring(with: NSRange(location: cursor, length: end - cursor))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else {
+            return nil
+        }
+        return ParsedValue(plaintext: raw, range: NSRange(location: separatorEnd, length: end - separatorEnd))
+    }
+
+    private static func sorted(_ candidates: [LocalSensitiveInformationCandidate]) -> [LocalSensitiveInformationCandidate] {
+        candidates.sorted { left, right in
             left.risk == right.risk
                 ? left.source.filePath == right.source.filePath
                     ? left.valueStartUTF16 < right.valueStartUTF16
@@ -88,108 +319,10 @@ public struct LocalSensitiveInformationScanner: Sendable {
         }
     }
 
-    public func scan(filePath: String, text: String) throws -> [LocalSensitiveInformationCandidate] {
-        try scan(fileURL: URL(fileURLWithPath: filePath), filePath: filePath, text: text)
-    }
-
-    public func scan(fileURL: URL, filePath: String, text: String) throws -> [LocalSensitiveInformationCandidate] {
-        let fullRange = NSRange(location: 0, length: (text as NSString).length)
-        let fingerprint = Self.fingerprint(text)
-        var matches: [Match] = []
-
-        for rule in Self.rules() {
-            for result in rule.expression.matches(in: text, range: fullRange) {
-                let valueRange = rule.captureIndexes
-                    .map { result.range(at: $0) }
-                    .first(where: { $0.location != NSNotFound && $0.length > 0 }) ?? result.range
-                matches.append(Match(rule: rule, range: valueRange))
-            }
-        }
-
-        let sortedMatches = matches.sorted { left, right in
-            left.rule.risk == right.rule.risk
-                ? left.range.length == right.range.length
-                    ? left.range.location < right.range.location
-                    : left.range.length > right.range.length
-                : left.rule.risk == .high
-        }
-        var acceptedRanges: [NSRange] = []
-        var candidates: [LocalSensitiveInformationCandidate] = []
-
-        for match in sortedMatches {
-            guard !acceptedRanges.contains(where: { NSIntersectionRange($0, match.range).length > 0 }) else {
-                continue
-            }
-            let paragraphRange = Self.paragraphRange(in: text, containingUTF16Offset: match.range.location)
-            let paragraph = (text as NSString).substring(with: paragraphRange)
-            guard !paragraph.contains("secret://") else {
-                continue
-            }
-
-            acceptedRanges.append(match.range)
-            let value = (text as NSString).substring(with: match.range)
-            let line = Self.lineNumber(in: text, atUTF16Offset: match.range.location)
-            let title = Self.title(in: text, atUTF16Offset: match.range.location, fallback: match.rule.title)
-            candidates.append(
-                LocalSensitiveInformationCandidate(
-                    id: "\(fileURL.path):\(match.range.location):\(match.range.length)",
-                    fileURL: fileURL,
-                    source: SensitiveSourceLocation(filePath: filePath, line: line),
-                    paragraph: paragraph,
-                    matchedValue: value,
-                    valueStartUTF16: match.range.location,
-                    valueEndUTF16: match.range.location + match.range.length,
-                    contentFingerprint: fingerprint,
-                    rule: match.rule.name,
-                    risk: match.rule.risk,
-                    title: title,
-                    category: match.rule.category
-                )
-            )
-        }
-        return candidates.sorted { $0.valueStartUTF16 < $1.valueStartUTF16 }
-    }
-
-    private struct Rule {
-        let name: String
-        let title: String
-        let category: String
-        let risk: SensitiveCandidateRisk
-        let expression: NSRegularExpression
-        let captureIndexes: [Int]
-    }
-
-    private struct Match {
-        let rule: Rule
-        let range: NSRange
-    }
-
-    private static func rules() -> [Rule] {
-        [
-            rule("OpenAI API Key", "OpenAI API Key", "API Key", .high, "\\bsk-[A-Za-z0-9_-]{16,}\\b"),
-            rule("GitHub Token", "GitHub Token", "Token", .high, "\\bgh[pousr]_[A-Za-z0-9_]{20,}\\b"),
-            rule("Private Key", "Private Key", "Private Key", .high, "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
-            rule("Bearer Token", "Bearer Token", "Token", .high, "\\bBearer\\s+([A-Za-z0-9._~+/=-]{10,})", captures: [1]),
-            rule("Password Assignment", "Password", "Credential", .medium, "(?i)(?:password|passwd|pwd|api[_ -]?key|access[_ -]?key|token|secret|密码|口令|令牌|密钥)\\s*[:=：]\\s*(?:\\\"([^\\\"\\r\\n]+)\\\"|'([^'\\r\\n]+)'|([^\\s'\\\"`，。；;]+))", captures: [1, 2, 3])
-        ]
-    }
-
-    private static func rule(
-        _ name: String,
-        _ title: String,
-        _ category: String,
-        _ risk: SensitiveCandidateRisk,
-        _ pattern: String,
-        captures: [Int] = []
-    ) -> Rule {
-        Rule(
-            name: name,
-            title: title,
-            category: category,
-            risk: risk,
-            expression: try! NSRegularExpression(pattern: pattern),
-            captureIndexes: captures
-        )
+    private static func isWhitespace(_ text: NSString, at offset: Int) -> Bool {
+        text.substring(with: NSRange(location: offset, length: 1))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
     }
 
     private static func paragraphRange(in text: String, containingUTF16Offset offset: Int) -> NSRange {
@@ -237,18 +370,6 @@ public struct LocalSensitiveInformationScanner: Sendable {
         }
     }
 
-    private static func title(in text: String, atUTF16Offset offset: Int, fallback: String) -> String {
-        let nsText = text as NSString
-        let lineStart = nsText.range(of: "\n", options: .backwards, range: NSRange(location: 0, length: offset)).location
-        let start = lineStart == NSNotFound ? 0 : lineStart + 1
-        let prefix = nsText.substring(with: NSRange(location: start, length: offset - start))
-            .replacingOccurrences(of: "：", with: "")
-            .replacingOccurrences(of: ":", with: "")
-            .replacingOccurrences(of: "=", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return prefix.isEmpty ? fallback : String(prefix.suffix(48))
-    }
-
     static func fingerprint(_ text: String) -> String {
         var value: UInt64 = 1_469_598_103_934_665_603
         for byte in text.utf8 {
@@ -266,11 +387,15 @@ public enum LocalSensitiveInformationWriteError: Error, Equatable, Sendable {
 }
 
 public enum LocalSensitiveInformationWriter {
-    public static func replace(
-        _ candidate: LocalSensitiveInformationCandidate,
-        displayID: String,
-        reference: String
-    ) throws {
+    public static func replace(_ candidate: LocalSensitiveInformationCandidate, reference: String) throws {
+        try replace(candidate, with: " \(reference)")
+    }
+
+    public static func remove(_ candidate: LocalSensitiveInformationCandidate) throws {
+        try replace(candidate, with: "")
+    }
+
+    private static func replace(_ candidate: LocalSensitiveInformationCandidate, with replacement: String) throws {
         let values = try candidate.fileURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true else {
             throw LocalSensitiveInformationWriteError.invalidSource
@@ -290,20 +415,10 @@ public enum LocalSensitiveInformationWriter {
         else {
             throw LocalSensitiveInformationWriteError.changedSinceScan
         }
-        let range = NSRange(
-            location: candidate.valueStartUTF16,
-            length: candidate.valueEndUTF16 - candidate.valueStartUTF16
-        )
-        guard nsText.substring(with: range) == candidate.matchedValue else {
+        let range = NSRange(location: candidate.valueStartUTF16, length: candidate.valueEndUTF16 - candidate.valueStartUTF16)
+        guard nsText.substring(with: range) == candidate.replacementText else {
             throw LocalSensitiveInformationWriteError.changedSinceScan
         }
-
-        let title = candidate.title.replacingOccurrences(of: "[", with: " ")
-            .replacingOccurrences(of: "]", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let visibleTitle = title.isEmpty ? "敏感信息" : title
-        let replacement = "[\(displayID) \(visibleTitle)](\(reference))"
-        let updated = nsText.replacingCharacters(in: range, with: replacement)
-        try updated.write(to: candidate.fileURL, atomically: true, encoding: .utf8)
+        try nsText.replacingCharacters(in: range, with: replacement).write(to: candidate.fileURL, atomically: true, encoding: .utf8)
     }
 }

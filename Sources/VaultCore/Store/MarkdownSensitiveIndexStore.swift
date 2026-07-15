@@ -19,6 +19,7 @@ public enum MarkdownSensitiveIndexStoreError: Error, Equatable, Sendable {
     case invalidRecord
     case recordNotFound(String)
     case replacementVersionIsNotNewer
+    case legacyRecordConflict(String)
     case verificationFailed
 }
 
@@ -135,6 +136,55 @@ public actor MarkdownSensitiveIndexStore: RecordStore, RecordListing {
 
     public func recordIDs() throws -> [String] {
         try readEntries().map(\ .record.id).sorted()
+    }
+
+    /// Imports encrypted legacy records without decrypting or rewriting their envelopes.
+    @discardableResult
+    public func importLegacyRecords(from legacyStore: FileRecordStore) async throws -> Int {
+        let legacyIDs = try await legacyStore.recordIDs()
+        guard !legacyIDs.isEmpty else {
+            return 0
+        }
+
+        var updatedEntries = try readEntries()
+        var importedCount = 0
+
+        for id in legacyIDs {
+            let legacyRecord = try await legacyStore.latest(id: id)
+            if let index = updatedEntries.firstIndex(where: { $0.record.id == id }) {
+                let existing = updatedEntries[index]
+                if existing.record == legacyRecord || existing.record.recordVersion > legacyRecord.recordVersion {
+                    continue
+                }
+                guard legacyRecord.recordVersion > existing.record.recordVersion else {
+                    throw MarkdownSensitiveIndexStoreError.legacyRecordConflict(id)
+                }
+
+                updatedEntries[index] = IndexedEncryptedRecord(
+                    displayID: existing.displayID,
+                    category: existing.category,
+                    title: existing.title,
+                    source: existing.source,
+                    record: legacyRecord
+                )
+            } else {
+                updatedEntries.append(
+                    IndexedEncryptedRecord(
+                        displayID: try nextDisplayID(in: updatedEntries),
+                        category: legacyRecord.policy.rawValue,
+                        title: legacyRecord.label ?? "Imported legacy record",
+                        source: nil,
+                        record: legacyRecord
+                    )
+                )
+            }
+            importedCount += 1
+        }
+
+        if importedCount > 0 {
+            try writeEntries(updatedEntries)
+        }
+        return importedCount
     }
 
     private func readEntries() throws -> [IndexedEncryptedRecord] {

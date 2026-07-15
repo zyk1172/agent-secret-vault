@@ -1,0 +1,9 @@
+{
+  "id": "svlt",
+  "name": "SVLT",
+  "version": "0.1.14",
+  "minAppVersion": "1.8.0",
+  "description": "Encrypt sensitive knowledge-base text into local SVLT references.",
+  "author": "SVLT",
+  "isDesktopOnly": true
+}

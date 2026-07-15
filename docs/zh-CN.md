@@ -1,10 +1,10 @@
-# Agent Secret Vault 中文使用教程
+# SVLT 中文使用教程
 
 本文面向普通用户和本地 Agent 使用者。正常使用不需要 Xcode，不需要打开源码项目。
 
 ## 1. 这个 App 做什么
 
-Agent Secret Vault 用来把知识库、笔记和对话里的敏感信息替换成 `secret://...` 引用。
+SVLT 用来把知识库、笔记和对话里的敏感信息替换成 `secret://...` 引用。
 
 正确效果：
 
@@ -19,17 +19,17 @@ Agent Secret Vault 用来把知识库、笔记和对话里的敏感信息替换�
 
 然后：
 
-1. 下载并解压 `AgentSecretVault-release.zip`。
+1. 下载并解压 `SVLT-release.zip`。
 2. 双击 `install.command`。
 3. 如果 macOS 拦截，右键点击 `install.command`，选择“打开”。
-4. 安装完成后，脚本会自动打开 Agent Secret Vault。
+4. 安装完成后，脚本会自动打开 SVLT。
 
 安装后文件位置：
 
-- App：`/Applications/AgentSecretVault.app` 或 `~/Applications/AgentSecretVault.app`
+- App：`/Applications/SVLT.app` 或 `~/Applications/SVLT.app`
 - MCP server：`~/Library/Application Support/AgentSecretVault/MCP`
-- MCP 配置：`~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json`
-- Obsidian 插件：release 包内的 `ObsidianPlugin/agent-secret-vault`
+- MCP 配置：`~/Library/Application Support/AgentSecretVault/svlt.mcp.json`
+- Obsidian 插件：release 包内的 `ObsidianPlugin/svlt`
 
 Obsidian 插件安装方式：
 
@@ -40,20 +40,20 @@ Obsidian 插件安装方式：
 ./install.sh "/你的/Obsidian/Vault/路径"
 ```
 
-- 也可以手动复制 `ObsidianPlugin/agent-secret-vault` 到：
+- 也可以手动复制 `ObsidianPlugin/svlt` 到：
 
 ```text
-你的 Vault/.obsidian/plugins/agent-secret-vault
+你的 Vault/.obsidian/plugins/svlt
 ```
 
-安装后，在 Obsidian 设置 → 第三方插件 中启用 Agent Secret Vault。
+安装后，在 Obsidian 设置 → 第三方插件 中启用 SVLT。
 
 ## 3. 连接 Codex / Claude / Hermes
 
 安装完成后，打开这个配置文件：
 
 ```text
-~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+~/Library/Application Support/AgentSecretVault/svlt.mcp.json
 ```
 
 把里面的 JSON 粘贴到 Agent 客户端的 MCP 配置里。
@@ -63,7 +63,7 @@ Obsidian 插件安装方式：
 ```json
 {
   "mcpServers": {
-    "agent-secret-vault": {
+    "svlt": {
       "command": "/bin/zsh",
       "args": [
         "-lc",
@@ -76,6 +76,8 @@ Obsidian 插件安装方式：
 
 然后重启或刷新 Agent 客户端。
 
+接着，把 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Codex、Claude、Hermes、OpenClaw 或其他 Agent 的系统提示、项目规则或工作区规则。这是连接 MCP 后的必做步骤：它要求 Agent 优先使用 App 选定的 `敏感信息.md` 和 `secret://...` 引用，不得直接读取索引或从笔记、日志、环境变量、历史对话、缓存和模型记忆中绕过获取敏感值。
+
 Agent 接入后可以先测试：
 
 1. 调用 `vault_status`
@@ -87,15 +89,15 @@ Agent 接入后可以先测试：
 
 ### 加密敏感信息
 
-在 App 的“敏感信息”中选择或新建 `敏感信息.md`。它是加密记录的唯一来源：每条记录保留可读的 ID、分类、标题、来源和独立密文载荷。
+在 App 的“敏感信息”中选择或新建 `敏感信息.md`。它是人工维护的唯一权威目录：保留服务、地址、账号、用途等非敏感上下文，并用 `secret://...` 引用对应本地保险箱中的独立加密记录。
 
-需要批量检查时，在 App 的“本地扫描”中选择 Markdown 文件夹。规则只在本机运行，候选默认不选中；确认后才会写入 `敏感信息.md`，并把原笔记中的命中值替换为带标题的引用。
+需要批量检查时，在 App 的“本地扫描”中选择单个 Markdown 文件或文件夹。规则只在本机运行，候选默认不选中；确认后才会将完整段落写入 `敏感信息.md`，并把原笔记中的命中值替换为无符号包裹的引用。
 
 笔记中只保存引用，例如：
 
 ```text
-NAS 用户名：[S-001 NAS 用户名](secret://0123456789ABCDEFGHJKMNPQRS)
-NAS 密码：[S-002 NAS 密码](secret://ABCDEFGHJKMNPQRS0123456789)
+NAS 用户名: secret://0123456789ABCDEFGHJKMNPQRS
+NAS 密码: secret://ABCDEFGHJKMNPQRS0123456789
 ```
 
 不要把明文和 `secret://...` 同时保存。
@@ -112,20 +114,7 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 
 ## 5. Agent 应遵守的规则
 
-可以把下面这段放进 Agent 的项目规则或系统提示：
-
-```text
-当任务、文件、笔记或工具输出中出现 secret:// 引用、密码、token、API key、cookie、私钥、本地登录、SSH、SFTP/SCP、数据库连接、API 请求或需要本机使用秘密的动作时，自动使用 agent-secret-vault MCP 工具。
-
-规则：
-1. 把 secret:// 当作不透明引用，不要推断、摘要或改写背后的真实值。
-2. 不要求用户把明文密码、token、cookie、私钥贴到聊天。
-3. 不把解密后的明文、Authorization header、cookie、session key、填充后的敏感字段返回聊天。
-4. 普通文本里有 secret:// 时，优先调用 secret_auto_handle_text。
-5. 需要本机执行动作时，优先调用 secret_action_router 或对应的具体工具。
-6. 工具返回失败、锁定、不可用或隔离时，只报告状态码和非敏感下一步，不降级为索要明文。
-7. 没有合适安全工具时停止，请求新增更窄的工具。
-```
+将 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Agent 的系统提示、项目规则或工作区规则。策略要求 Agent 只经 MCP 使用 `敏感信息.md` 中的独立密文记录和 `secret://...` 引用；不能直接读取或修改索引，也不能从笔记、日志、缓存、环境变量或模型记忆绕过获取敏感值。
 
 ## 6. Obsidian 使用建议
 
@@ -137,7 +126,7 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 2. 在 App 的“本地扫描”中选择笔记文件夹，先看清候选和完整段落，再决定是否加密。
 3. 只加密真正敏感的字段，不要整段加密。
 4. Obsidian 仅保留手动兜底：选中文字后使用“加密选中文本”。
-5. 加密后检查笔记是否只留下带标题的引用链接。
+5. 加密后检查笔记是否只留下前置一个英文空格的 `secret://` 引用，没有链接、反引号或方括号包裹。
 6. 保留 `secret://...` 引用，删除明文。
 
 重点：加密目标是“敏感片段”，不是整篇笔记。

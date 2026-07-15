@@ -4,7 +4,7 @@ import VaultCore
 import VaultIPC
 
 public enum VaultWorkbenchCopy {
-    public static let documentationURL = URL(string: "https://github.com/zyk1172/agent-secret-vault")!
+    public static let documentationURL = URL(string: "https://github.com/zyk1172/svlt")!
 
     public static let disconnected = (
         status: "Obsidian 插件未连接",
@@ -24,7 +24,7 @@ public enum VaultWorkbenchCopy {
         """
         {
           "mcpServers": {
-            "agent-secret-vault": {
+            "svlt": {
               "command": "/bin/zsh",
               "args": [
                 "-lc",
@@ -37,7 +37,7 @@ public enum VaultWorkbenchCopy {
     }
 
     public static let agentPrompt = """
-    看到 secret:// 就自动使用 agent-secret-vault；不要让我粘贴明文。
+    看到 secret:// 就自动使用 svlt；不要让我粘贴明文。
     """
 }
 
@@ -125,9 +125,10 @@ public struct VaultWorkbenchView: View {
     let auditEntries: [AgentAutomationAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
     let sensitiveIndexURL: URL?
-    let sensitiveIndexEntries: [IndexedEncryptedRecord]
+    let sensitiveIndexEntries: [SensitiveInformationDocumentReference]
     let sensitiveScanRootURL: URL?
     let sensitiveScanCandidates: [LocalSensitiveInformationCandidate]
+    let sensitiveScanRules: [SensitiveScanRuleDefinition]
     let restoreParagraph: ((String) async throws -> RestoredParagraph)?
     let refreshSavedReferences: (() async -> Void)?
     let chooseSensitiveIndex: (() -> Void)?
@@ -136,6 +137,11 @@ public struct VaultWorkbenchView: View {
     let chooseSensitiveScanRoot: (() -> Void)?
     let scanSensitiveInformation: (() async -> Void)?
     let encryptSensitiveCandidates: ((Set<String>) async -> Void)?
+    let ignoreSensitiveCandidates: ((Set<String>) async -> Void)?
+    let jumpToSensitiveCandidate: ((LocalSensitiveInformationCandidate) -> Void)?
+    let deleteSensitiveCandidate: ((LocalSensitiveInformationCandidate) async -> Void)?
+    let addSensitiveScanRule: ((SensitiveScanRuleDefinition) -> Void)?
+    let removeSensitiveScanRule: ((String) -> Void)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
 
     public init(
@@ -144,9 +150,10 @@ public struct VaultWorkbenchView: View {
         auditEntries: [AgentAutomationAuditEntry] = [],
         savedReferences: [SecretReferenceMetadata] = [],
         sensitiveIndexURL: URL? = nil,
-        sensitiveIndexEntries: [IndexedEncryptedRecord] = [],
+        sensitiveIndexEntries: [SensitiveInformationDocumentReference] = [],
         sensitiveScanRootURL: URL? = nil,
         sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = [],
+        sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults,
         restoreParagraph: ((String) async throws -> RestoredParagraph)? = nil,
         refreshSavedReferences: (() async -> Void)? = nil,
         chooseSensitiveIndex: (() -> Void)? = nil,
@@ -154,7 +161,12 @@ public struct VaultWorkbenchView: View {
         refreshSensitiveIndex: (() async -> Void)? = nil,
         chooseSensitiveScanRoot: (() -> Void)? = nil,
         scanSensitiveInformation: (() async -> Void)? = nil,
-        encryptSensitiveCandidates: ((Set<String>) async -> Void)? = nil
+        encryptSensitiveCandidates: ((Set<String>) async -> Void)? = nil,
+        ignoreSensitiveCandidates: ((Set<String>) async -> Void)? = nil,
+        jumpToSensitiveCandidate: ((LocalSensitiveInformationCandidate) -> Void)? = nil,
+        deleteSensitiveCandidate: ((LocalSensitiveInformationCandidate) async -> Void)? = nil,
+        addSensitiveScanRule: ((SensitiveScanRuleDefinition) -> Void)? = nil,
+        removeSensitiveScanRule: ((String) -> Void)? = nil
     ) {
         self.status = status
         self.orphanScanResult = orphanScanResult
@@ -164,6 +176,7 @@ public struct VaultWorkbenchView: View {
         self.sensitiveIndexEntries = sensitiveIndexEntries
         self.sensitiveScanRootURL = sensitiveScanRootURL
         self.sensitiveScanCandidates = sensitiveScanCandidates
+        self.sensitiveScanRules = sensitiveScanRules
         self.restoreParagraph = restoreParagraph
         self.refreshSavedReferences = refreshSavedReferences
         self.chooseSensitiveIndex = chooseSensitiveIndex
@@ -172,6 +185,11 @@ public struct VaultWorkbenchView: View {
         self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
         self.scanSensitiveInformation = scanSensitiveInformation
         self.encryptSensitiveCandidates = encryptSensitiveCandidates
+        self.ignoreSensitiveCandidates = ignoreSensitiveCandidates
+        self.jumpToSensitiveCandidate = jumpToSensitiveCandidate
+        self.deleteSensitiveCandidate = deleteSensitiveCandidate
+        self.addSensitiveScanRule = addSensitiveScanRule
+        self.removeSensitiveScanRule = removeSensitiveScanRule
     }
 
     public var body: some View {
@@ -278,9 +296,15 @@ public struct VaultWorkbenchView: View {
                 LocalSensitiveScanCard(
                     scanRootURL: sensitiveScanRootURL,
                     candidates: sensitiveScanCandidates,
+                    rules: sensitiveScanRules,
                     chooseRoot: chooseSensitiveScanRoot,
                     rescan: scanSensitiveInformation,
-                    encrypt: encryptSensitiveCandidates
+                    encrypt: encryptSensitiveCandidates,
+                    ignore: ignoreSensitiveCandidates,
+                    jump: jumpToSensitiveCandidate,
+                    delete: deleteSensitiveCandidate,
+                    addRule: addSensitiveScanRule,
+                    removeRule: removeSensitiveScanRule
                 )
             }
         case .automation:
@@ -638,7 +662,7 @@ private struct SidebarStatusStrip: View {
 
 private struct SensitiveIndexLibraryCard: View {
     let indexURL: URL?
-    let entries: [IndexedEncryptedRecord]
+    let entries: [SensitiveInformationDocumentReference]
     let chooseIndex: (() -> Void)?
     let createIndex: (() -> Void)?
     let refresh: (() async -> Void)?
@@ -687,12 +711,12 @@ private struct SensitiveIndexLibraryCard: View {
                     ContentUnavailableView(
                         "索引为空",
                         systemImage: "doc.text",
-                        description: Text("从 Obsidian 手动加密后，记录会写入这个文件。")
+                        description: Text("此文件中还没有 secret:// 引用。可在此维护现有引用，或从本地扫描写入。")
                     )
                     .frame(maxWidth: .infinity, minHeight: 170)
                 } else {
                     VStack(spacing: 8) {
-                        ForEach(entries, id: \.displayID) { entry in
+                        ForEach(entries) { entry in
                             SensitiveIndexRow(entry: entry, copiedReference: copiedReference) { reference in
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(reference, forType: .string)
@@ -727,15 +751,15 @@ private struct SensitiveIndexLibraryCard: View {
 }
 
 private struct SensitiveIndexRow: View {
-    let entry: IndexedEncryptedRecord
+    let entry: SensitiveInformationDocumentReference
     let copiedReference: String?
     let copyReference: (String) -> Void
 
-    private var reference: String { "secret://\(entry.record.id)" }
+    private var reference: String { entry.reference }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Text(entry.displayID)
+            Text("REF")
                 .font(.system(.caption, design: .monospaced).weight(.semibold))
                 .foregroundStyle(.blue)
                 .frame(width: 48, alignment: .leading)
@@ -744,16 +768,14 @@ private struct SensitiveIndexRow: View {
                 HStack(spacing: 8) {
                     Text(entry.title)
                         .font(.headline)
-                    Text(entry.category)
+                    Text("引用")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if let source = entry.source {
-                        Text("\(source.filePath):\(source.line)")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
+                    Text("\(entry.source.filePath):\(entry.source.line)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
 
                 Text(reference)
@@ -782,11 +804,18 @@ private struct SensitiveIndexRow: View {
 private struct LocalSensitiveScanCard: View {
     let scanRootURL: URL?
     let candidates: [LocalSensitiveInformationCandidate]
+    let rules: [SensitiveScanRuleDefinition]
     let chooseRoot: (() -> Void)?
     let rescan: (() async -> Void)?
     let encrypt: ((Set<String>) async -> Void)?
+    let ignore: ((Set<String>) async -> Void)?
+    let jump: ((LocalSensitiveInformationCandidate) -> Void)?
+    let delete: ((LocalSensitiveInformationCandidate) async -> Void)?
+    let addRule: ((SensitiveScanRuleDefinition) -> Void)?
+    let removeRule: ((String) -> Void)?
     @State private var selectedIDs: Set<String> = []
     @State private var isWorking = false
+    @State private var candidatePendingDeletion: LocalSensitiveInformationCandidate?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -797,7 +826,7 @@ private struct LocalSensitiveScanCard: View {
                 Text("\(candidates.count) 项")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
-                Button("选择文件夹") { chooseRoot?() }
+                Button("选择 Markdown") { chooseRoot?() }
                     .buttonStyle(.bordered)
                 if scanRootURL != nil {
                     Button("重新扫描") {
@@ -820,16 +849,16 @@ private struct LocalSensitiveScanCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             } else {
-                Text("选择任意 Markdown 文件夹。本机仅生成候选，不会自动加密。")
+                Text("可选择一个 .md 文件或文件夹。本机只生成候选，不会自动加密。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
             if candidates.isEmpty {
                 ContentUnavailableView(
-                    scanRootURL == nil ? "尚未选择文件夹" : "没有候选",
-                    systemImage: scanRootURL == nil ? "folder.badge.questionmark" : "checkmark.shield",
-                    description: Text(scanRootURL == nil ? "选择文件夹后显示可人工确认的候选。" : "已跳过含 secret:// 的段落。仍可在 Obsidian 中手动加密选中内容。")
+                    scanRootURL == nil ? "尚未选择 Markdown" : "没有候选",
+                    systemImage: scanRootURL == nil ? "doc.badge.questionmark" : "checkmark.shield",
+                    description: Text(scanRootURL == nil ? "选择文件或文件夹后显示可人工确认的候选。" : "已跳过含 secret:// 的段落和已忽略的候选。")
                 )
                 .frame(maxWidth: .infinity, minHeight: 170)
             } else {
@@ -863,14 +892,42 @@ private struct LocalSensitiveScanCard: View {
                             } else {
                                 selectedIDs.remove(candidate.id)
                             }
+                        } onIgnore: {
+                            Task { await ignore?([candidate.id]) }
+                        } onJump: {
+                            jump?(candidate)
+                        } onDelete: {
+                            candidatePendingDeletion = candidate
                         }
                     }
                 }
             }
+
+            SensitiveRuleEditor(
+                rules: rules,
+                addRule: addRule,
+                removeRule: removeRule
+            )
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .alert("删除命中值？", isPresented: Binding(
+            get: { candidatePendingDeletion != nil },
+            set: { if !$0 { candidatePendingDeletion = nil } }
+        ), presenting: candidatePendingDeletion) { candidate in
+            Button("删除命中值", role: .destructive) {
+                Task {
+                    isWorking = true
+                    await delete?(candidate)
+                    isWorking = false
+                    candidatePendingDeletion = nil
+                }
+            }
+            Button("取消", role: .cancel) { candidatePendingDeletion = nil }
+        } message: { candidate in
+            Text("只删除 \(candidate.source.filePath) 第 \(candidate.source.line) 行的敏感值；不会删除整段正文或加密记录。")
+        }
     }
 }
 
@@ -878,6 +935,9 @@ private struct LocalSensitiveCandidateRow: View {
     let candidate: LocalSensitiveInformationCandidate
     let selected: Bool
     let setSelected: (Bool) -> Void
+    let onIgnore: () -> Void
+    let onJump: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -905,9 +965,21 @@ private struct LocalSensitiveCandidateRow: View {
                     .padding(10)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                Text("命中值会写入敏感信息.md，并替换为带标题的引用链接。")
+                Text("加密后会写入敏感信息.md 的对应段落，原文统一替换为 secret:// 引用。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    Button("跳转") { onJump() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("忽略") { onIgnore() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("删除命中值", role: .destructive) { onDelete() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
             }
         }
         .padding(12)
@@ -921,6 +993,80 @@ private struct LocalSensitiveCandidateRow: View {
         return Text(candidate.paragraph[..<range.lowerBound])
             + Text(candidate.paragraph[range]).foregroundColor(.red)
             + Text(candidate.paragraph[range.upperBound...])
+    }
+}
+
+private struct SensitiveRuleEditor: View {
+    let rules: [SensitiveScanRuleDefinition]
+    let addRule: ((SensitiveScanRuleDefinition) -> Void)?
+    let removeRule: ((String) -> Void)?
+    @State private var name = ""
+    @State private var labels = ""
+    @State private var category = "Custom"
+    @State private var risk: SensitiveCandidateRisk = .medium
+
+    private var customRules: [SensitiveScanRuleDefinition] {
+        let defaultIDs = Set(SensitiveScanRuleDefinition.defaults.map(\.id))
+        return rules.filter { !defaultIDs.contains($0.id) }
+    }
+
+    var body: some View {
+        DisclosureGroup("识别规则（\(rules.count) 条）") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("默认规则已覆盖中英文名称、: / ：/ =、任意空格和常见引号或 Markdown 包裹。新增规则按“名称 + 冒号 + 明文”匹配。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(SensitiveScanRuleDefinition.defaults) { rule in
+                    Text("\(rule.name)：\(rule.labels.joined(separator: "、"))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+                Text("新增规则")
+                    .font(.headline)
+                TextField("规则名称，例如 NAS 凭据", text: $name)
+                TextField("名称或别名，用逗号分隔，例如 nas 密码,NAS Password", text: $labels)
+                HStack {
+                    TextField("分类", text: $category)
+                    Picker("风险", selection: $risk) {
+                        Text("高").tag(SensitiveCandidateRisk.high)
+                        Text("中").tag(SensitiveCandidateRisk.medium)
+                    }
+                    .frame(width: 120)
+                    Button("添加规则") {
+                        let aliases = labels.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == "\n" })
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !aliases.isEmpty else {
+                            return
+                        }
+                        addRule?(SensitiveScanRuleDefinition(name: name, labels: aliases, category: category, risk: risk))
+                        name = ""
+                        labels = ""
+                        category = "Custom"
+                        risk = .medium
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                if !customRules.isEmpty {
+                    Divider()
+                    ForEach(customRules) { rule in
+                        HStack {
+                            Text("\(rule.name)：\(rule.labels.joined(separator: "、"))")
+                                .font(.caption)
+                            Spacer()
+                            Button("删除", role: .destructive) { removeRule?(rule.id) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
+                    }
+                }
+            }
+            .padding(.top, 10)
+        }
     }
 }
 

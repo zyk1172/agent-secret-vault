@@ -1,4 +1,4 @@
-# Agent Secret Vault threat model
+# SVLT threat model
 
 ## Assets
 
@@ -10,7 +10,7 @@
 
 ## Security goals
 
-Agent Secret Vault is designed to prevent plaintext exposure to Codex, cloud
+SVLT is designed to prevent plaintext exposure to Codex, cloud
 models, the Obsidian knowledge base and search index, file-sync providers,
 copied encrypted sidecar stores, audit logs, system logs, notifications, and
 crash reports.
@@ -43,7 +43,7 @@ The product does not claim to resist:
 - compromise of the developer signing identity.
 
 These are release-blocking only if documentation or UI implies protection
-against them. The correct claim is that Agent Secret Vault reduces accidental
+against them. The correct claim is that SVLT reduces accidental
 agent/cloud/log exposure, not that it defeats local same-user compromise.
 
 ## First-release scope exclusions

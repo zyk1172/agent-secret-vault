@@ -11,10 +11,18 @@ import VaultIPC
 struct AgentSecretVaultApplication: App {
     @NSApplicationDelegateAdaptor(AgentSecretVaultAppDelegate.self) private var appDelegate
     @State private var secureViewerModel = SecureViewerModel()
-    @StateObject private var runtime = AgentSecretVaultRuntime()
+    @StateObject private var runtime: AgentSecretVaultRuntime
+
+    init() {
+        let runtime = AgentSecretVaultRuntimeStore.shared
+        _runtime = StateObject(wrappedValue: runtime)
+        Task { @MainActor in
+            await runtime.start()
+        }
+    }
 
     var body: some Scene {
-        Window("Agent Secret Vault", id: MenuBarPresentation.mainWindowID) {
+        Window("SVLT", id: MenuBarPresentation.mainWindowID) {
             VaultWorkbenchView(
                 status: runtime.status,
                 orphanScanResult: runtime.orphanScanResult,
@@ -24,6 +32,7 @@ struct AgentSecretVaultApplication: App {
                 sensitiveIndexEntries: runtime.sensitiveIndexEntries,
                 sensitiveScanRootURL: runtime.sensitiveScanRootURL,
                 sensitiveScanCandidates: runtime.sensitiveScanCandidates,
+                sensitiveScanRules: runtime.sensitiveScanRules,
                 restoreParagraph: { text in
                     try await runtime.restoreParagraph(text)
                 },
@@ -47,6 +56,21 @@ struct AgentSecretVaultApplication: App {
                 },
                 encryptSensitiveCandidates: { candidateIDs in
                     await runtime.encryptSensitiveCandidates(candidateIDs)
+                },
+                ignoreSensitiveCandidates: { candidateIDs in
+                    await runtime.ignoreSensitiveCandidates(candidateIDs)
+                },
+                jumpToSensitiveCandidate: { candidate in
+                    runtime.jumpToSensitiveCandidate(candidate)
+                },
+                deleteSensitiveCandidate: { candidate in
+                    await runtime.deleteSensitiveCandidate(candidate)
+                },
+                addSensitiveScanRule: { rule in
+                    runtime.addSensitiveScanRule(rule)
+                },
+                removeSensitiveScanRule: { id in
+                    runtime.removeSensitiveScanRule(id)
                 }
             )
                 .task {
@@ -108,7 +132,7 @@ struct AgentSecretVaultApplication: App {
                 }
             }
 
-        MenuBarExtra("Agent Secret Vault", systemImage: MenuBarPresentation.statusItemSymbol) {
+        MenuBarExtra("SVLT", systemImage: MenuBarPresentation.statusItemSymbol) {
             MenuBarVaultPanel(
                 status: runtime.status,
                 orphanScanResult: runtime.orphanScanResult,
@@ -155,6 +179,11 @@ struct AgentSecretVaultApplication: App {
 }
 
 @MainActor
+private enum AgentSecretVaultRuntimeStore {
+    static let shared = AgentSecretVaultRuntime()
+}
+
+@MainActor
 private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var status = WorkbenchStatus(
         locked: true,
@@ -166,24 +195,28 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var auditEntries: [AgentAutomationAuditEntry] = []
     @Published var savedReferences: [SecretReferenceMetadata] = []
     @Published var sensitiveIndexURL: URL?
-    @Published var sensitiveIndexEntries: [IndexedEncryptedRecord] = []
+    @Published var sensitiveIndexEntries: [SensitiveInformationDocumentReference] = []
     @Published var sensitiveIndexError: String?
     @Published var sensitiveScanRootURL: URL?
     @Published var sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = []
     @Published var sensitiveScanError: String?
+    @Published var sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults + SensitiveScanRulePreferences.customRules()
 
     private var controller: AppIPCController?
     private var services: VaultAppServices?
     private var protectionKeyStore: AppProtectionKeyStore?
-    private var sensitiveIndexStore: MarkdownSensitiveIndexStore?
+    private var sensitiveIndexStore: SensitiveInformationDocumentStore?
+    private var legacyRecordStore: FileRecordStore?
     private var lifecycleMonitor: VaultLifecycleMonitor?
     private var started = false
+    private var isStarting = false
 
     func start() async {
-        guard !started else {
+        guard !started, !isStarting else {
             return
         }
-        started = true
+        isStarting = true
+        defer { isStarting = false }
 
         do {
             let runtime = try makeRuntime()
@@ -192,8 +225,18 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             services = runtime.services
             protectionKeyStore = runtime.protectionKeyStore
             sensitiveIndexStore = runtime.sensitiveIndexStore
-            sensitiveIndexURL = await runtime.sensitiveIndexStore.selectedIndexURL()
+            legacyRecordStore = runtime.legacyRecordStore
+            sensitiveIndexURL = await runtime.sensitiveIndexStore.selectedDocumentURL()
             sensitiveScanRootURL = SensitiveIndexSelectionStore.selectedScanRootURL()
+            do {
+                _ = try await runtime.sensitiveIndexStore.prepareSelectedDocument()
+                if let documentURL = await runtime.sensitiveIndexStore.selectedDocumentURL() {
+                    SensitiveIndexSelectionStore.save(documentURL)
+                    sensitiveIndexURL = documentURL
+                }
+            } catch {
+                sensitiveIndexError = "无法整理敏感信息.md"
+            }
             try runtime.controller.start()
             lifecycleMonitor = VaultLifecycleMonitor { [weak self] in
                 await self?.clearRevealSessions()
@@ -202,7 +245,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             status = await runtime.services.status()
             await refreshSavedReferences()
             await refreshSensitiveIndex()
+            started = true
         } catch {
+            NSLog("SVLT runtime startup failed: %@", String(describing: error))
+            sensitiveIndexError = "无法启动本地服务"
             status = WorkbenchStatus(
                 locked: true,
                 ipcAvailable: false,
@@ -258,9 +304,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
 
         do {
-            sensitiveIndexEntries = try await sensitiveIndexStore.entries()
+            sensitiveIndexEntries = try await sensitiveIndexStore.references()
             sensitiveIndexError = nil
-        } catch MarkdownSensitiveIndexStoreError.noSelectedIndex {
+        } catch SensitiveInformationDocumentStoreError.noSelectedDocument {
             sensitiveIndexEntries = []
             sensitiveIndexError = nil
         } catch {
@@ -275,7 +321,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
-        panel.message = "选择作为加密记录库的敏感信息.md"
+        panel.message = "选择集中维护的敏感信息.md"
         panel.prompt = "选择"
 
         guard panel.runModal() == .OK, let url = panel.url else {
@@ -288,7 +334,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.nameFieldStringValue = "敏感信息.md"
-        panel.message = "新建集中加密记录库"
+        panel.message = "新建集中维护的敏感信息.md"
         panel.prompt = "新建"
 
         guard panel.runModal() == .OK, let url = panel.url else {
@@ -301,18 +347,18 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         guard let sensitiveIndexStore else {
             return
         }
-        let priorURL = await sensitiveIndexStore.selectedIndexURL()
+        let priorURL = await sensitiveIndexStore.selectedDocumentURL()
 
         do {
-            try await sensitiveIndexStore.selectIndex(at: url)
-            try await sensitiveIndexStore.initializeSelectedIndex()
+            try await sensitiveIndexStore.selectDocument(at: url)
+            _ = try await sensitiveIndexStore.prepareSelectedDocument()
             SensitiveIndexSelectionStore.save(url)
             sensitiveIndexURL = url
             sensitiveIndexError = nil
             await refreshSensitiveIndex()
             await refreshSavedReferences()
         } catch {
-            try? await sensitiveIndexStore.selectIndex(at: priorURL)
+            try? await sensitiveIndexStore.selectDocument(at: priorURL)
             sensitiveIndexError = "所选文件不是有效的敏感信息.md"
         }
     }
@@ -320,9 +366,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     func chooseSensitiveScanRoot() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.message = "选择要本地检查的 Markdown 文件夹"
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.message = "选择要本地检查的 Markdown 文件或文件夹"
         panel.prompt = "选择"
 
         guard panel.runModal() == .OK, let url = panel.url else {
@@ -336,19 +383,21 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     func scanSensitiveInformation() async {
         guard let sensitiveScanRootURL else {
             sensitiveScanCandidates = []
-            sensitiveScanError = "请先选择 Markdown 文件夹"
+            sensitiveScanError = "请先选择 Markdown 文件或文件夹"
             return
         }
 
         do {
-            sensitiveScanCandidates = try LocalSensitiveInformationScanner().scan(
-                directory: sensitiveScanRootURL,
+            let scanner = LocalSensitiveInformationScanner(rules: sensitiveScanRules)
+            let ignored = SensitiveScanRulePreferences.ignoredCandidateIDs()
+            sensitiveScanCandidates = try scanner.scan(
+                target: sensitiveScanRootURL,
                 excluding: sensitiveIndexURL
-            )
+            ).filter { !ignored.contains($0.id) }
             sensitiveScanError = nil
         } catch {
             sensitiveScanCandidates = []
-            sensitiveScanError = "无法读取所选文件夹"
+            sensitiveScanError = "无法读取所选 Markdown 内容"
         }
     }
 
@@ -366,22 +415,13 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                     label: candidate.title,
                     policy: .credential
                 )
-                let parsed = try SecretReference(reference)
-                try await sensitiveIndexStore.updateMetadata(
-                    id: parsed.id,
-                    metadata: SensitiveIndexMetadata(
-                        category: candidate.category,
-                        title: candidate.title,
-                        source: candidate.source
-                    )
-                )
-                let entries = try await sensitiveIndexStore.entries()
-                guard let entry = entries.first(where: { $0.record.id == parsed.id }) else {
-                    throw MarkdownSensitiveIndexStoreError.recordNotFound(parsed.id)
-                }
                 try LocalSensitiveInformationWriter.replace(
                     candidate,
-                    displayID: entry.displayID,
+                    reference: reference
+                )
+                try await sensitiveIndexStore.appendParagraph(
+                    candidate.replacingValue(in: candidate.paragraph, reference: reference),
+                    title: candidate.title,
                     reference: reference
                 )
             } catch {
@@ -393,15 +433,64 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         await refreshSavedReferences()
         await scanSensitiveInformation()
         if failed {
-            sensitiveScanError = "部分候选未写回：文件可能已修改，或尚未选择有效的敏感信息.md"
+            sensitiveScanError = "部分候选未写回：文件可能已修改，或尚未选择敏感信息.md"
         }
+    }
+
+    func ignoreSensitiveCandidates(_ ids: Set<String>) async {
+        guard !ids.isEmpty else {
+            return
+        }
+        SensitiveScanRulePreferences.ignore(ids)
+        sensitiveScanCandidates.removeAll { ids.contains($0.id) }
+    }
+
+    func deleteSensitiveCandidate(_ candidate: LocalSensitiveInformationCandidate) async {
+        guard let protectionKeyStore else {
+            return
+        }
+        do {
+            _ = try await protectionKeyStore.deviceKey(for: .credential, reason: "删除本地扫描命中值")
+            try LocalSensitiveInformationWriter.remove(candidate)
+            await scanSensitiveInformation()
+        } catch {
+            sensitiveScanError = "无法删除命中值：文件可能已修改"
+        }
+    }
+
+    func jumpToSensitiveCandidate(_ candidate: LocalSensitiveInformationCandidate) {
+        var components = URLComponents()
+        components.scheme = "obsidian"
+        components.host = "svlt"
+        components.queryItems = [
+            URLQueryItem(name: "file", value: candidate.fileURL.path),
+            URLQueryItem(name: "line", value: String(candidate.source.line))
+        ]
+        if let url = components.url {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func addSensitiveScanRule(_ rule: SensitiveScanRuleDefinition) {
+        var custom = SensitiveScanRulePreferences.customRules()
+        custom.append(rule)
+        SensitiveScanRulePreferences.saveCustomRules(custom)
+        sensitiveScanRules = SensitiveScanRuleDefinition.defaults + custom
+    }
+
+    func removeSensitiveScanRule(_ id: String) {
+        var custom = SensitiveScanRulePreferences.customRules()
+        custom.removeAll { $0.id == id }
+        SensitiveScanRulePreferences.saveCustomRules(custom)
+        sensitiveScanRules = SensitiveScanRuleDefinition.defaults + custom
     }
 
     private func makeRuntime() throws -> (
         controller: AppIPCController,
         services: VaultAppServices,
         protectionKeyStore: AppProtectionKeyStore,
-        sensitiveIndexStore: MarkdownSensitiveIndexStore
+        sensitiveIndexStore: SensitiveInformationDocumentStore,
+        legacyRecordStore: FileRecordStore
     ) {
         let fileManager = FileManager.default
         let appSupport = try fileManager.url(
@@ -419,7 +508,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: auditRoot, withIntermediateDirectories: true)
 
-        let recordStore = MarkdownSensitiveIndexStore(indexURL: SensitiveIndexSelectionStore.selectedURL())
+        let selectedScanTarget = SensitiveIndexSelectionStore.selectedScanRootURL()
+        let selectedDocument = SensitiveIndexSelectionStore.selectedURL()
+            ?? SensitiveInformationDocumentStore.defaultDocumentURL(scanTargetURL: selectedScanTarget)
+        let recordStore = FileRecordStore(baseDirectory: root)
+        let sensitiveIndexStore = SensitiveInformationDocumentStore(documentURL: selectedDocument)
+        let legacyRecordStore = FileRecordStore(baseDirectory: root)
         let auditLog = EncryptedAuditLog(directoryURL: auditRoot)
         let deviceKeyStore = DeviceKeyStore()
         let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
@@ -434,9 +528,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         )
         let vaultMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data = { policy, reason in
             let localWrappingKey = try await protectionKeyStore.deviceKey(for: policy, reason: reason)
+            let hasLegacyRecords = (try? await recordStore.recordIDs().isEmpty) == false
             if try await wrappedMasterKeyStore.loadWrappedMasterKeySet() == nil,
-               (try? await recordStore.recordIDs().isEmpty) == false
-            {
+               hasLegacyRecords {
                 return try await masterKeyCoordinator.adoptExistingVault(
                     reason: reason,
                     localWrappingKey: localWrappingKey,
@@ -489,7 +583,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             server: server,
             handler: IPCRequestHandler(service: services)
         )
-        return (controller, services, protectionKeyStore, recordStore)
+        return (controller, services, protectionKeyStore, sensitiveIndexStore, legacyRecordStore)
     }
 
     private func recordAudit(_ entry: AgentAutomationAuditEntry) {
@@ -518,6 +612,12 @@ private enum NoopSelectionReplacerError: Error {
 final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
     private let terminationCoordinator = MenuBarTerminationCoordinator {
         NSApp.terminate(nil)
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { @MainActor in
+            await AgentSecretVaultRuntimeStore.shared.start()
+        }
     }
 
     func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {

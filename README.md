@@ -1,8 +1,8 @@
-# Agent Secret Vault
+# SVLT
 
-![Agent Secret Vault app icon](AppAssets/AppIcon-source.png)
+![SVLT app icon](AppAssets/AppIcon-source.png)
 
-Agent Secret Vault is a macOS app plus local MCP adapter for letting agents such
+SVLT is a macOS app plus local MCP adapter for letting agents such
 as Codex work with sensitive knowledge-base material without receiving
 plaintext secrets.
 
@@ -18,21 +18,24 @@ secret://0123456789ABCDEFGHJKMNPQRS
 
 For people who only use the app, do not run Xcode. Use the release zip:
 
-1. Unzip `AgentSecretVault-release.zip`.
+1. Unzip `SVLT-release.zip`.
 2. Double-click `install.command`. If macOS blocks it, right-click it and choose
    Open. Terminal users can run `install.sh`.
-3. Open Agent Secret Vault.
+3. Open SVLT.
 4. Copy the generated MCP config from:
 
 ```text
-~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+~/Library/Application Support/AgentSecretVault/svlt.mcp.json
 ```
+5. For Codex, Hermes, OpenClaw, or another MCP agent, paste the required
+   [Agent sensitive-information policy](docs/svlt-agent-policy-zh-CN.md)
+   into its system prompt, project rule, or workspace instruction.
 
 The installer places:
 
-- App: `/Applications/AgentSecretVault.app` or `~/Applications/AgentSecretVault.app`
+- App: `/Applications/SVLT.app` or `~/Applications/SVLT.app`
 - MCP server: `~/Library/Application Support/AgentSecretVault/MCP`
-- MCP config: `~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json`
+- MCP config: `~/Library/Application Support/AgentSecretVault/svlt.mcp.json`
 
 The user only needs Node.js 24 or newer for the MCP server. Xcode is not needed
 for normal use.
@@ -50,11 +53,11 @@ Build, package, and test:
 
 ```bash
 xcodegen generate
-xcodebuild test -project AgentSecretVault.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
+xcodebuild test -project SVLT.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
 cd mcp-server && npm test && npm run typecheck && npm run build
-cd ../obsidian-plugin/agent-secret-vault && npm test && npm run typecheck && npm run build
+cd ../obsidian-plugin/svlt && npm test && npm run typecheck && npm run build
 cd ../..
-ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/agent-secret-vault/main.js obsidian-plugin/agent-secret-vault/dist
+ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/svlt/main.js obsidian-plugin/svlt/dist
 git diff --check
 ```
 
@@ -73,11 +76,20 @@ For Codex, Claude, Hermes, or another MCP-capable agent, follow
 
 Short version:
 
-Use the generated MCP config:
+1. Open SVLT and select the `敏感信息.md` that will be the active
+   human-maintained sensitive-information catalog. It contains context and
+   unwrapped `secret://` references; encrypted records remain in the local vault.
+2. Use the generated MCP config:
 
 ```text
-~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+~/Library/Application Support/AgentSecretVault/svlt.mcp.json
 ```
+
+3. Paste the required [Agent sensitive-information policy](docs/svlt-agent-policy-zh-CN.md)
+   into the agent's system prompt, project rule, or workspace instruction.
+   This makes the App-selected index and its `secret://` references the
+   mandatory path for sensitive data; agents must not read the index directly
+   or fall back to notes, logs, environment variables, or memory.
 
 For Codex skill installation:
 
@@ -87,13 +99,13 @@ For Codex skill installation:
 
 ## Obsidian workflow
 
-1. Open Agent Secret Vault.
-2. Install the Obsidian plugin from `obsidian-plugin/agent-secret-vault`.
-3. Pair the plugin with the local Agent Secret Vault app.
+1. Open SVLT.
+2. Install the Obsidian plugin from `obsidian-plugin/svlt`.
+3. Pair the plugin with the local SVLT app.
 4. Select sensitive text in Obsidian and encrypt it into an opaque `secret://`
    reference.
-5. Scan the current note or vault to review replacement candidates before
-   converting them to references.
+5. Use the App's local scan to review replacement candidates before converting
+   them to references.
 6. Use reveal for the current paragraph only when local display is needed. The
    app opens an app-owned temporary reveal window; the plugin receives status
    only, not decrypted values.

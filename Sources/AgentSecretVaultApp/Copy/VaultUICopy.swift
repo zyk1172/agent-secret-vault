@@ -59,7 +59,7 @@ public enum VaultUICopy {
 
     public static let usageSteps: [UsageStepCopy] = [
         UsageStepCopy(id: 1, englishTitle: "Select sensitive text", englishBody: "Choose the password, token, note fragment, or credential text in your knowledge base.", chineseTitle: "选择敏感文本", chineseBody: "在知识库中选择密码、令牌、笔记片段或凭据文本。"),
-        UsageStepCopy(id: 2, englishTitle: "Encrypt into a reference", englishBody: "Agent Secret Vault stores encrypted bytes and replaces the text with a secret:// reference.", chineseTitle: "加密为引用", chineseBody: "本应用保存加密数据，并把原文替换成 secret:// 引用。"),
+        UsageStepCopy(id: 2, englishTitle: "Encrypt into a reference", englishBody: "SVLT stores encrypted bytes and replaces the text with a secret:// reference.", chineseTitle: "加密为引用", chineseBody: "本应用保存加密数据，并把原文替换成 secret:// 引用。"),
         UsageStepCopy(id: 3, englishTitle: "Let the agent use the reference", englishBody: "Codex, Claude, or Hermes can discuss and pass the reference without receiving plaintext during normal reveal.", chineseTitle: "让智能体使用引用", chineseBody: "Codex、Claude 或 Hermes 可以讨论和传递引用；普通临时解密不会把明文给插件。"),
         UsageStepCopy(id: 4, englishTitle: "Reveal, send, or restore locally", englishBody: "Use this app to reveal or send the secret after fresh local authorization. Restore writes plaintext back to Obsidian explicitly.", chineseTitle: "在本机查看、发送或还原", chineseBody: "需要查看、发送或还原时，通过本应用完成本机授权；还原会把明文明确写回 Obsidian。")
     ]

@@ -2,22 +2,22 @@
 set -euo pipefail
 
 RELEASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_SOURCE="$RELEASE_DIR/AgentSecretVault.app"
+APP_SOURCE="$RELEASE_DIR/SVLT.app"
 MCP_SOURCE="$RELEASE_DIR/MCP"
-OBSIDIAN_PLUGIN_SOURCE="$RELEASE_DIR/ObsidianPlugin/agent-secret-vault"
+OBSIDIAN_PLUGIN_SOURCE="$RELEASE_DIR/ObsidianPlugin/svlt"
 
 APP_DIR="/Applications"
 if [[ ! -w "$APP_DIR" ]]; then
   APP_DIR="$HOME/Applications"
 fi
-APP_TARGET="$APP_DIR/AgentSecretVault.app"
+APP_TARGET="$APP_DIR/SVLT.app"
 
 APP_SUPPORT="$HOME/Library/Application Support/AgentSecretVault"
 MCP_TARGET="$APP_SUPPORT/MCP"
-CONFIG_PATH="$APP_SUPPORT/agent-secret-vault.mcp.json"
+CONFIG_PATH="$APP_SUPPORT/svlt.mcp.json"
 
 if [[ ! -d "$APP_SOURCE" ]]; then
-  echo "找不到 AgentSecretVault.app。请从完整 release 包中运行本脚本。" >&2
+  echo "找不到 SVLT.app。请从完整 release 包中运行本脚本。" >&2
   exit 1
 fi
 
@@ -45,7 +45,9 @@ cp -R "$MCP_SOURCE"/. "$MCP_TARGET"/
 
 install_obsidian_plugin() {
   local vault_path="$1"
-  local plugin_target="$vault_path/.obsidian/plugins/agent-secret-vault"
+  local plugin_target="$vault_path/.obsidian/plugins/svlt"
+  local legacy_plugin_target="$vault_path/.obsidian/plugins/agent-secret-vault"
+  local enabled_plugins_path="$vault_path/.obsidian/community-plugins.json"
 
   if [[ ! -d "$vault_path/.obsidian" ]]; then
     echo "跳过 Obsidian 插件安装：$vault_path 不是有效 Obsidian Vault（缺少 .obsidian）。" >&2
@@ -53,8 +55,12 @@ install_obsidian_plugin() {
   fi
 
   if [[ ! -d "$OBSIDIAN_PLUGIN_SOURCE" ]]; then
-    echo "跳过 Obsidian 插件安装：release 包中缺少 ObsidianPlugin/agent-secret-vault。" >&2
+    echo "跳过 Obsidian 插件安装：release 包中缺少 ObsidianPlugin/svlt。" >&2
     return 1
+  fi
+
+  if [[ ! -d "$plugin_target" && -d "$legacy_plugin_target" ]]; then
+    mv "$legacy_plugin_target" "$plugin_target"
   fi
 
   mkdir -p "$plugin_target"
@@ -63,6 +69,22 @@ install_obsidian_plugin() {
   if [[ -f "$OBSIDIAN_PLUGIN_SOURCE/styles.css" ]]; then
     cp "$OBSIDIAN_PLUGIN_SOURCE/styles.css" "$plugin_target/styles.css"
   fi
+
+  if [[ -f "$enabled_plugins_path" ]]; then
+    if ! node -e '
+      const fs = require("fs");
+      const filePath = process.argv[1];
+      const plugins = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (!Array.isArray(plugins)) process.exit(0);
+      const migrated = plugins.map((plugin) => plugin === "agent-secret-vault" ? "svlt" : plugin);
+      if (JSON.stringify(migrated) !== JSON.stringify(plugins)) {
+        fs.writeFileSync(filePath, `${JSON.stringify(migrated, null, 2)}\n`);
+      }
+    ' "$enabled_plugins_path"; then
+      echo "未能更新 Obsidian 已启用插件列表，请在设置中手动启用 SVLT。" >&2
+    fi
+  fi
+
   echo "Obsidian 插件已安装: $plugin_target"
 }
 
@@ -100,14 +122,14 @@ else
     echo "检测到多个 Obsidian Vault，未自动安装插件。请指定 Vault 路径重新运行："
     echo "./install.sh \"/你的/Obsidian/Vault/路径\""
   else
-    echo "未检测到 Obsidian Vault。需要时手动复制 ObsidianPlugin/agent-secret-vault 到 Vault/.obsidian/plugins/。"
+    echo "未检测到 Obsidian Vault。需要时手动复制 ObsidianPlugin/svlt 到 Vault/.obsidian/plugins/。"
   fi
 fi
 
 cat > "$CONFIG_PATH" <<JSON
 {
   "mcpServers": {
-    "agent-secret-vault": {
+    "svlt": {
       "command": "/bin/zsh",
       "args": [
         "-lc",
@@ -124,8 +146,9 @@ echo "MCP 配置: $CONFIG_PATH"
 echo "Obsidian 插件: $OBSIDIAN_INSTALL_STATUS"
 echo
 echo "下一步："
-echo "1. 打开 Agent Secret Vault：open \"$APP_TARGET\""
-echo "2. 在 Codex / Claude / Hermes 的 MCP 配置中粘贴 $CONFIG_PATH 的内容。"
-echo "3. 如果安装了 Obsidian 插件，请在 Obsidian 设置 → 第三方插件中启用 Agent Secret Vault。"
+echo "1. 打开 SVLT：open \"$APP_TARGET\""
+echo "2. 在 Codex / Claude / Hermes / OpenClaw 的 MCP 配置中粘贴 $CONFIG_PATH 的内容。"
+echo "3. 将 $RELEASE_DIR/svlt-agent-policy-zh-CN.md 中的代码块粘贴到 Agent 的系统提示、项目规则或工作区规则。"
+echo "4. 如果安装了 Obsidian 插件，请在 Obsidian 设置 → 第三方插件中启用 SVLT。"
 
 open "$APP_TARGET"

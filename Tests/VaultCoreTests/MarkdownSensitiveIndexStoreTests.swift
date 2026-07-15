@@ -91,6 +91,44 @@ import Testing
     }
 }
 
+@Test func markdownIndexStoreImportsLegacyEncryptedRecordsWithoutDecrypting() async throws {
+    let directory = try makeMarkdownIndexTemporaryDirectory()
+    let indexStore = MarkdownSensitiveIndexStore(indexURL: directory.appendingPathComponent("Sensitive Information.md"))
+    let legacyDirectory = directory.appendingPathComponent("Legacy Vault", isDirectory: true)
+    try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+    let legacyStore = FileRecordStore(baseDirectory: legacyDirectory)
+    let first = makeMarkdownIndexRecord(id: "0123456789ABCDEFGHJKMNPQRS", version: 1)
+    let second = makeMarkdownIndexRecord(id: "ABCDEFGHJKMNPQRSTVWXYZ0123", version: 1)
+
+    try await legacyStore.save(first)
+    try await legacyStore.save(second)
+
+    #expect(try await indexStore.importLegacyRecords(from: legacyStore) == 2)
+    let records = try await indexStore.entries().map(\ .record).sorted { $0.id < $1.id }
+    #expect(records == [first, second].sorted { $0.id < $1.id })
+    #expect(try await indexStore.importLegacyRecords(from: legacyStore) == 0)
+}
+
+@Test func markdownIndexStoreImportsNewerLegacyEnvelopeAndPreservesVisibleMetadata() async throws {
+    let directory = try makeMarkdownIndexTemporaryDirectory()
+    let indexStore = MarkdownSensitiveIndexStore(indexURL: directory.appendingPathComponent("Sensitive Information.md"))
+    let legacyDirectory = directory.appendingPathComponent("Legacy Vault", isDirectory: true)
+    try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+    let legacyStore = FileRecordStore(baseDirectory: legacyDirectory)
+    let original = makeMarkdownIndexRecord(id: "0123456789ABCDEFGHJKMNPQRS", version: 1)
+    let upgraded = makeMarkdownIndexRecord(id: "0123456789ABCDEFGHJKMNPQRS", version: 2)
+    let metadata = SensitiveIndexMetadata(category: "NAS", title: "NAS password", source: nil)
+
+    try await indexStore.save(original, metadata: metadata)
+    try await legacyStore.save(upgraded)
+
+    #expect(try await indexStore.importLegacyRecords(from: legacyStore) == 1)
+    let entry = try #require(try await indexStore.entries().first)
+    #expect(entry.record == upgraded)
+    #expect(entry.category == metadata.category)
+    #expect(entry.title == metadata.title)
+}
+
 private func makeMarkdownIndexTemporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("MarkdownSensitiveIndexStoreTests-\(UUID().uuidString)", isDirectory: true)

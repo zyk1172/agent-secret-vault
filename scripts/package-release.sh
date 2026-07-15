@@ -4,9 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 BUILD_DIR="$ROOT_DIR/build/release"
-STAGING_DIR="$DIST_DIR/AgentSecretVault-release"
+STAGING_DIR="$DIST_DIR/SVLT-release"
 MCP_STAGING="$STAGING_DIR/MCP"
-OBSIDIAN_PLUGIN_STAGING="$STAGING_DIR/ObsidianPlugin/agent-secret-vault"
+OBSIDIAN_PLUGIN_STAGING="$STAGING_DIR/ObsidianPlugin/svlt"
 
 cd "$ROOT_DIR"
 
@@ -17,7 +17,7 @@ echo "==> Building MCP server"
 (cd "$ROOT_DIR/mcp-server" && npm ci && npm run build)
 
 echo "==> Building Obsidian plugin"
-(cd "$ROOT_DIR/obsidian-plugin/agent-secret-vault" && npm ci && npm run build)
+(cd "$ROOT_DIR/obsidian-plugin/svlt" && npm ci && npm run build)
 
 echo "==> Building macOS app"
 if command -v xcodegen >/dev/null 2>&1; then
@@ -29,33 +29,34 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode-beta.app/Contents/Devel
 fi
 
 xcodebuild \
-  -project "$ROOT_DIR/AgentSecretVault.xcodeproj" \
+  -project "$ROOT_DIR/SVLT.xcodeproj" \
   -scheme AgentSecretVault \
   -configuration Release \
   -derivedDataPath "$BUILD_DIR/DerivedData" \
   build
 
-APP_SOURCE="$BUILD_DIR/DerivedData/Build/Products/Release/AgentSecretVault.app"
+APP_SOURCE="$BUILD_DIR/DerivedData/Build/Products/Release/SVLT.app"
 if [[ ! -d "$APP_SOURCE" ]]; then
   echo "Build succeeded but app was not found at $APP_SOURCE" >&2
   exit 1
 fi
 
 echo "==> Staging app and MCP bundle"
-cp -R "$APP_SOURCE" "$STAGING_DIR/AgentSecretVault.app"
+cp -R "$APP_SOURCE" "$STAGING_DIR/SVLT.app"
 cp "$ROOT_DIR/mcp-server/package.json" "$MCP_STAGING/package.json"
 cp "$ROOT_DIR/mcp-server/package-lock.json" "$MCP_STAGING/package-lock.json"
 cp -R "$ROOT_DIR/mcp-server/dist" "$MCP_STAGING/dist"
-cp "$ROOT_DIR/obsidian-plugin/agent-secret-vault/main.js" "$OBSIDIAN_PLUGIN_STAGING/main.js"
-cp "$ROOT_DIR/obsidian-plugin/agent-secret-vault/manifest.json" "$OBSIDIAN_PLUGIN_STAGING/manifest.json"
+cp "$ROOT_DIR/obsidian-plugin/svlt/main.js" "$OBSIDIAN_PLUGIN_STAGING/main.js"
+cp "$ROOT_DIR/obsidian-plugin/svlt/manifest.json" "$OBSIDIAN_PLUGIN_STAGING/manifest.json"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.sh"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.command"
 cp "$ROOT_DIR/docs/zh-CN.md" "$STAGING_DIR/USER_GUIDE_zh-CN.md"
+cp "$ROOT_DIR/docs/svlt-agent-policy-zh-CN.md" "$STAGING_DIR/svlt-agent-policy-zh-CN.md"
 chmod +x "$STAGING_DIR/install.sh"
 chmod +x "$STAGING_DIR/install.command"
 
 cat > "$STAGING_DIR/README_INSTALL.txt" <<'TEXT'
-Agent Secret Vault 安装方式
+SVLT 安装方式
 
 1. 双击 install.command；如果系统拦截，右键点它再选“打开”。
    也可以在终端运行 install.sh。
@@ -63,21 +64,23 @@ Agent Secret Vault 安装方式
 3. 安装脚本会把 MCP server 安装到：
    ~/Library/Application Support/AgentSecretVault/MCP
 4. 安装脚本会生成可复制的 MCP 配置：
-   ~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+   ~/Library/Application Support/AgentSecretVault/svlt.mcp.json
 5. release 包内包含 Obsidian 插件：
-   ObsidianPlugin/agent-secret-vault
+   ObsidianPlugin/svlt
    安装脚本会在能唯一识别 Vault 时自动安装。也可以指定：
    ./install.sh "/你的/Obsidian/Vault/路径"
-6. 打开 Agent Secret Vault，再把 MCP 配置粘贴到 Codex / Claude / Hermes。
+6. 打开 SVLT，再把 MCP 配置粘贴到 Codex / Claude / Hermes / OpenClaw。
+7. 必须将 svlt-agent-policy-zh-CN.md 中的代码块粘贴到 Agent 的系统提示、项目规则或工作区规则。
+   Agent 只能通过 MCP 使用 App 选定的 敏感信息.md 和 secret:// 引用，不得直接读取索引或从笔记、日志、环境变量、历史和记忆中绕过获取敏感值。
 
 完整中文教程见：USER_GUIDE_zh-CN.md
 
 注意：本版本需要本机已安装 Node.js 24 或更新版本，用于运行 MCP server。
 TEXT
 
-ZIP_PATH="$DIST_DIR/AgentSecretVault-release.zip"
+ZIP_PATH="$DIST_DIR/SVLT-release.zip"
 rm -f "$ZIP_PATH"
-(cd "$DIST_DIR" && ditto -c -k --sequesterRsrc --keepParent "AgentSecretVault-release" "$ZIP_PATH")
+(cd "$DIST_DIR" && ditto -c -k --sequesterRsrc --keepParent "SVLT-release" "$ZIP_PATH")
 
 echo "Release package:"
 echo "$ZIP_PATH"

@@ -14,7 +14,7 @@ import Testing
 @Test func appSceneUsesSingletonMainWindow() throws {
     let source = try appSource()
 
-    #expect(source.contains("Window(\"Agent Secret Vault\", id: MenuBarPresentation.mainWindowID)"))
+    #expect(source.contains("Window(\"SVLT\", id: MenuBarPresentation.mainWindowID)"))
     #expect(!source.contains("WindowGroup(id: MenuBarPresentation.mainWindowID)"))
 }
 

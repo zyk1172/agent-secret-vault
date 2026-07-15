@@ -1,15 +1,15 @@
-# Agent Secret Vault 通用 Agent 使用文档
+# SVLT 通用 Agent 使用文档
 
 本文面向 Codex、Claude、Hermes 以及其他支持 MCP 的本地或桌面 Agent。目标是让 Agent 在对话中使用 `secret://...` 密文引用，而不是接触密码、token、cookie、私钥等明文。
 
 ## 1. Agent 必须理解的边界
 
-Agent Secret Vault 的正确使用方式是：
+SVLT 的正确使用方式是：
 
 1. 聊天、笔记、任务描述里只保留 `secret://...`。
 2. Agent 不要求用户粘贴明文。
 3. Agent 不把解密后的密码、token、Authorization header、cookie、session key、填充后的敏感字段返回聊天。
-4. 需要本机使用秘密时，Agent 调用 Agent Secret Vault MCP 工具。
+4. 需要本机使用秘密时，Agent 调用 SVLT MCP 工具。
 5. 明文只短暂存在于本机 macOS App、MCP server 内部或专用本地 runner 中。
 
 Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明引用。
@@ -20,16 +20,16 @@ Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明�
 
 安装方式：
 
-1. 解压 `AgentSecretVault-release.zip`。
+1. 解压 `SVLT-release.zip`。
 2. 双击里面的 `install.command`。如果 macOS 拦截，右键点它再选“打开”。终端用户可以运行 `install.sh`。
-3. 安装脚本会打开 Agent Secret Vault。
+3. 安装脚本会打开 SVLT。
 4. 安装脚本会生成 MCP 配置文件。
 
 安装后的固定位置：
 
-- App：`/Applications/AgentSecretVault.app` 或 `~/Applications/AgentSecretVault.app`
+- App：`/Applications/SVLT.app` 或 `~/Applications/SVLT.app`
 - MCP server：`~/Library/Application Support/AgentSecretVault/MCP`
-- MCP 配置：`~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json`
+- MCP 配置：`~/Library/Application Support/AgentSecretVault/svlt.mcp.json`
 
 普通用户只需要安装 Node.js 24 或更新版本，用来运行 MCP server。不需要安装 Xcode。
 
@@ -38,7 +38,7 @@ Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明�
 安装完成后，打开这个文件：
 
 ```text
-~/Library/Application Support/AgentSecretVault/agent-secret-vault.mcp.json
+~/Library/Application Support/AgentSecretVault/svlt.mcp.json
 ```
 
 它的内容类似：
@@ -46,7 +46,7 @@ Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明�
 ```json
 {
   "mcpServers": {
-    "agent-secret-vault": {
+    "svlt": {
       "command": "/bin/zsh",
       "args": [
         "-lc",
@@ -59,7 +59,7 @@ Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明�
 
 如果客户端是表单配置：
 
-- Name：`agent-secret-vault`
+- Name：`svlt`
 - Command：`/bin/zsh`
 - Args 第一项：`-lc`
 - Args 第二项：`exec node "$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js"`
@@ -86,20 +86,20 @@ Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明�
 项目内插件目录：
 
 ```text
-plugins/agent-secret-vault
+plugins/svlt
 ```
 
 插件包含：
 
 - `.codex-plugin/plugin.json`
 - `.mcp.json`
-- `skills/agent-secret-vault/SKILL.md`
+- `skills/svlt/SKILL.md`
 - `hooks/validate_secret_output.js`
 
 如果 Codex 支持从本地目录加载插件，选择上述目录。加载后，Codex 应能看到：
 
-- MCP server：`agent-secret-vault`
-- Skill：`agent-secret-vault`
+- MCP server：`svlt`
+- Skill：`svlt`
 - Hook：`validate-secret-output`
 
 ## 5. Claude / Hermes / 其他 Agent 安装方式
@@ -107,26 +107,22 @@ plugins/agent-secret-vault
 Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 
 1. 安装 MCP server，使用第 3 节的 MCP 配置。
-2. 把第 6 节的“Agent 运行规则”加入该客户端的系统提示、项目规则、profile instruction 或 workspace instruction。
+2. 把第 6 节的“敏感信息使用策略”加入该客户端的系统提示、项目规则、profile instruction 或 workspace instruction。
 3. 重启客户端。
 4. 让 Agent 先调用 `vault_status`，再调用 `agent_secret_usage_policy`。
 
-## 6. Agent 运行规则
+## 6. Agent 敏感信息使用策略
 
-把下面这段交给任何 Agent：
+这是连接 MCP 后的必做步骤。将 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样交给任何 Agent。
 
-```text
-当任务、文件、笔记或工具输出中出现 secret:// 引用、密码、token、API key、cookie、私钥、本地登录、SSH、SFTP/SCP、数据库连接、API 请求或需要本机使用秘密的动作时，自动使用 agent-secret-vault MCP 工具。
+策略要求 Agent：
 
-规则：
-1. 把 secret:// 当作不透明引用，不要推断、摘要或改写背后的真实值。
-2. 不要求用户把明文密码、token、cookie、私钥贴到聊天。
-3. 不把解密后的明文、Authorization header、cookie、session key、填充后的敏感字段返回聊天。
-4. 普通文本里有 secret:// 时，优先调用 secret_auto_handle_text。
-5. 需要本机执行动作时，优先调用 secret_action_router 或对应的具体工具。
-6. 工具返回失败、锁定、不可用或隔离时，只报告状态码和非敏感下一步，不降级为索要明文。
-7. 没有合适安全工具时停止，请求新增更窄的 allowlisted MCP 工具。
-```
+1. 将 App 选定的 `敏感信息.md` 视为唯一权威目录；每个引用对应本地保险箱中的独立加密记录。
+2. 仅通过 MCP 使用 `secret://...` 引用或非敏感元数据，绝不直接读取或修改该文件或本地加密记录。
+3. 遵守文件顶部“必读：格式与使用”：每组信息为独立段落；敏感值以前置一个英文空格的未包裹 `secret://...` 表示。
+4. 禁止以笔记、历史、日志、缓存、环境变量或模型记忆作为敏感值的替代来源。
+5. 先检查保险库状态，再使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具。
+6. 工具不可用或找不到引用时停止，不索要或恢复明文。
 
 ## 7. Agent 启动自检
 
@@ -140,7 +136,7 @@ Agent 接入后先做：
 - `vault_status` 返回 App 可用状态或锁定状态。
 - `agent_secret_usage_policy` 返回可用工具和安全规则。
 
-如果 App 未运行，先打开 Agent Secret Vault App。
+如果 App 未运行，先打开 SVLT App。
 
 ## 8. 工具选择规则
 
@@ -250,7 +246,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 
 | 状态 | Agent 应该怎么做 |
 | --- | --- |
-| `APP_UNAVAILABLE` | 让用户打开 Agent Secret Vault App 后重试。 |
+| `APP_UNAVAILABLE` | 让用户打开 SVLT App 后重试。 |
 | `URL_NOT_ALLOWED` / `HOST_NOT_ALLOWED` | 目标不是 localhost、`.local`、私有 IP 或显式 allowlist。请用户确认目标。 |
 | `URL_CREDENTIALS_NOT_ALLOWED` | URL 里包含用户名或密码。改用 `usernameRef` / `passwordRef`。 |
 | `URL_TOKEN_NOT_ALLOWED` | URL query 里出现 token/key/password 等敏感参数。改用 `tokenRef`。 |
@@ -265,7 +261,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 在 Agent 中发起：
 
 ```text
-请调用 agent-secret-vault 的 vault_status，并读取 agent_secret_usage_policy。
+请调用 svlt 的 vault_status，并读取 agent_secret_usage_policy。
 ```
 
 通过标准：

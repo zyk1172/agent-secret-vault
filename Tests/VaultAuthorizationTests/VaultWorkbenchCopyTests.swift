@@ -18,11 +18,11 @@ import Foundation
 }
 
 @Test func workbenchCopyProvidesExternalDocumentationLink() {
-    #expect(VaultWorkbenchCopy.documentationURL.absoluteString == "https://github.com/zyk1172/agent-secret-vault")
+    #expect(VaultWorkbenchCopy.documentationURL.absoluteString == "https://github.com/zyk1172/svlt")
 }
 
 @Test func workbenchCopyProvidesCopyableMcpConfigAndPrompt() {
-    #expect(VaultWorkbenchCopy.mcpConfig.contains("\"agent-secret-vault\""))
+    #expect(VaultWorkbenchCopy.mcpConfig.contains("\"svlt\""))
     #expect(VaultWorkbenchCopy.mcpConfig.contains("\"command\": \"/bin/zsh\""))
     #expect(VaultWorkbenchCopy.mcpConfig.contains("\"-lc\""))
     #expect(VaultWorkbenchCopy.mcpConfig.contains("$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js"))
