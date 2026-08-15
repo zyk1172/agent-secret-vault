@@ -9,7 +9,7 @@ public enum FileRecordStoreError: Error, Equatable, Sendable {
     case verificationFailed
 }
 
-public struct FileRecordStore: RecordStore, RecordListing, Sendable {
+public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Sendable {
     private let baseDirectory: URL
 
     public init(baseDirectory: URL) {
@@ -118,6 +118,20 @@ public struct FileRecordStore: RecordStore, RecordListing, Sendable {
             return (try? SecretReference("secret://\(id)")).map(\.id)
         }
         .sorted()
+    }
+
+    public func delete(id: String) async throws {
+        try validate(id: id)
+        let directory = recordDirectory(id: id)
+        guard fileManager.fileExists(atPath: directory.path) else {
+            return
+        }
+        try rejectSymlink(at: directory)
+        let values = try directory.resourceValues(forKeys: [.isDirectoryKey])
+        guard values.isDirectory == true else {
+            throw FileRecordStoreError.symlinkRejected
+        }
+        try fileManager.removeItem(at: directory)
     }
 
     private func loadValidRecord(id: String, version: Int) throws -> EncryptedRecord {

@@ -78,6 +78,10 @@ public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Senda
     public let matchedValue: String
     public let valueStartUTF16: Int
     public let valueEndUTF16: Int
+    public let paragraphStartUTF16: Int
+    public let paragraphEndUTF16: Int
+    public let valueStartInParagraphUTF16: Int
+    public let valueEndInParagraphUTF16: Int
     public let replacementText: String
     public let contentFingerprint: String
     public let rule: String
@@ -93,6 +97,10 @@ public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Senda
         matchedValue: String,
         valueStartUTF16: Int,
         valueEndUTF16: Int,
+        paragraphStartUTF16: Int,
+        paragraphEndUTF16: Int,
+        valueStartInParagraphUTF16: Int,
+        valueEndInParagraphUTF16: Int,
         replacementText: String? = nil,
         contentFingerprint: String,
         rule: String,
@@ -107,6 +115,10 @@ public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Senda
         self.matchedValue = matchedValue
         self.valueStartUTF16 = valueStartUTF16
         self.valueEndUTF16 = valueEndUTF16
+        self.paragraphStartUTF16 = paragraphStartUTF16
+        self.paragraphEndUTF16 = paragraphEndUTF16
+        self.valueStartInParagraphUTF16 = valueStartInParagraphUTF16
+        self.valueEndInParagraphUTF16 = valueEndInParagraphUTF16
         self.replacementText = replacementText ?? matchedValue
         self.contentFingerprint = contentFingerprint
         self.rule = rule
@@ -116,10 +128,21 @@ public struct LocalSensitiveInformationCandidate: Identifiable, Equatable, Senda
     }
 
     public func replacingValue(in text: String, reference: String) -> String {
-        guard let range = text.range(of: replacementText) else {
+        let nsText = text as NSString
+        guard valueStartInParagraphUTF16 >= 0,
+              valueEndInParagraphUTF16 >= valueStartInParagraphUTF16,
+              valueEndInParagraphUTF16 <= nsText.length
+        else {
             return text
         }
-        return text.replacingCharacters(in: range, with: " \(reference)")
+        let range = NSRange(
+            location: valueStartInParagraphUTF16,
+            length: valueEndInParagraphUTF16 - valueStartInParagraphUTF16
+        )
+        guard nsText.substring(with: range) == replacementText else {
+            return text
+        }
+        return nsText.replacingCharacters(in: range, with: " \(reference)")
     }
 }
 
@@ -217,7 +240,7 @@ public struct LocalSensitiveInformationScanner: Sendable {
             }
             let paragraphRange = Self.paragraphRange(in: text, containingUTF16Offset: match.value.range.location)
             let paragraph = nsText.substring(with: paragraphRange)
-            guard !paragraph.contains("secret://") else {
+            if (try? SecretReference(match.value.plaintext)) != nil {
                 continue
             }
 
@@ -233,6 +256,10 @@ public struct LocalSensitiveInformationScanner: Sendable {
                     matchedValue: match.value.plaintext,
                     valueStartUTF16: match.value.range.location,
                     valueEndUTF16: match.value.range.location + match.value.range.length,
+                    paragraphStartUTF16: paragraphRange.location,
+                    paragraphEndUTF16: paragraphRange.location + paragraphRange.length,
+                    valueStartInParagraphUTF16: match.value.range.location - paragraphRange.location,
+                    valueEndInParagraphUTF16: match.value.range.location + match.value.range.length - paragraphRange.location,
                     replacementText: nsText.substring(with: match.value.range),
                     contentFingerprint: fingerprint,
                     rule: match.rule.name,
@@ -388,37 +415,138 @@ public enum LocalSensitiveInformationWriteError: Error, Equatable, Sendable {
 
 public enum LocalSensitiveInformationWriter {
     public static func replace(_ candidate: LocalSensitiveInformationCandidate, reference: String) throws {
-        try replace(candidate, with: " \(reference)")
+        try replace([candidate], references: [reference])
     }
 
     public static func remove(_ candidate: LocalSensitiveInformationCandidate) throws {
-        try replace(candidate, with: "")
+        try replace([candidate], references: [""])
     }
 
-    private static func replace(_ candidate: LocalSensitiveInformationCandidate, with replacement: String) throws {
-        let values = try candidate.fileURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+    public static func replacingValues(
+        in text: String,
+        candidates: [LocalSensitiveInformationCandidate],
+        references: [String]
+    ) -> String {
+        guard candidates.count == references.count, !candidates.isEmpty else {
+            return text
+        }
+        let mutable = NSMutableString(string: text)
+        let ordered = zip(candidates, references).sorted { lhs, rhs in
+            lhs.0.valueStartInParagraphUTF16 > rhs.0.valueStartInParagraphUTF16
+        }
+        for (candidate, reference) in ordered {
+            let nsText = mutable as NSString
+            guard candidate.valueStartInParagraphUTF16 >= 0,
+                  candidate.valueEndInParagraphUTF16 >= candidate.valueStartInParagraphUTF16,
+                  candidate.valueEndInParagraphUTF16 <= nsText.length
+            else {
+                return text
+            }
+            let range = NSRange(
+                location: candidate.valueStartInParagraphUTF16,
+                length: candidate.valueEndInParagraphUTF16 - candidate.valueStartInParagraphUTF16
+            )
+            guard nsText.substring(with: range) == candidate.replacementText else {
+                return text
+            }
+            mutable.replaceCharacters(in: range, with: " \(reference)")
+        }
+        return mutable as String
+    }
+
+    public static func validate(_ candidates: [LocalSensitiveInformationCandidate]) throws {
+        guard let first = candidates.first else {
+            return
+        }
+        try validateSameSource(candidates, against: first)
+        let text = try readSource(at: first.fileURL)
+        guard LocalSensitiveInformationScanner.fingerprint(text) == first.contentFingerprint else {
+            throw LocalSensitiveInformationWriteError.changedSinceScan
+        }
+        let nsText = text as NSString
+        for candidate in candidates {
+            try validate(candidate, in: nsText)
+        }
+    }
+
+    public static func replace(
+        _ candidates: [LocalSensitiveInformationCandidate],
+        references: [String]
+    ) throws {
+        guard candidates.count == references.count else {
+            throw LocalSensitiveInformationWriteError.invalidSource
+        }
+        guard let first = candidates.first else {
+            return
+        }
+        try validateSameSource(candidates, against: first)
+        let text = try readSource(at: first.fileURL)
+        guard LocalSensitiveInformationScanner.fingerprint(text) == first.contentFingerprint else {
+            throw LocalSensitiveInformationWriteError.changedSinceScan
+        }
+
+        let mutable = NSMutableString(string: text)
+        let ordered = zip(candidates, references).sorted { lhs, rhs in
+            lhs.0.valueStartUTF16 > rhs.0.valueStartUTF16
+        }
+        for (candidate, reference) in ordered {
+            let nsText = mutable as NSString
+            try validate(candidate, in: nsText)
+            let range = NSRange(
+                location: candidate.valueStartUTF16,
+                length: candidate.valueEndUTF16 - candidate.valueStartUTF16
+            )
+            let replacement = reference.isEmpty ? "" : " \(reference)"
+            mutable.replaceCharacters(in: range, with: replacement)
+        }
+
+        let values = try first.fileURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true else {
             throw LocalSensitiveInformationWriteError.invalidSource
         }
         if values.isSymbolicLink == true {
             throw LocalSensitiveInformationWriteError.symlinkRejected
         }
+        try (mutable as String).write(to: first.fileURL, atomically: true, encoding: .utf8)
+    }
 
-        let text = try String(contentsOf: candidate.fileURL, encoding: .utf8)
-        guard LocalSensitiveInformationScanner.fingerprint(text) == candidate.contentFingerprint else {
-            throw LocalSensitiveInformationWriteError.changedSinceScan
+    private static func validateSameSource(
+        _ candidates: [LocalSensitiveInformationCandidate],
+        against first: LocalSensitiveInformationCandidate
+    ) throws {
+        for candidate in candidates {
+            guard candidate.fileURL.standardizedFileURL == first.fileURL.standardizedFileURL,
+                  candidate.contentFingerprint == first.contentFingerprint
+            else {
+                throw LocalSensitiveInformationWriteError.changedSinceScan
+            }
         }
-        let nsText = text as NSString
+    }
+
+    private static func readSource(at url: URL) throws -> String {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true else {
+            throw LocalSensitiveInformationWriteError.invalidSource
+        }
+        if values.isSymbolicLink == true {
+            throw LocalSensitiveInformationWriteError.symlinkRejected
+        }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private static func validate(_ candidate: LocalSensitiveInformationCandidate, in nsText: NSString) throws {
         guard candidate.valueStartUTF16 >= 0,
               candidate.valueEndUTF16 >= candidate.valueStartUTF16,
               candidate.valueEndUTF16 <= nsText.length
         else {
             throw LocalSensitiveInformationWriteError.changedSinceScan
         }
-        let range = NSRange(location: candidate.valueStartUTF16, length: candidate.valueEndUTF16 - candidate.valueStartUTF16)
+        let range = NSRange(
+            location: candidate.valueStartUTF16,
+            length: candidate.valueEndUTF16 - candidate.valueStartUTF16
+        )
         guard nsText.substring(with: range) == candidate.replacementText else {
             throw LocalSensitiveInformationWriteError.changedSinceScan
         }
-        try nsText.replacingCharacters(in: range, with: replacement).write(to: candidate.fileURL, atomically: true, encoding: .utf8)
     }
 }

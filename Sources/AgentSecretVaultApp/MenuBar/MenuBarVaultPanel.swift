@@ -78,7 +78,7 @@ public struct MenuBarVaultPanel: View {
             Button("取消", role: .cancel) {}
         } message: {
             if let referencePendingDeletion {
-                Text("这里只会为 \(referencePendingDeletion) 请求删除授权。真正删除前仍必须完成本机高风险授权。")
+                Text("确认后会先请求本机高风险授权，再删除 \(referencePendingDeletion)。")
             }
         }
     }

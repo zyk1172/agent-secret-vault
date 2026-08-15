@@ -1,6 +1,6 @@
 import VaultCore
 
-public struct LegacyCompatibleRecordStore: RecordStore, RecordListing, Sendable {
+public struct LegacyCompatibleRecordStore: RecordStore, RecordListing, RecordDeleting, Sendable {
     private let primary: MarkdownSensitiveIndexStore
     private let legacy: FileRecordStore
 
@@ -40,5 +40,15 @@ public struct LegacyCompatibleRecordStore: RecordStore, RecordListing, Sendable 
         }
         let legacyIDs = try await legacy.recordIDs()
         return Array(Set(primaryIDs).union(legacyIDs)).sorted()
+    }
+
+    public func delete(id: String) async throws {
+        do {
+            try await primary.delete(id: id)
+        } catch MarkdownSensitiveIndexStoreError.noSelectedIndex,
+                MarkdownSensitiveIndexStoreError.recordNotFound {
+            // Legacy records are the fallback store when the primary index is absent.
+        }
+        try await legacy.delete(id: id)
     }
 }

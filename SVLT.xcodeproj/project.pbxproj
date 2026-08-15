@@ -142,7 +142,6 @@
 		D361757BCA881FB873581CAF /* VaultExecution.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3344061D1CB333FC44C63D40 /* VaultExecution.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D4D3D7826AFC6A253368441F /* RevealSessionPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3F4E1E33491F2770F3661B7 /* RevealSessionPresenter.swift */; };
 		D61398B66656F685ED140562 /* VaultAppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69345BDFE3F9665F9C38C22F /* VaultAppServices.swift */; };
-		D9F6368E640947E7E01C3353 /* MenuBarTerminationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64DF76944638357EA06F5588 /* MenuBarTerminationCoordinator.swift */; };
 		DA6307833D3297F5DD1FC903 /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 869C6FAE8B4BDF3BF292E96C /* VaultCore.framework */; };
 		DDB9320559DFD456F13C6663 /* LegacyCompatibleRecordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B251CECF8E3CA56EDDE1C2E /* LegacyCompatibleRecordStoreTests.swift */; };
 		DE2473850DA47467180C31BD /* SecureViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E5B9A994288A49A5223AFA8 /* SecureViewerView.swift */; };
@@ -442,7 +441,6 @@
 		5E6B1CFA81D6AAA0D3E38BDE /* LeakTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LeakTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5EF3C000F6FABAA6BA95BA02 /* FoundationProcessRunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationProcessRunnerTests.swift; sourceTree = "<group>"; };
 		5F74853ABA9ADAF4A59A7E6D /* MasterKeyCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyCoordinator.swift; sourceTree = "<group>"; };
-		64DF76944638357EA06F5588 /* MenuBarTerminationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarTerminationCoordinator.swift; sourceTree = "<group>"; };
 		656B0F9F51F995034FFABD08 /* SecureViewerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureViewerModelTests.swift; sourceTree = "<group>"; };
 		681BEBE00AB3DD1F6B66D300 /* VaultDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultDashboardView.swift; sourceTree = "<group>"; };
 		692B4656410A50A1C57889B0 /* AppIPCControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIPCControllerTests.swift; sourceTree = "<group>"; };
@@ -755,7 +753,6 @@
 			children = (
 				A103BBA5005144E98E41B24C /* AppProtectionKeyStore.swift */,
 				D748BCEA660E92EA1FED8966 /* LegacyCompatibleRecordStore.swift */,
-				64DF76944638357EA06F5588 /* MenuBarTerminationCoordinator.swift */,
 				27A7FBBA34E87B672F60FA0C /* RevealSessionStore.swift */,
 				34A5B63ACB0AA03803FDA941 /* SensitiveIndexSelectionStore.swift */,
 				33E2DE2E4F7D4EEE98B023BF /* SensitiveInformationDocumentStore.swift */,
@@ -1226,7 +1223,6 @@
 				BB90318A6C2A184F12ADE950 /* MenuBarParagraphRestoreState.swift in Sources */,
 				A95054B372987B89CC0971B6 /* MenuBarParagraphRestoreView.swift in Sources */,
 				27808991EBDA747B41EDA32A /* MenuBarPresentation.swift in Sources */,
-				D9F6368E640947E7E01C3353 /* MenuBarTerminationCoordinator.swift in Sources */,
 				8B53350D8EE81AD47E6D0EEE /* MenuBarVaultPanel.swift in Sources */,
 				1D95CBE80B68E6D32E80D90B /* MetalTelemetryCompatibility.m in Sources */,
 				25643B712AC2FFA79E86AEBE /* OrphanReviewView.swift in Sources */,

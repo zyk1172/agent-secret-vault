@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct FoundationProcessRunner: ProcessRunning {
@@ -171,11 +172,11 @@ private final class FoundationProcessRunState: @unchecked Sendable {
     }
 
     func markTimedOutAndTerminate() {
-        markAndTerminate(.timedOut)
+        markAndTerminate(.timedOut, killFallback: true)
     }
 
     func markOutputLimitExceededAndTerminate() {
-        markAndTerminate(.outputLimitExceeded)
+        markAndTerminate(.outputLimitExceeded, killFallback: true)
     }
 
     func terminate() {
@@ -186,15 +187,39 @@ private final class FoundationProcessRunState: @unchecked Sendable {
         }
     }
 
-    private func markAndTerminate(_ finishReason: FoundationProcessFinishReason) {
+    private func markAndTerminate(
+        _ finishReason: FoundationProcessFinishReason,
+        killFallback: Bool
+    ) {
+        var processToKill: Process?
         lock.withLock {
-            guard let process, process.isRunning else { return }
+            guard let process, process.isRunning else {
+                return
+            }
 
             if reason == nil {
                 reason = finishReason
             }
 
             process.terminate()
+            if killFallback {
+                processToKill = process
+            }
+        }
+
+        guard let processToKill else {
+            return
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            self.killIfNeeded(processToKill)
+        }
+    }
+
+    private func killIfNeeded(_ process: Process) {
+        lock.withLock {
+            guard process.isRunning else { return }
+            Darwin.kill(process.processIdentifier, SIGKILL)
         }
     }
 }

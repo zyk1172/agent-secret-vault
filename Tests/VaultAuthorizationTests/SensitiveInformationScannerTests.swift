@@ -23,11 +23,35 @@ import Testing
     #expect(candidates[0].source.line == 3)
 }
 
-@Test func localSensitiveScannerSkipsEntireParagraphThatAlreadyHasAReference() throws {
+@Test func localSensitiveScannerStillFindsUnencryptedValueInParagraphThatAlreadyHasAReference() throws {
     let text = "密码：ASVSCANFIXTURE0000 secret://0123456789ABCDEFGHJKMNPQRS"
     let scanner = LocalSensitiveInformationScanner()
 
-    #expect(try scanner.scan(filePath: "AI/工具与服务.md", text: text).isEmpty)
+    let candidates = try scanner.scan(filePath: "AI/工具与服务.md", text: text)
+    #expect(candidates.count == 1)
+    #expect(candidates[0].matchedValue == "ASVSCANFIXTURE0000")
+}
+
+@Test func localSensitiveWriterReplacesMultipleCandidatesInOneFileAtomically() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let fileURL = directory.appendingPathComponent("服务.md")
+    let text = "API: abc123\nToken: xyz789"
+    try text.write(to: fileURL, atomically: true, encoding: .utf8)
+    let scanner = LocalSensitiveInformationScanner()
+    let candidates = try scanner.scan(fileURL: fileURL, filePath: "服务.md", text: text)
+
+    #expect(candidates.count == 2)
+    try LocalSensitiveInformationWriter.replace(
+        candidates,
+        references: [
+            "secret://ABCDEFGHJKMNPQRSTVWXYZ0123",
+            "secret://0123456789ABCDEFGHJKMNPQRS"
+        ]
+    )
+
+    let updated = try String(contentsOf: fileURL, encoding: .utf8)
+    #expect(updated == "API: secret://ABCDEFGHJKMNPQRSTVWXYZ0123\nToken: secret://0123456789ABCDEFGHJKMNPQRS")
 }
 
 @Test func localSensitiveWriterReplacesOnlyAnUnchangedScannedCandidate() throws {

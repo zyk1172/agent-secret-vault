@@ -148,6 +148,7 @@ export interface SecretLocalActionPolicy {
   };
   ssh: {
     allowedRisks: Array<"read">;
+    allowedCommandNames: string[];
     blockedCommandNames: string[];
     blockShellSubstitution: boolean;
     blockRedirection: boolean;
@@ -178,6 +179,26 @@ export const defaultSecretLocalActionPolicy: SecretLocalActionPolicy = {
   },
   ssh: {
     allowedRisks: ["read"],
+    allowedCommandNames: [
+      "ls",
+      "cat",
+      "head",
+      "tail",
+      "grep",
+      "stat",
+      "df",
+      "du",
+      "ps",
+      "uptime",
+      "uname",
+      "whoami",
+      "id",
+      "hostname",
+      "date",
+      "free",
+      "w",
+      "last"
+    ],
     blockedCommandNames: [
       "rm",
       "rmdir",
@@ -1762,10 +1783,23 @@ function isAllowedSshCommand(command: string, policy: SecretLocalActionPolicy): 
   if (/[\r\n\0]/.test(command)) {
     return false;
   }
+  if (/(^|\s)(&{1,2}|;|\|)/.test(command)) {
+    return false;
+  }
   if (policy.ssh.blockShellSubstitution && (/[`]/.test(command) || /\$\(/.test(command))) {
     return false;
   }
   if (policy.ssh.blockRedirection && /(^|\s)(>|>>|<|2>|2>>|&>)/.test(command)) {
+    return false;
+  }
+  if (/\bfind\b/i.test(command) && /(^|\s)-(exec|execdir|delete|ok)\b/i.test(command)) {
+    return false;
+  }
+  const commandName = command.trim().split(/\s+/)[0]?.toLowerCase();
+  if (policy.ssh.allowedCommandNames.length === 0) {
+    return false;
+  }
+  if (!policy.ssh.allowedCommandNames.includes(commandName)) {
     return false;
   }
   const blocked = policy.ssh.blockedCommandNames
@@ -1852,12 +1886,17 @@ const defaultDatabaseRunner: SecretDatabaseRunner = async (request) => {
     });
     await client.connect();
     try {
-      const result = await client.query(request.query);
-      const rows = Array.isArray(result.rows) ? result.rows.slice(0, request.maxRows) : [];
-      return {
-        rowCount: typeof result.rowCount === "number" ? result.rowCount : rows.length,
-        rowsPreview: JSON.stringify(rows)
-      };
+      await client.query("BEGIN READ ONLY");
+      try {
+        const result = await client.query(request.query);
+        const rows = Array.isArray(result.rows) ? result.rows.slice(0, request.maxRows) : [];
+        return {
+          rowCount: typeof result.rowCount === "number" ? result.rowCount : rows.length,
+          rowsPreview: JSON.stringify(rows)
+        };
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+      }
     } finally {
       await client.end();
     }
@@ -1873,16 +1912,22 @@ const defaultDatabaseRunner: SecretDatabaseRunner = async (request) => {
     connectTimeout: request.timeoutMs
   });
   try {
-    const [rows] = await connection.query({
-      sql: request.query,
-      timeout: request.timeoutMs,
-      rowsAsArray: false
-    });
-    const rowArray = Array.isArray(rows) ? rows.slice(0, request.maxRows) : [];
-    return {
-      rowCount: Array.isArray(rows) ? rows.length : 0,
-      rowsPreview: JSON.stringify(rowArray)
-    };
+    await connection.query("SET TRANSACTION READ ONLY");
+    await connection.query("START TRANSACTION READ ONLY");
+    try {
+      const [rows] = await connection.query({
+        sql: request.query,
+        timeout: request.timeoutMs,
+        rowsAsArray: false
+      });
+      const rowArray = Array.isArray(rows) ? rows.slice(0, request.maxRows) : [];
+      return {
+        rowCount: Array.isArray(rows) ? rows.length : 0,
+        rowsPreview: JSON.stringify(rowArray)
+      };
+    } finally {
+      await connection.query("ROLLBACK").catch(() => undefined);
+    }
   } finally {
     await connection.end();
   }

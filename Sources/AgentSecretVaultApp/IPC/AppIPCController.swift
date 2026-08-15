@@ -20,6 +20,7 @@ public final class AppIPCController: @unchecked Sendable {
     private var boundSocket: BoundUnixSocket?
     private var acceptTask: Task<Void, Never>?
     private var authenticator: IPCAuthenticator?
+    private var activeClientFDs: Set<Int32> = []
 
     public init(server: UnixSocketServer, handler: IPCRequestHandler) {
         self.server = server
@@ -65,12 +66,16 @@ public final class AppIPCController: @unchecked Sendable {
         stateLock.lock()
         let task = acceptTask
         let socket = boundSocket
+        let activeClients = Array(activeClientFDs)
         acceptTask = nil
         boundSocket = nil
         authenticator = nil
         stateLock.unlock()
 
         task?.cancel()
+        for fileDescriptor in activeClients {
+            Darwin.shutdown(fileDescriptor, SHUT_RDWR)
+        }
         socket?.close()
     }
 
@@ -99,6 +104,7 @@ public final class AppIPCController: @unchecked Sendable {
                 continue
             }
 
+            registerClient(fileDescriptor: clientFD)
             Task.detached(priority: .userInitiated) { [weak self, authenticator] in
                 await self?.handleClient(fileDescriptor: clientFD, authenticator: authenticator)
             }
@@ -107,10 +113,12 @@ public final class AppIPCController: @unchecked Sendable {
 
     private func handleClient(fileDescriptor: Int32, authenticator: IPCAuthenticator) async {
         defer {
+            unregisterClient(fileDescriptor: fileDescriptor)
             Darwin.close(fileDescriptor)
         }
 
         do {
+            setReadTimeout(on: fileDescriptor)
             let frame = try readFrame(from: fileDescriptor)
             let responseFrame = try await handleAuthenticatedFrame(frame, authenticator: authenticator)
             try writeAll(responseFrame, to: fileDescriptor)
@@ -139,6 +147,31 @@ public final class AppIPCController: @unchecked Sendable {
             Self.logger.error("IPC request failed: \(String(describing: error), privacy: .public)")
             Self.writeDiagnosticError(error)
             return try IPCFrameCodec.encode(IPCResponse.failure(code: "REQUEST_FAILED"))
+        }
+    }
+
+    private func registerClient(fileDescriptor: Int32) {
+        stateLock.lock()
+        activeClientFDs.insert(fileDescriptor)
+        stateLock.unlock()
+    }
+
+    private func unregisterClient(fileDescriptor: Int32) {
+        stateLock.lock()
+        activeClientFDs.remove(fileDescriptor)
+        stateLock.unlock()
+    }
+
+    private func setReadTimeout(on fileDescriptor: Int32) {
+        var timeout = timeval(tv_sec: 30, tv_usec: 0)
+        _ = withUnsafePointer(to: &timeout) { pointer in
+            setsockopt(
+                fileDescriptor,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                pointer,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
         }
     }
 

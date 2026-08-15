@@ -23,7 +23,7 @@ public enum MarkdownSensitiveIndexStoreError: Error, Equatable, Sendable {
     case verificationFailed
 }
 
-public actor MarkdownSensitiveIndexStore: RecordStore, RecordListing {
+public actor MarkdownSensitiveIndexStore: RecordStore, RecordListing, RecordDeleting {
     private var indexURL: URL?
 
     public init(indexURL: URL? = nil) {
@@ -136,6 +136,15 @@ public actor MarkdownSensitiveIndexStore: RecordStore, RecordListing {
 
     public func recordIDs() throws -> [String] {
         try readEntries().map(\ .record.id).sorted()
+    }
+
+    public func delete(id: String) throws {
+        var updatedEntries = try readEntries()
+        guard let index = updatedEntries.firstIndex(where: { $0.record.id == id }) else {
+            throw MarkdownSensitiveIndexStoreError.recordNotFound(id)
+        }
+        updatedEntries.remove(at: index)
+        try writeEntries(updatedEntries)
     }
 
     /// Imports encrypted legacy records without decrypting or rewriting their envelopes.

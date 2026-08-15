@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import VaultAuthorization
 import VaultCore
 import VaultIPC
 
@@ -60,12 +61,14 @@ public actor VaultAppServices: WorkbenchServicing {
     private let textEncryptor: any TextEncrypting
     private let activeRoot: URL?
     private let recordLister: (any RecordListing)?
+    private let recordDeleter: (any RecordDeleting)?
     private let recordResolver: VaultRecordResolver?
     private let masterKey: SymmetricKey?
     private let masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
     private let isUnlockedProvider: (@Sendable () async -> Bool)
     private let revealSessionStore: RevealSessionStore
     private let revealSessionPresenter: any RevealSessionPresenting
+    private let authorizationSession: AuthorizationSession
     private let agentDecryptAuthorizationTTL: TimeInterval
     private let now: @Sendable () -> Date
     private let orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)?
@@ -74,19 +77,21 @@ public actor VaultAppServices: WorkbenchServicing {
     private let savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)?
     private let auditLog: EncryptedAuditLog?
     private let exportDirectory: URL
-    private var pluginConnected = false
+    private var pluginConnectedAt: Date?
     private var agentDecryptAuthorization: AgentDecryptAuthorization?
 
     public init(
         textEncryptor: any TextEncrypting,
         activeRoot: URL?,
         recordLister: (any RecordListing)? = nil,
+        recordDeleter: (any RecordDeleting)? = nil,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
+        authorizationSession: AuthorizationSession = AuthorizationSession(),
         agentDecryptAuthorizationTTL: TimeInterval = 300,
         now: @escaping @Sendable () -> Date = Date.init,
         orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil,
@@ -99,12 +104,14 @@ public actor VaultAppServices: WorkbenchServicing {
         self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
         self.recordLister = recordLister
+        self.recordDeleter = recordDeleter
         self.recordResolver = recordResolver
         self.masterKey = masterKey
         self.masterKeyProvider = masterKeyProvider
         self.isUnlockedProvider = isUnlockedProvider
         self.revealSessionStore = revealSessionStore
         self.revealSessionPresenter = revealSessionPresenter
+        self.authorizationSession = authorizationSession
         self.agentDecryptAuthorizationTTL = agentDecryptAuthorizationTTL
         self.now = now
         self.orphanScanObserver = orphanScanObserver
@@ -119,12 +126,14 @@ public actor VaultAppServices: WorkbenchServicing {
         encryptSelection: any EncryptSelectionCoordinating & TextEncrypting,
         activeRoot: URL?,
         recordLister: (any RecordListing)? = nil,
+        recordDeleter: (any RecordDeleting)? = nil,
         recordResolver: VaultRecordResolver? = nil,
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = RevealSessionPresenter(),
+        authorizationSession: AuthorizationSession = AuthorizationSession(),
         agentDecryptAuthorizationTTL: TimeInterval = 300,
         now: @escaping @Sendable () -> Date = Date.init,
         orphanScanObserver: (@Sendable (OrphanScanResult) async -> Void)? = nil,
@@ -138,12 +147,14 @@ public actor VaultAppServices: WorkbenchServicing {
             textEncryptor: encryptSelection,
             activeRoot: activeRoot,
             recordLister: recordLister,
+            recordDeleter: recordDeleter,
             recordResolver: recordResolver,
             masterKey: masterKey,
             masterKeyProvider: masterKeyProvider,
             isUnlockedProvider: isUnlockedProvider,
             revealSessionStore: revealSessionStore,
             revealSessionPresenter: revealSessionPresenter,
+            authorizationSession: authorizationSession,
             agentDecryptAuthorizationTTL: agentDecryptAuthorizationTTL,
             now: now,
             orphanScanObserver: orphanScanObserver,
@@ -156,17 +167,17 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func recordPluginActivity() async {
-        guard !pluginConnected else {
-            return
+        let wasConnected = isPluginConnected()
+        pluginConnectedAt = now()
+        if !wasConnected {
+            await statusObserver?(status())
+            await emitAudit(
+                action: "MCP 连接",
+                target: "svlt",
+                referenceCount: 0,
+                result: "已连接"
+            )
         }
-        pluginConnected = true
-        await statusObserver?(status())
-        await emitAudit(
-            action: "MCP 连接",
-            target: "agent-secret-vault",
-            referenceCount: 0,
-            result: "已连接"
-        )
     }
 
     public func status() async -> WorkbenchStatus {
@@ -174,12 +185,18 @@ public actor VaultAppServices: WorkbenchServicing {
             locked: !(await isUnlockedProvider()),
             ipcAvailable: true,
             activeKnowledgeBaseRoot: activeRoot?.path,
-            pluginConnected: pluginConnected
+            pluginConnected: isPluginConnected()
         )
     }
 
     public func clearRevealSessions() async {
         await revealSessionStore.clearAll()
+    }
+
+    public func invalidateSecurityState() async {
+        await authorizationSession.invalidate()
+        agentDecryptAuthorization = nil
+        await statusObserver?(status())
     }
 
     public func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String {
@@ -190,6 +207,29 @@ public actor VaultAppServices: WorkbenchServicing {
         )
         await notifySavedReferencesChanged()
         return reference.description
+    }
+
+    public func deleteRecord(_ reference: String) async throws {
+        let parsed = try SecretReference(reference)
+        guard let recordResolver else {
+            throw VaultAppServicesSavedReferencesError.listUnavailable
+        }
+        guard let recordDeleter else {
+            throw VaultAppServicesSavedReferencesError.listUnavailable
+        }
+
+        _ = try await recordResolver.metadata(reference: reference)
+        if let masterKeyProvider {
+            _ = try await masterKeyProvider(.credential, "删除本机加密记录")
+        }
+        try await recordDeleter.delete(id: parsed.id)
+        await notifySavedReferencesChanged()
+        await emitAudit(
+            action: "删除本机加密记录",
+            target: reference,
+            referenceCount: 0,
+            result: "已删除"
+        )
     }
 
     public func inspectReference(_ reference: String) async throws -> SecretReferenceMetadata {
@@ -349,35 +389,38 @@ public actor VaultAppServices: WorkbenchServicing {
         if let masterKey {
             return masterKey
         }
-        if allowsAgentDecryptReuse, let key = cachedAgentDecryptAuthorization(for: policy) {
+        if allowsAgentDecryptReuse,
+           policy == .read,
+           await authorizationSession.consumeAuthorization(for: .read),
+           let key = cachedAgentDecryptAuthorization(for: .read) {
             return key
         }
         guard let masterKeyProvider else {
             throw VaultAppServicesRevealError.revealUnavailable
         }
         let key = try await masterKeyProvider(policy, reason)
-        if allowsAgentDecryptReuse {
-            cacheAgentDecryptAuthorization(key: key, policy: policy)
+        if allowsAgentDecryptReuse, policy == .read {
+            await authorizationSession.authorizeRead()
+            cacheAgentDecryptAuthorization(key: key, policy: .read)
         }
         return key
     }
 
     private func cachedAgentDecryptAuthorization(for policy: SecretPolicy) -> SymmetricKey? {
-        guard let authorization = agentDecryptAuthorization else {
+        guard policy == .read,
+              let authorization = agentDecryptAuthorization
+        else {
             return nil
         }
         guard now() < authorization.expiresAt else {
             agentDecryptAuthorization = nil
             return nil
         }
-        guard authorization.policy.canAuthorizeDecrypt(for: policy) else {
-            return nil
-        }
         return authorization.key
     }
 
     private func cacheAgentDecryptAuthorization(key: SymmetricKey, policy: SecretPolicy) {
-        guard agentDecryptAuthorizationTTL > 0 else {
+        guard policy == .read, agentDecryptAuthorizationTTL > 0 else {
             agentDecryptAuthorization = nil
             return
         }
@@ -386,6 +429,13 @@ public actor VaultAppServices: WorkbenchServicing {
             policy: policy,
             expiresAt: now().addingTimeInterval(agentDecryptAuthorizationTTL)
         )
+    }
+
+    private func isPluginConnected() -> Bool {
+        guard let pluginConnectedAt else {
+            return false
+        }
+        return now().timeIntervalSince(pluginConnectedAt) < 15
     }
 
     private func notifySavedReferencesChanged() async {

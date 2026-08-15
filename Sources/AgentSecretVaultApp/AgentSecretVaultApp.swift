@@ -82,15 +82,15 @@ struct AgentSecretVaultApplication: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    Task { await runtime.clearRevealSessions() }
+                    Task { await runtime.lockVault() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.willSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    Task { await runtime.clearRevealSessions() }
+                    Task { await runtime.lockVault() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
                     secureViewerModel.handleLockNotification()
-                    Task { await runtime.clearRevealSessions() }
+                    Task { await runtime.lockVault() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     Task { await runtime.clearRevealSessions() }
@@ -98,7 +98,6 @@ struct AgentSecretVaultApplication: App {
         }
             .commands {
                 CommandGroup(replacing: .pasteboard) {}
-                CommandGroup(replacing: .appTermination) {}
                 CommandMenu("导航") {
                     Button("控制台") {
                         navigateWorkbench(to: .overview)
@@ -153,13 +152,13 @@ struct AgentSecretVaultApplication: App {
                     await runtime.refreshSavedReferences()
                 },
                 clearRevealSessions: { await runtime.clearRevealSessions() },
-                requestPermanentDelete: { _ in
+                requestPermanentDelete: { reference in
                     Task {
-                        await runtime.requestPermanentDeleteAuthorization()
+                        await runtime.deleteRecord(reference)
                     }
                 },
                 requestTermination: {
-                    await appDelegate.requestMenuBarTermination(cleanup: runtime.clearRevealSessions)
+                    await appDelegate.requestMenuBarTermination()
                 }
             )
             .task {
@@ -238,9 +237,14 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 sensitiveIndexError = "无法整理敏感信息.md"
             }
             try runtime.controller.start()
-            lifecycleMonitor = VaultLifecycleMonitor { [weak self] in
-                await self?.clearRevealSessions()
-            }
+            lifecycleMonitor = VaultLifecycleMonitor(
+                clearAction: { [weak self] in
+                    await self?.clearRevealSessions()
+                },
+                lockAction: { [weak self] in
+                    await self?.lockVault()
+                }
+            )
             lifecycleMonitor?.start()
             status = await runtime.services.status()
             await refreshSavedReferences()
@@ -263,15 +267,29 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         await services?.clearRevealSessions()
     }
 
-    func requestPermanentDeleteAuthorization() async {
-        guard let protectionKeyStore else {
+    func lockVault() async {
+        await protectionKeyStore?.clearLowProtectionUnlock()
+        await services?.invalidateSecurityState()
+    }
+
+    func shutdown() async {
+        lifecycleMonitor?.stop()
+        controller?.stop()
+        await clearRevealSessions()
+        await lockVault()
+    }
+
+    func deleteRecord(_ reference: String) async {
+        guard let services else {
             return
         }
-
-        _ = try? await protectionKeyStore.deviceKey(
-            for: .credential,
-            reason: "请求删除本机加密记录"
-        )
+        do {
+            try await services.deleteRecord(reference)
+            await refreshSavedReferences()
+            await refreshSensitiveIndex()
+        } catch {
+            sensitiveScanError = "无法删除加密记录：\(reference)"
+        }
     }
 
     func restoreParagraph(_ text: String) async throws -> RestoredParagraph {
@@ -407,23 +425,53 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
 
         let selected = sensitiveScanCandidates.filter { ids.contains($0.id) }
+        let groupedByFile = Dictionary(grouping: selected) {
+            $0.fileURL.standardizedFileURL
+        }
         var failed = false
-        for candidate in selected {
+
+        for fileGroup in groupedByFile.values {
             do {
-                let reference = try await services.encryptText(
-                    candidate.matchedValue,
-                    label: candidate.title,
-                    policy: .credential
-                )
-                try LocalSensitiveInformationWriter.replace(
-                    candidate,
-                    reference: reference
-                )
-                try await sensitiveIndexStore.appendParagraph(
-                    candidate.replacingValue(in: candidate.paragraph, reference: reference),
-                    title: candidate.title,
-                    reference: reference
-                )
+                try LocalSensitiveInformationWriter.validate(fileGroup)
+                var references: [String] = []
+                var createdReferences: [String] = []
+                for candidate in fileGroup {
+                    let reference = try await services.encryptText(
+                        candidate.matchedValue,
+                        label: candidate.title,
+                        policy: .credential
+                    )
+                    references.append(reference)
+                    createdReferences.append(reference)
+                }
+
+                do {
+                    try LocalSensitiveInformationWriter.replace(fileGroup, references: references)
+                } catch {
+                    for reference in createdReferences {
+                        if let id = try? SecretReference(reference).id {
+                            try? await legacyRecordStore?.delete(id: id)
+                        }
+                    }
+                    throw error
+                }
+
+                let paragraphGroups = Dictionary(grouping: zip(fileGroup, references)) { pair in
+                    "\(pair.0.paragraphStartUTF16):\(pair.0.paragraphEndUTF16)"
+                }
+                for paragraphGroup in paragraphGroups.values {
+                    let first = paragraphGroup[0].0
+                    let updatedParagraph = LocalSensitiveInformationWriter.replacingValues(
+                        in: first.paragraph,
+                        candidates: paragraphGroup.map(\.0),
+                        references: paragraphGroup.map(\.1)
+                    )
+                    try await sensitiveIndexStore.appendParagraph(
+                        updatedParagraph,
+                        title: first.title,
+                        reference: paragraphGroup[0].1
+                    )
+                }
             } catch {
                 failed = true
             }
@@ -548,6 +596,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             textEncryptor: encryptor,
             activeRoot: root,
             recordLister: recordStore,
+            recordDeleter: recordStore,
             recordResolver: VaultRecordResolver(recordStore: recordStore),
             masterKeyProvider: { policy, reason in
                 SymmetricKey(data: try await vaultMasterKeyProvider(policy, reason))
@@ -610,9 +659,7 @@ private enum NoopSelectionReplacerError: Error {
 
 @MainActor
 final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
-    private let terminationCoordinator = MenuBarTerminationCoordinator {
-        NSApp.terminate(nil)
-    }
+    private var terminationInProgress = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
@@ -632,13 +679,20 @@ final class AgentSecretVaultAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    func requestMenuBarTermination(
-        cleanup: @escaping @MainActor () async -> Void
-    ) async {
-        await terminationCoordinator.requestTermination(cleanup: cleanup)
+    func requestMenuBarTermination() async {
+        NSApp.terminate(nil)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        terminationCoordinator.permitsTermination ? .terminateNow : .terminateCancel
+        guard !terminationInProgress else {
+            return .terminateLater
+        }
+
+        terminationInProgress = true
+        Task { @MainActor in
+            await AgentSecretVaultRuntimeStore.shared.shutdown()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

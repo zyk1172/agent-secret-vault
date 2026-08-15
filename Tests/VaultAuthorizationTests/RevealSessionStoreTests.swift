@@ -218,7 +218,7 @@ import VaultIPC
     ])
 }
 
-@Test func vaultAppServicesReusesAgentDecryptAuthorizationForFiveMinutes() async throws {
+@Test func vaultAppServicesRequiresFreshAuthorizationForEachCredentialDecrypt() async throws {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer {
@@ -283,7 +283,8 @@ import VaultIPC
     #expect(firstRestored == "first=ASV_CANARY_FIRST_AGENT_DECRYPT")
     #expect(secondRestored == "second=ASV_CANARY_SECOND_AGENT_DECRYPT")
     #expect(await provider.calls == [
-        MasterKeyProviderCall(policy: .credential, reason: "Agent decrypt first credential")
+        MasterKeyProviderCall(policy: .credential, reason: "Agent decrypt first credential"),
+        MasterKeyProviderCall(policy: .credential, reason: "Agent decrypt second credential")
     ])
 }
 

@@ -18,34 +18,39 @@ import Testing
     #expect(!source.contains("WindowGroup(id: MenuBarPresentation.mainWindowID)"))
 }
 
-@Test func appDelegateKeepsProcessAliveUntilMenuBarQuit() throws {
+@Test func appDelegateKeepsProcessAliveButAllowsSystemTerminationAfterCleanup() throws {
     let source = try appSource()
 
     #expect(source.contains("applicationShouldTerminateAfterLastWindowClosed"))
     #expect(source.contains("requestMenuBarTermination"))
     #expect(source.contains("applicationShouldTerminate"))
-    #expect(source.contains("permitsTermination ? .terminateNow : .terminateCancel"))
-    #expect(source.contains("CommandGroup(replacing: .appTermination) {}"))
+    #expect(source.contains("return .terminateLater"))
+    #expect(source.contains("sender.reply(toApplicationShouldTerminate: true)"))
+    #expect(!source.contains("permitsTermination ? .terminateNow : .terminateCancel"))
+    #expect(!source.contains("CommandGroup(replacing: .appTermination) {}"))
 }
 
-@Test func runtimeOwnsLifecycleMonitorAndMenuQuitUsesTerminationCoordinator() throws {
+@Test func runtimeOwnsLifecycleMonitorAndMenuQuitUsesStandardTermination() throws {
     let source = try appSource()
 
     #expect(source.contains("private var lifecycleMonitor: VaultLifecycleMonitor?"))
     #expect(source.contains("lifecycleMonitor = VaultLifecycleMonitor"))
     #expect(source.contains("func clearRevealSessions() async"))
-    #expect(source.contains("requestMenuBarTermination(cleanup: runtime.clearRevealSessions)"))
-    #expect(source.contains("private let terminationCoordinator = MenuBarTerminationCoordinator"))
-    #expect(source.contains("await terminationCoordinator.requestTermination(cleanup: cleanup)"))
+    #expect(source.contains("func lockVault() async"))
+    #expect(source.contains("func shutdown() async"))
+    #expect(source.contains("requestMenuBarTermination()"))
+    #expect(!source.contains("private let terminationCoordinator = MenuBarTerminationCoordinator"))
+    #expect(!source.contains("await terminationCoordinator.requestTermination(cleanup: cleanup)"))
 }
 
-@Test func menuBarProtectedDeleteRequestUsesFreshLocalAuthorization() throws {
+@Test func menuBarProtectedDeleteRequestDeletesTheRecord() throws {
     let source = try appSource()
 
-    #expect(source.contains("runtime.requestPermanentDeleteAuthorization()"))
-    #expect(source.contains("func requestPermanentDeleteAuthorization() async"))
-    #expect(source.contains("for: .credential"))
-    #expect(source.contains("请求删除本机加密记录"))
+    #expect(source.contains("runtime.deleteRecord(reference)"))
+    #expect(source.contains("func deleteRecord(_ reference: String) async"))
+    #expect(source.contains("services.deleteRecord(reference)"))
+    #expect(!source.contains("runtime.requestPermanentDeleteAuthorization()"))
+    #expect(!source.contains("func requestPermanentDeleteAuthorization() async"))
 }
 
 @Test @MainActor func lifecycleMonitorHandlesEachSecurityBoundaryOnce() async {
@@ -71,89 +76,6 @@ import Testing
     #expect(await counter.count == 5)
 }
 
-@Test @MainActor func menuTerminationRemainsDeniedWhileCleanupIsSuspended() async {
-    let cleanup = SuspendedCleanup()
-    let termination = TerminationRecorder()
-    let coordinator = MenuBarTerminationCoordinator {
-        termination.recordTermination()
-    }
-
-    let request = Task { @MainActor in
-        await coordinator.requestTermination {
-            await cleanup.run()
-        }
-    }
-
-    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
-
-    #expect(!coordinator.permitsTermination)
-    #expect(termination.count == 0)
-
-    cleanup.finish()
-    await drainMainActorTasks(until: { termination.count == 1 })
-
-    #expect(coordinator.permitsTermination)
-    #expect(termination.count == 1)
-    _ = request
-}
-
-@Test @MainActor func menuTerminationPermitsAndTerminatesAfterCleanupCompletes() async {
-    let cleanup = SuspendedCleanup()
-    let termination = TerminationRecorder()
-    let coordinator = MenuBarTerminationCoordinator {
-        termination.recordTermination()
-    }
-
-    let request = Task { @MainActor in
-        await coordinator.requestTermination {
-            await cleanup.run()
-        }
-    }
-
-    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
-    cleanup.finish()
-    await drainMainActorTasks(until: { termination.count == 1 })
-
-    #expect(coordinator.permitsTermination)
-    #expect(cleanup.invocationCount == 1)
-    #expect(termination.count == 1)
-    _ = request
-}
-
-@Test @MainActor func duplicateMenuTerminationRequestsCleanUpAndTerminateOnce() async {
-    let cleanup = SuspendedCleanup()
-    let termination = TerminationRecorder()
-    let coordinator = MenuBarTerminationCoordinator {
-        termination.recordTermination()
-    }
-
-    let firstRequest = Task { @MainActor in
-        await coordinator.requestTermination {
-            await cleanup.run()
-        }
-    }
-
-    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
-
-    let duplicateRequest = Task { @MainActor in
-        await coordinator.requestTermination {
-            await cleanup.run()
-        }
-    }
-    await drainMainActorTasks(until: { cleanup.invocationCount == 1 })
-
-    #expect(cleanup.invocationCount == 1)
-    #expect(termination.count == 0)
-
-    cleanup.finish()
-    await drainMainActorTasks(until: { termination.count == 1 })
-
-    #expect(cleanup.invocationCount == 1)
-    #expect(termination.count == 1)
-    _ = firstRequest
-    _ = duplicateRequest
-}
-
 private func appSource() throws -> String {
     let sourceURL = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -177,32 +99,5 @@ private func drainMainActorTasks(until condition: () async -> Bool) async {
             return
         }
         await Task.yield()
-    }
-}
-
-@MainActor
-private final class SuspendedCleanup {
-    private var finishContinuation: CheckedContinuation<Void, Never>?
-    private(set) var invocationCount = 0
-
-    func run() async {
-        invocationCount += 1
-        await withCheckedContinuation { continuation in
-            finishContinuation = continuation
-        }
-    }
-
-    func finish() {
-        finishContinuation?.resume()
-        finishContinuation = nil
-    }
-}
-
-@MainActor
-private final class TerminationRecorder {
-    private(set) var count = 0
-
-    func recordTermination() {
-        count += 1
     }
 }

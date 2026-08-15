@@ -1,6 +1,6 @@
 {
   "name": "svlt",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Use a local macOS vault for encrypted agent secrets without returning plaintext to Codex, Claude, Hermes, or other MCP agents.",
   "author": {
     "name": "Local developer"

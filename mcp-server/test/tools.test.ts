@@ -417,7 +417,7 @@ describe("MCP tool contracts", () => {
       host: "192.168.2.240",
       username: "zyk",
       passwordRef: validReference,
-      command: "hostname && whoami && uptime",
+      command: "hostname",
       risk: "read"
     });
 
@@ -466,6 +466,21 @@ describe("MCP tool contracts", () => {
     expect(dangerousCommand.structuredContent).toEqual({ status: "COMMAND_NOT_ALLOWED" });
   });
 
+  it("ssh_command_with_secret rejects compound read commands before resolving secrets", async () => {
+    const client = new FakeClient([]);
+    const tool = getTool(client, "ssh_command_with_secret");
+
+    const compound = await tool.handler({
+      host: "192.168.2.240",
+      username: "zyk",
+      passwordRef: validReference,
+      command: "ls | rm -rf /"
+    });
+
+    expect(client.requests).toEqual([]);
+    expect(compound.structuredContent).toEqual({ status: "COMMAND_NOT_ALLOWED" });
+  });
+
   it("ssh_command_with_secret returns app failure status when secret resolution fails", async () => {
     const client = new FakeClient([
       { type: "failure", code: "APP_UNAVAILABLE" }
@@ -511,7 +526,7 @@ describe("MCP tool contracts", () => {
       host: "example.com",
       username: "zyk",
       passwordRef: validReference,
-      command: "rm --version",
+      command: "ls --version",
       risk: "read"
     });
 

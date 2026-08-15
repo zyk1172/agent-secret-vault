@@ -18,6 +18,22 @@ import VaultCore
     #expect(await protectionKeyStore.isLowProtectionUnlocked)
 }
 
+@Test func clearingLowProtectionUnlockRelocksReadAccess() async throws {
+    let deviceKeyStore = CountingDeviceKeyStore(keyData: Data(repeating: 0x43, count: 32))
+    let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
+
+    try await protectionKeyStore.unlockLowProtection()
+    #expect(await protectionKeyStore.isLowProtectionUnlocked)
+    await protectionKeyStore.clearLowProtectionUnlock()
+    #expect(!(await protectionKeyStore.isLowProtectionUnlocked))
+
+    _ = try await protectionKeyStore.deviceKey(for: .read, reason: "Unlock read after clearing")
+    #expect(await deviceKeyStore.reasons == [
+        "打开知识库密文保险箱",
+        "打开知识库密文保险箱"
+    ])
+}
+
 @Test func highProtectionStillRequestsFreshDeviceAuthorization() async throws {
     let deviceKeyStore = CountingDeviceKeyStore(keyData: Data(repeating: 0x42, count: 32))
     let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)

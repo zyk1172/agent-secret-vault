@@ -53,6 +53,24 @@ private let validRecordID = "01JABCDEF0123456789ABCDEFG"
     }
 }
 
+@Test func deleteRemovesAllVersionsAndReference() async throws {
+    let baseDirectory = try makeTemporaryDirectory()
+    let store = FileRecordStore(baseDirectory: baseDirectory)
+
+    try await store.save(makeRecord(version: 1))
+    try await store.save(makeRecord(version: 2))
+    try await store.delete(id: validRecordID)
+
+    #expect(try await store.versions(id: validRecordID).isEmpty)
+    #expect(try await store.recordIDs().isEmpty)
+    do {
+        _ = try await store.latest(id: validRecordID)
+        Issue.record("Expected deleted record to be unavailable.")
+    } catch {
+        #expect(true)
+    }
+}
+
 @Test func pathTraversalIDsAreRejected() async throws {
     let baseDirectory = try makeTemporaryDirectory()
     let store = FileRecordStore(baseDirectory: baseDirectory)

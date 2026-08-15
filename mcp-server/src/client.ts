@@ -22,10 +22,12 @@ export interface LocalIpcClientOptions {
   tokenPath?: string;
   unavailableRetryCount?: number;
   unavailableRetryDelayMs?: number;
+  requestTimeoutMs?: number;
 }
 
 const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
 const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export function appSupportIpcPaths(): IpcPaths {
   const directory = path.join(
@@ -48,6 +50,7 @@ export class LocalIpcClient {
   private readonly tokenPath: string;
   private readonly unavailableRetryCount: number;
   private readonly unavailableRetryDelayMs: number;
+  private readonly requestTimeoutMs: number;
 
   constructor(options: LocalIpcClientOptions = {}) {
     const defaults = appSupportIpcPaths();
@@ -55,6 +58,7 @@ export class LocalIpcClient {
     this.tokenPath = options.tokenPath ?? defaults.token;
     this.unavailableRetryCount = options.unavailableRetryCount ?? DEFAULT_UNAVAILABLE_RETRY_COUNT;
     this.unavailableRetryDelayMs = options.unavailableRetryDelayMs ?? DEFAULT_UNAVAILABLE_RETRY_DELAY_MS;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   static async readCapabilityToken(tokenPath: string): Promise<CapabilityToken> {
@@ -108,7 +112,8 @@ export class LocalIpcClient {
     try {
       const responseFrame = await sendFramedRequest(
         this.socketPath,
-        IpcFrameCodec.encode(authenticatedRequest)
+        IpcFrameCodec.encode(authenticatedRequest),
+        this.requestTimeoutMs
       );
       return IpcFrameCodec.decode(responseFrame, IpcResponse);
     } catch (error) {
@@ -124,7 +129,11 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function sendFramedRequest(socketPath: string, requestFrame: Buffer): Promise<Buffer> {
+function sendFramedRequest(
+  socketPath: string,
+  requestFrame: Buffer,
+  timeoutMs: number
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     const chunks: Buffer[] = [];
@@ -135,7 +144,12 @@ function sendFramedRequest(socketPath: string, requestFrame: Buffer): Promise<Bu
         settled = true;
         callback();
       }
+      socket.destroy();
     };
+
+    socket.setTimeout(timeoutMs, () => {
+      settle(() => reject(new Error("IPC request timed out.")));
+    });
 
     socket.on("connect", () => {
       socket.end(requestFrame);

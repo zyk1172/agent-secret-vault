@@ -94,8 +94,8 @@ targets:
     info:
       path: Config/Info.plist
       properties:
-        CFBundleShortVersionString: 0.1.14
-        CFBundleVersion: 14
+        CFBundleShortVersionString: 0.1.15
+        CFBundleVersion: 15
     dependencies:
       - target: AgentSecretVaultApp
       - target: VaultIPC
