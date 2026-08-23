@@ -1,4 +1,5 @@
 import Foundation
+import VaultIPC
 
 public actor RevealSessionStore {
     public typealias ClearHandler = @Sendable () async -> Void
@@ -29,6 +30,10 @@ public actor RevealSessionStore {
 
     public func restoredParagraph(id: String) -> RestoredParagraph? {
         sessions[id]
+    }
+
+    public func sessionIDs() -> [String] {
+        sessions.keys.sorted()
     }
 
     public func paragraph(id: String) -> String? {

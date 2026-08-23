@@ -2,13 +2,14 @@
 
 ![SVLT app icon](AppAssets/AppIcon-source.png)
 
-SVLT is a macOS app plus local MCP adapter for letting agents such
-as Codex work with sensitive knowledge-base material without receiving
-plaintext secrets.
+SVLT is a macOS UI app plus a separate launchd-managed local Agent and MCP
+adapter. The UI can quit while the Agent continues serving Vault, MCP, and
+Obsidian IPC requests without loading SwiftUI or creating a window.
 
-The app owns encryption, decryption, authorization, secure display, recovery,
-audit logging, migration, and controlled local execution. Agents receive only
-opaque references such as:
+`SVLT.app` owns UI, settings, file selection, service registration, and local
+reveal presentation. `SVLTAgent` owns encryption, decryption, authorization,
+Unix-socket IPC, recovery, audit logging, migration, and controlled local
+execution. Agents receive only opaque references such as:
 
 ```text
 secret://0123456789ABCDEFGHJKMNPQRS
@@ -33,9 +34,16 @@ For people who only use the app, do not run Xcode. Use the release zip:
 
 The installer places:
 
-- App: `/Applications/SVLT.app` or `~/Applications/SVLT.app`
+- App and embedded Agent: `/Applications/SVLT.app` or `~/Applications/SVLT.app`
+- LaunchAgent plist: `SVLT.app/Contents/Library/LaunchAgents/com.agent-secret-vault.SVLT.agent.plist`
 - MCP server: `~/Library/Application Support/AgentSecretVault/MCP`
 - MCP config: `~/Library/Application Support/AgentSecretVault/svlt.mcp.json`
+
+On first launch the App registers the embedded plist with `SMAppService.agent`.
+The plist uses `BundleProgram` and points to `Contents/MacOS/SVLTAgent`. If
+macOS requests approval, use System Settings → General → Login Items. Do not
+copy the plist to `~/Library/LaunchAgents`; registration and lifecycle are
+owned by `SMAppService`.
 
 The user only needs Node.js 24 or newer for the MCP server. Xcode is not needed
 for normal use.
@@ -66,6 +74,18 @@ Create a distributable zip:
 ```bash
 ./scripts/package-release.sh
 ```
+
+To inspect the idle background process after installation:
+
+```bash
+./scripts/check-agent-resources.sh
+# or: ps -axo pid,ppid,%cpu,%mem,rss,etime,command | grep '[S]VLTAgent'
+```
+
+The Agent blocks on its Unix socket and uses no heartbeat, Timer, periodic
+status refresh, network ping, or full-vault scan. `SVLT.app` termination does
+not stop it; only an explicit service unregister/disable, uninstall, or
+intentional development stop should do so.
 
 ## Agent installation
 
@@ -146,8 +166,15 @@ must never be returned to the agent.
   only.
 - Authorization has separate risk classes for read, external-send/write, and
   delete or credential-change operations.
-- Read authorization is short-lived. Higher-risk operations require fresh
-  per-operation authorization.
+- Read authorization is held in memory until system sleep/lock, session
+  change, explicit lock, or Agent restart by default. An optional TTL is a
+  policy setting, not a fixed five-minute security model.
+- Credential authorization uses a configurable default ten-minute window;
+  one transaction/credential batch reuses one authorization. External-send
+  authorization is short-lived and destination-bound. Delete, export, security
+  setting, recovery, and key-rotation operations require fresh authorization.
+- Audit writes use an independent Keychain audit key and never unlock the Vault
+  merely to record status or connection activity.
 - Clipboard use is explicit and best-effort: the app clears only the
   app-owned clipboard value if nothing else has replaced it.
 - Bulk plaintext export is intentionally unsupported.

@@ -9,7 +9,15 @@ import VaultExecution
 @Test func requestJSONRoundTripsEveryCase() throws {
     let requests: [IPCRequest] = [
         .status,
+        .workbenchStatus,
+        .savedReferences,
+        .pendingRevealSessions,
         .inspectReference(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
+        .deleteRecord(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
+        .authorizeHighRisk(reason: "delete record"),
+        .lock,
+        .clearRevealSessions,
+        .revealSessionData(sessionID: "session-1"),
         .reveal(reference: "secret://0123456789ABCDEFGHJKMNPQRS", reason: "show to user"),
         .encrypt(label: "api token", policy: .externalSend),
         .restoreReferences(
@@ -51,6 +59,8 @@ import VaultExecution
 @Test func responseJSONRoundTripsEveryCase() throws {
     let responses: [IPCResponse] = [
         .status(locked: false),
+        .workbenchStatus(WorkbenchStatus(locked: true, ipcAvailable: true, activeKnowledgeBaseRoot: nil, pluginConnected: false)),
+        .savedReferences([]),
         .referenceMetadata(SecretReferenceMetadata(
             reference: "secret://0123456789ABCDEFGHJKMNPQRS",
             policy: .read,
@@ -214,6 +224,21 @@ import VaultExecution
     var socketStat = stat()
     #expect(stat(configuration.socketURL.path, &socketStat) == 0)
     #expect((socketStat.st_mode & 0o777) == 0o600)
+}
+
+@Test func controlPlaneResponsesRoundTripWithoutPlaintext() throws {
+    let responses: [IPCResponse] = [
+        .operationCompleted,
+        .authorizationApproved,
+        .savedReferences([]),
+        .revealSessionIDs(["session-1"]),
+        .revealSessionData(RestoredParagraph(text: "redacted", values: []))
+    ]
+    for response in responses {
+        let encoded = try JSONEncoder().encode(response)
+        let decoded = try JSONDecoder().decode(IPCResponse.self, from: encoded)
+        #expect(decoded == response)
+    }
 }
 
 private func collectForbiddenKeys(in value: Any) -> [String] {

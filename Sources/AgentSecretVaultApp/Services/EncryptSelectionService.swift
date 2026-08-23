@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import VaultCore
+import VaultService
 
 @objc public final class EncryptSelectionService: NSObject {
     private let coordinator: (any EncryptSelectionCoordinating)?

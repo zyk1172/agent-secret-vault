@@ -3,9 +3,24 @@ import LocalAuthentication
 
 protocol LocalAuthenticationEvaluating: Sendable {
     func evaluate(policy: LAPolicy, localizedReason: String) async throws -> Bool
+    func evaluate(
+        policy: LAPolicy,
+        localizedReason: String,
+        using context: LocalAuthenticationContext
+    ) async throws -> Bool
 }
 
-public struct LocalAuthenticator: BiometricAuthorizing {
+extension LocalAuthenticationEvaluating {
+    func evaluate(
+        policy: LAPolicy,
+        localizedReason: String,
+        using context: LocalAuthenticationContext
+    ) async throws -> Bool {
+        try await evaluate(policy: policy, localizedReason: localizedReason)
+    }
+}
+
+public struct LocalAuthenticator: BiometricAuthorizing, KeychainContextAuthorizing {
     public let policy: LAPolicy
     private let evaluator: any LocalAuthenticationEvaluating
 
@@ -22,11 +37,21 @@ public struct LocalAuthenticator: BiometricAuthorizing {
     }
 
     public func evaluate(reason: String) async throws {
+        _ = try await makeAuthenticationContext(reason: reason)
+    }
+
+    func makeAuthenticationContext(reason: String) async throws -> LocalAuthenticationContext {
+        let context = LocalAuthenticationContext(rawContext: LAContext())
         do {
-            let success = try await evaluator.evaluate(policy: policy, localizedReason: reason)
+            let success = try await evaluator.evaluate(
+                policy: policy,
+                localizedReason: reason,
+                using: context
+            )
             guard success else {
                 throw BiometricAuthorizationError.authenticationFailed
             }
+            return context
         } catch let error as BiometricAuthorizationError {
             throw error
         } catch {
@@ -61,10 +86,20 @@ public struct LocalAuthenticator: BiometricAuthorizing {
 
 private struct LAContextEvaluator: LocalAuthenticationEvaluating {
     func evaluate(policy: LAPolicy, localizedReason: String) async throws -> Bool {
-        let context = LAContext()
+        try await evaluate(
+            policy: policy,
+            localizedReason: localizedReason,
+            using: LocalAuthenticationContext(rawContext: LAContext())
+        )
+    }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            context.evaluatePolicy(policy, localizedReason: localizedReason) { success, error in
+    func evaluate(
+        policy: LAPolicy,
+        localizedReason: String,
+        using context: LocalAuthenticationContext
+    ) async throws -> Bool {
+        try await withCheckedThrowingContinuation { continuation in
+            context.rawContext.evaluatePolicy(policy, localizedReason: localizedReason) { success, error in
                 if let error {
                     continuation.resume(throwing: error)
                     return

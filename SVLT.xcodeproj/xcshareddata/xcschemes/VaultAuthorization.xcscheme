@@ -49,6 +49,20 @@
                ReferencedContainer = "container:SVLT.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B74A522843B3D6B8F8D2D0F6"
+               BuildableName = "VaultService.framework"
+               BlueprintName = "VaultService"
+               ReferencedContainer = "container:SVLT.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction

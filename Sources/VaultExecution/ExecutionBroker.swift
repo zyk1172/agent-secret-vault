@@ -5,6 +5,13 @@ import VaultCore
 
 public protocol ExecutionAuthorizing: Sendable {
     func consumeAuthorization(for risk: RiskClass) async -> Bool
+    func consumeExternalSend(destination: String) async -> Bool
+}
+
+public extension ExecutionAuthorizing {
+    func consumeExternalSend(destination: String) async -> Bool {
+        await consumeAuthorization(for: .writeOrExternalSend)
+    }
 }
 
 extension AuthorizationSession: ExecutionAuthorizing {}
@@ -131,7 +138,16 @@ public struct ExecutionBroker: Sendable {
     public func execute(_ execution: ValidatedExecution) async throws -> SanitizedExecutionResult {
         try Task.checkCancellation()
 
-        guard await authorizer.consumeAuthorization(for: execution.risk) else {
+        let isAuthorized: Bool
+        if execution.risk == .writeOrExternalSend,
+           let destination = execution.destinationHost,
+           !destination.isEmpty {
+            isAuthorized = await authorizer.consumeExternalSend(destination: destination)
+        } else {
+            isAuthorized = await authorizer.consumeAuthorization(for: execution.risk)
+        }
+
+        guard isAuthorized else {
             throw ExecutionBrokerError.authorizationRequired
         }
 

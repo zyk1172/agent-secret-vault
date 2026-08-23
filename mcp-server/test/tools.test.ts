@@ -428,6 +428,7 @@ describe("MCP tool contracts", () => {
         context: {
           reason: "Use SSH password for local device",
           template: "{{0}}",
+          destination: "192.168.2.240",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       }
@@ -606,6 +607,7 @@ describe("MCP tool contracts", () => {
         context: {
           reason: "Use local device password",
           template: "{{0}}",
+          destination: "192.168.2.240:8080",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       }
@@ -782,6 +784,7 @@ describe("MCP tool contracts", () => {
         context: {
           reason: "Use API token for restricted local/API request",
           template: "{{0}}",
+          destination: "192.168.2.240:8080",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       }

@@ -116,6 +116,24 @@ import Testing
     #expect(await store.current == wrapped)
 }
 
+@Test func unlockUsesRecoveryWrapperWhenLocalWrapperIsMissing() async throws {
+    let recoveryKey = Data(repeating: 0x53, count: 32)
+    let localKey = Data(repeating: 0x54, count: 32)
+    let masterKey = Data(repeating: 0x55, count: 32)
+    let wrapped = try WrappedMasterKeySet(local: nil, recovery: .seal(masterKey, using: recoveryKey))
+    let store = MemoryWrappedMasterKeyStore(initial: wrapped)
+    let coordinator = MasterKeyCoordinator(
+        deviceKeyStore: FixedDeviceKeyStore(key: localKey),
+        recoveryKeyStore: MemoryRecoveryKeyStore(key: recoveryKey),
+        wrappedStore: store
+    )
+
+    #expect(try await coordinator.unlock(reason: "Open recovered vault") == masterKey)
+    let repaired = try #require(await store.current)
+    #expect(repaired.local != nil)
+    #expect(try repaired.local?.open(using: localKey) == masterKey)
+}
+
 @Test func recoveryUnavailableWhenOnlyRecoveryWrapperExistsButRecoveryKeyIsMissing() async throws {
     let recoveryKey = Data(repeating: 0x55, count: 32)
     let masterKey = Data(repeating: 0x66, count: 32)

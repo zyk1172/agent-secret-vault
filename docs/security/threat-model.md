@@ -21,10 +21,12 @@ record bytes, or sanitized execution output.
 
 ## Trust boundary
 
-The native macOS app is the only component with decryption authority. The MCP
-server and Codex plugin are untrusted for plaintext handling: they may request
-actions, but they must not receive plaintext, unwrapped keys, resolved command
-arguments, or bulk export data.
+The signed native SVLT components (SVLT.app and the launchd-managed SVLTAgent)
+form the local decryption boundary. SVLTAgent owns the master-key session and
+Vault access; SVLT.app is a UI client for settings and App-owned reveal windows.
+The MCP server and Codex/Obsidian clients are untrusted for plaintext handling:
+they may request actions, but they must not receive plaintext, unwrapped keys,
+resolved command arguments, or bulk export data.
 
 The Obsidian plugin follows the same boundary. App-to-plugin responses for
 selection encryption, scan, and paragraph reveal must return opaque references,
@@ -63,12 +65,19 @@ The first release also excludes:
 
 Risk classes are separated:
 
-- Read: short-lived local display authorization.
-- Write or external-send: fresh single-use authorization.
-- Delete or credential-change: highest-risk fresh single-use authorization.
+- Read: in-memory session authorization until system sleep/lock, user-session
+  change, explicit lock, or Agent restart by default. A configured TTL may be
+  enabled as a policy.
+- Credential: configurable short authorization window (default ten minutes)
+  reused by one transaction/batch rather than once per secret.
+- External-send: short authorization bound to the exact destination/integration;
+  it cannot be reused for another host.
+- Delete, export, credential change, recovery, and security-setting changes:
+  fresh authorization for each operation.
 
 Write, external-send, delete, and credential-change operations cannot reuse a
-read authorization.
+read authorization. Audit records use a separate non-userPresence Keychain key
+and recording status never unlocks the Vault.
 
 ## Recovery limitations
 

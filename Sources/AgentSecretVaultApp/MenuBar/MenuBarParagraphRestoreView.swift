@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VaultIPC
 
 public struct MenuBarParagraphRestoreView: View {
     let state: MenuBarParagraphRestoreState

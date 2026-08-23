@@ -1,6 +1,6 @@
 import Foundation
 
-public struct RestoredParagraph: Equatable, Sendable {
+public struct RestoredParagraph: Codable, Equatable, Sendable {
     public let text: String
     public let values: [String]
 

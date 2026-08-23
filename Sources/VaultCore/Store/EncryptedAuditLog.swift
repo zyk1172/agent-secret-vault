@@ -5,19 +5,23 @@ import Security
 public enum EncryptedAuditLogError: Error, Equatable, Sendable {
     case integrityFailed
     case randomGenerationFailed
+    case auditKeyUnavailable
 }
 
 public struct EncryptedAuditLog: Sendable {
     private let directoryURL: URL
+    private let auditKeyProvider: (@Sendable () async throws -> SymmetricKey)?
     private let now: @Sendable () -> Date
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
         directoryURL: URL,
+        auditKeyProvider: (@Sendable () async throws -> SymmetricKey)? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.directoryURL = directoryURL
+        self.auditKeyProvider = auditKeyProvider
         self.now = now
 
         let encoder = JSONEncoder()
@@ -26,34 +30,37 @@ public struct EncryptedAuditLog: Sendable {
         decoder = JSONDecoder()
     }
 
+    /// Production path. The supplied key is independent from the vault
+    /// master key and is loaded without `.userPresence`, so status requests
+    /// cannot trigger a vault unlock.
+    public func append(_ event: AuditEvent) async throws {
+        guard let auditKeyProvider else {
+            throw EncryptedAuditLogError.auditKeyUnavailable
+        }
+        try await append(event, auditKey: auditKeyProvider())
+    }
+
+    /// Compatibility path for explicit audit export/migration callers that
+    /// already hold a master key. VaultAppServices never calls this to record
+    /// routine activity.
     public func append(_ event: AuditEvent, masterKey: SymmetricKey) async throws {
         try prepareDirectory()
         let auditKey = try auditDataKey(masterKey: masterKey)
-        let eventData = try encoder.encode(event)
-        let sealed = try AES.GCM.seal(
-            eventData,
-            using: auditKey,
-            authenticating: Data("AgentSecretVault.AuditEvent.v1".utf8)
-        )
-        let record = EncryptedAuditEventRecord(
-            id: UUID().uuidString,
-            createdAt: now(),
-            ciphertext: sealed.ciphertext,
-            nonce: sealed.nonce.data,
-            tag: sealed.tag
-        )
-        let url = directoryURL.appending(path: "\(record.id).audit.json")
-        try encoder.encode(record).write(to: url, options: [.atomic])
+        try await append(event, auditKey: auditKey)
+    }
+
+    public func export() async throws -> [AuditEvent] {
+        guard let auditKeyProvider else {
+            throw EncryptedAuditLogError.auditKeyUnavailable
+        }
+        let key = try await auditKeyProvider()
+        return try export(auditKey: key)
     }
 
     public func export(masterKey: SymmetricKey) async throws -> [AuditEvent] {
         try prepareDirectory()
         let auditKey = try auditDataKey(masterKey: masterKey)
-        let records = try eventRecords()
-        let events = try records.map { _, record in
-            try open(record, using: auditKey)
-        }
-        return events.sorted { $0.timestamp < $1.timestamp }
+        return try export(auditKey: auditKey)
     }
 
     public func prune(retentionDays: Int, masterKey: SymmetricKey) async throws {
@@ -69,10 +76,47 @@ public struct EncryptedAuditLog: Sendable {
         }
     }
 
+    private func append(_ event: AuditEvent, auditKey: SymmetricKey) async throws {
+        try prepareDirectory()
+        let eventData = try encoder.encode(event)
+        let sealed = try AES.GCM.seal(
+            eventData,
+            using: auditKey,
+            authenticating: Data("AgentSecretVault.AuditEvent.v1".utf8)
+        )
+        let record = EncryptedAuditEventRecord(
+            id: UUID().uuidString,
+            createdAt: now(),
+            ciphertext: sealed.ciphertext,
+            nonce: sealed.nonce.data,
+            tag: sealed.tag
+        )
+        let url = directoryURL.appending(path: "\(record.id).audit.json")
+        try encoder.encode(record).write(to: url, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private func export(auditKey: SymmetricKey) throws -> [AuditEvent] {
+        try prepareDirectory()
+        let records = try eventRecords()
+        let events = try records.map { _, record in
+            try open(record, using: auditKey)
+        }
+        return events.sorted { $0.timestamp < $1.timestamp }
+    }
+
     private func prepareDirectory() throws {
         try FileManager.default.createDirectory(
             at: directoryURL,
-            withIntermediateDirectories: true
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directoryURL.path
         )
     }
 
@@ -98,6 +142,10 @@ public struct EncryptedAuditLog: Sendable {
             tag: sealed.tag
         )
         try encoder.encode(record).write(to: keyURL, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: keyURL.path
+        )
         return SymmetricKey(data: keyData)
     }
 

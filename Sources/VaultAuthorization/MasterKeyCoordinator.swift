@@ -135,7 +135,14 @@ public struct MasterKeyCoordinator: Sendable {
         }
 
         guard let local = wrapped.local else {
-            throw MasterKeyCoordinatorError.recoveryUnavailable
+            guard wrapped.recovery != nil else {
+                throw MasterKeyCoordinatorError.recoveryUnavailable
+            }
+            return try await recover(
+                reason: reason,
+                localWrappingKey: localWrappingKey,
+                wrappedSet: wrapped
+            )
         }
 
         do {
@@ -163,10 +170,20 @@ public struct MasterKeyCoordinator: Sendable {
     }
 
     public func recover(reason: String) async throws -> Data {
+        let localWrappingKey = try await validatedDeviceKey(reason: reason)
+        return try await recover(reason: reason, localWrappingKey: localWrappingKey)
+    }
+
+    private func recover(
+        reason: String,
+        localWrappingKey: Data,
+        wrappedSet: WrappedMasterKeySet? = nil
+    ) async throws -> Data {
         guard try await recoveryKeyStore.supportsRequiredKeychainControls() else {
             throw MasterKeyCoordinatorError.unsupportedRequiredKeychainControls
         }
-        guard let wrapped = try await wrappedStore.loadWrappedMasterKeySet() else {
+        let loadedWrapped = try await wrappedStore.loadWrappedMasterKeySet()
+        guard let wrapped = loadedWrapped ?? wrappedSet else {
             throw MasterKeyCoordinatorError.missingWrappedMasterKey
         }
         guard let recoveryWrapper = wrapped.recovery else {
@@ -176,9 +193,9 @@ public struct MasterKeyCoordinator: Sendable {
             throw MasterKeyCoordinatorError.recoveryUnavailable
         }
         try validateKeySize(recoveryKey)
+        try validateKeySize(localWrappingKey)
 
         let masterKey = try recoveryWrapper.open(using: recoveryKey)
-        let localWrappingKey = try await validatedDeviceKey(reason: reason)
         let newLocalWrapper = try WrappedMasterKey.seal(masterKey, using: localWrappingKey)
         try await wrappedStore.saveWrappedMasterKeySet(WrappedMasterKeySet(
             local: newLocalWrapper,

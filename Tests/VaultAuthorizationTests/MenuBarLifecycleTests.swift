@@ -30,17 +30,17 @@ import Testing
     #expect(!source.contains("CommandGroup(replacing: .appTermination) {}"))
 }
 
-@Test func runtimeOwnsLifecycleMonitorAndMenuQuitUsesStandardTermination() throws {
+@Test func appUsesLaunchdAgentClientInsteadOfOwningVaultLifecycle() throws {
     let source = try appSource()
 
-    #expect(source.contains("private var lifecycleMonitor: VaultLifecycleMonitor?"))
-    #expect(source.contains("lifecycleMonitor = VaultLifecycleMonitor"))
+    #expect(source.contains("private var agentClient: VaultIPCClient?"))
+    #expect(source.contains("AgentServiceRegistration.shared"))
+    #expect(source.contains("try registration.registerIfNeeded()"))
     #expect(source.contains("func clearRevealSessions() async"))
-    #expect(source.contains("func lockVault() async"))
     #expect(source.contains("func shutdown() async"))
-    #expect(source.contains("requestMenuBarTermination()"))
-    #expect(!source.contains("private let terminationCoordinator = MenuBarTerminationCoordinator"))
-    #expect(!source.contains("await terminationCoordinator.requestTermination(cleanup: cleanup)"))
+    #expect(!source.contains("unlockLowProtection"))
+    #expect(!source.contains("controller.start()"))
+    #expect(!source.contains("controller?.stop()"))
 }
 
 @Test func menuBarProtectedDeleteRequestDeletesTheRecord() throws {
@@ -48,7 +48,7 @@ import Testing
 
     #expect(source.contains("runtime.deleteRecord(reference)"))
     #expect(source.contains("func deleteRecord(_ reference: String) async"))
-    #expect(source.contains("services.deleteRecord(reference)"))
+    #expect(source.contains("agentClient.deleteRecord(reference)"))
     #expect(!source.contains("runtime.requestPermanentDeleteAuthorization()"))
     #expect(!source.contains("func requestPermanentDeleteAuthorization() async"))
 }

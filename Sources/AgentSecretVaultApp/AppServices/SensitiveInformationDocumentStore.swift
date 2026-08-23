@@ -124,9 +124,13 @@ public actor SensitiveInformationDocumentStore {
         let codePattern = "`\\s*(\(referencePattern))\\s*`"
         let unspacedPattern = "(?<!\\s)(\(referencePattern))"
         let multipleSpacesPattern = "[ \\t]+(\(referencePattern))"
-        let linkRegex = try! NSRegularExpression(pattern: linkPattern)
-        let codeRegex = try! NSRegularExpression(pattern: codePattern)
-        let unspacedRegex = try! NSRegularExpression(pattern: unspacedPattern)
+        guard let linkRegex = try? NSRegularExpression(pattern: linkPattern),
+              let codeRegex = try? NSRegularExpression(pattern: codePattern),
+              let unspacedRegex = try? NSRegularExpression(pattern: unspacedPattern),
+              let spacesRegex = try? NSRegularExpression(pattern: multipleSpacesPattern)
+        else {
+            return text
+        }
         let fullRange = NSRange(location: 0, length: (text as NSString).length)
         let withoutLinks = linkRegex.stringByReplacingMatches(in: text, range: fullRange, withTemplate: " $1")
         let codeRange = NSRange(location: 0, length: (withoutLinks as NSString).length)
@@ -134,12 +138,13 @@ public actor SensitiveInformationDocumentStore {
         let referenceRange = NSRange(location: 0, length: (withoutCode as NSString).length)
         let withRequiredSpace = unspacedRegex.stringByReplacingMatches(in: withoutCode, range: referenceRange, withTemplate: " $1")
         let spaceRange = NSRange(location: 0, length: (withRequiredSpace as NSString).length)
-        let spacesRegex = try! NSRegularExpression(pattern: multipleSpacesPattern)
         return spacesRegex.stringByReplacingMatches(in: withRequiredSpace, range: spaceRange, withTemplate: " $1")
     }
 
     private static func references(in text: String, filePath: String) -> [SensitiveInformationDocumentReference] {
-        let regex = try! NSRegularExpression(pattern: referencePattern)
+        guard let regex = try? NSRegularExpression(pattern: referencePattern) else {
+            return []
+        }
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
         return matches.map { match in

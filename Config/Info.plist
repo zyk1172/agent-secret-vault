@@ -17,6 +17,6 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.15</string>
 	<key>CFBundleVersion</key>
-	<integer>15</integer>
+	<string>15</string>
 </dict>
 </plist>

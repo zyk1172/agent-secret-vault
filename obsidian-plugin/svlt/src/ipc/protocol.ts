@@ -10,7 +10,8 @@ export const RevealContext = z.object({
   ranges: z.array(z.object({
     index: z.number().int().nonnegative(),
     placeholder: z.string().min(1)
-  }).strict())
+  }).strict()),
+  destination: z.string().min(1).optional()
 }).strict();
 
 export const IpcRequest = z.discriminatedUnion("type", [

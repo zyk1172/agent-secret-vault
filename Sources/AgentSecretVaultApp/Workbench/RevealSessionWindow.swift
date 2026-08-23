@@ -1,4 +1,5 @@
 import SwiftUI
+import VaultIPC
 
 public enum RevealSessionWindowLayout {
     public static let contentSize = CGSize(width: 560, height: 320)

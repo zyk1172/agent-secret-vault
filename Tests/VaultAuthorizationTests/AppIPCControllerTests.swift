@@ -44,6 +44,46 @@ import VaultIPC
     )))
 }
 
+@Test func controllerRotatesCapabilityTokenAcrossRestart() async throws {
+    let directoryURL = URL(fileURLWithPath: "/tmp/asv-rotate-\(UUID().uuidString)")
+    let server = UnixSocketServer(configuration: UnixSocketServerConfiguration(directoryURL: directoryURL))
+    let controller = AppIPCController(
+        server: server,
+        handler: IPCRequestHandler(service: ControllerSpyWorkbenchService())
+    )
+    defer {
+        controller.stop()
+        try? FileManager.default.removeItem(at: directoryURL)
+    }
+
+    try controller.start()
+    let oldToken = try CapabilityToken(base64Encoded: String(contentsOf: server.configuration.tokenURL).trimmingCharacters(in: .whitespacesAndNewlines))
+    let oldFrame = try IPCFrameCodec.encode(AuthenticatedIPCRequest(capabilityToken: oldToken, request: .status))
+
+    controller.stop()
+    try controller.start()
+    let newToken = try CapabilityToken(base64Encoded: String(contentsOf: server.configuration.tokenURL).trimmingCharacters(in: .whitespacesAndNewlines))
+    #expect(oldToken != newToken)
+
+    let rejectedFrame = try await controller.handleAuthenticatedFrame(oldFrame)
+    #expect(try IPCFrameCodec.decode(IPCResponse.self, from: rejectedFrame) == .failure(code: "INVALID_CAPABILITY_TOKEN"))
+}
+
+@Test func controllerRejectsAnUnboundedClientConfiguration() throws {
+    let directoryURL = URL(fileURLWithPath: "/tmp/asv-limit-\(UUID().uuidString)")
+    let server = UnixSocketServer(configuration: UnixSocketServerConfiguration(directoryURL: directoryURL))
+    let controller = AppIPCController(
+        server: server,
+        handler: IPCRequestHandler(service: ControllerSpyWorkbenchService()),
+        maxActiveClients: 0
+    )
+
+    #expect(throws: AppIPCControllerError.invalidMaxActiveClients) {
+        try controller.start()
+    }
+    try? FileManager.default.removeItem(at: directoryURL)
+}
+
 private actor ControllerSpyWorkbenchService: WorkbenchServicing {
     func status() async -> WorkbenchStatus {
         WorkbenchStatus(locked: false, ipcAvailable: true, activeKnowledgeBaseRoot: nil, pluginConnected: false)

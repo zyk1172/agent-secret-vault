@@ -133,10 +133,10 @@ Agent 接入后先做：
 
 预期：
 
-- `vault_status` 返回 App 可用状态或锁定状态。
+- `vault_status` 返回后台 Agent 可用状态或锁定状态。
 - `agent_secret_usage_policy` 返回可用工具和安全规则。
 
-如果 App 未运行，先打开 SVLT App。
+普通操作不要求 SVLT.app 一直运行。若通道不可达，先打开一次 SVLT 完成 SMAppService 注册/批准；若仅显示锁定，下一次受保护操作会 lazy unlock。
 
 ## 8. 工具选择规则
 
@@ -246,7 +246,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 
 | 状态 | Agent 应该怎么做 |
 | --- | --- |
-| `APP_UNAVAILABLE` | 让用户打开 SVLT App 后重试。 |
+| `APP_UNAVAILABLE` | 让用户打开一次 SVLT 完成后台服务注册/批准后重试；不要要求 GUI 一直保持打开。 |
 | `URL_NOT_ALLOWED` / `HOST_NOT_ALLOWED` | 目标不是 localhost、`.local`、私有 IP 或显式 allowlist。请用户确认目标。 |
 | `URL_CREDENTIALS_NOT_ALLOWED` | URL 里包含用户名或密码。改用 `usernameRef` / `passwordRef`。 |
 | `URL_TOKEN_NOT_ALLOWED` | URL query 里出现 token/key/password 等敏感参数。改用 `tokenRef`。 |

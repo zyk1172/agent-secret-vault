@@ -1,11 +1,10 @@
 import AppKit
 import AgentSecretVaultApp
-import CryptoKit
 import SwiftUI
 import UniformTypeIdentifiers
-import VaultAuthorization
 import VaultCore
 import VaultIPC
+import VaultService
 
 @main
 struct AgentSecretVaultApplication: App {
@@ -25,6 +24,7 @@ struct AgentSecretVaultApplication: App {
         Window("SVLT", id: MenuBarPresentation.mainWindowID) {
             VaultWorkbenchView(
                 status: runtime.status,
+                agentServiceStatus: runtime.agentServiceStatus,
                 orphanScanResult: runtime.orphanScanResult,
                 auditEntries: runtime.auditEntries,
                 savedReferences: runtime.savedReferences,
@@ -82,15 +82,15 @@ struct AgentSecretVaultApplication: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    Task { await runtime.lockVault() }
+                    Task { await runtime.clearRevealSessions() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.willSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    Task { await runtime.lockVault() }
+                    Task { await runtime.clearRevealSessions() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
                     secureViewerModel.handleLockNotification()
-                    Task { await runtime.lockVault() }
+                    Task { await runtime.clearRevealSessions() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     Task { await runtime.clearRevealSessions() }
@@ -190,6 +190,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         activeKnowledgeBaseRoot: nil,
         pluginConnected: false
     )
+    @Published var agentServiceStatus: AgentServiceStatus = .notRegistered
     @Published var orphanScanResult: OrphanScanResult?
     @Published var auditEntries: [AgentAutomationAuditEntry] = []
     @Published var savedReferences: [SecretReferenceMetadata] = []
@@ -201,12 +202,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var sensitiveScanError: String?
     @Published var sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults + SensitiveScanRulePreferences.customRules()
 
-    private var controller: AppIPCController?
-    private var services: VaultAppServices?
-    private var protectionKeyStore: AppProtectionKeyStore?
+    private var agentClient: VaultIPCClient?
+    private let uiRevealSessionStore = RevealSessionStore(defaultTTLSeconds: 60)
+    private var uiRequestObserver: NSObjectProtocol?
+    private var presentedAgentSessionIDs: Set<String> = []
     private var sensitiveIndexStore: SensitiveInformationDocumentStore?
-    private var legacyRecordStore: FileRecordStore?
-    private var lifecycleMonitor: VaultLifecycleMonitor?
     private var started = false
     private var isStarting = false
 
@@ -218,41 +218,48 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         defer { isStarting = false }
 
         do {
-            let runtime = try makeRuntime()
-            try? await runtime.protectionKeyStore.unlockLowProtection()
-            controller = runtime.controller
-            services = runtime.services
-            protectionKeyStore = runtime.protectionKeyStore
-            sensitiveIndexStore = runtime.sensitiveIndexStore
-            legacyRecordStore = runtime.legacyRecordStore
-            sensitiveIndexURL = await runtime.sensitiveIndexStore.selectedDocumentURL()
+            let registration = AgentServiceRegistration.shared
+            try registration.registerIfNeeded()
+            agentServiceStatus = registration.status
+            let client = try VaultIPCClient.defaultClient()
+            agentClient = client
+            startUIRequestObserver()
+            sensitiveIndexStore = try makeSensitiveIndexStore()
+            guard let sensitiveIndexStore else {
+                throw AgentSecretVaultRuntimeError.notStarted
+            }
+            sensitiveIndexURL = await sensitiveIndexStore.selectedDocumentURL()
             sensitiveScanRootURL = SensitiveIndexSelectionStore.selectedScanRootURL()
             do {
-                _ = try await runtime.sensitiveIndexStore.prepareSelectedDocument()
-                if let documentURL = await runtime.sensitiveIndexStore.selectedDocumentURL() {
+                _ = try await sensitiveIndexStore.prepareSelectedDocument()
+                if let documentURL = await sensitiveIndexStore.selectedDocumentURL() {
                     SensitiveIndexSelectionStore.save(documentURL)
                     sensitiveIndexURL = documentURL
                 }
             } catch {
                 sensitiveIndexError = "无法整理敏感信息.md"
             }
-            try runtime.controller.start()
-            lifecycleMonitor = VaultLifecycleMonitor(
-                clearAction: { [weak self] in
-                    await self?.clearRevealSessions()
-                },
-                lockAction: { [weak self] in
-                    await self?.lockVault()
+
+            var lastStatus: WorkbenchStatus?
+            for attempt in 0..<3 {
+                do {
+                    lastStatus = try await client.workbenchStatus()
+                    break
+                } catch {
+                    guard attempt < 2 else { throw error }
+                    try await Task.sleep(for: .milliseconds(150))
                 }
-            )
-            lifecycleMonitor?.start()
-            status = await runtime.services.status()
+            }
+            status = lastStatus ?? status
+            agentServiceStatus = .running
             await refreshSavedReferences()
             await refreshSensitiveIndex()
+            await presentPendingRevealSessions()
             started = true
         } catch {
-            NSLog("SVLT runtime startup failed: %@", String(describing: error))
+            NSLog("SVLT runtime startup failed [AGENT_START_FAILED]")
             sensitiveIndexError = "无法启动本地服务"
+            agentServiceStatus = AgentServiceRegistration.shared.status
             status = WorkbenchStatus(
                 locked: true,
                 ipcAvailable: false,
@@ -264,52 +271,113 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     func clearRevealSessions() async {
         RevealSessionLifecycle.clearAll()
-        await services?.clearRevealSessions()
+        await uiRevealSessionStore.clearAll()
+        presentedAgentSessionIDs.removeAll()
+        try? await agentClient?.clearRevealSessions()
     }
 
     func lockVault() async {
-        await protectionKeyStore?.clearLowProtectionUnlock()
-        await services?.invalidateSecurityState()
+        try? await agentClient?.lock()
+        await clearRevealSessions()
     }
 
     func shutdown() async {
-        lifecycleMonitor?.stop()
-        controller?.stop()
-        await clearRevealSessions()
-        await lockVault()
+        // App termination is not Agent termination. launchd keeps the
+        // independent SVLTAgent alive for MCP/Obsidian clients.
+        if let uiRequestObserver {
+            DistributedNotificationCenter.default().removeObserver(uiRequestObserver)
+            self.uiRequestObserver = nil
+        }
+        RevealSessionLifecycle.clearAll()
+        await uiRevealSessionStore.clearAll()
+        presentedAgentSessionIDs.removeAll()
+        // Clear only UI reveal sessions in the independent Agent; do not stop
+        // it or invalidate ordinary read/credential authorization on App quit.
+        try? await agentClient?.clearRevealSessions()
     }
 
-    func deleteRecord(_ reference: String) async {
-        guard let services else {
+    private func startUIRequestObserver() {
+        guard uiRequestObserver == nil else {
+            return
+        }
+        uiRequestObserver = DistributedNotificationCenter.default().addObserver(
+            forName: AgentUIRequestNotifier.notificationName,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let sessionID = notification.userInfo?["sessionID"] as? String else {
+                return
+            }
+            Task { @MainActor [weak self] in
+                await self?.presentAgentRevealSession(sessionID: sessionID)
+            }
+        }
+    }
+
+    private func presentPendingRevealSessions() async {
+        guard let agentClient,
+              let sessionIDs = try? await agentClient.pendingRevealSessionIDs()
+        else {
+            return
+        }
+        for sessionID in sessionIDs {
+            await presentAgentRevealSession(sessionID: sessionID)
+        }
+    }
+
+    private func presentAgentRevealSession(sessionID: String) async {
+        guard let agentClient,
+              presentedAgentSessionIDs.insert(sessionID).inserted
+        else {
             return
         }
         do {
-            try await services.deleteRecord(reference)
+            let paragraph = try await agentClient.revealSessionData(sessionID: sessionID)
+            let localSessionID = await uiRevealSessionStore.create(resolvedParagraph: paragraph)
+            await RevealSessionPresenter().present(
+                sessionID: localSessionID,
+                store: uiRevealSessionStore
+            )
+        } catch {
+            presentedAgentSessionIDs.remove(sessionID)
+        }
+    }
+
+    func deleteRecord(_ reference: String) async {
+        guard let agentClient else {
+            return
+        }
+        do {
+            try await agentClient.deleteRecord(reference)
             await refreshSavedReferences()
             await refreshSensitiveIndex()
         } catch {
-            sensitiveScanError = "无法删除加密记录：\(reference)"
+            sensitiveScanError = "无法删除加密记录"
         }
     }
 
     func restoreParagraph(_ text: String) async throws -> RestoredParagraph {
-        guard let services else {
+        guard let agentClient else {
             throw AgentSecretVaultRuntimeError.notStarted
         }
         let request = try ParagraphRestoreBuilder.build(from: text)
-        return try await services.restoreReferencesWithValues(
+        return try await agentClient.restoreReferences(
             references: request.references,
             context: request.context
         )
     }
 
     func refreshSavedReferences() async {
-        guard let services else {
+        guard let agentClient else {
             savedReferences = []
             return
         }
         do {
-            savedReferences = try await services.savedSecretReferences()
+            savedReferences = try await agentClient.savedSecretReferences()
+            if let currentStatus = try? await agentClient.workbenchStatus() {
+                status = currentStatus
+                agentServiceStatus = .running
+            }
         } catch {
             savedReferences = []
         }
@@ -420,7 +488,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func encryptSensitiveCandidates(_ ids: Set<String>) async {
-        guard !ids.isEmpty, let services, let sensitiveIndexStore else {
+        guard !ids.isEmpty, let agentClient, let sensitiveIndexStore else {
             return
         }
 
@@ -436,10 +504,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 var references: [String] = []
                 var createdReferences: [String] = []
                 for candidate in fileGroup {
-                    let reference = try await services.encryptText(
+                    let reference = try await agentClient.encryptText(
                         candidate.matchedValue,
                         label: candidate.title,
-                        policy: .credential
+                        policy: policy(for: candidate)
                     )
                     references.append(reference)
                     createdReferences.append(reference)
@@ -450,7 +518,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 } catch {
                     for reference in createdReferences {
                         if let id = try? SecretReference(reference).id {
-                            try? await legacyRecordStore?.delete(id: id)
+                            try? await agentClient.deleteRecord("secret://\(id)")
                         }
                     }
                     throw error
@@ -494,11 +562,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func deleteSensitiveCandidate(_ candidate: LocalSensitiveInformationCandidate) async {
-        guard let protectionKeyStore else {
+        guard let agentClient else {
             return
         }
         do {
-            _ = try await protectionKeyStore.deviceKey(for: .credential, reason: "删除本地扫描命中值")
+            try await agentClient.authorizeHighRisk(reason: "删除本地扫描命中值")
             try LocalSensitiveInformationWriter.remove(candidate)
             await scanSensitiveInformation()
         } catch {
@@ -533,106 +601,25 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         sensitiveScanRules = SensitiveScanRuleDefinition.defaults + custom
     }
 
-    private func makeRuntime() throws -> (
-        controller: AppIPCController,
-        services: VaultAppServices,
-        protectionKeyStore: AppProtectionKeyStore,
-        sensitiveIndexStore: SensitiveInformationDocumentStore,
-        legacyRecordStore: FileRecordStore
-    ) {
-        let fileManager = FileManager.default
-        let appSupport = try fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let root = appSupport
-            .appendingPathComponent("AgentSecretVault", isDirectory: true)
-            .appendingPathComponent("Vault", isDirectory: true)
-        let auditRoot = appSupport
-            .appendingPathComponent("AgentSecretVault", isDirectory: true)
-            .appendingPathComponent("Audit", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: auditRoot, withIntermediateDirectories: true)
-
+    private func makeSensitiveIndexStore() throws -> SensitiveInformationDocumentStore {
         let selectedScanTarget = SensitiveIndexSelectionStore.selectedScanRootURL()
         let selectedDocument = SensitiveIndexSelectionStore.selectedURL()
             ?? SensitiveInformationDocumentStore.defaultDocumentURL(scanTargetURL: selectedScanTarget)
-        let recordStore = FileRecordStore(baseDirectory: root)
-        let sensitiveIndexStore = SensitiveInformationDocumentStore(documentURL: selectedDocument)
-        let legacyRecordStore = FileRecordStore(baseDirectory: root)
-        let auditLog = EncryptedAuditLog(directoryURL: auditRoot)
-        let deviceKeyStore = DeviceKeyStore()
-        let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
-        let wrappedMasterKeyStore = FileWrappedMasterKeyStore(
-            fileURL: root
-                .appendingPathComponent(".agent-secret-vault", isDirectory: true)
-                .appendingPathComponent("master-key.json")
-        )
-        let masterKeyCoordinator = MasterKeyCoordinator(
-            deviceKeyStore: deviceKeyStore,
-            wrappedStore: wrappedMasterKeyStore
-        )
-        let vaultMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data = { policy, reason in
-            let localWrappingKey = try await protectionKeyStore.deviceKey(for: policy, reason: reason)
-            let hasLegacyRecords = (try? await recordStore.recordIDs().isEmpty) == false
-            if try await wrappedMasterKeyStore.loadWrappedMasterKeySet() == nil,
-               hasLegacyRecords {
-                return try await masterKeyCoordinator.adoptExistingVault(
-                    reason: reason,
-                    localWrappingKey: localWrappingKey,
-                    existingMasterKey: localWrappingKey
-                )
-            }
-            return try await masterKeyCoordinator.unlock(reason: reason, localWrappingKey: localWrappingKey)
+        return SensitiveInformationDocumentStore(documentURL: selectedDocument)
+    }
+
+    private func policy(for candidate: LocalSensitiveInformationCandidate) -> SecretPolicy {
+        let highRiskCategories = Set([
+            "credential", "api key", "token", "cookie", "private key", "database"
+        ])
+        if candidate.risk == .high,
+           highRiskCategories.contains(candidate.category.lowercased()) {
+            return .credential
         }
-        let encryptor = EncryptSelectionCoordinator(
-            recordStore: recordStore,
-            selectionReplacer: NoopSelectionReplacer(),
-            masterKeyProvider: vaultMasterKeyProvider
-        )
-        let services = VaultAppServices(
-            textEncryptor: encryptor,
-            activeRoot: root,
-            recordLister: recordStore,
-            recordDeleter: recordStore,
-            recordResolver: VaultRecordResolver(recordStore: recordStore),
-            masterKeyProvider: { policy, reason in
-                SymmetricKey(data: try await vaultMasterKeyProvider(policy, reason))
-            },
-            isUnlockedProvider: {
-                await protectionKeyStore.isLowProtectionUnlocked
-            },
-            revealSessionStore: RevealSessionStore(defaultTTLSeconds: 60),
-            orphanScanObserver: { [weak self] result in
-                await MainActor.run {
-                    self?.orphanScanResult = result
-                }
-            },
-            statusObserver: { [weak self] status in
-                await MainActor.run {
-                    self?.status = status
-                }
-            },
-            auditObserver: { [weak self] entry in
-                await MainActor.run {
-                    self?.recordAudit(entry)
-                }
-            },
-            savedReferencesObserver: { [weak self] references in
-                await MainActor.run {
-                    self?.savedReferences = references
-                }
-            },
-            auditLog: auditLog
-        )
-        let server = try UnixSocketServer(configuration: .defaultConfiguration())
-        let controller = AppIPCController(
-            server: server,
-            handler: IPCRequestHandler(service: services)
-        )
-        return (controller, services, protectionKeyStore, sensitiveIndexStore, legacyRecordStore)
+        // Scanner uncertainty defaults to read. Users can promote a record to
+        // credential/externalSend through the explicit policy controls instead
+        // of silently making every match a high-risk secret.
+        return .read
     }
 
     private func recordAudit(_ entry: AgentAutomationAuditEntry) {
@@ -645,16 +632,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
 private enum AgentSecretVaultRuntimeError: Error {
     case notStarted
-}
-
-private struct NoopSelectionReplacer: SelectionReplacing {
-    func replaceSelection(with text: String) async throws {
-        throw NoopSelectionReplacerError.unavailable
-    }
-}
-
-private enum NoopSelectionReplacerError: Error {
-    case unavailable
 }
 
 @MainActor

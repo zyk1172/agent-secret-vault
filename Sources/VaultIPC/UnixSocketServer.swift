@@ -114,8 +114,20 @@ public final class UnixSocketServer: @unchecked Sendable {
 
     public func writeCapabilityToken(_ token: CapabilityToken) throws {
         try prepareDirectory()
-        try Data(token.rawValue.utf8).write(to: configuration.tokenURL, options: [.atomic])
-        try chmod(configuration.tokenURL.path, 0o600).throwIfFailed()
+        let temporaryURL = configuration.directoryURL.appendingPathComponent(
+            ".capability.\(UUID().uuidString).tmp"
+        )
+        do {
+            try Data(token.rawValue.utf8).write(to: temporaryURL, options: [.atomic])
+            try chmod(temporaryURL.path, 0o600).throwIfFailed()
+            guard rename(temporaryURL.path, configuration.tokenURL.path) == 0 else {
+                throw IPCSocketError.operationFailed("rename-token", errno: errno)
+            }
+            try chmod(configuration.tokenURL.path, 0o600).throwIfFailed()
+        } catch {
+            try? fileManager.removeItem(at: temporaryURL)
+            throw error
+        }
     }
 
     public func bindListeningSocket(backlog: Int32 = 16) throws -> BoundUnixSocket {
@@ -127,6 +139,7 @@ public final class UnixSocketServer: @unchecked Sendable {
         }
 
         do {
+            try setNoSIGPIPE(fileDescriptor)
             try unlinkSocketIfPresent()
             var address = try sockaddrUnix(for: configuration.socketURL.path)
 
@@ -184,14 +197,31 @@ public final class UnixSocketServer: @unchecked Sendable {
 
         return address
     }
+
+    private func setNoSIGPIPE(_ fileDescriptor: Int32) throws {
+        var enabled: Int32 = 1
+        let result = withUnsafePointer(to: &enabled) { pointer in
+            setsockopt(
+                fileDescriptor,
+                SOL_SOCKET,
+                SO_NOSIGPIPE,
+                pointer,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
+        }
+        guard result == 0 else {
+            throw IPCSocketError.operationFailed("setsockopt", errno: errno)
+        }
+    }
 }
 
 public final class BoundUnixSocket: @unchecked Sendable {
-    public private(set) var fileDescriptor: Int32
     public let socketURL: URL
+    private let stateLock = NSLock()
+    private var storedFileDescriptor: Int32
 
     init(fileDescriptor: Int32, socketURL: URL) {
-        self.fileDescriptor = fileDescriptor
+        self.storedFileDescriptor = fileDescriptor
         self.socketURL = socketURL
     }
 
@@ -199,13 +229,26 @@ public final class BoundUnixSocket: @unchecked Sendable {
         close()
     }
 
+    public var fileDescriptor: Int32 {
+        stateLock.lock()
+        defer {
+            stateLock.unlock()
+        }
+        return storedFileDescriptor
+    }
+
     public func close() {
-        guard fileDescriptor >= 0 else {
+        stateLock.lock()
+        guard storedFileDescriptor >= 0 else {
+            stateLock.unlock()
             return
         }
+        let fileDescriptor = storedFileDescriptor
+        storedFileDescriptor = -1
+        stateLock.unlock()
 
+        _ = Darwin.shutdown(fileDescriptor, SHUT_RDWR)
         Darwin.close(fileDescriptor)
-        fileDescriptor = -1
         unlink(socketURL.path)
     }
 }

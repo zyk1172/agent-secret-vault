@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VaultIPC
 
 public enum ParagraphRestoreCopy {
     public static let title = "段落解密"

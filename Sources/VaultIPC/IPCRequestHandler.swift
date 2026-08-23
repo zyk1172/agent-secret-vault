@@ -5,15 +5,45 @@ public protocol WorkbenchServicing: Sendable {
     func recordPluginActivity() async
     func status() async -> WorkbenchStatus
     func inspectReference(_ reference: String) async throws -> SecretReferenceMetadata
+    func savedSecretReferences() async throws -> [SecretReferenceMetadata]
+    func pendingRevealSessionIDs() async throws -> [String]
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
+    func deleteRecord(_ reference: String) async throws
+    func authorizeHighRisk(reason: String) async throws
     func openRevealSession(references: [String], context: RevealContext) async throws -> String
+    func revealSessionData(sessionID: String) async throws -> RestoredParagraph
     func restoreReferences(references: [String], context: RevealContext) async throws -> String
     func exportResolvedText(references: [String], context: RevealContext, destinationPath: String) async throws -> String
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult
+    func clearRevealSessions() async
+    func invalidateSecurityState() async
 }
 
 public extension WorkbenchServicing {
     func recordPluginActivity() async {}
+
+    func savedSecretReferences() async throws -> [SecretReferenceMetadata] {
+        []
+    }
+
+    func pendingRevealSessionIDs() async throws -> [String] {
+        []
+    }
+
+    func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func deleteRecord(_ reference: String) async throws {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func authorizeHighRisk(reason: String) async throws {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func clearRevealSessions() async {}
+    func invalidateSecurityState() async {}
 }
 
 public enum IPCRequestHandlerError: Error, Equatable, Sendable {
@@ -34,8 +64,28 @@ public struct IPCRequestHandler: Sendable {
             return .status(locked: await service.status().locked)
         case .workbenchStatus:
             return .workbenchStatus(await service.status())
+        case .savedReferences:
+            return .savedReferences(try await service.savedSecretReferences())
+        case .pendingRevealSessions:
+            return .revealSessionIDs(try await service.pendingRevealSessionIDs())
         case let .inspectReference(reference):
             return .referenceMetadata(try await service.inspectReference(reference))
+        case let .deleteRecord(reference):
+            try await service.deleteRecord(reference)
+            return .operationCompleted
+        case let .authorizeHighRisk(reason):
+            try await service.authorizeHighRisk(reason: reason)
+            return .authorizationApproved
+        case let .revealSessionData(sessionID):
+            // Native App UI control-plane request. MCP/Obsidian schemas do not
+            // expose this case; their reveal path receives only a session ID.
+            return .revealSessionData(try await service.revealSessionData(sessionID: sessionID))
+        case .lock:
+            await service.invalidateSecurityState()
+            return .operationCompleted
+        case .clearRevealSessions:
+            await service.clearRevealSessions()
+            return .operationCompleted
         case let .reveal(reference, reason):
             _ = try await service.openRevealSession(
                 references: [reference],

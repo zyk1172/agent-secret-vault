@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import VaultIPC
+import VaultService
 
 public final class RevealSessionPresenter: RevealSessionPresenting, @unchecked Sendable {
     public init() {}

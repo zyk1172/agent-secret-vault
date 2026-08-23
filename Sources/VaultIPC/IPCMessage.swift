@@ -12,6 +12,10 @@ public struct CapabilityToken: Codable, Equatable, Sendable {
 
     public let rawValue: String
 
+    private init(uncheckedRawValue: String) {
+        self.rawValue = uncheckedRawValue
+    }
+
     public init(base64Encoded rawValue: String) throws {
         guard let decoded = Data(base64Encoded: rawValue) else {
             throw CapabilityTokenError.invalidEncoding
@@ -24,16 +28,18 @@ public struct CapabilityToken: Codable, Equatable, Sendable {
     }
 
     public static func random() -> CapabilityToken {
+        var generator = SystemRandomNumberGenerator()
         let bytes = (0..<byteCount).map { _ in
-            UInt8.random(in: UInt8.min ... UInt8.max)
+            UInt8.random(in: UInt8.min ... UInt8.max, using: &generator)
         }
-        return try! CapabilityToken(base64Encoded: Data(bytes).base64EncodedString())
+        return CapabilityToken(uncheckedRawValue: Data(bytes).base64EncodedString())
     }
 
     public func constantTimeEquals(_ other: CapabilityToken) -> Bool {
-        let lhs = Data(base64Encoded: rawValue)!
-        let rhs = Data(base64Encoded: other.rawValue)!
-        guard lhs.count == rhs.count else {
+        guard let lhs = Data(base64Encoded: rawValue),
+              let rhs = Data(base64Encoded: other.rawValue),
+              lhs.count == rhs.count
+        else {
             return false
         }
 
@@ -58,7 +64,14 @@ public struct CapabilityToken: Codable, Equatable, Sendable {
 public enum IPCRequest: Codable, Equatable, Sendable {
     case status
     case workbenchStatus
+    case savedReferences
+    case pendingRevealSessions
     case inspectReference(reference: String)
+    case deleteRecord(reference: String)
+    case authorizeHighRisk(reason: String)
+    case lock
+    case clearRevealSessions
+    case revealSessionData(sessionID: String)
     case reveal(reference: String, reason: String)
     case encrypt(label: String?, policy: SecretPolicy)
     case encryptText(plaintext: String, label: String?, policy: SecretPolicy)
@@ -74,6 +87,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case reference
         case references
         case reason
+        case sessionID
         case label
         case policy
         case context
@@ -85,7 +99,14 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     private enum RequestType: String, Codable {
         case status
         case workbenchStatus
+        case savedReferences
+        case pendingRevealSessions
         case inspectReference
+        case deleteRecord
+        case authorizeHighRisk
+        case lock
+        case clearRevealSessions
+        case revealSessionData
         case reveal
         case encrypt
         case encryptText
@@ -103,9 +124,29 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .status
         case .workbenchStatus:
             self = .workbenchStatus
+        case .savedReferences:
+            self = .savedReferences
+        case .pendingRevealSessions:
+            self = .pendingRevealSessions
         case .inspectReference:
             self = .inspectReference(
                 reference: try container.decode(String.self, forKey: .reference)
+            )
+        case .deleteRecord:
+            self = .deleteRecord(
+                reference: try container.decode(String.self, forKey: .reference)
+            )
+        case .authorizeHighRisk:
+            self = .authorizeHighRisk(
+                reason: try container.decode(String.self, forKey: .reason)
+            )
+        case .lock:
+            self = .lock
+        case .clearRevealSessions:
+            self = .clearRevealSessions
+        case .revealSessionData:
+            self = .revealSessionData(
+                sessionID: try container.decode(String.self, forKey: .sessionID)
             )
         case .reveal:
             self = .reveal(
@@ -155,9 +196,26 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.status, forKey: .type)
         case .workbenchStatus:
             try container.encode(RequestType.workbenchStatus, forKey: .type)
+        case .savedReferences:
+            try container.encode(RequestType.savedReferences, forKey: .type)
+        case .pendingRevealSessions:
+            try container.encode(RequestType.pendingRevealSessions, forKey: .type)
         case let .inspectReference(reference):
             try container.encode(RequestType.inspectReference, forKey: .type)
             try container.encode(reference, forKey: .reference)
+        case let .deleteRecord(reference):
+            try container.encode(RequestType.deleteRecord, forKey: .type)
+            try container.encode(reference, forKey: .reference)
+        case let .authorizeHighRisk(reason):
+            try container.encode(RequestType.authorizeHighRisk, forKey: .type)
+            try container.encode(reason, forKey: .reason)
+        case .lock:
+            try container.encode(RequestType.lock, forKey: .type)
+        case .clearRevealSessions:
+            try container.encode(RequestType.clearRevealSessions, forKey: .type)
+        case let .revealSessionData(sessionID):
+            try container.encode(RequestType.revealSessionData, forKey: .type)
+            try container.encode(sessionID, forKey: .sessionID)
         case let .reveal(reference, reason):
             try container.encode(RequestType.reveal, forKey: .type)
             try container.encode(reference, forKey: .reference)
@@ -242,18 +300,6 @@ public struct ReferenceRange: Codable, Equatable, Sendable {
     }
 }
 
-public struct RevealContext: Codable, Equatable, Sendable {
-    public let reason: String
-    public let template: String
-    public let ranges: [ReferenceRange]
-
-    public init(reason: String, template: String, ranges: [ReferenceRange]) {
-        self.reason = reason
-        self.template = template
-        self.ranges = ranges
-    }
-}
-
 public struct OrphanScanResult: Codable, Equatable, Sendable {
     public let missingRecords: [String]
     public let unreferencedRecords: [String]
@@ -289,8 +335,13 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
 public enum IPCResponse: Codable, Equatable, Sendable {
     case status(locked: Bool)
     case workbenchStatus(WorkbenchStatus)
+    case savedReferences([SecretReferenceMetadata])
+    case revealSessionIDs([String])
     case referenceMetadata(SecretReferenceMetadata)
     case displayedToUser
+    case operationCompleted
+    case authorizationApproved
+    case revealSessionData(RestoredParagraph)
     case created(reference: String)
     case revealSessionOpened(sessionID: String)
     case restoredText(String)
@@ -303,9 +354,12 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case type
         case locked
         case status
+        case references
+        case sessionIDs
         case metadata
         case reference
         case sessionID
+        case paragraph
         case text
         case path
         case result
@@ -315,8 +369,13 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     private enum ResponseType: String, Codable {
         case status
         case workbenchStatus
+        case savedReferences
+        case revealSessionIDs
         case referenceMetadata
         case displayedToUser
+        case operationCompleted
+        case authorizationApproved
+        case revealSessionData
         case created
         case revealSessionOpened
         case restoredText
@@ -333,10 +392,20 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .status(locked: try container.decode(Bool.self, forKey: .locked))
         case .workbenchStatus:
             self = .workbenchStatus(try container.decode(WorkbenchStatus.self, forKey: .status))
+        case .savedReferences:
+            self = .savedReferences(try container.decode([SecretReferenceMetadata].self, forKey: .references))
+        case .revealSessionIDs:
+            self = .revealSessionIDs(try container.decode([String].self, forKey: .sessionIDs))
         case .referenceMetadata:
             self = .referenceMetadata(try container.decode(SecretReferenceMetadata.self, forKey: .metadata))
         case .displayedToUser:
             self = .displayedToUser
+        case .operationCompleted:
+            self = .operationCompleted
+        case .authorizationApproved:
+            self = .authorizationApproved
+        case .revealSessionData:
+            self = .revealSessionData(try container.decode(RestoredParagraph.self, forKey: .paragraph))
         case .created:
             self = .created(reference: try container.decode(String.self, forKey: .reference))
         case .revealSessionOpened:
@@ -363,11 +432,24 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .workbenchStatus(status):
             try container.encode(ResponseType.workbenchStatus, forKey: .type)
             try container.encode(status, forKey: .status)
+        case let .savedReferences(references):
+            try container.encode(ResponseType.savedReferences, forKey: .type)
+            try container.encode(references, forKey: .references)
+        case let .revealSessionIDs(sessionIDs):
+            try container.encode(ResponseType.revealSessionIDs, forKey: .type)
+            try container.encode(sessionIDs, forKey: .sessionIDs)
         case let .referenceMetadata(metadata):
             try container.encode(ResponseType.referenceMetadata, forKey: .type)
             try container.encode(metadata, forKey: .metadata)
         case .displayedToUser:
             try container.encode(ResponseType.displayedToUser, forKey: .type)
+        case .operationCompleted:
+            try container.encode(ResponseType.operationCompleted, forKey: .type)
+        case .authorizationApproved:
+            try container.encode(ResponseType.authorizationApproved, forKey: .type)
+        case let .revealSessionData(paragraph):
+            try container.encode(ResponseType.revealSessionData, forKey: .type)
+            try container.encode(paragraph, forKey: .paragraph)
         case let .created(reference):
             try container.encode(ResponseType.created, forKey: .type)
             try container.encode(reference, forKey: .reference)

@@ -35,9 +35,20 @@ Current runtime path:
 4. Copying the wrapped vault data to a different local device key must not
    decrypt the vault.
 
+The `SVLTAgent` starts with no unwrapped master key. LocalAuthentication and
+Keychain access occur only at the first protected operation; the App and
+launchd startup path never calls `unlockLowProtection()`.
+
+Audit events use a separate 256-bit Keychain key with `WhenUnlockedThisDeviceOnly`
+and no `.userPresence` flag. The audit key is never used to unwrap Vault data,
+and status/connection handling never asks for it merely to report health.
+
 Regression coverage:
 
 - `copiedWrappedMasterKeyFailsWithDifferentLocalDeviceKey`
+- `deviceKeyStorePassesOneEvaluatedContextIntoKeychainQuery`
+- `existingAccessibleOnlyKeychainItemFailsClosed`
+- `statusAuditUsesIndependentKeyAndNeverRequestsVaultMasterKey`
 - `fileWrappedMasterKeyStoreRoundTripsWrappedSet`
 - `fileWrappedMasterKeyStoreRejectsSymlinkTargetBeforeWriting`
 

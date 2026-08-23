@@ -992,7 +992,7 @@ export function createVaultToolDefinitions(
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "svlt",
-    version: "0.1.14"
+    version: "0.1.15"
   });
 
   registerVaultTools(server, client);
@@ -1111,10 +1111,10 @@ async function handleLocalHttpRequest(
   try {
     username = parsed.usernameRef === undefined
       ? parsed.username
-      : await resolveSingleSecret(client, parsed.usernameRef, "Use local device username");
+      : await resolveSingleSecret(client, parsed.usernameRef, "Use local device username", parsedUrl.host);
     password = parsed.passwordRef === undefined
       ? undefined
-      : await resolveSingleSecret(client, parsed.passwordRef, "Use local device password");
+      : await resolveSingleSecret(client, parsed.passwordRef, "Use local device password", parsedUrl.host);
   } catch (error) {
     return structuredResult({ status: statusFromError(error, "REQUEST_FAILED") });
   }
@@ -1193,7 +1193,7 @@ async function handleSshCommandWithSecret(
   try {
     username = parsed.usernameRef === undefined
       ? parsed.username
-      : await resolveSingleSecret(client, parsed.usernameRef, "Use SSH username for local device");
+      : await resolveSingleSecret(client, parsed.usernameRef, "Use SSH username for local device", parsed.host);
   } catch (error) {
     return structuredResult({ status: statusFromError(error, "SSH_REQUEST_FAILED") });
   }
@@ -1206,7 +1206,7 @@ async function handleSshCommandWithSecret(
 
   let password: string;
   try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use SSH password for local device");
+    password = await resolveSingleSecret(client, parsed.passwordRef, "Use SSH password for local device", parsed.host);
   } catch (error) {
     return structuredResult({ status: statusFromError(error, "SSH_REQUEST_FAILED") });
   }
@@ -1257,7 +1257,7 @@ async function handleApiRequestWithToken(
 
   let token: string;
   try {
-    token = await resolveSingleSecret(client, parsed.tokenRef, "Use API token for restricted local/API request");
+    token = await resolveSingleSecret(client, parsed.tokenRef, "Use API token for restricted local/API request", parsedUrl.host);
   } catch (error) {
     return structuredResult({ status: statusFromError(error, "REQUEST_FAILED") });
   }
@@ -1327,7 +1327,8 @@ async function handleDatabaseQueryWithSecret(
     client,
     parsed.username,
     parsed.usernameRef,
-    "Use database username for local/private database"
+    "Use database username for local/private database",
+    parsed.host
   );
   if (!usernameResult.ok) {
     return structuredResult({ status: usernameResult.status });
@@ -1341,7 +1342,7 @@ async function handleDatabaseQueryWithSecret(
 
   let password: string;
   try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use database password for local/private database");
+    password = await resolveSingleSecret(client, parsed.passwordRef, "Use database password for local/private database", parsed.host);
   } catch (error) {
     return structuredResult({ status: statusFromError(error, "DATABASE_REQUEST_FAILED") });
   }
@@ -1398,7 +1399,8 @@ async function handleFileTransferWithSecret(
     client,
     parsed.username,
     parsed.usernameRef,
-    "Use SFTP/SCP username for local/private device"
+    "Use SFTP/SCP username for local/private device",
+    parsed.host
   );
   if (!usernameResult.ok) {
     return structuredResult({ status: usernameResult.status });
@@ -1412,7 +1414,7 @@ async function handleFileTransferWithSecret(
 
   let password: string;
   try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use SFTP/SCP password for local/private device");
+    password = await resolveSingleSecret(client, parsed.passwordRef, "Use SFTP/SCP password for local/private device", parsed.host);
   } catch (error) {
     return structuredResult({ status: statusFromError(error, "FILE_TRANSFER_REQUEST_FAILED") });
   }
@@ -1465,7 +1467,8 @@ async function handleBrowserLoginWithSecret(
     client,
     parsed.username,
     parsed.usernameRef,
-    "Use browser login username for local/private web form"
+    "Use browser login username for local/private web form",
+    parsedUrl.host
   );
   if (!usernameResult.ok) {
     return structuredResult({ status: usernameResult.status });
@@ -1476,7 +1479,7 @@ async function handleBrowserLoginWithSecret(
 
   let password: string;
   try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use browser login password for local/private web form");
+    password = await resolveSingleSecret(client, parsed.passwordRef, "Use browser login password for local/private web form", parsedUrl.host);
   } catch (error) {
     return structuredResult({ status: statusFromError(error, "BROWSER_LOGIN_FAILED") });
   }
@@ -1523,7 +1526,7 @@ async function handleLocalAppFillWithSecret(
       continue;
     }
     try {
-      const value = await resolveSingleSecret(client, field.valueRef, `Use local app form field ${field.name}`);
+      const value = await resolveSingleSecret(client, field.valueRef, `Use local app form field ${field.name}`, parsed.bundleId);
       secretsUsed.push(value);
       fields.push({ name: field.name, value });
     } catch (error) {
@@ -1683,7 +1686,8 @@ function buildRevealRequestFromTemplate(references: string[], template: string):
 async function resolveSingleSecret(
   client: VaultIpcClient,
   reference: string,
-  reason: string
+  reason: string,
+  destination?: string
 ): Promise<string> {
   const response = await client.request({
     type: "restoreReferences",
@@ -1691,7 +1695,8 @@ async function resolveSingleSecret(
     context: {
       reason,
       template: "{{0}}",
-      ranges: [{ index: 0, placeholder: "{{0}}" }]
+      ranges: [{ index: 0, placeholder: "{{0}}" }],
+      ...(destination === undefined ? {} : { destination })
     }
   });
 
@@ -1709,7 +1714,8 @@ async function resolveOptionalUsername(
   client: VaultIpcClient,
   username: string | undefined,
   usernameRef: string | undefined,
-  reason: string
+  reason: string,
+  destination?: string
 ): Promise<ResolveOptionalUsernameResult> {
   if (usernameRef === undefined) {
     return { ok: true, value: username, wasSecret: false };
@@ -1717,7 +1723,7 @@ async function resolveOptionalUsername(
   try {
     return {
       ok: true,
-      value: await resolveSingleSecret(client, usernameRef, reason),
+      value: await resolveSingleSecret(client, usernameRef, reason, destination),
       wasSecret: true
     };
   } catch (error) {

@@ -105,7 +105,8 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 
 ## 失败处理
 
-- `vault_status` 显示 app 不可达或 vault 锁定：让用户启动/解锁本地 app 后重试。
+- `vault_status` 显示本机通道不可达：让用户打开 SVLT 一次以完成 SMAppService 注册/批准；普通后台 Agent 不要求 App 一直运行。
+- `vault_status` 显示 vault 锁定：下一次真正的受保护操作会触发 Agent 的 lazy unlock；不要要求用户预先打开 GUI 解锁。
 - 返回 `URL_NOT_ALLOWED`、`HOST_NOT_ALLOWED`、`COMMAND_NOT_ALLOWED`：说明目标或动作超出 allowlist；请用户确认目标，或新增更窄的安全工具。
 - 返回 `QUERY_NOT_ALLOWED`、`PATH_NOT_ALLOWED`、`URL_TOKEN_NOT_ALLOWED`：说明 SQL、路径或 URL 形态不安全；修正非敏感参数后重试，不要索要明文。
 - 返回 `SAFE_AUTOFILL_UNAVAILABLE`、`DATABASE_RUNNER_UNAVAILABLE`、`FILE_TRANSFER_RUNNER_UNAVAILABLE`：说明本地 runner 尚不可用；不要改用明文或剪贴板绕过。
@@ -125,7 +126,8 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 
 ## 本地预期
 
-- SVLT app 已安装并运行。
+- SVLT.app 已安装；首次启动完成 SMAppService Agent 注册并在系统设置中批准（如 macOS 要求）。
+- SVLTAgent 可在 SVLT.app 退出后继续运行；只有需要本机窗口的 reveal 才会按需激活 App。
 - MCP server 已安装到 `~/Library/Application Support/AgentSecretVault/MCP`。
 - agent 的 MCP entry 指向安装后的 `MCP/dist/server.js`。
 - 现有笔记和任务中的敏感值以 `secret://...` 保存，不保存明文。

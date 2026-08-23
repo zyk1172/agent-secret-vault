@@ -41,6 +41,15 @@ if [[ ! -d "$APP_SOURCE" ]]; then
   exit 1
 fi
 
+AGENT_EXECUTABLE="$APP_SOURCE/Contents/MacOS/SVLTAgent"
+AGENT_PLIST="$APP_SOURCE/Contents/Library/LaunchAgents/com.agent-secret-vault.SVLT.agent.plist"
+if [[ ! -x "$AGENT_EXECUTABLE" || ! -f "$AGENT_PLIST" ]]; then
+  echo "Release app is missing the launchd Agent or embedded LaunchAgent plist." >&2
+  exit 1
+fi
+codesign --verify --strict "$AGENT_EXECUTABLE"
+codesign --verify --deep --strict "$APP_SOURCE"
+echo "Embedded, signed SVLTAgent and LaunchAgent verified."
 echo "==> Staging app and MCP bundle"
 cp -R "$APP_SOURCE" "$STAGING_DIR/SVLT.app"
 cp "$ROOT_DIR/mcp-server/package.json" "$MCP_STAGING/package.json"
@@ -50,17 +59,20 @@ cp "$ROOT_DIR/obsidian-plugin/svlt/main.js" "$OBSIDIAN_PLUGIN_STAGING/main.js"
 cp "$ROOT_DIR/obsidian-plugin/svlt/manifest.json" "$OBSIDIAN_PLUGIN_STAGING/manifest.json"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.sh"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.command"
+cp "$ROOT_DIR/scripts/check-agent-resources.sh" "$STAGING_DIR/check-agent-resources.sh"
 cp "$ROOT_DIR/docs/zh-CN.md" "$STAGING_DIR/USER_GUIDE_zh-CN.md"
 cp "$ROOT_DIR/docs/svlt-agent-policy-zh-CN.md" "$STAGING_DIR/svlt-agent-policy-zh-CN.md"
 chmod +x "$STAGING_DIR/install.sh"
 chmod +x "$STAGING_DIR/install.command"
+chmod +x "$STAGING_DIR/check-agent-resources.sh"
 
 cat > "$STAGING_DIR/README_INSTALL.txt" <<'TEXT'
 SVLT 安装方式
 
 1. 双击 install.command；如果系统拦截，右键点它再选“打开”。
    也可以在终端运行 install.sh。
-2. 安装脚本会把 App 复制到 /Applications 或 ~/Applications。
+2. 安装脚本会把包含 SVLTAgent 的 App 复制到 /Applications 或 ~/Applications，
+   首次打开时通过 SMAppService 注册内置 LaunchAgent。
 3. 安装脚本会把 MCP server 安装到：
    ~/Library/Application Support/AgentSecretVault/MCP
 4. 安装脚本会生成可复制的 MCP 配置：
@@ -74,6 +86,8 @@ SVLT 安装方式
    Agent 只能通过 MCP 使用 App 选定的 敏感信息.md 和 secret:// 引用，不得直接读取索引或从笔记、日志、环境变量、历史和记忆中绕过获取敏感值。
 
 完整中文教程见：USER_GUIDE_zh-CN.md
+
+可用 check-agent-resources.sh 检查后台 Agent 的 ps/top/powermetrics 占用。
 
 注意：本版本需要本机已安装 Node.js 24 或更新版本，用于运行 MCP server。
 TEXT

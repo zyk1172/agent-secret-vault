@@ -2,9 +2,10 @@ import AppKit
 import SwiftUI
 import VaultCore
 import VaultIPC
+import VaultService
 
 public enum VaultWorkbenchCopy {
-    public static let documentationURL = URL(string: "https://github.com/zyk1172/svlt")!
+    public static let documentationURL = URL(string: "https://github.com/zyk1172/svlt") ?? URL(fileURLWithPath: "/")
 
     public static let disconnected = (
         status: "Obsidian 插件未连接",
@@ -121,6 +122,7 @@ public extension Notification.Name {
 
 public struct VaultWorkbenchView: View {
     let status: WorkbenchStatus
+    let agentServiceStatus: AgentServiceStatus
     let orphanScanResult: OrphanScanResult?
     let auditEntries: [AgentAutomationAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
@@ -146,6 +148,7 @@ public struct VaultWorkbenchView: View {
 
     public init(
         status: WorkbenchStatus,
+        agentServiceStatus: AgentServiceStatus = .unavailable,
         orphanScanResult: OrphanScanResult? = nil,
         auditEntries: [AgentAutomationAuditEntry] = [],
         savedReferences: [SecretReferenceMetadata] = [],
@@ -169,6 +172,7 @@ public struct VaultWorkbenchView: View {
         removeSensitiveScanRule: ((String) -> Void)? = nil
     ) {
         self.status = status
+        self.agentServiceStatus = agentServiceStatus
         self.orphanScanResult = orphanScanResult
         self.auditEntries = auditEntries
         self.savedReferences = savedReferences
@@ -233,6 +237,9 @@ public struct VaultWorkbenchView: View {
             .listStyle(.sidebar)
 
             SidebarStatusStrip(status: status)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            AgentServiceStatusView(status: agentServiceStatus)
                 .padding(.horizontal, 14)
                 .padding(.bottom, 14)
         }

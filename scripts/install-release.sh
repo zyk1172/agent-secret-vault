@@ -26,6 +26,11 @@ if [[ ! -d "$MCP_SOURCE" ]]; then
   exit 1
 fi
 
+if [[ ! -x "$APP_SOURCE/Contents/MacOS/SVLTAgent" || ! -f "$APP_SOURCE/Contents/Library/LaunchAgents/com.agent-secret-vault.SVLT.agent.plist" ]]; then
+  echo "SVLT.app 缺少 SVLTAgent 或内置 LaunchAgent，拒绝安装不完整 release。" >&2
+  exit 1
+fi
+
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "需要先安装 Node.js 24 或更新版本。安装后重新运行本脚本。" >&2
   echo "推荐：从 https://nodejs.org 下载 LTS/current 版本。" >&2
@@ -142,13 +147,17 @@ JSON
 
 echo "安装完成。"
 echo "App: $APP_TARGET"
+echo "后台 Agent: $APP_TARGET/Contents/MacOS/SVLTAgent"
+echo "LaunchAgent: $APP_TARGET/Contents/Library/LaunchAgents/com.agent-secret-vault.SVLT.agent.plist"
 echo "MCP 配置: $CONFIG_PATH"
 echo "Obsidian 插件: $OBSIDIAN_INSTALL_STATUS"
 echo
 echo "下一步："
-echo "1. 打开 SVLT：open \"$APP_TARGET\""
-echo "2. 在 Codex / Claude / Hermes / OpenClaw 的 MCP 配置中粘贴 $CONFIG_PATH 的内容。"
-echo "3. 将 $RELEASE_DIR/svlt-agent-policy-zh-CN.md 中的代码块粘贴到 Agent 的系统提示、项目规则或工作区规则。"
-echo "4. 如果安装了 Obsidian 插件，请在 Obsidian 设置 → 第三方插件中启用 SVLT。"
+echo "1. 打开 SVLT：open \"$APP_TARGET\"（首次启动会通过 SMAppService 注册后台 Agent）。"
+echo "2. 在系统设置 → 通用 → 登录项中批准 SVLT（如 macOS 要求）。"
+echo "3. 在 Codex / Claude / Hermes / OpenClaw 的 MCP 配置中粘贴 $CONFIG_PATH 的内容。"
+echo "4. 将 $RELEASE_DIR/svlt-agent-policy-zh-CN.md 中的代码块粘贴到 Agent 的系统提示、项目规则或工作区规则。"
+echo "5. 如需测量后台占用，运行：$RELEASE_DIR/check-agent-resources.sh"
+echo "6. 如果安装了 Obsidian 插件，请在 Obsidian 设置 → 第三方插件中启用 SVLT。"
 
 open "$APP_TARGET"

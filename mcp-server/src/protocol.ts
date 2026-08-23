@@ -36,7 +36,8 @@ export type ReferenceRange = z.infer<typeof ReferenceRange>;
 export const RevealContext = z.object({
   reason: z.string().min(1),
   template: z.string().min(1),
-  ranges: z.array(ReferenceRange)
+  ranges: z.array(ReferenceRange),
+  destination: z.string().min(1).optional()
 }).strict();
 export type RevealContext = z.infer<typeof RevealContext>;
 

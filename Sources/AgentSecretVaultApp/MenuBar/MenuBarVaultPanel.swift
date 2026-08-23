@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import VaultIPC
+import VaultService
+import VaultIPC
 
 public struct MenuBarVaultPanel: View {
     public static let statusItemSymbol = MenuBarPresentation.statusItemSymbol

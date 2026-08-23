@@ -50,6 +50,21 @@ targets:
       - target: VaultCore
       - target: VaultAuthorization
 
+  VaultService:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Sources/VaultService
+    dependencies:
+      - target: VaultCore
+      - target: VaultAuthorization
+      - target: VaultIPC
+      - target: VaultExecution
+
   VaultIPC:
     type: framework
     platform: macOS
@@ -78,6 +93,25 @@ targets:
       - target: VaultCore
       - target: VaultAuthorization
       - target: VaultIPC
+      - target: VaultService
+
+  SVLTAgent:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    productName: SVLTAgent
+    settings:
+      base:
+        PRODUCT_NAME: SVLTAgent
+        PRODUCT_BUNDLE_IDENTIFIER: com.agent-secret-vault.SVLT.agent
+    sources:
+      - Sources/SVLTAgent
+    dependencies:
+      - target: VaultCore
+      - target: VaultAuthorization
+      - target: VaultExecution
+      - target: VaultIPC
+      - target: VaultService
 
   AgentSecretVault:
     type: application
@@ -88,20 +122,33 @@ targets:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: SVLT
+        PRODUCT_BUNDLE_IDENTIFIER: com.agent-secret-vault.SVLT
     sources:
       - Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift
       - AppAssets/Assets.xcassets
+      - path: Config/com.agent-secret-vault.SVLT.agent.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
     info:
       path: Config/Info.plist
       properties:
-        CFBundleShortVersionString: 0.1.15
-        CFBundleVersion: 15
+        CFBundleShortVersionString: "0.1.15"
+        CFBundleVersion: "15"
     dependencies:
       - target: AgentSecretVaultApp
       - target: VaultIPC
       - target: VaultExecution
       - target: VaultCore
       - target: VaultAuthorization
+      - target: VaultService
+      - target: SVLTAgent
+        embed: true
+        link: false
+        codeSign: true
+        copy:
+          destination: executables
 
   VaultAuthorizationTests:
     type: bundle.unit-test
@@ -116,6 +163,7 @@ targets:
       - target: VaultAuthorization
       - target: VaultCore
       - target: AgentSecretVaultApp
+      - target: VaultService
       - target: VaultIPC
 
   VaultExecutionTests:
@@ -171,6 +219,7 @@ schemes:
     build:
       targets:
         VaultAuthorization: all
+        VaultService: all
         AgentSecretVaultApp: all
         VaultAuthorizationTests:
           - test
@@ -182,11 +231,15 @@ schemes:
     build:
       targets:
         AgentSecretVault: all
+        VaultService: all
+        SVLTAgent: all
         VaultCoreTests:
           - test
         VaultAuthorizationTests:
           - test
         VaultIPCTests:
+          - test
+        VaultExecutionTests:
           - test
         LeakTests:
           - test
@@ -195,6 +248,7 @@ schemes:
         - VaultCoreTests
         - VaultAuthorizationTests
         - VaultIPCTests
+        - VaultExecutionTests
         - LeakTests
 
   VaultExecution:

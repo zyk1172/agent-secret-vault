@@ -88,11 +88,54 @@ import Testing
     }
 }
 
-@Test func keychainMaterialStoreFallsBackWhenAccessControlEntitlementIsMissing() async throws {
+@Test func deviceKeyStorePassesOneEvaluatedContextIntoKeychainQuery() async throws {
+    let expectedKey = Data(repeating: 0x4A, count: 32)
+    let keychain = FakeKeychainClient(
+        copyResults: [(errSecSuccess, expectedKey)],
+        addResults: []
+    )
+    let materialStore = KeychainDeviceKeyMaterialStore(
+        service: "com.agent-secret-vault.context-test",
+        account: "device-wrapping-key",
+        keychain: keychain,
+        randomKeyData: { expectedKey }
+    )
+    let evaluator = CountingLocalAuthenticationEvaluator()
+    let store = DeviceKeyStore(
+        authenticator: LocalAuthenticator(evaluator: evaluator),
+        materialStore: materialStore
+    )
+
+    #expect(try await store.deviceKey(reason: "one operation") == expectedKey)
+    #expect(await evaluator.count == 1)
+    #expect(keychain.copyQueries.count == 2)
+    #expect(keychain.copyQueries[0][kSecUseAuthenticationContext as String] != nil)
+    #expect(keychain.copyQueries[1][kSecUseAuthenticationContext as String] != nil)
+}
+
+@Test func existingAccessibleOnlyKeychainItemFailsClosed() async {
+    let keychain = FakeKeychainClient(
+        copyResults: [(errSecSuccess, Data(repeating: 0x55, count: 32))],
+        addResults: [],
+        attributeResults: [(errSecSuccess, [kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly])]
+    )
+    let store = KeychainDeviceKeyMaterialStore(
+        service: "com.agent-secret-vault.weak-item-test",
+        account: "device-wrapping-key",
+        keychain: keychain,
+        randomKeyData: { Data(repeating: 0x55, count: 32) }
+    )
+
+    await #expect(throws: DeviceKeyStoreError.unsupportedRequiredKeychainControls) {
+        _ = try await store.loadOrCreateDeviceKeyData()
+    }
+}
+
+@Test func keychainMaterialStoreFailsClosedWhenAccessControlIsUnavailable() async {
     let expectedKey = Data(repeating: 0x44, count: 32)
     let keychain = FakeKeychainClient(
         copyResults: [(errSecItemNotFound, nil)],
-        addResults: [errSecMissingEntitlement, errSecSuccess]
+        addResults: [errSecMissingEntitlement]
     )
     let store = KeychainDeviceKeyMaterialStore(
         service: "com.agent-secret-vault.test",
@@ -101,23 +144,18 @@ import Testing
         randomKeyData: { expectedKey }
     )
 
-    let actualKey = try await store.loadOrCreateDeviceKeyData()
-
-    #expect(actualKey == expectedKey)
-    #expect(keychain.addedAttributes.count == 2)
+    await #expect(throws: DeviceKeyStoreError.unsupportedRequiredKeychainControls) {
+        _ = try await store.loadOrCreateDeviceKeyData()
+    }
+    #expect(keychain.addedAttributes.count == 1)
     #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] != nil)
-    #expect(keychain.addedAttributes[1][kSecAttrAccessControl as String] == nil)
-    #expect((keychain.addedAttributes[1][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 }
 
-@Test func recoveryKeyStoreFallsBackWhenSynchronizableAccessControlIsRejected() async throws {
+@Test func recoveryKeyStoreFailsClosedWhenSynchronizableProtectionIsUnavailable() async {
     let expectedKey = Data(repeating: 0x45, count: 32)
     let keychain = FakeKeychainClient(
-        copyResults: [
-            (errSecMissingEntitlement, nil),
-            (errSecItemNotFound, nil)
-        ],
-        addResults: [errSecMissingEntitlement, errSecSuccess]
+        copyResults: [(errSecItemNotFound, nil)],
+        addResults: [errSecMissingEntitlement]
     )
     let store = KeychainRecoveryKeyStore(
         service: "com.agent-secret-vault.test.recovery",
@@ -126,24 +164,36 @@ import Testing
         randomKeyData: { expectedKey }
     )
 
-    let actualKey = try await store.loadOrCreateRecoveryKeyData()
-
-    #expect(actualKey == expectedKey)
-    #expect(keychain.addedAttributes.count == 2)
+    await #expect(throws: RecoveryKeyStoreError.unsupportedRequiredKeychainControls) {
+        _ = try await store.loadOrCreateRecoveryKeyData()
+    }
+    #expect(keychain.addedAttributes.count == 1)
     #expect((keychain.addedAttributes[0][kSecAttrSynchronizable as String] as? Bool) == true)
     #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] != nil)
-    #expect(keychain.addedAttributes[1][kSecAttrSynchronizable as String] == nil)
-    #expect(keychain.addedAttributes[1][kSecAttrAccessControl as String] == nil)
-    #expect((keychain.addedAttributes[1][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlocked as String))
 }
 
-@Test func recoveryKeyStoreLoadsLocalFallbackWhenSynchronizableQueryIsRejected() async throws {
-    let expectedKey = Data(repeating: 0x46, count: 32)
+@Test func auditKeyStoreUsesNoUserPresenceProtection() async throws {
+    let expectedKey = Data(repeating: 0x49, count: 32)
     let keychain = FakeKeychainClient(
-        copyResults: [
-            (errSecMissingEntitlement, nil),
-            (errSecSuccess, expectedKey)
-        ],
+        copyResults: [(errSecItemNotFound, nil)],
+        addResults: [errSecSuccess]
+    )
+    let store = KeychainAuditKeyStore(
+        service: "com.agent-secret-vault.audit-test",
+        account: "audit-encryption-key",
+        keychain: keychain,
+        randomKeyData: { expectedKey }
+    )
+
+    #expect(try await store.loadOrCreateAuditKeyData() == expectedKey)
+    #expect(keychain.addedAttributes.count == 1)
+    #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] == nil)
+    #expect((keychain.addedAttributes[0][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
+}
+
+@Test func recoveryKeyStoreDoesNotUseAWeakerLocalFallback() async {
+    let keychain = FakeKeychainClient(
+        copyResults: [(errSecMissingEntitlement, nil)],
         addResults: []
     )
     let store = KeychainRecoveryKeyStore(
@@ -151,14 +201,14 @@ import Testing
         account: "icloud-recovery-wrapping-key",
         keychain: keychain,
         randomKeyData: {
-            Issue.record("Recovery key should have loaded from local fallback.")
+            Issue.record("Recovery key must fail closed before generation.")
             return Data(repeating: 0x00, count: 32)
         }
     )
 
-    let actualKey = try await store.loadOrCreateRecoveryKeyData()
-
-    #expect(actualKey == expectedKey)
+    await #expect(throws: RecoveryKeyStoreError.unsupportedRequiredKeychainControls) {
+        _ = try await store.loadRecoveryKeyData()
+    }
     #expect(keychain.addedAttributes.isEmpty)
 }
 
@@ -217,6 +267,15 @@ private enum FakeLocalAuthenticationResult: Sendable {
     case laError(Int)
 }
 
+private actor CountingLocalAuthenticationEvaluator: LocalAuthenticationEvaluating {
+    private(set) var count = 0
+
+    func evaluate(policy: LAPolicy, localizedReason: String) async throws -> Bool {
+        count += 1
+        return true
+    }
+}
+
 private struct FakeLocalAuthenticationEvaluator: LocalAuthenticationEvaluating {
     let result: FakeLocalAuthenticationResult
 
@@ -233,15 +292,33 @@ private struct FakeLocalAuthenticationEvaluator: LocalAuthenticationEvaluating {
 private final class FakeKeychainClient: KeychainClient, @unchecked Sendable {
     private var copyResults: [(OSStatus, Data?)]
     private var addResults: [OSStatus]
+    private var attributeResults: [(OSStatus, [String: Any]?)]
     private(set) var addedAttributes: [[String: Any]] = []
+    private(set) var copyQueries: [[String: Any]] = []
 
-    init(copyResults: [(OSStatus, Data?)], addResults: [OSStatus]) {
+    init(
+        copyResults: [(OSStatus, Data?)],
+        addResults: [OSStatus],
+        attributeResults: [(OSStatus, [String: Any]?)] = []
+    ) {
         self.copyResults = copyResults
         self.addResults = addResults
+        self.attributeResults = attributeResults
     }
 
     func copyMatching(_ query: [String: Any]) -> (status: OSStatus, data: Data?) {
-        copyResults.removeFirst()
+        copyQueries.append(query)
+        guard !copyResults.isEmpty else {
+            return (errSecInteractionNotAllowed, nil)
+        }
+        return copyResults.removeFirst()
+    }
+
+    func copyAttributes(_ query: [String: Any]) -> (status: OSStatus, attributes: [String: Any]?) {
+        if attributeResults.isEmpty {
+            return (errSecSuccess, [kSecAttrAccessControl as String: NSObject()])
+        }
+        return attributeResults.removeFirst()
     }
 
     func add(_ attributes: [String: Any]) -> OSStatus {

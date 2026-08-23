@@ -12,6 +12,7 @@ SVLT 用来把知识库、笔记和对话里的敏感信息替换成 `secret://.
 - Codex、Claude、Hermes 等 Agent 在对话中只看到引用。
 - 需要本机使用秘密时，Agent 通过本机 MCP 工具请求 App 解密。
 - 明文不返回聊天，只在本机 App、MCP 内部或受控本地动作中短暂使用。
+- SVLT.app 只负责界面和设置；SVLTAgent 是由 launchd 管理的独立后台服务，App 退出后仍可连接。
 
 ## 2. 普通用户安装
 
@@ -26,7 +27,8 @@ SVLT 用来把知识库、笔记和对话里的敏感信息替换成 `secret://.
 
 安装后文件位置：
 
-- App：`/Applications/SVLT.app` 或 `~/Applications/SVLT.app`
+- App 与后台 Agent：`/Applications/SVLT.app` 或 `~/Applications/SVLT.app`
+- LaunchAgent：`SVLT.app/Contents/Library/LaunchAgents/com.agent-secret-vault.SVLT.agent.plist`
 - MCP server：`~/Library/Application Support/AgentSecretVault/MCP`
 - MCP 配置：`~/Library/Application Support/AgentSecretVault/svlt.mcp.json`
 - Obsidian 插件：release 包内的 `ObsidianPlugin/svlt`
@@ -49,6 +51,8 @@ Obsidian 插件安装方式：
 安装后，在 Obsidian 设置 → 第三方插件 中启用 SVLT。
 
 ## 3. 连接 Codex / Claude / Hermes
+
+首次打开 SVLT 时，App 会通过 `SMAppService.agent` 注册后台 Agent。若 macOS 要求批准，请到“系统设置 → 通用 → 登录项”批准 SVLT。不要手动把 plist 复制到 `~/Library/LaunchAgents`。
 
 安装完成后，打开这个配置文件：
 
@@ -83,7 +87,7 @@ Agent 接入后可以先测试：
 1. 调用 `vault_status`
 2. 调用 `agent_secret_usage_policy`
 
-如果 App 没打开或保险库锁定，先打开并解锁 App。
+普通状态、元数据、加密和受控 MCP 操作不要求 SVLT.app 一直打开。Agent 启动时保持 locked；第一次真正访问受保护密钥时才 lazy unlock。睡眠、锁屏、用户会话切换或手动锁定后会清除内存授权，下一次访问再授权。真正需要图形界面的 reveal 会通过 Agent → App UI 请求桥按需激活 App。
 
 ## 4. 日常使用流程
 
@@ -147,7 +151,17 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 
 ### Agent 能不能看到明文？
 
-设计目标是聊天里不返回明文。Agent 需要本机使用秘密时，应通过 MCP 工具让 App 在本机内部解密和使用。
+MCP、Codex 和 Obsidian 的协议不会返回明文。Agent 只在内存中为受控本地动作或 App-owned reveal session 暂时解析；普通 reveal 通过 UI 请求桥交给 SVLT.app 显示。
+
+### 如何确认后台占用？
+
+release 包中包含 `check-agent-resources.sh`：
+
+```bash
+./check-agent-resources.sh
+```
+
+也可以使用 `ps`、`top`，必要时使用 `powermetrics`。后台 Agent 主要阻塞等待 Unix Socket，没有 heartbeat、Timer、周期性 MCP ping 或全量扫描。
 
 ### 知识库里已经有很多明文怎么办？
 
