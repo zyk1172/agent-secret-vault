@@ -93,6 +93,46 @@ private struct CatalogStoreFixture {
     _ = first
 }
 
+@Test func catalogStoreSerializesConcurrentMutationsAcrossStoreInstances() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let firstStore = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let secondStore = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let first = try await firstStore.createIndex(title: "QNAP")
+
+    func attempt(_ store: SensitiveCatalogDocumentStore, title: String) async -> Bool {
+        do {
+            _ = try await store.createIndex(title: title, expectedRevision: first.revision)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    async let firstAttempt = attempt(firstStore, title: "音乐服务器")
+    async let secondAttempt = attempt(secondStore, title: "漫画服务器")
+    let outcomes = await (firstAttempt, secondAttempt)
+    #expect([outcomes.0, outcomes.1].filter { $0 }.count == 1)
+
+    let reopened = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let snapshot = try await reopened.snapshot()
+    #expect(snapshot.revision == 2)
+    #expect(snapshot.document.indexes.count == 2)
+}
+
 @Test func catalogStoreRejectsUnsupportedLegacyDocumentAndCanBackupItWithoutChangingIt() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

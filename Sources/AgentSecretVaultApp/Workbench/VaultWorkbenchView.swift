@@ -147,6 +147,11 @@ public extension Notification.Name {
 public struct VaultWorkbenchView: View {
     let status: WorkbenchStatus
     let agentServiceStatus: AgentServiceStatus
+    let agentServiceActionInFlight: Bool
+    let agentServiceActionErrorMessage: String?
+    let enableAgentService: (() async -> Void)?
+    let disableAgentService: (() async -> Void)?
+    let restartAgentService: (() async -> Void)?
     let orphanScanResult: OrphanScanResult?
     let auditEntries: [AgentAutomationAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
@@ -187,6 +192,11 @@ public struct VaultWorkbenchView: View {
     public init(
         status: WorkbenchStatus,
         agentServiceStatus: AgentServiceStatus = .unavailable,
+        agentServiceActionInFlight: Bool = false,
+        agentServiceActionErrorMessage: String? = nil,
+        enableAgentService: (() async -> Void)? = nil,
+        disableAgentService: (() async -> Void)? = nil,
+        restartAgentService: (() async -> Void)? = nil,
         orphanScanResult: OrphanScanResult? = nil,
         auditEntries: [AgentAutomationAuditEntry] = [],
         savedReferences: [SecretReferenceMetadata] = [],
@@ -225,6 +235,11 @@ public struct VaultWorkbenchView: View {
     ) {
         self.status = status
         self.agentServiceStatus = agentServiceStatus
+        self.agentServiceActionInFlight = agentServiceActionInFlight
+        self.agentServiceActionErrorMessage = agentServiceActionErrorMessage
+        self.enableAgentService = enableAgentService
+        self.disableAgentService = disableAgentService
+        self.restartAgentService = restartAgentService
         self.orphanScanResult = orphanScanResult
         self.auditEntries = auditEntries
         self.savedReferences = savedReferences
@@ -305,7 +320,14 @@ public struct VaultWorkbenchView: View {
             SidebarStatusStrip(status: status)
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
-            AgentServiceStatusView(status: agentServiceStatus)
+            AgentServiceStatusView(
+                status: agentServiceStatus,
+                actionInFlight: agentServiceActionInFlight,
+                actionErrorMessage: agentServiceActionErrorMessage,
+                enableAgent: enableAgentService,
+                disableAgent: disableAgentService,
+                restartAgent: restartAgentService
+            )
                 .padding(.horizontal, 14)
                 .padding(.bottom, 14)
         }
