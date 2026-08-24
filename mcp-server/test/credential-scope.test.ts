@@ -1,0 +1,110 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  classifyCredentialSelection,
+  credentialSourcePriority
+} from "../src/credential-scope.js";
+import {
+  createVaultToolDefinitions,
+  type VaultIpcClient
+} from "../src/server.js";
+
+class EmptyClient implements VaultIpcClient {
+  async request() {
+    return { type: "failure", code: "NOT_USED" } as const;
+  }
+}
+
+describe("credential scope selection", () => {
+  it("honors current user plaintext without SVLT lookup or substitution", () => {
+    const decision = classifyCredentialSelection({
+      userSuppliedPlaintext: true,
+      userExplicitlyRequestedPlaintext: true
+    });
+
+    expect(decision).toMatchObject({
+      scope: "USER_EXPLICIT_PLAINTEXT",
+      source: "USER_CURRENT_REQUEST",
+      shouldInvokeSVLT: false,
+      shouldSearchSVLT: false
+    });
+    expect(decision.explicitPlaintextOverride).toBeDefined();
+  });
+
+  it("requires SVLT only when the user explicitly selects SVLT", () => {
+    const decision = classifyCredentialSelection({
+      userSuppliedPlaintext: true,
+      userExplicitlyRequestedPlaintext: true,
+      userExplicitlySelectedSVLT: true
+    });
+
+    expect(decision).toMatchObject({
+      scope: "SVLT_MANAGED_OPERATION",
+      source: "EXPLICIT_SVLT_REFERENCE",
+      shouldInvokeSVLT: true,
+      shouldSearchSVLT: true
+    });
+    expect(decision.explicitPlaintextOverride).toBeUndefined();
+  });
+
+  it("keeps explicitly selected external providers outside SVLT", () => {
+    const decision = classifyCredentialSelection({
+      userSuppliedPlaintext: false,
+      userExplicitlyRequestedPlaintext: false,
+      explicitlySelectedExternalProvider: true
+    });
+
+    expect(decision).toMatchObject({
+      scope: "EXTERNAL_PROVIDER_OPERATION",
+      source: "EXPLICIT_EXTERNAL_PROVIDER",
+      shouldInvokeSVLT: false,
+      shouldSearchSVLT: false
+    });
+  });
+
+  it("does not activate from credential words alone", () => {
+    const decision = classifyCredentialSelection({
+      userSuppliedPlaintext: false,
+      userExplicitlyRequestedPlaintext: false
+    });
+
+    expect(decision.scope).toBe("UNMANAGED_CREDENTIAL");
+    expect(decision.shouldInvokeSVLT).toBe(false);
+    expect(decision.shouldSearchSVLT).toBe(true);
+  });
+
+  it("publishes the source priority without any value comparison", () => {
+    expect(credentialSourcePriority).toEqual([
+      "USER_CURRENT_REQUEST",
+      "EXPLICIT_EXTERNAL_PROVIDER",
+      "EXPLICIT_SVLT_REFERENCE",
+      "AUTOMATIC_DISCOVERY"
+    ]);
+  });
+});
+
+describe("agent policy contract", () => {
+  it("exposes explicit scope and derived-plaintext boundaries", async () => {
+    const tool = createVaultToolDefinitions(new EmptyClient()).find(
+      (candidate) => candidate.name === "agent_secret_usage_policy"
+    );
+    expect(tool).toBeDefined();
+
+    const result = await tool!.handler({});
+    const policy = result.structuredContent as Record<string, unknown>;
+    expect(policy.scopeRule).toMatchObject({
+      managed: expect.stringContaining("SVLT_MANAGED_OPERATION"),
+      explicitPlaintext: expect.stringContaining("USER_EXPLICIT_PLAINTEXT"),
+      externalProvider: expect.stringContaining("EXTERNAL_PROVIDER_OPERATION")
+    });
+    expect(policy.userOverrideRule).toEqual(expect.stringContaining("Do not force import"));
+    expect(policy.outOfScopeRule).toEqual(expect.arrayContaining([
+      expect.stringContaining("device MCP"),
+      expect.stringContaining("Do not compare")
+    ]));
+    expect((policy.forbidden as string[]).join(" ")).toContain(
+      "Do not expose plaintext obtained by decrypting an SVLT-managed secret outside the approved SVLT operation."
+    );
+    expect((policy.forbidden as string[]).join(" ")).not.toContain("Do not use raw credentials");
+  });
+});

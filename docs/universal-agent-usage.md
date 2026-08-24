@@ -1,18 +1,20 @@
 # SVLT 通用 Agent 使用文档
 
-本文面向 Codex、Claude、Hermes 以及其他支持 MCP 的本地或桌面 Agent。目标是让 Agent 在对话中使用 `secret://...` 密文引用，而不是接触密码、token、cookie、私钥等明文。
+本文面向 Codex、Claude、Hermes 以及其他支持 MCP 的本地或桌面 Agent。SVLT 是 opt-in：目标是让 Agent 在用户选择 SVLT 管理的秘密时使用 `secret://...` 密文引用，而不是接触这些秘密的明文；SVLT 不接管所有可用凭据。
 
 ## 1. Agent 必须理解的边界
 
-SVLT 的正确使用方式是：
+SVLT 管理路径的正确使用方式是：
 
-1. 聊天、笔记、任务描述里只保留 `secret://...`。
-2. Agent 不要求用户粘贴明文。
+1. SVLT 管理的聊天、笔记、任务描述里只保留 `secret://...`。
+2. Agent 不主动索要明文；如果用户亲自提供明文并明确要求本次使用，必须尊重这一选择，不得强制导入 SVLT。
 3. Agent 不把解密后的密码、token、Authorization header、cookie、session key、填充后的敏感字段返回聊天。
-4. 需要本机使用秘密时，Agent 调用 SVLT MCP 工具。
+4. 用户明确选择 SVLT 时，Agent 调用 SVLT MCP 工具；用户明确选择其他 provider 或当前明文时，调用用户选定的工具。
 5. 明文只短暂存在于本机 macOS App、MCP server 内部或专用本地 runner 中。
 
-Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明引用。
+Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明引用。SVLT 不比较用户独立提供的明文与引用背后的值。
+
+来源优先级为：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 没有指定时才自动发现。仅仅出现 password、token、API key 等词不会自动激活 SVLT。
 
 ## 2. 普通用户本机安装
 
@@ -117,15 +119,17 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 
 策略要求 Agent：
 
-1. 将 App 选定的 v2 `敏感信息.md` 视为唯一权威目录；每条数据属于 Index → Entry → Field，每个引用对应本地保险箱中的独立加密记录。
+1. 将 App 选定的 v2 `敏感信息.md` 视为 SVLT managed catalog 的权威目录；每条数据属于 Index → Entry → Field，每个引用对应本地保险箱中的独立加密记录。
 2. 仅通过 Catalog MCP/IPC 使用 `secret://...` 引用或允许返回的非敏感元数据，绝不直接读取、解析或修改 managed 文件。
 3. 遵守 `svlt-catalog-schema-v2.md`：普通字段使用 `value`，秘密字段只使用 `secretRef`，禁止秘密明文。
-4. 禁止以笔记、历史、日志、缓存、环境变量或模型记忆作为敏感值的替代来源。
-5. 先检查 SVLT 状态，再按具体动作提交风险提示并使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具；`locked` 不是全局门禁。
-6. 任务提到服务、设备、主机、账号或用途但没有引用时，先使用 `secret_search` 按非敏感上下文发现引用；不要要求用户复制 `secret://` ID。
+4. 不得把笔记、历史、日志、缓存或模型记忆冒充为 SVLT Secret；环境变量、外部 provider 和用户当前明文属于其各自安全规则，不由 SVLT 接管。
+5. 先判断用户是否选择 SVLT；选择后再检查 SVLT 状态并按具体动作使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具；`locked` 不是全局门禁。
+6. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` 按非敏感上下文自动发现引用；用户已明确选择 plaintext 或外部 provider 时不得搜索并替换来源。
 7. 用 Index、Entry、alias、tag、endpoint 和允许返回的字段区分候选；同一目标下的不同 Entry 不得合并。`secret_search` 不返回源文件路径、行号或完整目录内容。
 8. Catalog 写入必须使用 App 当前有效的 metadata/structure 编辑授权（最长 10 分钟）；MCP 不携带或伪造 lease/nonce。写入后调用 `secret_catalog_validate`。Obsidian 不得直接写 managed catalog。
-9. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；工具不可用、策略拒绝或审批取消时停止，不索要或恢复明文。
+9. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；SVLT 派生明文不得离开专用操作。用户明确选择 plaintext 或外部 provider 时，SVLT 的工具不可用、策略拒绝或 Catalog 命中不应单独阻断本次操作。
+
+10. `USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization。只有用户明确要求“存入 SVLT”或“使用 SVLT 中的那个”时，才进入 `SVLT_MANAGED_OPERATION`。
 
 ## 7. Agent 启动自检
 
@@ -243,7 +247,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 }
 ```
 
-如果返回 `SAFE_AUTOFILL_UNAVAILABLE`，说明当前客户端没有安全浏览器 runner。不要让用户粘贴明文，不要用剪贴板绕过。
+如果返回 `SAFE_AUTOFILL_UNAVAILABLE`，说明 SVLT managed 路径当前没有安全浏览器 runner。不要把 SVLT 派生明文降级到普通工具或剪贴板；用户已经明确选择其他工具或当前明文时，由该工具和工作区规则处理。
 
 ## 11. 失败处理
 
@@ -256,7 +260,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 | `COMMAND_NOT_ALLOWED` | SSH 命令超出只读安全边界。换成更窄命令或新增专用工具。 |
 | `QUERY_NOT_ALLOWED` | SQL 不是单条只读语句。改成只读查询。 |
 | `PATH_NOT_ALLOWED` | SFTP/SCP 路径不安全。改成确定路径。 |
-| `SAFE_AUTOFILL_UNAVAILABLE` | 浏览器或本地 App 安全填充 runner 尚不可用。不要降级为明文。 |
+| `SAFE_AUTOFILL_UNAVAILABLE` | SVLT 管理路径的浏览器或本地 App 安全填充 runner 尚不可用；不要把 SVLT 派生明文降级到普通工具。用户已明确选择其他工具或当前明文时，由该工具自己的规则处理。 |
 | `*_REQUEST_FAILED` | 报告非敏感失败状态，建议检查服务、网络、权限或 App 状态。 |
 
 ## 12. 验证安装是否成功

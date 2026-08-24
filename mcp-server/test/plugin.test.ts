@@ -70,6 +70,13 @@ describe("Codex plugin package", () => {
     expect(combined).toContain("never echo resolved credentials");
     expect(combined).toContain("use `secret://` references");
     expect(combined).toMatch(/plaintext|secretvalue|resolvedarguments|masterkey/);
+    expect(skill).toContain("SVLT is opt-in");
+    expect(skill).toContain("USER_EXPLICIT_PLAINTEXT");
+    expect(skill).toContain("do not force conversion to `secret://`");
+    expect(skill).not.toContain("only safe representation");
+    expect(hookScript).toContain("isSVLTManagedEvent");
+    expect(hookScript).toContain("Unknown-origin events are therefore fail-open");
+    expect(hookScript).toContain("USER_EXPLICIT_PLAINTEXT");
   });
 });
 

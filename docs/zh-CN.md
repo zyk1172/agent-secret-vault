@@ -4,14 +4,14 @@
 
 ## 1. 这个 App 做什么
 
-SVLT 用来把知识库、笔记和对话里的敏感信息替换成 `secret://...` 引用。
+SVLT 是 opt-in 的密钥保护工具：它把用户选择纳入管理的知识库、笔记和对话敏感信息替换成 `secret://...` 引用，但不接管 Agent 可访问的所有凭据。
 
 正确效果：
 
-- 知识库里保存 `secret://...`，不保存明文密码、token、cookie、私钥。
+- SVLT 管理的知识库里保存 `secret://...`，不保存对应的明文密码、token、cookie、私钥。
 - Codex、Claude、Hermes 等 Agent 在对话中只看到引用。
-- 需要本机使用秘密时，Agent 通过本机 MCP 工具请求 App 解密。
-- 明文不返回聊天，只在本机 App、MCP 内部或受控本地动作中短暂使用。
+- 用户明确选择 SVLT 时，需要本机使用秘密由 Agent 通过本机 MCP 工具请求受控操作。
+- SVLT 派生的明文不返回聊天，只在本机 App、MCP 内部或受控本地动作中短暂使用；用户明确选择当前明文或其他 provider 时，不由 SVLT 强制转换或阻断。
 - SVLT.app 只负责界面和设置；SVLTAgent 是由 launchd 管理的独立后台服务，App 退出后仍可连接。
 
 ## 2. 普通用户安装
@@ -80,7 +80,7 @@ Obsidian 插件安装方式：
 
 然后重启或刷新 Agent 客户端。
 
-接着，把 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Codex、Claude、Hermes、OpenClaw 或其他 Agent 的系统提示、项目规则或工作区规则。这是连接 MCP 后的必做步骤：它要求 Agent 优先使用 App 选定的 `敏感信息.md` 和 `secret://...` 引用，不得直接读取索引或从笔记、日志、环境变量、历史对话、缓存和模型记忆中绕过获取敏感值。
+接着，把 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Codex、Claude、Hermes、OpenClaw 或其他 Agent 的系统提示、项目规则或工作区规则。这是连接 MCP 后的必做步骤：它要求 Agent 对 SVLT managed 数据使用 App 选定的 `敏感信息.md` 和 `secret://...` 引用，不得直接读取索引；但用户明确选择的 QNAP MCP、其他 provider、已登录 CLI、环境变量或当前明文不由 SVLT 抢占。
 
 Agent 接入后可以先测试：
 
@@ -93,7 +93,7 @@ Agent 接入后可以先测试：
 
 ### 加密敏感信息
 
-在 App 的“敏感信息”中选择或新建 `敏感信息.md`。它是 SVLT 管理的唯一权威目录：使用 Index → Entry → Field 结构保存服务、地址、账号、用途等允许暴露的非敏感上下文，并用 `secret://...` 引用对应本地保险箱中的独立加密记录。v2 managed 文件只能由 Catalog Store 写入。
+在 App 的“敏感信息”中选择或新建 `敏感信息.md`。它是 SVLT managed 数据的权威目录：使用 Index → Entry → Field 结构保存服务、地址、账号、用途等允许暴露的非敏感上下文，并用 `secret://...` 引用对应本地保险箱中的独立加密记录。v2 managed 文件只能由 Catalog Store 写入。
 
 需要批量检查时，在 App 的“本地扫描”中选择单个 Markdown 文件或文件夹。规则只在本机运行，候选默认不选中；确认后只把原笔记中的命中值替换为无符号包裹的引用。managed `敏感信息.md` 不会被本地扫描直接写入，目录记录请使用结构化编辑器或 Catalog MCP。
 
@@ -104,7 +104,7 @@ NAS 用户名: secret://0123456789ABCDEFGHJKMNPQRS
 NAS 密码: secret://ABCDEFGHJKMNPQRS0123456789
 ```
 
-不要把明文和 `secret://...` 同时保存。
+同一个 SVLT managed 字段不要把明文和 `secret://...` 同时保存；这条目录规则不限制用户在独立的当前操作中明确选择使用明文。
 
 ### 段落解密查看
 
@@ -118,7 +118,7 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 
 ## 5. Agent 应遵守的规则
 
-将 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Agent 的系统提示、项目规则或工作区规则。策略要求 Agent 只经 MCP 使用 `敏感信息.md` 中的独立密文记录和 `secret://...` 引用；不能直接读取或修改索引，也不能从笔记、日志、缓存、环境变量或模型记忆绕过获取敏感值。
+将 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Agent 的系统提示、项目规则或工作区规则。策略要求 Agent 只经 MCP 使用 SVLT managed `敏感信息.md` 中的独立密文记录和 `secret://...` 引用；不能直接读取或修改索引。用户当前明确提供并要求使用的明文或明确选择的其他 provider 不需要 SVLT lookup 或转换。
 
 ## 6. Obsidian 使用建议
 
@@ -131,7 +131,7 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 3. 只加密真正敏感的字段，不要整段加密。
 4. Obsidian 仅保留手动兜底：选中文字后使用“加密选中文本”。
 5. 加密后检查笔记是否只留下前置一个英文空格的 `secret://` 引用，没有链接、反引号或方括号包裹。
-6. 保留 `secret://...` 引用，删除明文。
+6. 对选择纳入 SVLT 的片段保留 `secret://...` 引用，删除对应明文；用户没有选择纳入 SVLT 的当前操作不由此规则强制改写。
 
 重点：加密目标是“敏感片段”，不是整篇笔记。
 
@@ -151,7 +151,7 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 
 ### Agent 能不能看到明文？
 
-MCP、Codex 和 Obsidian 的协议不会返回明文。Agent 只在内存中为受控本地动作或 App-owned reveal session 暂时解析；普通 reveal 通过 UI 请求桥交给 SVLT.app 显示。
+SVLT MCP、Codex 和 Obsidian 的 managed-secret 协议不会返回 SVLT 解密明文。Agent 只在内存中为受控本地动作或 App-owned reveal session 暂时解析；普通 reveal 通过 UI 请求桥交给 SVLT.app 显示。用户自己明确提供并要求使用的当前明文属于 `USER_EXPLICIT_PLAINTEXT`，不由 SVLT 强制接管，但仍受当前工具、工作区、仓库和日志规则约束。
 
 ### 如何确认后台占用？
 

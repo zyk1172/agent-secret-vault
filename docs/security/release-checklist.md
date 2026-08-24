@@ -19,7 +19,7 @@ git status --short
 
 ## Acceptance criteria
 
-1. Test plaintext cannot be found in the knowledge base, search index, audit logs, Codex transcript, application logs, notifications, or crash reports.
+1. For SVLT-managed test secrets, test plaintext cannot be found in the knowledge base, search index, audit logs, Codex transcript, application logs, notifications, or crash reports. This criterion does not claim to erase user plaintext explicitly selected for an external current operation.
 2. Copying the knowledge base and encrypted sidecar store to an unauthorized Mac does not permit decryption.
 3. Cancelling Touch ID, locking the application, or modifying ciphertext exposes no full or partial plaintext.
 4. Simulated credential echoes in stdout and stderr are removed before results reach Codex.

@@ -2,9 +2,9 @@
 
 SVLT 面向 Codex、Claude、Hermes 和其他 MCP-capable agents。
 
-核心规则：聊天里只保留 `secret://...` 引用。明文只允许停留在本地 macOS app，或停留在会内部解析引用并只返回脱敏结果的窄范围 MCP 工具里。
+核心规则：SVLT 管理的秘密在聊天里只保留 `secret://...` 引用。SVLT 是 opt-in，不接管用户明确选择的其他 provider 或当前明文。
 
-日常使用应自动触发。agent 看到消息、笔记片段、工具输出里有 `secret://...`，或任务需要本地登录、SSH、HTTP、本地文件导出时，应主动使用本流程；不要要求用户把明文贴到聊天。
+日常使用只在用户选择 SVLT 或出现 `secret://...` 时触发。仅出现 password、token、API key 或需要登录、SSH、HTTP 时不会自动接管；如果用户亲自提供明文并明确要求本次使用，必须尊重选择，不得强制转换。
 
 ## MCP server
 
@@ -40,16 +40,18 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 
 ## Agent 必须遵守
 
-看到 `secret://...` 或需要使用密码、token、cookie、私钥等敏感值时：
+看到 `secret://...` 或用户明确选择 SVLT 时：
 
 1. 把引用当作不透明句柄，不从密文推断隐藏值。
-2. 不要求用户把明文贴到聊天。
+2. Agent 不主动索要明文；用户主动提供并明确要求当前使用时，不得把它改写成 SVLT 引用。
 3. 不把解密明文、Authorization header、cookie、session key、填充后的敏感文件内容返回聊天。
-4. 文本/段落/工具输出中含引用时，默认先调用 `secret_auto_handle_text`；若任务已经明确是本地动作，则直接用 `secret_action_router` 或更具体的安全工具。
+4. 文本/段落/工具输出中含引用时，默认先调用 `secret_auto_handle_text`；若任务已经明确是本地动作，则直接用 `secret_action_router` 或更具体的安全工具。用户选了其他来源时不要调用来替换来源。
 5. 用户需要亲自查看明文时，用 `secret_reveal_request` 或 `paragraph_reveal_request` 让本地 app 展示；聊天里只报告 `DISPLAYED_TO_USER`。
 6. 只用 `secret_inspect_reference` 查看非敏感元数据。
-7. 任务提到服务、设备、主机、账号或用途但没有引用时，先用 `secret_search` 发现 Entry-centric opaque 引用；不要要求用户复制 `secret://` ID。
-8. 没有安全工具时停止并请求新增 allowlisted 工具，不降级为通用命令、浏览器填表或索要明文。
+7. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` 发现 Entry-centric opaque 引用；用户已明确选择 plaintext 或外部 provider 时不要搜索并替换来源。
+8. 没有 SVLT 安全工具时，只对明确的 SVLT managed 操作停止并请求新增 allowlisted 工具；不得把 SVLT 派生明文降级到通用命令，也不得因 SVLT 缺失阻断用户已明确选择的外部工具/当前明文。
+
+来源优先级：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 无指定时才自动发现。`USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization。
 
 ## 工具选择规则
 
@@ -110,19 +112,19 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 - `vault_status` 的 `locked` 字段为兼容信息：不要要求用户预先打开 GUI 解锁；直接提交具体操作，由本地策略判断静默、审批或拒绝。
 - 返回 `URL_NOT_ALLOWED`、`HOST_NOT_ALLOWED`、`COMMAND_NOT_ALLOWED`：说明目标或动作超出 allowlist；请用户确认目标，或新增更窄的安全工具。
 - 返回 `QUERY_NOT_ALLOWED`、`PATH_NOT_ALLOWED`、`URL_TOKEN_NOT_ALLOWED`：说明 SQL、路径或 URL 形态不安全；修正非敏感参数后重试，不要索要明文。
-- 返回 `SAFE_AUTOFILL_UNAVAILABLE`、`DATABASE_RUNNER_UNAVAILABLE`、`FILE_TRANSFER_RUNNER_UNAVAILABLE`：说明本地 runner 尚不可用；不要改用明文或剪贴板绕过。
+- 返回 `SAFE_AUTOFILL_UNAVAILABLE`、`DATABASE_RUNNER_UNAVAILABLE`、`FILE_TRANSFER_RUNNER_UNAVAILABLE`：说明 SVLT managed 路径的本地 runner 尚不可用；不要把 SVLT 派生明文交给普通工具。用户已选择其他工具时由该工具规则处理。
 - 返回 `BASIC_AUTH_REQUIRES_USERNAME_AND_PASSWORD`：要求补充缺失的用户名引用或非敏感用户名；不要要求密码明文。
 - 返回 `REQUEST_FAILED`、`SSH_REQUEST_FAILED`：报告失败状态和非敏感上下文，可建议检查网络/服务状态。
-- 返回 `SELECTION_ENCRYPT_UNAVAILABLE`：说明当前本地选择加密桥接能力不可用；不要改用明文替代。
+- 返回 `SELECTION_ENCRYPT_UNAVAILABLE`：说明当前 SVLT 加密桥接能力不可用；不要强迫用户把本次明文导入 SVLT，也不要把 SVLT 派生明文交给普通工具。
 - 返回 `QUARANTINED`：只报告隔离原因，不展示被隔离输出。
-- 没有匹配工具：停止，请求新增 allowlisted MCP 工具；不要用 shell、curl、浏览器自动填表或让用户复制明文绕过边界。
+- 没有匹配工具：明确选择 SVLT 时请求新增 allowlisted MCP 工具；明确选择其他 provider 或当前明文时不由 SVLT 阻断，遵守该工具和工作区规则。
 
 ## 可选兜底提示
 
 仅在客户端无法自动加载 skill 时使用：
 
 ```text
-看到 secret://、本地登录、SSH、HTTP 或本地文件导出需要秘密时，自动使用 svlt 的 secret_action_router 或具体安全工具；不要让我粘贴明文，不要把明文返回聊天。
+看到 secret:// 或用户明确选择 SVLT 时，使用 svlt 的 secret_action_router 或具体安全工具；用户明确选择当前明文或其他 provider 时不要自动改用 SVLT，不要把 SVLT 解密明文返回聊天。
 ```
 
 ## 本地预期

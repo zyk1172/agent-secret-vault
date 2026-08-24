@@ -10,10 +10,12 @@
 
 ## Security goals
 
-SVLT is designed to prevent plaintext exposure to Codex, cloud
-models, the Obsidian knowledge base and search index, file-sync providers,
-copied encrypted sidecar stores, audit logs, system logs, notifications, and
-crash reports.
+For SVLT-managed secrets, SVLT is designed to prevent plaintext exposure to
+Codex, cloud models, the Obsidian knowledge base and search index, file-sync
+providers, copied encrypted sidecar stores, audit logs, system logs,
+notifications, and crash reports. This is an opt-in boundary, not a global DLP
+claim: user-selected external credentials and explicitly supplied plaintext for
+the current operation remain outside SVLT scope.
 
 The expected safe data shape outside the macOS app is an opaque reference such
 as `secret://0123456789ABCDEFGHJKMNPQRS`, fixed redacted metadata, encrypted
@@ -24,9 +26,10 @@ record bytes, or sanitized execution output.
 The signed native SVLT components (SVLT.app and the launchd-managed SVLTAgent)
 form the local decryption boundary. SVLTAgent owns the master-key session and
 Vault access; SVLT.app is a UI client for settings and App-owned reveal windows.
-The MCP server and Codex/Obsidian clients are untrusted for plaintext handling:
-they may request actions, but they must not receive plaintext, unwrapped keys,
-resolved command arguments, or bulk export data.
+The MCP server and Codex/Obsidian clients are untrusted for SVLT-managed
+plaintext handling: they may request actions, but they must not receive
+SVLT-decrypted plaintext, unwrapped keys, resolved command arguments, or bulk
+export data.
 
 The Obsidian plugin follows the same boundary. App-to-plugin responses for
 selection encryption, scan, and paragraph reveal must return opaque references,
