@@ -48,6 +48,24 @@ public struct SensitiveCatalogEntryPreset: Identifiable, Equatable, Sendable {
         }
     }
 
+    /// The App starts a manually-created Entry with one editable field.  The
+    /// remaining preset fields stay available as a reference for Agent/API
+    /// creation and can be added from the Entry editor when needed.
+    public func makeInitialField() -> SecretCatalogFieldValue {
+        let presetField = fields.first ?? SensitiveCatalogPresetField(
+            key: "value",
+            label: "值",
+            type: .text
+        )
+        return SecretCatalogFieldValue(
+            key: presetField.key,
+            label: presetField.label,
+            type: presetField.type,
+            agentVisible: presetField.agentVisible,
+            searchable: presetField.searchable
+        )
+    }
+
     public static let all: [Self] = [
         Self(id: "credential", title: "账号密码", fields: [
             .init(key: "service", label: "服务", type: .text),

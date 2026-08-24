@@ -674,7 +674,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let request = CatalogDraftRequest(
             indexID: indexID,
             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-            fields: preset.makeFields()
+            fields: [preset.makeInitialField()]
         )
 
         func create(expectedRevision: UInt64) async throws -> CatalogWriteResult {

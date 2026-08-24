@@ -1018,6 +1018,7 @@ private struct SensitiveCatalogEditorCard: View {
                                             }
                                         }
                                         .frame(width: 150)
+                                        .help("预设只决定创建后的第一个字段，其余字段可在编辑器中按需添加")
                                         Button("创建") {
                                             let title = newEntryTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                                             guard !title.isEmpty else { return }
@@ -1156,8 +1157,20 @@ private struct SensitiveCatalogEntryRow: View {
                 Button(editing ? "取消" : "编辑") {
                     if editing {
                         load(entry)
+                        editing = false
+                    } else {
+                        // Existing entries start collapsed.  Entering edit
+                        // mode must reveal the editor; newly-created entries
+                        // already use autoEdit and are expanded in init.
+                        editing = true
+                        // The button is inside the DisclosureGroup label. The
+                        // group handles its own tap after the button action,
+                        // so defer the expansion until that label event has
+                        // finished; otherwise it immediately collapses again.
+                        DispatchQueue.main.async {
+                            expanded = true
+                        }
                     }
-                    editing.toggle()
                     editorError = nil
                 }
                 .buttonStyle(.bordered)
