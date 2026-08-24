@@ -10,6 +10,7 @@
 
 const forbiddenKeyPattern = /plaintext|secretValue|resolvedArguments|masterKey/i;
 const SVLT_IDENTITIES = new Set([
+  "SVLT",
   "svlt",
   "svlt-mcp",
   "agent-secret-vault",

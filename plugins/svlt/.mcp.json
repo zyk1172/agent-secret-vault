@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "svlt": {
+    "SVLT": {
       "command": "node",
       "args": [
         "${PLUGIN_ROOT}/../../mcp-server/dist/server.js"

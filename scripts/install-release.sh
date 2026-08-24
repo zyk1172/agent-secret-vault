@@ -134,7 +134,7 @@ fi
 cat > "$CONFIG_PATH" <<JSON
 {
   "mcpServers": {
-    "svlt": {
+    "SVLT": {
       "command": "/bin/zsh",
       "args": [
         "-lc",

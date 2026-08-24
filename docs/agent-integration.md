@@ -25,7 +25,7 @@ SVLT 面向 Codex、Claude、Hermes 和其他 MCP-capable agents。
 ```json
 {
   "mcpServers": {
-    "svlt": {
+    "SVLT": {
       "command": "/bin/zsh",
       "args": [
         "-lc",
