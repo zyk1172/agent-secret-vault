@@ -1680,10 +1680,19 @@ private struct SensitiveCatalogEntryRow: View {
                     ),
                     replaceSecret: replaceCatalogSecret,
                     entryID: entry.id,
-                    onReplacementSuccess: {
+                    onReplacementSuccess: { newReference in
                         pendingSecretInputs.removeValue(forKey: field.key)
-                        editing = false
-                        expanded = false
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
+                        let currentField = draftFields[currentIndex]
+                        draftFields[currentIndex] = SecretCatalogFieldValue(
+                            key: currentField.key,
+                            label: currentField.label,
+                            type: currentField.type,
+                            agentVisible: currentField.agentVisible,
+                            searchable: currentField.searchable,
+                            value: nil,
+                            secretRef: newReference
+                        )
                         editorError = nil
                     },
                     onUpdate: { updatedField in
@@ -1843,7 +1852,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
     @Binding var secretInput: String
     let replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let entryID: String
-    let onReplacementSuccess: () -> Void
+    let onReplacementSuccess: (String) -> Void
     let onUpdate: (SecretCatalogFieldValue) -> Void
     let onDelete: () -> Void
     let onMoveUp: () -> Void
@@ -1867,7 +1876,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
         secretInput: Binding<String>,
         replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?,
         entryID: String,
-        onReplacementSuccess: @escaping () -> Void = {},
+        onReplacementSuccess: @escaping (String) -> Void = { _ in },
         onUpdate: @escaping (SecretCatalogFieldValue) -> Void,
         onDelete: @escaping () -> Void,
         onMoveUp: @escaping () -> Void,
@@ -2090,10 +2099,14 @@ private struct SensitiveCatalogFieldEditorRow: View {
             secretInput = ""
             isSubmittingReplacement = false
             switch result {
-            case .success:
+            case .success(let writeResult):
+                guard let newReference = writeResult.secretReference else {
+                    errorMessage = "替换成功但未收到新的安全引用，请刷新目录"
+                    return
+                }
                 isReplacingSecret = false
                 errorMessage = nil
-                onReplacementSuccess()
+                onReplacementSuccess(newReference)
             case .failure(let error):
                 errorMessage = error.displayText
             }

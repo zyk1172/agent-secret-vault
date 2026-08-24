@@ -331,8 +331,41 @@ private extension SensitiveCatalogDocumentCodec {
                     entry = currentEntry
                     source.fields[FieldKey(id: current.id, key: current.key)] = FieldSource(markerRange: current.markerRange, bodyRange: bodyRange, blockRange: current.markerRange.lowerBound..<line.end)
                     field = nil
+                } else if trimmed.contains("<!-- SVLT-") || trimmed.contains("<!-- /SVLT-") {
+                    // Field bodies are data, not a second marker language.
+                    // Reject an injected SVLT token before it can be retained
+                    // as ordinary text by a non-secret field.
+                    throw SecretCatalogValidationError.unmanagedContent
                 }
                 continue
+            }
+
+            // Every non-policy line outside a secret field is metadata or
+            // Markdown, regardless of whether the parser later attaches it to
+            // a managed block. Keep the invariant at this source boundary so
+            // ignored/unmanaged lines cannot become a second secret-ref
+            // storage channel.
+            guard MarkdownReferenceScanner.references(in: line.text).isEmpty else {
+                throw SecretCatalogValidationError.secretReferenceInMetadata
+            }
+            let isManagedMarker =
+                trimmed == "<!-- /SVLT-INDEX -->" ||
+                trimmed == "<!-- /SVLT-ENTRY -->" ||
+                trimmed == "<!-- /SVLT-FIELD -->" ||
+                (trimmed.hasPrefix("<!-- SVLT-INDEX ") && trimmed.hasSuffix(" -->")) ||
+                (trimmed.hasPrefix("<!-- SVLT-ENTRY ") && trimmed.hasSuffix(" -->")) ||
+                (trimmed.hasPrefix("<!-- SVLT-FIELD ") && trimmed.hasSuffix(" -->"))
+            // Notes delimiters are managed only inside an active entry. The
+            // same marker text at document level is not an unmanaged Markdown
+            // escape hatch.
+            let isEntryNotesMarker = entry != nil && (
+                trimmed == "<!-- SVLT-NOTES-BEGIN -->" ||
+                trimmed == "<!-- SVLT-NOTES-END -->"
+            )
+            if (trimmed.contains("<!-- SVLT-") || trimmed.contains("<!-- /SVLT-")),
+               !isManagedMarker,
+               !isEntryNotesMarker {
+                throw SecretCatalogValidationError.unmanagedContent
             }
             if let raw = marker(trimmed, prefix: "<!-- SVLT-FIELD ", line: line) {
                 guard var currentEntry = entry, currentEntry.title != nil else { throw SecretCatalogValidationError.missingEntryBlock }

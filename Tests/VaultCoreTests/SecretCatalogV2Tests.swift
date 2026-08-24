@@ -339,3 +339,36 @@ private func qnapDocument() -> SecretCatalogDocument {
     )
     try valid.validate()
 }
+
+@Test func catalogV3RejectsSecretReferencesAndManagedMarkersInDocumentMarkdown() throws {
+    let rendered = try SensitiveCatalogDocumentCodec.encode(qnapDocument())
+    let firstIndexMarker = "<!-- SVLT-INDEX "
+
+    let ordinaryMarkdown = rendered.replacingOccurrences(
+        of: firstIndexMarker,
+        with: "> 目录说明：[[QNAP]]\n\n\(firstIndexMarker)",
+        options: [],
+        range: rendered.range(of: firstIndexMarker)
+    )
+    #expect(try SensitiveCatalogDocumentCodec.decode(ordinaryMarkdown) == qnapDocument())
+
+    let injectedReference = rendered.replacingOccurrences(
+        of: firstIndexMarker,
+        with: "> 目录说明：secret://0123456789ABCDEFGHJKMNPQRS\n\n\(firstIndexMarker)",
+        options: [],
+        range: rendered.range(of: firstIndexMarker)
+    )
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SensitiveCatalogDocumentCodec.decode(injectedReference)
+    }
+
+    let injectedMarker = rendered.replacingOccurrences(
+        of: firstIndexMarker,
+        with: "<!-- SVLT-FAKE-MARKER -->\n\n\(firstIndexMarker)",
+        options: [],
+        range: rendered.range(of: firstIndexMarker)
+    )
+    #expect(throws: SecretCatalogValidationError.unmanagedContent) {
+        try SensitiveCatalogDocumentCodec.decode(injectedMarker)
+    }
+}

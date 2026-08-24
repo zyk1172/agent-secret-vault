@@ -167,10 +167,19 @@ public struct CatalogSecretInput: Codable, Equatable, Sendable {
 public struct CatalogWriteResult: Codable, Equatable, Sendable {
     public let revision: UInt64
     public let entry: SecretCatalogEntryMatch?
+    /// Opaque reference returned only by the App-controlled secure-input
+    /// flow. It is never plaintext and is optional so existing catalog write
+    /// responses remain wire-compatible.
+    public let secretReference: String?
 
-    public init(revision: UInt64, entry: SecretCatalogEntryMatch? = nil) {
+    public init(
+        revision: UInt64,
+        entry: SecretCatalogEntryMatch? = nil,
+        secretReference: String? = nil
+    ) {
         self.revision = revision
         self.entry = entry
+        self.secretReference = secretReference
     }
 }
 

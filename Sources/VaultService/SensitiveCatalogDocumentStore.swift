@@ -144,17 +144,40 @@ private struct CatalogMigrationJournal: Codable, Equatable {
 
 /// Durable compensation state for secret records created before a Catalog
 /// commit. It deliberately contains only opaque record IDs; plaintext is
-/// never journaled or persisted by this store.
+/// never journaled or persisted by this store. This file is an authenticated
+/// recovery hint, never an independent deletion authority.
 private struct CatalogSecretCleanupRecord: Codable, Equatable {
-    let schemaVersion: Int
-    let referenceIDs: [String]
-    let updatedAt: String
+    static let currentSchemaVersion = 2
 
-    init(referenceIDs: [String], updatedAt: String) {
-        self.schemaVersion = 1
+    let schemaVersion: Int
+    let documentIdentity: String
+    let transactionID: String
+    let referenceIDs: [String]
+    let createdAt: String
+    let hmac: String
+
+    init(
+        documentIdentity: String,
+        transactionID: String,
+        referenceIDs: [String],
+        createdAt: String,
+        hmac: String
+    ) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.documentIdentity = documentIdentity
+        self.transactionID = transactionID
         self.referenceIDs = referenceIDs
-        self.updatedAt = updatedAt
+        self.createdAt = createdAt
+        self.hmac = hmac
     }
+}
+
+private struct CatalogSecretCleanupMACPayload: Codable {
+    let schemaVersion: Int
+    let documentIdentity: String
+    let transactionID: String
+    let referenceIDs: [String]
+    let createdAt: String
 }
 
 /// Test-only fault injection is intentionally limited to the atomic commit
@@ -1213,6 +1236,13 @@ public actor SensitiveCatalogDocumentStore {
         return normalized.sorted()
     }
 
+    private func cleanupDocumentIdentity() throws -> String {
+        guard let documentURL else {
+            throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+        }
+        return documentURL.standardizedFileURL.path
+    }
+
     private func cleanupRecordURL() throws -> URL {
         let integrity = try integrityURL()
         return integrity.deletingLastPathComponent()
@@ -1228,13 +1258,39 @@ public actor SensitiveCatalogDocumentStore {
                 CatalogSecretCleanupRecord.self,
                 from: Data(contentsOf: url)
             )
-            guard record.schemaVersion == 1 else {
-                throw SensitiveCatalogDocumentStoreError.invalidIntegrity
-            }
-            return try normalizedCleanupReferenceIDs(record.referenceIDs)
+            try verifyCleanupRecord(record)
+            return record.referenceIDs
         } catch let error as SensitiveCatalogDocumentStoreError {
             throw error
         } catch {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+    }
+
+    private func verifyCleanupRecord(_ record: CatalogSecretCleanupRecord) throws {
+        guard record.schemaVersion == CatalogSecretCleanupRecord.currentSchemaVersion,
+              record.documentIdentity == (try cleanupDocumentIdentity()),
+              UUID(uuidString: record.transactionID) != nil,
+              !record.createdAt.isEmpty,
+              let expectedMAC = Data(base64Encoded: record.hmac),
+              expectedMAC.count == 32
+        else {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+
+        let normalized = try normalizedCleanupReferenceIDs(record.referenceIDs)
+        guard normalized == record.referenceIDs else {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+
+        let key: Data
+        do { key = try keyStore.loadOrCreateKey() }
+        catch { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
+        let computedMAC = Data(HMAC<SHA256>.authenticationCode(
+            for: cleanupMACPayload(record),
+            using: SymmetricKey(data: key)
+        ))
+        guard constantTimeEqual(computedMAC, expectedMAC) else {
             throw SensitiveCatalogDocumentStoreError.invalidIntegrity
         }
     }
@@ -1249,9 +1305,27 @@ public actor SensitiveCatalogDocumentStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         do {
-            let data = try encoder.encode(CatalogSecretCleanupRecord(
+            let documentIdentity = try cleanupDocumentIdentity()
+            let transactionID = UUID().uuidString.lowercased()
+            let createdAt = iso8601String(Date())
+            let unsigned = CatalogSecretCleanupMACPayload(
+                schemaVersion: CatalogSecretCleanupRecord.currentSchemaVersion,
+                documentIdentity: documentIdentity,
+                transactionID: transactionID,
                 referenceIDs: normalized,
-                updatedAt: iso8601String(Date())
+                createdAt: createdAt
+            )
+            let key = try keyStore.loadOrCreateKey()
+            let mac = HMAC<SHA256>.authenticationCode(
+                for: cleanupMACPayload(unsigned),
+                using: SymmetricKey(data: key)
+            )
+            let data = try encoder.encode(CatalogSecretCleanupRecord(
+                documentIdentity: documentIdentity,
+                transactionID: transactionID,
+                referenceIDs: normalized,
+                createdAt: createdAt,
+                hmac: Data(mac).base64EncodedString()
             ))
             try atomicWrite(data, to: url)
         } catch let error as SensitiveCatalogDocumentStoreError {
@@ -1259,6 +1333,23 @@ public actor SensitiveCatalogDocumentStore {
         } catch {
             throw SensitiveCatalogDocumentStoreError.writeFailed
         }
+    }
+
+    private func cleanupMACPayload(_ record: CatalogSecretCleanupRecord) -> Data {
+        cleanupMACPayload(CatalogSecretCleanupMACPayload(
+            schemaVersion: record.schemaVersion,
+            documentIdentity: record.documentIdentity,
+            transactionID: record.transactionID,
+            referenceIDs: record.referenceIDs,
+            createdAt: record.createdAt
+        ))
+    }
+
+    private func cleanupMACPayload(_ payload: CatalogSecretCleanupMACPayload) -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let encoded = (try? encoder.encode(payload)) ?? Data()
+        return Data("SVLT-CATALOG-CLEANUP-V1\n".utf8) + encoded
     }
 
     private func legacyIntegrityPayloadV2(data: Data, revision: UInt64, hash: String) -> Data {

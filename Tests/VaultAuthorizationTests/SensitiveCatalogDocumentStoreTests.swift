@@ -997,3 +997,50 @@ private func writeManagedV2WithLegacySidecar(
     #expect(rewritten.contains(storeSecretReference))
     #expect(FileManager.default.fileExists(atPath: fixture.integrity.path))
 }
+
+@Test func catalogStoreRejectsTamperedCleanupRecordBeforeItCanBecomeDeletionAuthority() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    _ = try await store.createIndex(title: "QNAP")
+    try await store.recordPendingSecretCleanup(referenceIDs: [String(storeSecretReference.dropFirst("secret://".count))])
+
+    let cleanupURL = fixture.integrity
+        .deletingLastPathComponent()
+        .appendingPathComponent("\(fixture.integrity.lastPathComponent).cleanup.json")
+    var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: cleanupURL)) as? [String: Any])
+    object["referenceIDs"] = [String(storeAlternateSecretReference.dropFirst("secret://".count))]
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .prettyPrinted])
+        .write(to: cleanupURL, options: [.atomic])
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.invalidIntegrity) {
+        _ = try await store.pendingSecretCleanupReferenceIDs()
+    }
+}
+
+@Test func catalogStoreDoesNotSilentlyAcceptASecretReferenceInUnmanagedMarkdown() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    _ = try await store.createIndex(title: "QNAP")
+    let original = try String(contentsOf: fixture.document, encoding: .utf8)
+    let injected = original.replacingOccurrences(
+        of: "<!-- SVLT-INDEX ",
+        with: "> 说明：secret://0123456789ABCDEFGHJKMNPQRS\n\n<!-- SVLT-INDEX ",
+        options: [],
+        range: original.range(of: "<!-- SVLT-INDEX ")
+    )
+    try injected.write(to: fixture.document, atomically: true, encoding: .utf8)
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
+        _ = try await store.snapshot()
+    }
+}

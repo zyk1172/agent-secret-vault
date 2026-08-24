@@ -1279,25 +1279,60 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
 
-        if let existingReference = field.secretRef {
-            let parsedReference: SecretReference
-            do {
-                parsedReference = try SecretReference(existingReference)
-            } catch {
-                throw SecretCatalogAgentError.invalidOperation
-            }
-            let metadata = try await policyMetadata(for: [parsedReference])
-            let descriptor = SecretOperationDescriptor(
-                actionType: .changeSecretPolicy,
-                secretReferences: [parsedReference],
-                requestedEffects: ["replace-catalog-secret"]
-            )
-            let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-            try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
-        }
-
         let secret = try await textEncryptor.encryptText(plaintext, label: label, policy: policy)
         do {
+            if field.secretRef != nil {
+                let replacementFields = entry.fields.map { currentField in
+                    guard currentField.key == key else { return currentField }
+                    return SecretCatalogFieldValue(
+                        key: currentField.key,
+                        label: currentField.label,
+                        type: currentField.type,
+                        agentVisible: currentField.agentVisible,
+                        searchable: currentField.searchable,
+                        value: nil,
+                        secretRef: secret.description
+                    )
+                }
+                var candidateEntries = snapshot.document.entries
+                guard let entryOffset = candidateEntries.firstIndex(where: { $0.id == entry.id }) else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+                candidateEntries[entryOffset] = SecretCatalogEntry(
+                    id: entry.id,
+                    indexId: entry.indexId,
+                    title: entry.title,
+                    type: entry.type,
+                    aliases: entry.aliases,
+                    endpoints: entry.endpoints,
+                    fields: replacementFields,
+                    notes: entry.notes,
+                    tags: entry.tags,
+                    schema: entry.schema
+                )
+                let candidate = SecretCatalogDocument(
+                    indexes: snapshot.document.indexes,
+                    entries: candidateEntries
+                )
+                try candidate.validate()
+                let diff = CatalogSemanticDiff.between(old: snapshot.document, new: candidate)
+                guard diff.changes.contains(where: {
+                    $0.kind == .replaceSecret
+                        && $0.entryID == entryID
+                        && $0.fieldKey == key
+                        && $0.oldSecretRef == field.secretRef
+                        && $0.newSecretRef == secret.description
+                }) else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+                try await authorizeCatalogDiff(
+                    diff,
+                    transport: .directManagedFileWrite,
+                    requireAgentSafeWrite: false,
+                    requestedEffect: "catalog-replace-secret"
+                )
+            }
+
             let updated = try await catalogDocumentStore!.bindSecret(
                 secret.description,
                 toFieldKey: key,
@@ -1586,7 +1621,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func authorizeCatalogDiff(
         _ diff: CatalogSemanticDiff,
         transport: CatalogMutationKind,
-        requireAgentSafeWrite: Bool = true
+        requireAgentSafeWrite: Bool = true,
+        requestedEffect: String = "catalog-semantic-approval"
     ) async throws {
         let catalogDecision = catalogMutationPolicyEngine.evaluate(diff, transport: transport)
         switch catalogDecision {
@@ -1609,7 +1645,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             if references.isEmpty {
                 descriptor = SecretOperationDescriptor(
                     actionType: .changeAuthorizationRules,
-                    requestedEffects: ["catalog-semantic-approval"]
+                    requestedEffects: [requestedEffect]
                 )
                 metadata = []
             } else {
@@ -1621,7 +1657,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 descriptor = SecretOperationDescriptor(
                     actionType: diff.changesSecretTarget ? .changeDestinationBinding : .changeSecretPolicy,
                     secretReferences: references,
-                    requestedEffects: ["catalog-semantic-approval"]
+                    requestedEffects: [requestedEffect]
                 )
             }
             let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
@@ -1640,7 +1676,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let labelText = labels.isEmpty ? "未命名凭据" : labels.prefix(3).joined(separator: "、")
         let target = safeDisplayLabel(decision.normalizedDestination ?? "本机")
         let detail = safeDisplayLabel(operationDetail(for: descriptor))
-        return "SVLT 请求本机审批：\(displayName(for: descriptor.actionType))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+        return "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+    }
+
+    private func displayName(for descriptor: SecretOperationDescriptor) -> String {
+        if descriptor.requestedEffects.contains("catalog-replace-secret") {
+            return "替换目录密码"
+        }
+        return displayName(for: descriptor.actionType)
     }
 
     private func operationDetail(for descriptor: SecretOperationDescriptor) -> String {
@@ -1986,11 +2029,31 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
         let pending = try await catalogDocumentStore.pendingSecretCleanupReferenceIDs()
         guard !pending.isEmpty else { return [] }
-        guard let recordDeleter else { return pending }
+
+        // Cleanup metadata is authenticated, but it is still only a recovery
+        // hint. Re-read the current accepted Catalog before every deletion
+        // pass and refuse to delete a record that has since become referenced.
+        // A pending external change makes the accepted state unavailable, so
+        // snapshot() fails closed and no deletion is attempted.
+        let current = try await catalogDocumentStore.snapshot()
+        let referencedIDs = Set(current.document.entries.flatMap { entry in
+            entry.fields.compactMap { field in
+                field.secretRef.flatMap { try? SecretReference($0).id }
+            }
+        })
+        let referencedPending = pending.filter { referencedIDs.contains($0) }
+        var orphanPending = pending.filter { !referencedIDs.contains($0) }
+        var resolved = referencedPending
+
+        guard let recordDeleter else {
+            if !resolved.isEmpty {
+                try await catalogDocumentStore.clearPendingSecretCleanup(referenceIDs: resolved)
+            }
+            return orphanPending
+        }
 
         var remaining: [String] = []
-        var resolved: [String] = []
-        for id in pending {
+        for id in orphanPending {
             do {
                 try await recordDeleter.delete(id: id)
                 resolved.append(id)
@@ -2002,7 +2065,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             try await catalogDocumentStore.clearPendingSecretCleanup(referenceIDs: resolved)
         }
         await notifySavedReferencesChanged()
-        return remaining
+        orphanPending = remaining
+        return orphanPending
     }
 
     private static func canonicalReference(_ reference: String) -> String? {

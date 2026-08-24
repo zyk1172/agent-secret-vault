@@ -1041,7 +1041,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             )
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
-            return .success(CatalogWriteResult(revision: result.revision))
+            return .success(CatalogWriteResult(
+                revision: result.revision,
+                secretReference: result.reference
+            ))
         } catch VaultIPCClientError.responseFailure("CATALOG_CLEANUP_REQUIRED") {
             let error = CatalogMutationUIError(
                 code: "CATALOG_CLEANUP_REQUIRED",
