@@ -26,9 +26,9 @@ SVLT 敏感信息目录写入规范：
 5. 普通元数据只有在字段明确允许 agentVisible 时才可读取或写入；searchable=true 且 agentVisible=false 的字段允许内部命中，但不得返回字段值或命中原因。
 6. 不得修改 schema、id、indexId、revision、完整性标记或 SVLT 管理标记。
 7. 如果需要的字段或结构当前 MCP 不支持，应停止并告诉用户，不得通过直接修改“敏感信息.md”绕过 SVLT。该规则不阻止用户选择其他明确允许的凭据工具或直接提供明文。
-8. 如果用户要求新增记录，应优先通过 Catalog Draft 创建结构；Secret 字段使用 placeholder 或已有 secret:// 引用，需要新秘密时让用户在 SVLT 本机安全表单中填写。不得默认导入用户明文。
+8. 如果用户要求新增记录，应优先通过 secret_catalog_create_entry 或 Catalog Draft 创建结构；普通元数据和空 Secret placeholder 可以安全写入，需要新秘密时让用户在 SVLT 本机安全表单中填写。绑定已有 secret:// 是独立的高风险操作，不得默认导入用户明文。
 9. 修改后必须调用 secret_catalog_validate；验证失败时不得继续使用或尝试自行修复文件结构。
-10. Catalog 写入必须使用 App 当前有效的 metadata/structure 编辑授权，最长 10 分钟；MCP 不携带、生成、延长或伪造 lease/nonce。
+10. 新建 Index/Entry、普通元数据、空 Secret placeholder 和 validate 属于安全目录编辑，默认静默完成，由 App-control 的安全编辑开关控制（默认开启）。绑定、替换或删除已有 secretRef，改变秘密类型、目标或策略，删除含 Secret 的记录，以及批量导入导出必须经过本机审批。MCP 不携带、生成、延长或伪造 lease/nonce；关闭安全编辑时安全写入返回 CATALOG_AGENT_WRITE_NOT_ALLOWED。
 11. 遇到 LEGACY_CATALOG_UNSUPPORTED 时必须停止；SVLT 不提供旧版目录自动升级，Agent 不得自行转换或修改旧文件。合法 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用接管操作。
 
 用户明文覆盖规则：

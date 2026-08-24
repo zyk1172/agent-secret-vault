@@ -257,6 +257,40 @@ describe("IPC request schema", () => {
       { type: "catalogSearch", query: "QNAP", limit: 10 },
       { type: "catalogGet", entryID: validEntryID },
       {
+        type: "catalogCreateIndex",
+        title: "QNAP",
+        aliases: ["NAS"],
+        tags: ["设备"]
+      },
+      {
+        type: "catalogCreateEntry",
+        request: {
+          indexID: validIndexID,
+          title: "音乐服务器",
+          type: "credential",
+          aliases: ["音乐"],
+          tags: ["QNAP"],
+          endpoints: [{ type: "http", host: "192.168.2.240", port: 4533 }],
+          fields: [
+            {
+              key: "username",
+              label: "用户名",
+              type: "text",
+              agentVisible: true,
+              searchable: true,
+              value: "zyk"
+            },
+            {
+              key: "password",
+              label: "密码",
+              type: "secret",
+              agentVisible: true,
+              searchable: false
+            }
+          ]
+        }
+      },
+      {
         type: "catalogCreateDraft",
         request: {
           indexID: validIndexID,

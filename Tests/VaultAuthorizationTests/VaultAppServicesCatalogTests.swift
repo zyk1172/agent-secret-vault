@@ -22,6 +22,41 @@ private struct CatalogMultiSecretEncryptor: TextEncrypting {
     }
 }
 
+private enum CatalogMetadataStoreError: Error {
+    case unexpectedWrite
+    case missingRecord
+}
+
+private struct CatalogMetadataRecordStore: RecordStore {
+    let record: EncryptedRecord
+
+    func save(_: EncryptedRecord) async throws {
+        throw CatalogMetadataStoreError.unexpectedWrite
+    }
+
+    func latest(id: String) async throws -> EncryptedRecord {
+        guard id == record.id else {
+            throw CatalogMetadataStoreError.missingRecord
+        }
+        return record
+    }
+
+    func versions(id: String) async throws -> [Int] {
+        guard id == record.id else {
+            throw CatalogMetadataStoreError.missingRecord
+        }
+        return [record.recordVersion]
+    }
+}
+
+private actor CatalogApprovalRecorder: OperationApproving {
+    private(set) var count = 0
+
+    func approve(summary _: String) async throws {
+        count += 1
+    }
+}
+
 private func serviceDocument() -> SecretCatalogDocument {
     SecretCatalogDocument(
         indexes: [SecretCatalogIndex(id: serviceIndexID, title: "QNAP")],
@@ -83,7 +118,7 @@ private struct CatalogFixture {
     #expect(result.matches.first?.entry.fields.contains { $0.key == "password" && $0.secretRef == nil } == true)
 }
 
-@Test func appServiceRequiresAppControlledAuthorizationAndUsesActiveStructureMode() async throws {
+@Test func appServiceAllowsSafeCatalogCreationWithoutStructureLease() async throws {
     let fixture = try await CatalogFixture()
     defer { fixture.cleanup() }
     let service = VaultAppServices(
@@ -95,15 +130,60 @@ private struct CatalogFixture {
     )
     let request = CatalogDraftRequest(indexID: serviceIndexID, title: "Komga")
 
-    let disabledError = await serviceCatalogError {
-        _ = try await service.createCatalogDraft(request)
-    }
-    #expect(disabledError == .agentWriteNotAllowed)
-
-    _ = try await fixture.agentAuthorization.enable(mode: .structure, duration: 60)
     let draft = try await service.createCatalogDraft(request)
     let result = try await service.commitCatalogDraft(draft, expectedRevision: draft.baseRevision)
     #expect(result.entry?.title == "Komga")
+}
+
+@Test func appServiceHonorsAppControlledSafeWriteDisable() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+    await fixture.agentAuthorization.revoke()
+
+    let error = await serviceCatalogError {
+        _ = try await service.createCatalogDraft(CatalogDraftRequest(indexID: serviceIndexID, title: "Komga"))
+    }
+    #expect(error == .agentWriteNotAllowed)
+}
+
+@Test func agentSafeCreateEntryWritesMetadataAndEmptySecretPlaceholderWithoutLease() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let result = try await service.createCatalogEntry(CatalogDraftRequest(
+        indexID: serviceIndexID,
+        title: "音乐服务器",
+        endpoints: [CatalogEndpoint(type: "http", host: "192.168.2.240", port: 4533)],
+        fields: [
+            SecretCatalogFieldValue(
+                key: "username",
+                label: "用户名",
+                type: .text,
+                value: .string("zyk")
+            ),
+            SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)
+        ]
+    ))
+
+    #expect(result.entry?.title == "音乐服务器")
+    #expect(result.entry?.fields.first(where: { $0.key == "username" })?.value == .string("zyk"))
+    #expect(result.entry?.fields.first(where: { $0.key == "password" })?.secretRef == nil)
+    let search = try await service.searchSecrets(query: "音乐服务器", field: nil, limit: 10)
+    #expect(search.matches.count == 1)
 }
 
 @Test func appServiceDoesNotLetDraftSmuggleExistingSecretBinding() async throws {
@@ -144,8 +224,6 @@ private struct CatalogFixture {
         catalogSelectionManifestURL: fixture.selectionURL,
         catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
-    _ = try await fixture.agentAuthorization.enable(mode: .structure, duration: 60)
-
     let approvalError = await serviceCatalogError {
         _ = try await service.bindCatalogExistingSecret(
             entryID: serviceEntryID,
@@ -155,6 +233,67 @@ private struct CatalogFixture {
         )
     }
     #expect(approvalError == .approvalRequired)
+}
+
+@Test func appControlSecretEndpointChangeRequiresAndUsesLocalApproval() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+
+    let boundEntry = SecretCatalogEntry(
+        id: serviceEntryID,
+        indexId: serviceIndexID,
+        title: "QNAP 管理后台登录",
+        endpoints: [CatalogEndpoint(type: "https", host: "192.168.2.240", port: 443)],
+        fields: [
+            SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("admin")),
+            SecretCatalogFieldValue(
+                key: "password",
+                label: "密码",
+                type: .secret,
+                secretRef: servicePasswordRef
+            )
+        ]
+    )
+    let boundSnapshot = try await fixture.store.updateEntry(boundEntry, expectedRevision: 1)
+    let recordStore = CatalogMetadataRecordStore(record: EncryptedRecord(
+        formatVersion: 2,
+        id: String(servicePasswordRef.dropFirst("secret://".count)),
+        recordVersion: 1,
+        ciphertext: Data(),
+        nonce: Data(),
+        tag: Data(),
+        wrappedDataKey: Data(),
+        wrappedDataKeyNonce: Data(),
+        wrappedDataKeyTag: Data(),
+        label: "QNAP credential",
+        policy: .credential,
+        allowedDestinations: ["192.168.2.240"],
+        allowedProtocols: ["https"],
+        createdAt: Date(),
+        updatedAt: Date()
+    ))
+    let approver = CatalogApprovalRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+
+    let changed = SecretCatalogEntry(
+        id: boundEntry.id,
+        indexId: boundEntry.indexId,
+        title: boundEntry.title,
+        endpoints: [CatalogEndpoint(type: "https", host: "evil.example.com", port: 443)],
+        fields: boundEntry.fields
+    )
+    let result = try await service.catalogUpdateEntry(changed, expectedRevision: boundSnapshot.revision)
+
+    #expect(result.entry?.endpoints.first?.host == "evil.example.com")
+    #expect(await approver.count == 1)
 }
 
 @Test func appServiceKeepsMultipleSecureFieldsIndependentAndNeverStoresPlaintext() async throws {

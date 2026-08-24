@@ -1,7 +1,9 @@
 import Foundation
 import Testing
+import VaultAuthorization
 import VaultCore
 import VaultIPC
+import VaultService
 @testable import AgentSecretVaultApp
 
 @Test func appIPCControllerPublishesEndpointMetadataWithoutSecrets() throws {
@@ -84,6 +86,65 @@ import VaultIPC
     try? FileManager.default.removeItem(at: directoryURL)
 }
 
+@Test func appControlIPCUsesRealCatalogStoreAndHMACPathForEntryCreation() async throws {
+    let root = URL(fileURLWithPath: "/tmp/svlt-app-control-\(UUID().uuidString.prefix(8))")
+    let ipcRoot = root.appendingPathComponent("ipc", isDirectory: true)
+    let documentURL = root.appendingPathComponent("敏感信息.md")
+    let selectionURL = root.appendingPathComponent("selection.json")
+    let integrityURL = root.appendingPathComponent("catalog-integrity.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: documentURL,
+        integrityURL: integrityURL,
+        keyStore: try FixedCatalogIntegrityKeyStore(key: Data(repeating: 11, count: 32))
+    )
+    try await store.selectDocument(at: documentURL)
+    _ = try await store.canonicalWrite(SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: "0123456789ABCDEFGHJKMNPQRS", title: "QNAP")]
+    ))
+    try SecretCatalogSelectionStore(manifestURL: selectionURL).save(documentURL: documentURL)
+
+    let service = VaultAppServices(
+        textEncryptor: IntegrationTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: store,
+        catalogSelectionManifestURL: selectionURL,
+        catalogAgentWriteAuthorization: CatalogAgentWriteAuthorization()
+    )
+    let configuration = try UnixSocketServerConfiguration.appControlConfiguration(directoryURL: ipcRoot)
+    let controller = AppControlIPCController(
+        server: UnixSocketServer(configuration: configuration),
+        handler: AppControlRequestHandler(service: service),
+        peerAuthenticator: AppControlPeerAuthenticator(validator: { _ in true })
+    )
+    try controller.start()
+    defer { controller.stop() }
+
+    let client = AppControlIPCClient(configuration: configuration)
+    let result = try await client.catalogCreateEntry(
+        CatalogDraftRequest(
+            indexID: "0123456789ABCDEFGHJKMNPQRS",
+            title: "音乐服务器",
+            endpoints: [CatalogEndpoint(type: "http", host: "192.168.2.240", port: 4533)],
+            fields: [
+                SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("zyk")),
+                SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)
+            ]
+        ),
+        expectedRevision: 1
+    )
+
+    #expect(result.revision == 2)
+    #expect(result.entry?.title == "音乐服务器")
+    let verified = try await store.snapshot()
+    #expect(verified.revision == 2)
+    #expect(verified.integrity == .verified)
+    #expect(verified.document.entries.first?.fields.first(where: { $0.key == "username" })?.value == .string("zyk"))
+    #expect(verified.document.entries.first?.fields.first(where: { $0.key == "password" })?.secretRef == nil)
+}
+
 private actor ControllerSpyWorkbenchService: WorkbenchServicing {
     func status() async -> WorkbenchStatus {
         WorkbenchStatus(locked: false, ipcAvailable: true, activeKnowledgeBaseRoot: nil, pluginConnected: false)
@@ -121,5 +182,11 @@ private actor ControllerSpyWorkbenchService: WorkbenchServicing {
 
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {
         OrphanScanResult(missingRecords: [], unreferencedRecords: [])
+    }
+}
+
+private struct IntegrationTextEncryptor: TextEncrypting {
+    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
+        try SecretReference("secret://0123456789ABCDEFGHJKMNPQRT")
     }
 }

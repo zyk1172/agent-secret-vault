@@ -10,6 +10,7 @@ import { LocalIpcClient } from "./client.js";
 import { credentialSourcePriority } from "./credential-scope.js";
 import {
   AgentRiskAssessment,
+  CatalogCreateEntryRequest,
   CatalogDraft,
   CatalogDraftRequest,
   CatalogMetadataPatch,
@@ -44,11 +45,11 @@ SVLT 是 opt-in 的秘密保护工具，只保护用户选择纳入 SVLT 管理�
 5. 普通元数据只有在字段明确允许 agentVisible 时才可读取或写入；searchable=true 且 agentVisible=false 的字段允许内部命中，但不得返回字段值或命中原因。
 6. 不得修改 schema、id、indexId、revision、完整性标记或 SVLT 管理标记。
 7. 如果需要的字段或结构当前 MCP 不支持，应停止并告诉用户，不得通过直接修改“敏感信息.md”绕过 SVLT。该规则不阻止用户在本次操作中选择其他明确允许的凭据工具或直接提供明文。
-8. 如果用户要求新增记录，应优先通过 Catalog Draft 创建结构；Secret 字段使用 placeholder 或已有 secret:// 引用，需要新秘密时让用户在 SVLT 本机安全表单中填写。
+8. 如果用户要求新增记录，应优先通过 secret_catalog_create_entry 或 Catalog Draft 创建结构；普通元数据和空 Secret placeholder 可以安全写入，需要新秘密时让用户在 SVLT 本机安全表单中填写。绑定已有 secret:// 是独立的高风险操作。
 9. 修改后必须调用 secret_catalog_validate；验证失败时不得继续使用或尝试自行修复文件结构。
 10. 即使用户要求修改目录，也不代表允许绕过 SVLT；用户授权的是目标操作，不是直接文件写权限。另一方面，用户明确选择本次直接使用明文时，不需要导入、转换、检索、SVLT 授权或 Touch ID。
 11. 遇到 LEGACY_CATALOG_UNSUPPORTED 时必须停止；SVLT 不提供旧版目录自动升级，Agent 不得自行转换或修改旧文件。合法的 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用接管操作。
-12. Catalog 写入必须使用 App 当前有效的 Agent 编辑授权；授权最长 10 分钟并自动过期。MCP 不携带、生成、延长或伪造 lease/nonce；无授权或授权过期时只能读取和报告状态。
+12. 新建 Index/Entry、普通元数据、空 Secret placeholder 和 validate 属于安全目录编辑，默认静默完成，由 App-control 的安全编辑开关控制（默认开启）。绑定、替换或删除已有 secretRef，改变秘密类型、目标或策略，删除含 Secret 的记录，以及批量导入导出必须经过本机审批。MCP 不携带、生成、延长或伪造 lease/nonce；关闭安全目录编辑时，安全写入只能报告 CATALOG_AGENT_WRITE_NOT_ALLOWED。
 
 范围与来源优先级：
 - SVLT_MANAGED_OPERATION：用户明确要求使用 SVLT、Entry 或 secret://；秘密仍只能在 SVLT 批准的专用操作内解析。
@@ -164,6 +165,16 @@ const CatalogCreateDraftInput = z
   .object({ request: CatalogDraftRequest })
   .strict();
 
+const CatalogCreateIndexInput = z
+  .object({
+    title: z.string().trim().min(1).max(2000),
+    aliases: z.array(z.string()).max(64).default([]),
+    tags: z.array(z.string()).max(64).default([])
+  })
+  .strict();
+
+const CatalogCreateEntryInput = CatalogCreateEntryRequest;
+
 const CatalogPatchMetadataInput = z
   .object({
     entryID: z.string().length(26),
@@ -205,6 +216,24 @@ const CatalogWriteOutput = z
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Catalog write result. Secret plaintext is never accepted or returned.");
+
+const CatalogCreateOutput = z
+  .union([
+    z.object({
+      status: z.literal("CREATED"),
+      entryID: z.string().length(26),
+      revision: z.number().int().nonnegative()
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Safe Catalog creation result. Secret plaintext and existing secretRef values are never accepted.");
+
+const CatalogIndexCreateOutput = z
+  .union([
+    z.object({ status: z.literal("CREATED"), revision: z.number().int().nonnegative() }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Safe Catalog Index creation result.");
 
 const CatalogDraftOutput = z
   .union([CatalogDraft, z.object({ status: z.string().min(1) }).strict()])
@@ -796,10 +825,57 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       }
     },
     {
+      name: "secret_catalog_create_index",
+      title: "Create Catalog Index",
+      description:
+        "Creates a new top-level Catalog Index using safe metadata mutation. It does not accept secrets or secret references and does not require a temporary structure lease.",
+      inputSchema: CatalogCreateIndexInput,
+      outputSchema: CatalogIndexCreateOutput,
+      async handler(input) {
+        const parsed = CatalogCreateIndexInput.parse(input);
+        const response = await client.request({
+          type: "catalogCreateIndex",
+          title: parsed.title,
+          aliases: parsed.aliases,
+          tags: parsed.tags
+        });
+        if (response.type === "catalogWriteResult") {
+          return structuredResult({
+            status: "CREATED",
+            revision: response.result.revision
+          });
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_create_entry",
+      title: "Create Catalog Entry",
+      description:
+        "Creates an Index Entry in one safe operation. Ordinary metadata and empty secret placeholders are allowed; existing secretRef values and plaintext secrets are rejected. No temporary structure lease is required.",
+      inputSchema: CatalogCreateEntryInput,
+      outputSchema: CatalogCreateOutput,
+      async handler(input) {
+        const parsed = CatalogCreateEntryInput.parse(input);
+        const response = await client.request({
+          type: "catalogCreateEntry",
+          request: parsed
+        });
+        if (response.type === "catalogWriteResult" && response.result.entry?.id) {
+          return structuredResult({
+            status: "CREATED",
+            entryID: response.result.entry.id,
+            revision: response.result.revision
+          });
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
       name: "secret_catalog_create_draft",
       title: "Create Catalog Draft",
       description:
-        "Creates an Index Entry draft under the current App-controlled Agent write authorization. Secret fields may only be placeholders; binding an existing secret:// reference is a separate App-approved operation, and plaintext is never accepted.",
+        "Creates an Index Entry draft using safe Catalog mutation. Secret fields may only be placeholders; binding an existing secret:// reference is a separate App-approved operation, and plaintext is never accepted.",
       inputSchema: CatalogCreateDraftInput,
       outputSchema: CatalogDraftOutput,
       async handler(input) {
@@ -818,7 +894,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_patch_metadata",
       title: "Patch Catalog Metadata",
       description:
-        "Patches ordinary Entry metadata under the current App-controlled Agent write authorization and expected revision. Secret transitions and secret replacement remain App-approved operations.",
+        "Patches ordinary Entry metadata using the current Catalog risk policy and expected revision. Secret transitions, target changes, and secret replacement remain App-approved operations.",
       inputSchema: CatalogPatchMetadataInput,
       outputSchema: CatalogWriteOutput,
       async handler(input) {
@@ -839,7 +915,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_commit",
       title: "Commit Catalog Draft",
       description:
-        "Commits a previously created catalog draft under the current App-controlled structure authorization and optimistic revision. The Agent cannot self-issue or extend authorization.",
+        "Commits a previously created safe catalog draft under optimistic revision. Dangerous secret mutations remain App-approved and the Agent cannot self-approve them.",
       inputSchema: CatalogCommitInput,
       outputSchema: CatalogWriteOutput,
       async handler(input) {
@@ -859,7 +935,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_add_secret_placeholder",
       title: "Add Secret Placeholder",
       description:
-        "Adds a secret field placeholder under the current App-controlled structure authorization. The user must fill the secret in SVLT App secure input; plaintext is never accepted here.",
+        "Adds an empty secret field placeholder as a safe Catalog mutation. The user must fill the secret in SVLT App secure input; plaintext is never accepted here.",
       inputSchema: CatalogPlaceholderInput,
       outputSchema: CatalogWriteOutput,
       async handler(input) {
@@ -1528,7 +1604,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "When a task names a service, device, host, account, or purpose but no credential source is specified, call secret_search before asking the user for anything; this is automatic discovery, not forced SVLT ownership.",
       "Use the Index, Entry, endpoint, visible metadata, and opaque secretRef returned by secret_search or secret_catalog_search to choose compatible references; do not ask the user to copy reference IDs.",
       "Use secret_catalog_get for one Entry, and use secret_catalog_validate after every catalog write.",
-      "Catalog writes require the current App-controlled Agent authorization; never invent, extend, or self-approve authorization.",
+      "Safe Catalog mutations (create Index/Entry, ordinary metadata, empty secret placeholders, and validate) are silent when the App-controlled safe-edit preference is enabled; dangerous secret binding, replacement, deletion, target, policy, and batch changes require local approval. Never invent, extend, or self-approve authorization.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",

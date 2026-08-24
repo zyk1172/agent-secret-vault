@@ -8,7 +8,11 @@ public actor CatalogAgentWriteAuthorization {
     public static let maximumLifetime: TimeInterval = 600
 
     private let now: @Sendable () -> Date
-    private var currentMode: CatalogAgentWriteMode = .disabled
+    // Safe catalog editing is opt-in at the App-control preference level, but
+    // is enabled by default so ordinary directory creation does not require a
+    // temporary structure lease. Dangerous mutations still go through the
+    // CatalogMutationPolicyEngine and local approval.
+    private var currentMode: CatalogAgentWriteMode = .safe
     private var currentExpiry: Date?
 
     public init(now: @escaping @Sendable () -> Date = Date.init) {
@@ -21,14 +25,13 @@ public actor CatalogAgentWriteAuthorization {
         duration: TimeInterval = 600
     ) throws -> CatalogAgentWriteAuthorizationStatus {
         guard mode != .disabled,
-              duration > 0,
-              duration <= Self.maximumLifetime
+              mode == .safe || (duration > 0 && duration <= Self.maximumLifetime)
         else {
             throw SecretCatalogAgentError.invalidOperation
         }
         let issuedAt = now()
         currentMode = mode
-        currentExpiry = issuedAt.addingTimeInterval(duration)
+        currentExpiry = mode == .safe ? nil : issuedAt.addingTimeInterval(duration)
         return status()
     }
 
@@ -50,6 +53,14 @@ public actor CatalogAgentWriteAuthorization {
     public func validate(requiredScope: CatalogAgentWriteScope) throws {
         let current = status()
         guard current.isActive(at: now()), current.mode.permits(requiredScope) else {
+            throw SecretCatalogAgentError.agentWriteNotAllowed
+        }
+    }
+
+    /// Safe mutations use this preference rather than the legacy metadata /
+    /// structure lease. It remains App-controlled; the Agent has no setter.
+    public func validateSafeWrite() throws {
+        guard status().mode == .safe else {
             throw SecretCatalogAgentError.agentWriteNotAllowed
         }
     }

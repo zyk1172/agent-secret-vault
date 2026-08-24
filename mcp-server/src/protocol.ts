@@ -212,6 +212,37 @@ export const CatalogDraftRequest = z.object({
 }).strict();
 export type CatalogDraftRequest = z.infer<typeof CatalogDraftRequest>;
 
+// Direct creation is intentionally narrower than a draft. A safe Agent
+// mutation may provide ordinary metadata and an empty secret placeholder, but
+// it cannot carry an existing secretRef or any secret value.
+export const CatalogSafeFieldValue = z
+  .object({
+    key: z.string().min(1),
+    label: z.string().min(1),
+    type: SecretCatalogFieldType,
+    agentVisible: z.boolean().default(true),
+    searchable: z.boolean().default(true),
+    value: SecretCatalogValue.optional()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.type === "secret" && value.value !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "secret fields must be empty placeholders" });
+    }
+  });
+
+export const CatalogCreateEntryRequest = z.object({
+  indexID: z.string().length(26),
+  title: z.string().min(1).max(2000),
+  type: z.string().min(1).max(2000).default("credential"),
+  aliases: z.array(z.string()).max(64).default([]),
+  tags: z.array(z.string()).max(64).default([]),
+  endpoints: z.array(CatalogEndpoint).max(64).default([]),
+  notes: z.string().max(2000).nullable().optional(),
+  fields: z.array(CatalogSafeFieldValue).max(128).default([])
+}).strict();
+export type CatalogCreateEntryRequest = z.infer<typeof CatalogCreateEntryRequest>;
+
 export const CatalogMetadataPatch = z.object({
   title: z.string().min(1).max(2000).optional(),
   aliases: z.array(z.string()).max(64).optional(),
@@ -349,6 +380,20 @@ export const IpcRequest = z.discriminatedUnion("type", [
     })
     .strict(),
   z.object({ type: z.literal("catalogGet"), entryID: z.string().length(26) }).strict(),
+  z
+    .object({
+      type: z.literal("catalogCreateIndex"),
+      title: z.string().min(1).max(2000),
+      aliases: z.array(z.string()).max(64).default([]),
+      tags: z.array(z.string()).max(64).default([])
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("catalogCreateEntry"),
+      request: CatalogDraftRequest
+    })
+    .strict(),
   z
     .object({
       type: z.literal("catalogCreateDraft"),
