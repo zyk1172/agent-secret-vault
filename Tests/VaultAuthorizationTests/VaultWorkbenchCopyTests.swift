@@ -96,6 +96,9 @@ import Foundation
     #expect(source.contains("SensitiveCatalogGroupSheet"))
     #expect(source.contains("接纳外部 v3 文件"))
     #expect(source.contains("验证并接纳"))
+    #expect(source.contains("智能体目录编辑"))
+    #expect(source.contains("允许普通目录修改"))
+    #expect(source.contains("密码绑定、替换和删除仍需本机批准"))
     #expect(!source.contains("SensitiveCatalogPolicyCard"))
 }
 

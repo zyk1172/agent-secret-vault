@@ -311,4 +311,112 @@ describe("encrypt selection", () => {
       origin: "svlt-restore"
     });
   });
+
+  it("refuses paragraph restore in a managed v3 catalog", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\ntoken = secret://0123456789ABCDEFGHJKMNPQRS';
+    const editor = new TestEditor(text, text.length, text.length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      restoreCurrentParagraph: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "catalogValidation", catalogStatus: "FOUND", revision: 1 };
+      }
+    });
+
+    await plugin.restoreCurrentParagraph(editor);
+
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(editor.replaceCalls).toEqual([]);
+    expect(editor.text).toBe(text);
+    expect(obsidianMock.notices).toContain("SVLT：v3 敏感信息目录禁止在 Obsidian 中还原 secret://；明文只可在 SVLT App 安全窗口中临时查看。");
+  });
+
+  it("refuses selection restore in a managed v3 catalog", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\ntoken = secret://0123456789ABCDEFGHJKMNPQRS';
+    const start = text.indexOf("secret://");
+    const editor = new TestEditor(text, start, text.length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      restoreSelection: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "catalogValidation", catalogStatus: "FOUND", revision: 1 };
+      }
+    });
+
+    await plugin.restoreSelection(editor);
+
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(editor.replaceCalls).toEqual([]);
+    expect(editor.text).toBe(text);
+  });
+
+  it("allows reveal from a managed v3 catalog without editing the file", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\ntoken = secret://0123456789ABCDEFGHJKMNPQRS';
+    const start = text.indexOf("secret://");
+    const editor = new TestEditor(text, start, text.length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      revealSelection: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "revealSessionOpened", sessionID: "session-1" };
+      }
+    });
+
+    await plugin.revealSelection(editor);
+
+    expect(requests).toEqual([{
+      type: "revealReferences",
+      references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+      context: {
+        reason: "Reveal current paragraph",
+        template: "{{0}}",
+        ranges: [{ index: 0, placeholder: "{{0}}" }]
+      }
+    }]);
+    expect(editor.replaceCalls).toEqual([]);
+    expect(editor.text).toBe(text);
+  });
+
+  it("allows ordinary v3 catalog editing while keeping the editor patch local", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\npassword = ASV_CANARY_PLUGIN';
+    const start = text.indexOf("ASV_CANARY_PLUGIN");
+    const editor = new TestEditor(text, start, start + "ASV_CANARY_PLUGIN".length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      encryptSelection: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        if ((request as { type: string }).type === "catalogValidate") {
+          return { type: "catalogValidation", catalogStatus: "FOUND", revision: 1 };
+        }
+        return { type: "created", reference: "secret://0123456789ABCDEFGHJKMNPQRS" };
+      }
+    });
+
+    await plugin.encryptSelection(editor);
+
+    expect(requests[0]).toEqual({ type: "catalogValidate" });
+    expect(requests.at(-1)).toMatchObject({ type: "encryptText" });
+    expect(editor.text).toContain("secret://0123456789ABCDEFGHJKMNPQRS");
+    expect(editor.replaceCalls[0]?.origin).toBe("svlt");
+  });
 });

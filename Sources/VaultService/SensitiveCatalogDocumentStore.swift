@@ -75,14 +75,33 @@ public struct CatalogIntegrityRecord: Codable, Equatable, Sendable {
     public var updatedAt: String { acceptedState.updatedAt }
 }
 
+/// Flat sidecar emitted by the PR #13 Catalog v2 implementation.  It must be
+/// decoded separately because the v3 accepted-state sidecar intentionally has
+/// a different schema and HMAC payload.
+private struct LegacyCatalogIntegrityRecordV2: Codable, Equatable {
+    let schemaVersion: Int
+    let revision: UInt64
+    let canonicalSHA256: String
+    let hmac: String
+    let updatedAt: String
+}
+
 public struct CatalogExternalChange: Codable, Equatable, Sendable {
     public let rawSHA256: String
+    public let semanticSHA256: String
     public let acceptedRevision: UInt64
     public let candidateDocument: SecretCatalogDocument
     public let semanticDiff: CatalogSemanticDiff
 
-    public init(rawSHA256: String, acceptedRevision: UInt64, candidateDocument: SecretCatalogDocument, semanticDiff: CatalogSemanticDiff) {
+    public init(
+        rawSHA256: String,
+        semanticSHA256: String,
+        acceptedRevision: UInt64,
+        candidateDocument: SecretCatalogDocument,
+        semanticDiff: CatalogSemanticDiff
+    ) {
         self.rawSHA256 = rawSHA256
+        self.semanticSHA256 = semanticSHA256
         self.acceptedRevision = acceptedRevision
         self.candidateDocument = candidateDocument
         self.semanticDiff = semanticDiff
@@ -294,13 +313,25 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     @discardableResult
-    public func acceptPendingExternalChange() throws -> SensitiveCatalogSnapshot {
+    public func acceptPendingExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) throws -> SensitiveCatalogSnapshot {
         try withCatalogLock(exclusive: true) {
             guard let candidate = try externalCandidateUnlocked(), candidate.semanticDiff.requiresApproval else {
                 throw SensitiveCatalogDocumentStoreError.invalidOperation
             }
+            guard candidate.acceptedRevision == expectedRevision,
+                  candidate.rawSHA256 == expectedRawSHA256,
+                  candidate.semanticSHA256 == expectedSemanticSHA256
+            else {
+                throw SensitiveCatalogDocumentStoreError.revisionConflict
+            }
             let raw = try readDocumentData()
-            guard sha256Hex(raw) == candidate.rawSHA256 else {
+            guard sha256Hex(raw) == expectedRawSHA256,
+                  semanticDigest(candidate.candidateDocument) == expectedSemanticSHA256
+            else {
                 throw SensitiveCatalogDocumentStoreError.revisionConflict
             }
             let record = try makeRecord(document: candidate.candidateDocument, revision: candidate.acceptedRevision + 1, raw: raw)
@@ -327,8 +358,16 @@ public actor SensitiveCatalogDocumentStore {
             let reparsed = try SensitiveCatalogDocumentCodec.decode(rendered)
             guard reparsed == document, referenceSet(document) == referenceSet(reparsed) else { throw SensitiveCatalogDocumentStoreError.referenceSetChanged }
             let stateURL = try integrityURL()
-            guard !fileManager.fileExists(atPath: stateURL.path) else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
+            let hasLegacySidecar = fileManager.fileExists(atPath: stateURL.path)
+            if hasLegacySidecar {
+                try assertSafeFile(stateURL)
+                let legacy = try readLegacyIntegrityRecordV2(at: stateURL)
+                try verifyLegacyIntegrityV2(legacy, data: raw)
+            }
             _ = try backupCurrentDocumentUnlocked()
+            if hasLegacySidecar {
+                _ = try backupFileUnlocked(stateURL)
+            }
             try atomicWrite(rendered, to: url)
             let record = try makeRecord(document: reparsed, revision: 1, raw: rendered)
             try atomicWriteIntegrity(record)
@@ -338,7 +377,7 @@ public actor SensitiveCatalogDocumentStore {
 
     /// Explicit adoption for a hand-created v3 file with no accepted state.
     @discardableResult
-    public func adoptExternalV3() throws -> SensitiveCatalogSnapshot {
+    public func externalV3AdoptionCandidate() throws -> CatalogExternalChange {
         try withCatalogLock(exclusive: true) {
             guard let url = documentURL, fileManager.fileExists(atPath: url.path) else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
             try assertSafeFile(url)
@@ -347,6 +386,36 @@ public actor SensitiveCatalogDocumentStore {
             let document = try decodeV3(raw)
             let stateURL = try integrityURL()
             guard !fileManager.fileExists(atPath: stateURL.path) else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
+            let baseline = SecretCatalogDocument()
+            let diff = CatalogSemanticDiff.between(old: baseline, new: document)
+            return CatalogExternalChange(
+                rawSHA256: sha256Hex(raw),
+                semanticSHA256: semanticDigest(document),
+                acceptedRevision: 0,
+                candidateDocument: document,
+                semanticDiff: diff
+            )
+        }
+    }
+
+    @discardableResult
+    public func adoptExternalV3(
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) throws -> SensitiveCatalogSnapshot {
+        try withCatalogLock(exclusive: true) {
+            guard let url = documentURL, fileManager.fileExists(atPath: url.path) else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
+            try assertSafeFile(url)
+            let raw = try Data(contentsOf: url)
+            guard SensitiveCatalogDocumentCodec.format(raw) == .managedV3 else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
+            let document = try decodeV3(raw)
+            let stateURL = try integrityURL()
+            guard !fileManager.fileExists(atPath: stateURL.path) else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
+            guard sha256Hex(raw) == expectedRawSHA256,
+                  semanticDigest(document) == expectedSemanticSHA256
+            else {
+                throw SensitiveCatalogDocumentStoreError.revisionConflict
+            }
             let record = try makeRecord(document: document, revision: 1, raw: raw)
             try atomicWriteIntegrity(record)
             return SensitiveCatalogSnapshot(document: document, revision: 1, integrity: .verified)
@@ -439,7 +508,13 @@ public actor SensitiveCatalogDocumentStore {
         let candidate = try decodeV3(raw)
         let diff = CatalogSemanticDiff.between(old: record.acceptedDocument, new: candidate)
         guard !diff.isEmpty else { return nil }
-        return CatalogExternalChange(rawSHA256: sha256Hex(raw), acceptedRevision: record.revision, candidateDocument: candidate, semanticDiff: diff)
+        return CatalogExternalChange(
+            rawSHA256: sha256Hex(raw),
+            semanticSHA256: semanticDigest(candidate),
+            acceptedRevision: record.revision,
+            candidateDocument: candidate,
+            semanticDiff: diff
+        )
     }
 
     private enum CatalogMergePath: Hashable {
@@ -767,6 +842,51 @@ public actor SensitiveCatalogDocumentStore {
         catch { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
     }
 
+    private func readLegacyIntegrityRecordV2(at url: URL) throws -> LegacyCatalogIntegrityRecordV2 {
+        do {
+            return try JSONDecoder().decode(
+                LegacyCatalogIntegrityRecordV2.self,
+                from: Data(contentsOf: url)
+            )
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+    }
+
+    private func verifyLegacyIntegrityV2(
+        _ record: LegacyCatalogIntegrityRecordV2,
+        data: Data
+    ) throws {
+        guard record.schemaVersion == 2,
+              record.revision > 0,
+              let expectedMAC = Data(base64Encoded: record.hmac)
+        else {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+
+        let hash = sha256Hex(data)
+        guard hash == record.canonicalSHA256 else {
+            throw SensitiveCatalogDocumentStoreError.externalModification
+        }
+
+        let key: Data
+        do { key = try keyStore.loadOrCreateKey() }
+        catch { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
+        let computedMAC = Data(HMAC<SHA256>.authenticationCode(
+            for: legacyIntegrityPayloadV2(data: data, revision: record.revision, hash: hash),
+            using: SymmetricKey(data: key)
+        ))
+        guard constantTimeEqual(computedMAC, expectedMAC) else {
+            throw SensitiveCatalogDocumentStoreError.externalModification
+        }
+    }
+
+    private func legacyIntegrityPayloadV2(data: Data, revision: UInt64, hash: String) -> Data {
+        var payload = Data("SVLT-CATALOG-INTEGRITY-V2\n\(revision)\n\(hash)\n".utf8)
+        payload.append(data)
+        return payload
+    }
+
     private func atomicWriteIntegrity(_ record: CatalogIntegrityRecord) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         do { try atomicWrite(encoder.encode(record), to: try integrityURL()) }
@@ -776,6 +896,10 @@ public actor SensitiveCatalogDocumentStore {
 
     private func backupCurrentDocumentUnlocked() throws -> URL? {
         guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
+        return try backupFileUnlocked(url)
+    }
+
+    private func backupFileUnlocked(_ url: URL) throws -> URL? {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         try assertSafeFile(url)
         let backup = url.deletingLastPathComponent().appendingPathComponent("\(url.lastPathComponent).bak-\(backupTimestampString(Date()))-\(UUID().uuidString.lowercased())")

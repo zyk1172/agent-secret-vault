@@ -406,6 +406,8 @@ public struct VaultWorkbenchView: View {
                         updateEntry: updateCatalogEntry,
                         applyBatch: applyCatalogBatch,
                         fillSecret: fillCatalogSecret,
+                        catalogAgentWriteStatus: catalogAgentWriteStatus,
+                        catalogAgentWriteError: catalogAgentWriteError,
                         enableAgentWrite: enableCatalogAgentWrite,
                         revokeAgentWrite: revokeCatalogAgentWrite
                     )
@@ -893,6 +895,8 @@ private struct SensitiveCatalogEditorCard: View {
     let updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
     let fillSecret: ((String, String, String, String) async -> String?)?
+    let catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus
+    let catalogAgentWriteError: String?
     let enableAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
     let revokeAgentWrite: (() async -> Void)?
 
@@ -988,6 +992,47 @@ private struct SensitiveCatalogEditorCard: View {
                 Label("旧版目录不支持自动升级。请先备份文件，再手动转换为 Catalog v3。", systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let enableAgentWrite, let revokeAgentWrite {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Label("智能体目录编辑", systemImage: "person.crop.circle.badge.checkmark")
+                            .font(.headline)
+                        Spacer()
+                        if catalogAgentWriteStatus.mode == .disabled {
+                            Button("允许普通目录修改") {
+                                Task {
+                                    isWorking = true
+                                    await enableAgentWrite(.safe)
+                                    isWorking = false
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        } else {
+                            Button("关闭") {
+                                Task {
+                                    isWorking = true
+                                    await revokeAgentWrite()
+                                    isWorking = false
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    Text(catalogAgentWriteStatus.mode == .disabled
+                        ? "当前禁止智能体修改目录。开启后，新增分组、条目和普通字段可自动完成；密码绑定、替换和删除仍需本机批准。"
+                        : "当前允许普通目录修改。密码绑定、替换和删除仍需本机批准。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let catalogAgentWriteError {
+                        Label(catalogAgentWriteError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .padding(10)
+                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
 
             if let snapshot {

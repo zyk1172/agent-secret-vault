@@ -16,8 +16,13 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 1)
     }
 
-    func approveCatalogExternalChange() async throws -> CatalogValidationResult {
-        CatalogValidationResult(status: .found, revision: 2)
+    func approveCatalogExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) async throws -> CatalogValidationResult {
+        _ = (expectedRevision, expectedRawSHA256, expectedSemanticSHA256)
+        return CatalogValidationResult(status: .found, revision: 2)
     }
 
     func setCatalogAgentWriteMode(
@@ -109,6 +114,17 @@ private struct ControlService: AppControlServicing {
         from: JSONEncoder().encode(bindRequest)
     )
     #expect(decodedBindRequest == bindRequest)
+
+    let approvalRequest = AppControlRequest.catalogApproveExternalChange(
+        expectedRevision: 7,
+        expectedRawSHA256: String(repeating: "a", count: 64),
+        expectedSemanticSHA256: String(repeating: "b", count: 64)
+    )
+    let decodedApprovalRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(approvalRequest)
+    )
+    #expect(decodedApprovalRequest == approvalRequest)
 
     let response = await AppControlRequestHandler(service: ControlService()).handle(request)
     let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)

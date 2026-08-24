@@ -738,7 +738,20 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             case .externalModification:
                 return CatalogValidationResult(status: .externalModification)
             case .pendingExternalChange:
-                return CatalogValidationResult(status: .pendingExternalChange)
+                guard let store = catalogDocumentStore,
+                      let pending = try? await store.pendingExternalChange()
+                else {
+                    return CatalogValidationResult(status: .pendingExternalChange)
+                }
+                return CatalogValidationResult(
+                    status: .pendingExternalChange,
+                    revision: pending.acceptedRevision,
+                    pendingExternalChange: CatalogPendingExternalChange(
+                        acceptedRevision: pending.acceptedRevision,
+                        rawSHA256: pending.rawSHA256,
+                        semanticSHA256: pending.semanticSHA256
+                    )
+                )
             case .invalidCatalog:
                 return CatalogValidationResult(status: .invalidCatalog)
             case .unavailable:
@@ -779,7 +792,32 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func adoptCatalogExternalV3() async throws -> CatalogValidationResult {
         let store = try await selectedCatalogStoreForApp()
         do {
-            let snapshot = try await store.adoptExternalV3()
+            let candidate = try await store.externalV3AdoptionCandidate()
+            let references = candidate.semanticDiff.referencedSecretRefs
+            if !references.isEmpty {
+                guard recordResolver != nil else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+                for reference in references {
+                    do {
+                        _ = try await inspectReference(reference)
+                    } catch {
+                        // A syntactically valid secret:// handle is not enough
+                        // to adopt a catalog. Every binding must point at a
+                        // real local record before approval is presented.
+                        throw SecretCatalogAgentError.invalidOperation
+                    }
+                }
+                try await authorizeCatalogDiff(
+                    candidate.semanticDiff,
+                    transport: .bindExistingSecret,
+                    requireAgentSafeWrite: false
+                )
+            }
+            let snapshot = try await store.adoptExternalV3(
+                expectedRawSHA256: candidate.rawSHA256,
+                expectedSemanticSHA256: candidate.semanticSHA256
+            )
             return CatalogValidationResult(status: .found, revision: snapshot.revision)
         } catch let error as SensitiveCatalogDocumentStoreError {
             throw catalogAgentError(for: error)
@@ -789,16 +827,30 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// Approves the currently pending high-risk external semantic change.
     /// The Markdown already exists on disk; approval only moves its semantic
     /// snapshot into the accepted state and never rewrites user formatting.
-    public func approveCatalogExternalChange() async throws -> CatalogValidationResult {
+    public func approveCatalogExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) async throws -> CatalogValidationResult {
         let store = try await selectedCatalogStoreForApp()
         do {
             let pending = try await store.pendingExternalChange()
+            guard pending.acceptedRevision == expectedRevision,
+                  pending.rawSHA256 == expectedRawSHA256,
+                  pending.semanticSHA256 == expectedSemanticSHA256
+            else {
+                throw SensitiveCatalogDocumentStoreError.revisionConflict
+            }
             try await authorizeCatalogDiff(
                 pending.semanticDiff,
                 transport: .directManagedFileWrite,
                 requireAgentSafeWrite: false
             )
-            let accepted = try await store.acceptPendingExternalChange()
+            let accepted = try await store.acceptPendingExternalChange(
+                expectedRevision: expectedRevision,
+                expectedRawSHA256: expectedRawSHA256,
+                expectedSemanticSHA256: expectedSemanticSHA256
+            )
             return CatalogValidationResult(status: .found, revision: accepted.revision)
         } catch let error as SensitiveCatalogDocumentStoreError {
             throw catalogAgentError(for: error)

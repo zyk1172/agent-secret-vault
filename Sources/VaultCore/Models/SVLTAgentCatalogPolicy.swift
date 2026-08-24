@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum SVLTCredentialScope: String, Codable, CaseIterable, Sendable {
@@ -112,13 +113,20 @@ public enum SVLTAgentCatalogPolicy {
     30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
     """
 
+    public static let documentPolicyDigest: String = SHA256.hash(data: Data(text.utf8))
+        .map { String(format: "%02x", $0) }
+        .joined()
+
+    public static let documentPolicyBeginMarker = "<!-- SVLT-POLICY-BEGIN version=\"3\" digest=\"\(documentPolicyDigest)\" -->"
+    public static let documentPolicyEndMarker = "<!-- SVLT-POLICY-END -->"
+
     public static let documentPolicyBlock: String = {
         let lines = text.components(separatedBy: "\n")
-        var result = ["<!-- SVLT-POLICY-BEGIN version=\"3\" -->", "> [!info]- SVLT 智能体写入规范"]
+        var result = [documentPolicyBeginMarker, "> [!info]- SVLT 智能体写入规范"]
         for line in lines.dropFirst() {
             result.append(line.isEmpty ? ">" : "> " + line)
         }
-        result.append("<!-- SVLT-POLICY-END -->")
+        result.append(documentPolicyEndMarker)
         return result.joined(separator: "\n")
     }()
 

@@ -82,6 +82,34 @@ private func qnapDocument() -> SecretCatalogDocument {
     #expect(!rendered.contains("QNAP"))
 }
 
+@Test func catalogV3RequiresExactlyOneUntamperedPolicyBlock() throws {
+    let rendered = try SensitiveCatalogDocumentCodec.encode(SecretCatalogDocument())
+
+    let missing = rendered.replacingOccurrences(
+        of: SVLTAgentCatalogPolicy.documentPolicyBlock + "\n\n",
+        with: ""
+    )
+    #expect(throws: SecretCatalogValidationError.invalidPolicyBlock) {
+        try SensitiveCatalogDocumentCodec.decode(missing)
+    }
+
+    let duplicate = rendered.replacingOccurrences(
+        of: "\n\n\(SVLTAgentCatalogPolicy.documentPolicyBlock)",
+        with: "\n\n\(SVLTAgentCatalogPolicy.documentPolicyBlock)\n\n\(SVLTAgentCatalogPolicy.documentPolicyBlock)"
+    )
+    #expect(throws: SecretCatalogValidationError.invalidPolicyBlock) {
+        try SensitiveCatalogDocumentCodec.decode(duplicate)
+    }
+
+    let tampered = rendered.replacingOccurrences(
+        of: "> 13. 密码字段不得保存明文。",
+        with: "> 13. 密码字段可以保存明文。"
+    )
+    #expect(throws: SecretCatalogValidationError.invalidPolicyBlock) {
+        try SensitiveCatalogDocumentCodec.decode(tampered)
+    }
+}
+
 @Test func catalogV2IsInputOnlyAndDecodesToTheSameSemanticDocument() throws {
     let document = qnapDocument()
     let rendered = try SensitiveCatalogDocumentCodec.encodeV2(document)
@@ -197,6 +225,8 @@ private func qnapDocument() -> SecretCatalogDocument {
     let malformed = """
     \(SensitiveCatalogDocumentCodec.v3Marker)
     # 敏感信息
+
+    \(SVLTAgentCatalogPolicy.documentPolicyBlock)
 
     <!-- SVLT-INDEX {"id":"bad","unexpected":true} -->
     ## QNAP

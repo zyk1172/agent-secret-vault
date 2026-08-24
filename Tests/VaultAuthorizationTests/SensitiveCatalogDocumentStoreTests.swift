@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import VaultAuthorization
@@ -12,6 +13,15 @@ private let storeSecondEntryID = "0123456789ABCDEFGHJKMNPQRV"
 private let storeTemporaryEntryID = "0123456789ABCDEFGHJKMNPQRW"
 private let storeSecretReference = "secret://0123456789ABCDEFGHJKMNPQRV"
 private let storeAlternateSecretReference = "secret://0123456789ABCDEFGHJKMNPQRW"
+private let storeThirdSecretReference = "secret://0123456789ABCDEFGHJKMNPQRY"
+
+private struct LegacyCatalogIntegritySidecarV2: Codable {
+    let schemaVersion: Int
+    let revision: UInt64
+    let canonicalSHA256: String
+    let hmac: String
+    let updatedAt: String
+}
 
 private struct CatalogStoreFixture {
     let root: URL
@@ -177,7 +187,11 @@ private struct CatalogStoreFixture {
     await #expect(throws: SensitiveCatalogDocumentStoreError.integrityMissing) {
         _ = try await store.snapshot()
     }
-    let adopted = try await store.adoptExternalV3()
+    let candidate = try await store.externalV3AdoptionCandidate()
+    let adopted = try await store.adoptExternalV3(
+        expectedRawSHA256: candidate.rawSHA256,
+        expectedSemanticSHA256: candidate.semanticSHA256
+    )
 
     #expect(adopted.revision == 1)
     #expect(adopted.document == document)
@@ -224,7 +238,11 @@ private struct CatalogStoreFixture {
         _ = try await store.snapshot()
     }
 
-    let accepted = try await store.acceptPendingExternalChange()
+    let accepted = try await store.acceptPendingExternalChange(
+        expectedRevision: pending.acceptedRevision,
+        expectedRawSHA256: pending.rawSHA256,
+        expectedSemanticSHA256: pending.semanticSHA256
+    )
     #expect(accepted.revision == bound.revision + 1)
     #expect(accepted.document.entries.first?.fields.first?.secretRef == storeAlternateSecretReference)
     #expect(try Data(contentsOf: fixture.document) != before)
@@ -238,6 +256,45 @@ private struct CatalogStoreFixture {
     await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
         _ = try await store.snapshot()
     }
+}
+
+@Test func catalogStoreRejectsApprovalWhenThePendingFileChangesAfterApprovalSnapshot() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let first = try await store.createIndex(title: "QNAP")
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: try #require(first.document.indexes.first?.id),
+        title: "QNAP 登录",
+        fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)]
+    )
+    _ = try await store.createEntry(entry, expectedRevision: first.revision)
+
+    let original = try String(contentsOf: fixture.document, encoding: .utf8)
+    try original.replacingOccurrences(of: storeSecretReference, with: storeAlternateSecretReference)
+        .write(to: fixture.document, atomically: true, encoding: .utf8)
+    let pendingA = try await store.pendingExternalChange()
+
+    try String(contentsOf: fixture.document, encoding: .utf8)
+        .replacingOccurrences(of: storeAlternateSecretReference, with: storeThirdSecretReference)
+        .write(to: fixture.document, atomically: true, encoding: .utf8)
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.revisionConflict) {
+        _ = try await store.acceptPendingExternalChange(
+            expectedRevision: pendingA.acceptedRevision,
+            expectedRawSHA256: pendingA.rawSHA256,
+            expectedSemanticSHA256: pendingA.semanticSHA256
+        )
+    }
+    let pendingB = try await store.pendingExternalChange()
+    #expect(pendingB.rawSHA256 != pendingA.rawSHA256)
+    #expect(pendingB.semanticSHA256 != pendingA.semanticSHA256)
 }
 
 @Test func catalogStoreAppliesMixedBatchAsOneRevisionAndOneMarkdownWrite() async throws {
@@ -412,6 +469,52 @@ private struct CatalogStoreFixture {
     let backups = try FileManager.default.contentsOfDirectory(at: fixture.root, includingPropertiesForKeys: nil)
         .filter { $0.lastPathComponent.hasPrefix("敏感信息.md.bak-") }
     #expect(backups.count == 1)
+}
+
+@Test func catalogStoreMigratesManagedV2WithThePR13IntegritySidecar() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")],
+        entries: [SecretCatalogEntry(
+            id: storeEntryID,
+            indexId: storeIndexID,
+            title: "QNAP 登录",
+            fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)]
+        )]
+    )
+    let v2 = Data(try SensitiveCatalogDocumentCodec.encodeV2(document).utf8)
+    let revision: UInt64 = 9
+    let hash = SHA256.hash(data: v2).map { String(format: "%02x", $0) }.joined()
+    var payload = Data("SVLT-CATALOG-INTEGRITY-V2\n\(revision)\n\(hash)\n".utf8)
+    payload.append(v2)
+    let mac = HMAC<SHA256>.authenticationCode(for: payload, using: SymmetricKey(data: fixture.keyStore.key))
+    let sidecar = LegacyCatalogIntegritySidecarV2(
+        schemaVersion: 2,
+        revision: revision,
+        canonicalSHA256: hash,
+        hmac: Data(mac).base64EncodedString(),
+        updatedAt: "2026-08-25T00:00:00Z"
+    )
+    try v2.write(to: fixture.document, options: [.atomic])
+    try JSONEncoder().encode(sidecar).write(to: fixture.integrity, options: [.atomic])
+
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let adopted = try await store.adoptExternalV2()
+
+    #expect(adopted.revision == 1)
+    #expect(adopted.document == document)
+    #expect(SensitiveCatalogDocumentCodec.format(try Data(contentsOf: fixture.document)) == .managedV3)
+    let backups = try FileManager.default.contentsOfDirectory(at: fixture.root, includingPropertiesForKeys: nil)
+    #expect(backups.contains { $0.lastPathComponent.hasPrefix("敏感信息.md.bak-") })
+    #expect(backups.contains { $0.lastPathComponent.hasPrefix("catalog-integrity.json.bak-") })
+    let current = try JSONDecoder().decode(CatalogIntegrityRecord.self, from: Data(contentsOf: fixture.integrity))
+    #expect(current.revision == 1)
+    #expect(current.acceptedDocument == document)
 }
 
 @Test func catalogStoreDoesNotAdoptMalformedExternalV2OrChangeTheFile() async throws {

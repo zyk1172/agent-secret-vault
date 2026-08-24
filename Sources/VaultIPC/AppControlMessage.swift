@@ -5,7 +5,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
     case catalogStatus
     case catalogAdoptExternalV2
     case catalogAdoptExternalV3
-    case catalogApproveExternalChange
+    case catalogApproveExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    )
     case setCatalogAgentWriteMode(mode: CatalogAgentWriteMode, duration: TimeInterval?)
     case revokeCatalogAgentWrite
     case catalogAgentWriteStatus
@@ -44,6 +48,8 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case aliases
         case tags
         case expectedRevision
+        case expectedRawSHA256
+        case expectedSemanticSHA256
         case secretRef
         case mode
         case request
@@ -77,7 +83,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case .catalogAdoptExternalV3:
             self = .catalogAdoptExternalV3
         case .catalogApproveExternalChange:
-            self = .catalogApproveExternalChange
+            self = .catalogApproveExternalChange(
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision),
+                expectedRawSHA256: try container.decode(String.self, forKey: .expectedRawSHA256),
+                expectedSemanticSHA256: try container.decode(String.self, forKey: .expectedSemanticSHA256)
+            )
         case .setCatalogAgentWriteMode:
             self = .setCatalogAgentWriteMode(
                 mode: try container.decode(CatalogAgentWriteMode.self, forKey: .mode),
@@ -136,8 +146,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.catalogAdoptExternalV2, forKey: .type)
         case .catalogAdoptExternalV3:
             try container.encode(RequestType.catalogAdoptExternalV3, forKey: .type)
-        case .catalogApproveExternalChange:
+        case let .catalogApproveExternalChange(expectedRevision, expectedRawSHA256, expectedSemanticSHA256):
             try container.encode(RequestType.catalogApproveExternalChange, forKey: .type)
+            try container.encode(expectedRevision, forKey: .expectedRevision)
+            try container.encode(expectedRawSHA256, forKey: .expectedRawSHA256)
+            try container.encode(expectedSemanticSHA256, forKey: .expectedSemanticSHA256)
         case let .setCatalogAgentWriteMode(mode, duration):
             try container.encode(RequestType.setCatalogAgentWriteMode, forKey: .type)
             try container.encode(mode, forKey: .mode)
@@ -267,7 +280,11 @@ public protocol AppControlServicing: Sendable {
     func catalogStatus() async throws -> CatalogValidationResult
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult
     func adoptCatalogExternalV3() async throws -> CatalogValidationResult
-    func approveCatalogExternalChange() async throws -> CatalogValidationResult
+    func approveCatalogExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) async throws -> CatalogValidationResult
     func setCatalogAgentWriteMode(
         mode: CatalogAgentWriteMode,
         duration: TimeInterval?

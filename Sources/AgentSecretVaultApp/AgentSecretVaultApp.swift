@@ -782,7 +782,16 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             return
         }
         do {
-            let result = try await appControlClient.approveCatalogExternalChange()
+            let status = try await appControlClient.catalogStatus()
+            guard let pending = status.pendingExternalChange else {
+                sensitiveIndexError = "目录没有可批准的待审批修改"
+                return
+            }
+            let result = try await appControlClient.approveCatalogExternalChange(
+                expectedRevision: pending.acceptedRevision,
+                expectedRawSHA256: pending.rawSHA256,
+                expectedSemanticSHA256: pending.semanticSHA256
+            )
             if result.status == .found {
                 await refreshSensitiveCatalog()
             } else {

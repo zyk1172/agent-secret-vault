@@ -36,8 +36,16 @@ public actor AppControlIPCClient {
         return status
     }
 
-    public func approveCatalogExternalChange() async throws -> CatalogValidationResult {
-        let response = try await send(.catalogApproveExternalChange)
+    public func approveCatalogExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) async throws -> CatalogValidationResult {
+        let response = try await send(.catalogApproveExternalChange(
+            expectedRevision: expectedRevision,
+            expectedRawSHA256: expectedRawSHA256,
+            expectedSemanticSHA256: expectedSemanticSHA256
+        ))
         guard case let .catalogStatus(status) = response else { throw unexpected(response) }
         return status
     }

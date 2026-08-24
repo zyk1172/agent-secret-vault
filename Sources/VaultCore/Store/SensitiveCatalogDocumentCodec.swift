@@ -222,6 +222,7 @@ private extension SensitiveCatalogDocumentCodec {
     }
 
     static func parseV3(_ text: String) throws -> Parsed {
+        try validatePolicyBlock(text)
         let data = Data(text.utf8)
         let lines = splitLines(data)
         guard lines.first?.text == marker else { throw SecretCatalogValidationError.invalidMarker }
@@ -236,7 +237,7 @@ private extension SensitiveCatalogDocumentCodec {
 
         for line in lines.dropFirst() {
             let trimmed = line.text.trimmingCharacters(in: .whitespaces)
-            if trimmed == "<!-- SVLT-POLICY-BEGIN version=\"3\" -->" {
+            if trimmed == SVLTAgentCatalogPolicy.documentPolicyBeginMarker {
                 guard !policy, index == nil, entry == nil, field == nil else { throw SecretCatalogValidationError.invalidHeading }
                 policy = true
                 continue
@@ -337,6 +338,30 @@ private extension SensitiveCatalogDocumentCodec {
         let document = SecretCatalogDocument(indexes: indexes, entries: allEntries)
         try document.validate()
         return Parsed(document: document, source: source)
+    }
+
+    static func validatePolicyBlock(_ text: String) throws {
+        let lines = normalizeNewlines(text).components(separatedBy: "\n")
+        let beginLines = lines.enumerated().compactMap { offset, line in
+            line.trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyBeginMarker
+                ? offset
+                : nil
+        }
+        let endLines = lines.enumerated().compactMap { offset, line in
+            line.trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyEndMarker
+                ? offset
+                : nil
+        }
+        guard beginLines.count == 1, endLines.count == 1,
+              let begin = beginLines.first, let end = endLines.first, begin < end
+        else {
+            throw SecretCatalogValidationError.invalidPolicyBlock
+        }
+
+        let block = lines[begin...end].joined(separator: "\n")
+        guard block == SVLTAgentCatalogPolicy.documentPolicyBlock else {
+            throw SecretCatalogValidationError.invalidPolicyBlock
+        }
     }
 
     static func parseField(body: String, state: FieldState) throws -> SecretCatalogFieldValue {

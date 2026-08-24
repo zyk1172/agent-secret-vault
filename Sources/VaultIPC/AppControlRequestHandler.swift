@@ -22,8 +22,12 @@ public struct AppControlRequestHandler: Sendable {
                 return .catalogStatus(try await service.adoptCatalogExternalV2())
             case .catalogAdoptExternalV3:
                 return .catalogStatus(try await service.adoptCatalogExternalV3())
-            case .catalogApproveExternalChange:
-                return .catalogStatus(try await service.approveCatalogExternalChange())
+            case let .catalogApproveExternalChange(expectedRevision, expectedRawSHA256, expectedSemanticSHA256):
+                return .catalogStatus(try await service.approveCatalogExternalChange(
+                    expectedRevision: expectedRevision,
+                    expectedRawSHA256: expectedRawSHA256,
+                    expectedSemanticSHA256: expectedSemanticSHA256
+                ))
             case let .setCatalogAgentWriteMode(mode, duration):
                 return .catalogAgentWriteStatus(try await service.setCatalogAgentWriteMode(mode: mode, duration: duration))
             case .revokeCatalogAgentWrite:

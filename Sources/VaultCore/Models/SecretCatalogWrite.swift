@@ -158,9 +158,30 @@ public struct CatalogWriteResult: Codable, Equatable, Sendable {
 public struct CatalogValidationResult: Codable, Equatable, Sendable {
     public let status: SecretCatalogSearchStatus
     public let revision: UInt64?
+    public let pendingExternalChange: CatalogPendingExternalChange?
 
-    public init(status: SecretCatalogSearchStatus, revision: UInt64? = nil) {
+    public init(
+        status: SecretCatalogSearchStatus,
+        revision: UInt64? = nil,
+        pendingExternalChange: CatalogPendingExternalChange? = nil
+    ) {
         self.status = status
         self.revision = revision
+        self.pendingExternalChange = pendingExternalChange
+    }
+}
+
+/// Opaque identity for the exact external document that was shown for local
+/// approval.  Hashes are concurrency tokens only; no Markdown or secret value
+/// is exposed through AppControl.
+public struct CatalogPendingExternalChange: Codable, Equatable, Sendable {
+    public let acceptedRevision: UInt64
+    public let rawSHA256: String
+    public let semanticSHA256: String
+
+    public init(acceptedRevision: UInt64, rawSHA256: String, semanticSHA256: String) {
+        self.acceptedRevision = acceptedRevision
+        self.rawSHA256 = rawSHA256
+        self.semanticSHA256 = semanticSHA256
     }
 }

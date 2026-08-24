@@ -288,6 +288,15 @@ export default class AgentSecretVaultPlugin extends Plugin {
     return true;
   }
 
+  private async refuseManagedCatalogRestore(documentText: string): Promise<boolean> {
+    if (classifyCatalogText(documentText) === "managedV3") {
+      await this.validateManagedCatalog(true);
+      new Notice("SVLT：v3 敏感信息目录禁止在 Obsidian 中还原 secret://；明文只可在 SVLT App 安全窗口中临时查看。");
+      return true;
+    }
+    return this.refuseManagedCatalogMutation(documentText);
+  }
+
   private async encryptSelection(editor: Editor): Promise<void> {
     if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
       return;
@@ -414,7 +423,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async restoreCurrentParagraph(editor: Editor): Promise<void> {
     const documentText = editor.getValue();
-    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogRestore(documentText)) {
       return;
     }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
@@ -422,7 +431,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 
   private async restoreSelection(editor: Editor): Promise<void> {
-    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogRestore(editor.getValue())) {
       return;
     }
     const text = editor.getSelection();

@@ -921,6 +921,14 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     new import_obsidian2.Notice("SVLT\uFF1Av2 \u6216\u65E7\u7248\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u8BF7\u5148\u5728 SVLT App \u4E2D\u5347\u7EA7\uFF1BObsidian \u4E0D\u4F1A\u76F4\u63A5\u6539\u5199\u65E7\u7ED3\u6784\u3002");
     return true;
   }
+  async refuseManagedCatalogRestore(documentText) {
+    if (classifyCatalogText(documentText) === "managedV3") {
+      await this.validateManagedCatalog(true);
+      new import_obsidian2.Notice("SVLT\uFF1Av3 \u654F\u611F\u4FE1\u606F\u76EE\u5F55\u7981\u6B62\u5728 Obsidian \u4E2D\u8FD8\u539F secret://\uFF1B\u660E\u6587\u53EA\u53EF\u5728 SVLT App \u5B89\u5168\u7A97\u53E3\u4E2D\u4E34\u65F6\u67E5\u770B\u3002");
+      return true;
+    }
+    return this.refuseManagedCatalogMutation(documentText);
+  }
   async encryptSelection(editor) {
     if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
       return;
@@ -1027,14 +1035,14 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   }
   async restoreCurrentParagraph(editor) {
     const documentText = editor.getValue();
-    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogRestore(documentText)) {
       return;
     }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     await this.restoreRange(editor, range, editor.offsetToPos(range.start), editor.offsetToPos(range.end), "SVLT: current paragraph has no secret reference.");
   }
   async restoreSelection(editor) {
-    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogRestore(editor.getValue())) {
       return;
     }
     const text = editor.getSelection();

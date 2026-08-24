@@ -101,6 +101,50 @@ private struct CatalogFixture {
     }
 }
 
+private struct ExternalCatalogAdoptionFixture {
+    let root: URL
+    let documentURL: URL
+    let integrityURL: URL
+    let selectionURL: URL
+    let store: SensitiveCatalogDocumentStore
+    let agentAuthorization: CatalogAgentWriteAuthorization
+
+    init(reference: String) async throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("svlt-adoption-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        documentURL = root.appendingPathComponent("敏感信息.md")
+        integrityURL = root.appendingPathComponent("catalog-integrity.json")
+        selectionURL = root.appendingPathComponent("selection.json")
+        store = SensitiveCatalogDocumentStore(
+            documentURL: documentURL,
+            integrityURL: integrityURL,
+            keyStore: try FixedCatalogIntegrityKeyStore(key: Data(repeating: 7, count: 32))
+        )
+        try await store.selectDocument(at: documentURL)
+        let document = SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: serviceIndexID, title: "QNAP")],
+            entries: [SecretCatalogEntry(
+                id: serviceEntryID,
+                indexId: serviceIndexID,
+                title: "管理后台",
+                fields: [SecretCatalogFieldValue(
+                    key: "password",
+                    label: "密码",
+                    type: .secret,
+                    secretRef: reference
+                )]
+            )]
+        )
+        try SensitiveCatalogDocumentCodec.encode(document).write(to: documentURL, atomically: true, encoding: .utf8)
+        try SecretCatalogSelectionStore(manifestURL: selectionURL).save(documentURL: documentURL)
+        agentAuthorization = CatalogAgentWriteAuthorization()
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
 @Test func appServiceUsesEntryCentricCatalogAndNeverReturnsPlaintext() async throws {
     let fixture = try await CatalogFixture()
     defer { fixture.cleanup() }
@@ -151,6 +195,27 @@ private struct CatalogFixture {
         _ = try await service.createCatalogDraft(CatalogDraftRequest(indexID: serviceIndexID, title: "Komga"))
     }
     #expect(error == .agentWriteNotAllowed)
+}
+
+@Test func appServiceKeepsAgentCatalogWriteToggleOperational() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    #expect(await service.catalogAgentWriteStatus().mode == .safe)
+    await service.revokeCatalogAgentWrite()
+    #expect(await service.catalogAgentWriteStatus().mode == .disabled)
+    let enabled = try await service.setCatalogAgentWriteMode(mode: .safe, duration: nil)
+    #expect(enabled.mode == .safe)
+    #expect(await service.catalogAgentWriteStatus().mode == .safe)
+    await service.revokeCatalogAgentWrite()
+    #expect(await service.catalogAgentWriteStatus().mode == .disabled)
 }
 
 @Test func agentSafeCreateEntryWritesMetadataAndEmptySecretPlaceholderWithoutLease() async throws {
@@ -233,6 +298,78 @@ private struct CatalogFixture {
         )
     }
     #expect(approvalError == .approvalRequired)
+}
+
+@Test func appServiceRejectsV3AdoptionWhenSecretReferenceDoesNotExist() async throws {
+    let fixture = try await ExternalCatalogAdoptionFixture(reference: servicePrivateKeyRef)
+    defer { fixture.cleanup() }
+    let recordStore = CatalogMetadataRecordStore(record: EncryptedRecord(
+        formatVersion: 2,
+        id: String(servicePasswordRef.dropFirst("secret://".count)),
+        recordVersion: 1,
+        ciphertext: Data(),
+        nonce: Data(),
+        tag: Data(),
+        wrappedDataKey: Data(),
+        wrappedDataKeyNonce: Data(),
+        wrappedDataKeyTag: Data(),
+        label: "QNAP credential",
+        policy: .credential,
+        createdAt: Date(),
+        updatedAt: Date()
+    ))
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let error = await serviceCatalogError {
+        _ = try await service.adoptCatalogExternalV3()
+    }
+
+    #expect(error == .invalidOperation)
+    #expect(!FileManager.default.fileExists(atPath: fixture.integrityURL.path))
+}
+
+@Test func appServiceRequiresLocalApprovalForExistingSecretDuringV3Adoption() async throws {
+    let fixture = try await ExternalCatalogAdoptionFixture(reference: servicePasswordRef)
+    defer { fixture.cleanup() }
+    let recordStore = CatalogMetadataRecordStore(record: EncryptedRecord(
+        formatVersion: 2,
+        id: String(servicePasswordRef.dropFirst("secret://".count)),
+        recordVersion: 1,
+        ciphertext: Data(),
+        nonce: Data(),
+        tag: Data(),
+        wrappedDataKey: Data(),
+        wrappedDataKeyNonce: Data(),
+        wrappedDataKeyTag: Data(),
+        label: "QNAP credential",
+        policy: .credential,
+        createdAt: Date(),
+        updatedAt: Date()
+    ))
+    let approver = CatalogApprovalRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+
+    let result = try await service.adoptCatalogExternalV3()
+
+    #expect(result.status == .found)
+    #expect(result.revision == 1)
+    #expect(await approver.count == 1)
+    #expect(FileManager.default.fileExists(atPath: fixture.integrityURL.path))
 }
 
 @Test func appControlSecretEndpointChangeRequiresAndUsesLocalApproval() async throws {
