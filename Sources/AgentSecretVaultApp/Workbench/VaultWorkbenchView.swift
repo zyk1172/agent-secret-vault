@@ -128,6 +128,10 @@ public struct VaultWorkbenchView: View {
     let savedReferences: [SecretReferenceMetadata]
     let sensitiveIndexURL: URL?
     let sensitiveIndexEntries: [SensitiveInformationDocumentReference]
+    let sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
+    let sensitiveCatalogError: String?
+    let sensitiveMigrationPreview: SecretCatalogMigrationPreview?
+    let sensitiveMigrationError: String?
     let sensitiveScanRootURL: URL?
     let sensitiveScanCandidates: [LocalSensitiveInformationCandidate]
     let sensitiveScanRules: [SensitiveScanRuleDefinition]
@@ -136,6 +140,11 @@ public struct VaultWorkbenchView: View {
     let chooseSensitiveIndex: (() -> Void)?
     let createSensitiveIndex: (() -> Void)?
     let refreshSensitiveIndex: (() async -> Void)?
+    let refreshSensitiveCatalog: (() async -> Void)?
+    let createCatalogIndex: ((String) async -> Void)?
+    let createCatalogEntry: ((String, String, String) async -> Void)?
+    let prepareSensitiveMigration: (() async -> Void)?
+    let confirmSensitiveMigration: (() async -> Void)?
     let chooseSensitiveScanRoot: (() -> Void)?
     let scanSensitiveInformation: (() async -> Void)?
     let encryptSensitiveCandidates: ((Set<String>) async -> Void)?
@@ -154,6 +163,10 @@ public struct VaultWorkbenchView: View {
         savedReferences: [SecretReferenceMetadata] = [],
         sensitiveIndexURL: URL? = nil,
         sensitiveIndexEntries: [SensitiveInformationDocumentReference] = [],
+        sensitiveCatalogSnapshot: SensitiveCatalogSnapshot? = nil,
+        sensitiveCatalogError: String? = nil,
+        sensitiveMigrationPreview: SecretCatalogMigrationPreview? = nil,
+        sensitiveMigrationError: String? = nil,
         sensitiveScanRootURL: URL? = nil,
         sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = [],
         sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults,
@@ -162,6 +175,11 @@ public struct VaultWorkbenchView: View {
         chooseSensitiveIndex: (() -> Void)? = nil,
         createSensitiveIndex: (() -> Void)? = nil,
         refreshSensitiveIndex: (() async -> Void)? = nil,
+        refreshSensitiveCatalog: (() async -> Void)? = nil,
+        createCatalogIndex: ((String) async -> Void)? = nil,
+        createCatalogEntry: ((String, String, String) async -> Void)? = nil,
+        prepareSensitiveMigration: (() async -> Void)? = nil,
+        confirmSensitiveMigration: (() async -> Void)? = nil,
         chooseSensitiveScanRoot: (() -> Void)? = nil,
         scanSensitiveInformation: (() async -> Void)? = nil,
         encryptSensitiveCandidates: ((Set<String>) async -> Void)? = nil,
@@ -178,6 +196,10 @@ public struct VaultWorkbenchView: View {
         self.savedReferences = savedReferences
         self.sensitiveIndexURL = sensitiveIndexURL
         self.sensitiveIndexEntries = sensitiveIndexEntries
+        self.sensitiveCatalogSnapshot = sensitiveCatalogSnapshot
+        self.sensitiveCatalogError = sensitiveCatalogError
+        self.sensitiveMigrationPreview = sensitiveMigrationPreview
+        self.sensitiveMigrationError = sensitiveMigrationError
         self.sensitiveScanRootURL = sensitiveScanRootURL
         self.sensitiveScanCandidates = sensitiveScanCandidates
         self.sensitiveScanRules = sensitiveScanRules
@@ -186,6 +208,11 @@ public struct VaultWorkbenchView: View {
         self.chooseSensitiveIndex = chooseSensitiveIndex
         self.createSensitiveIndex = createSensitiveIndex
         self.refreshSensitiveIndex = refreshSensitiveIndex
+        self.refreshSensitiveCatalog = refreshSensitiveCatalog
+        self.createCatalogIndex = createCatalogIndex
+        self.createCatalogEntry = createCatalogEntry
+        self.prepareSensitiveMigration = prepareSensitiveMigration
+        self.confirmSensitiveMigration = confirmSensitiveMigration
         self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
         self.scanSensitiveInformation = scanSensitiveInformation
         self.encryptSensitiveCandidates = encryptSensitiveCandidates
@@ -289,14 +316,27 @@ public struct VaultWorkbenchView: View {
                 }
             }
         case .secrets:
-            WorkbenchPage(title: "敏感信息", subtitle: "集中维护敏感信息.md；每条记录保留可读索引和独立密文。", systemImage: selectedSection.systemImage) {
-                SensitiveIndexLibraryCard(
-                    indexURL: sensitiveIndexURL,
-                    entries: sensitiveIndexEntries,
-                    chooseIndex: chooseSensitiveIndex,
-                    createIndex: createSensitiveIndex,
-                    refresh: refreshSensitiveIndex
-                )
+            WorkbenchPage(title: "敏感信息", subtitle: "Index → Entry → Field 结构化目录；Markdown 只作为人类可读表现。", systemImage: selectedSection.systemImage) {
+                VStack(spacing: 14) {
+                    SensitiveCatalogEditorCard(
+                        snapshot: sensitiveCatalogSnapshot,
+                        errorMessage: sensitiveCatalogError,
+                        migrationPreview: sensitiveMigrationPreview,
+                        migrationError: sensitiveMigrationError,
+                        refresh: refreshSensitiveCatalog,
+                        createIndex: createCatalogIndex,
+                        createEntry: createCatalogEntry,
+                        prepareMigration: prepareSensitiveMigration,
+                        confirmMigration: confirmSensitiveMigration
+                    )
+                    SensitiveIndexLibraryCard(
+                        indexURL: sensitiveIndexURL,
+                        entries: sensitiveIndexEntries,
+                        chooseIndex: chooseSensitiveIndex,
+                        createIndex: createSensitiveIndex,
+                        refresh: refreshSensitiveIndex
+                    )
+                }
             }
         case .records:
             WorkbenchPage(title: "本地扫描", subtitle: "按本机规则找出候选；不会自动加密或写回。", systemImage: selectedSection.systemImage) {
@@ -754,6 +794,317 @@ private struct SensitiveIndexLibraryCard: View {
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct SensitiveCatalogEditorCard: View {
+    let snapshot: SensitiveCatalogSnapshot?
+    let errorMessage: String?
+    let migrationPreview: SecretCatalogMigrationPreview?
+    let migrationError: String?
+    let refresh: (() async -> Void)?
+    let createIndex: ((String) async -> Void)?
+    let createEntry: ((String, String, String) async -> Void)?
+    let prepareMigration: (() async -> Void)?
+    let confirmMigration: (() async -> Void)?
+
+    @State private var newIndexTitle = ""
+    @State private var addingEntryToIndexID: String?
+    @State private var newEntryTitle = ""
+    @State private var selectedPresetID = SensitiveCatalogEntryPreset.all.first?.id ?? "credential"
+    @State private var isWorking = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Label("结构化目录", systemImage: "list.bullet.indent")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                if let refresh {
+                    Button {
+                        Task {
+                            isWorking = true
+                            await refresh()
+                            isWorking = false
+                        }
+                    } label: {
+                        Label("验证并刷新", systemImage: "checkmark.shield")
+                    }
+                    .disabled(isWorking)
+                }
+            }
+
+            if let errorMessage, snapshot == nil {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+
+            if snapshot == nil, let prepareMigration {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .foregroundStyle(.orange)
+                        Text("旧格式迁移")
+                            .font(.headline)
+                        Spacer()
+                        Button("生成迁移预览") {
+                            Task {
+                                isWorking = true
+                                await prepareMigration()
+                                isWorking = false
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isWorking)
+                    }
+                    Text("SVLT 不会猜测未标注的用户名/密码，也不会直接覆盖旧文件。确认后会先生成时间戳备份，并校验 secret:// 引用集合。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let migrationError {
+                        Text(migrationError)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    if let migrationPreview {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("预览：Index \(migrationPreview.document.indexes.count) · Entry \(migrationPreview.document.entries.count) · 引用 \(migrationPreview.referencesBefore.count)")
+                                .font(.caption.weight(.semibold))
+                            if migrationPreview.ambiguousReferences.isEmpty && migrationPreview.plaintextSensitiveFields.isEmpty {
+                                Label("没有待确认字段，可以迁移", systemImage: "checkmark.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            } else {
+                                Label("存在待确认项，已禁止自动迁移", systemImage: "exclamationmark.triangle")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                ForEach(migrationPreview.ambiguousReferences, id: \.reference) { ambiguity in
+                                    Text("未识别：\(ambiguity.reference) · 可选 \(ambiguity.suggestedKeys.joined(separator: " / "))")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                if !migrationPreview.plaintextSensitiveFields.isEmpty {
+                                    Text("发现旧文档中的敏感字段明文；请在 SVLT 安全表单重新填写。")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                            HStack {
+                                Spacer()
+                                Button("确认迁移并备份") {
+                                    Task {
+                                        isWorking = true
+                                        await confirmMigration?()
+                                        isWorking = false
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(isWorking || migrationPreview.requiresUserResolution || confirmMigration == nil)
+                            }
+                        }
+                        .padding(10)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
+            if let snapshot {
+                HStack(spacing: 8) {
+                    Text("revision \(snapshot.revision)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Label("完整性已验证", systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                    Spacer()
+                    Text("Index \(snapshot.document.indexes.count) · Entry \(snapshot.document.entries.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    TextField("新增一级索引，例如 QNAP", text: $newIndexTitle)
+                        .textFieldStyle(.roundedBorder)
+                    Button("新增一级索引") {
+                        let title = newIndexTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !title.isEmpty else { return }
+                        Task {
+                            isWorking = true
+                            await createIndex?(title)
+                            newIndexTitle = ""
+                            isWorking = false
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isWorking || createIndex == nil)
+                }
+
+                if snapshot.document.indexes.isEmpty {
+                    ContentUnavailableView(
+                        "还没有一级索引",
+                        systemImage: "folder.badge.plus",
+                        description: Text("先创建 QNAP、Komga 或其他服务的一级索引。")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 120)
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(snapshot.document.indexes, id: \.id) { index in
+                            let entries = snapshot.document.entries.filter { $0.indexId == index.id }
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(.blue)
+                                    Text(index.title)
+                                        .font(.headline)
+                                    if !index.aliases.isEmpty {
+                                        Text(index.aliases.joined(separator: "、"))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button("新增 Entry") {
+                                        addingEntryToIndexID = index.id
+                                        newEntryTitle = ""
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+
+                                if addingEntryToIndexID == index.id {
+                                    HStack(spacing: 8) {
+                                        TextField("子索引标题，例如管理后台登录", text: $newEntryTitle)
+                                            .textFieldStyle(.roundedBorder)
+                                        Picker("预设", selection: $selectedPresetID) {
+                                            ForEach(SensitiveCatalogEntryPreset.all) { preset in
+                                                Text(preset.title).tag(preset.id)
+                                            }
+                                        }
+                                        .frame(width: 150)
+                                        Button("创建") {
+                                            let title = newEntryTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                                            guard !title.isEmpty else { return }
+                                            Task {
+                                                isWorking = true
+                                                await createEntry?(index.id, title, selectedPresetID)
+                                                addingEntryToIndexID = nil
+                                                newEntryTitle = ""
+                                                isWorking = false
+                                            }
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        Button("取消") { addingEntryToIndexID = nil }
+                                            .buttonStyle(.bordered)
+                                    }
+                                }
+
+                                if entries.isEmpty {
+                                    Text("暂无 Entry")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.leading, 28)
+                                } else {
+                                    ForEach(entries, id: \.id) { entry in
+                                        SensitiveCatalogEntryRow(entry: entry)
+                                    }
+                                }
+                            }
+                            .padding(12)
+                            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
+                }
+            } else if errorMessage == nil {
+                Text("选择或新建敏感信息.md 后，SVLT 会在这里显示 Index → Entry → Field 树。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct SensitiveCatalogEntryRow: View {
+    let entry: SecretCatalogEntry
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(entry.fields, id: \.key) { field in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: field.type.isSecret ? "lock.fill" : "circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(field.type.isSecret ? .orange : .secondary)
+                            .frame(width: 14)
+                        Text(field.label)
+                            .font(.caption.weight(.semibold))
+                        Text(fieldDisplayValue(field))
+                            .font(.system(.caption, design: field.type.isSecret ? .monospaced : .default))
+                            .foregroundStyle(field.type.isSecret ? .orange : .secondary)
+                            .textSelection(.enabled)
+                        Spacer()
+                        if !field.agentVisible {
+                            Text("Agent 隐藏")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        } else if field.searchable {
+                            Text("可搜索")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                if let notes = entry.notes, !notes.isEmpty {
+                    Text(notes)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 3)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "key.horizontal")
+                    .foregroundStyle(.green)
+                Text(entry.title)
+                    .font(.callout.weight(.semibold))
+                if !entry.aliases.isEmpty {
+                    Text(entry.aliases.joined(separator: "、"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(entry.id)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func fieldDisplayValue(_ field: SecretCatalogFieldValue) -> String {
+        if field.type.isSecret {
+            return field.secretRef ?? "未填写（请在 SVLT 安全表单中输入）"
+        }
+        guard field.agentVisible else { return "已隐藏" }
+        guard let value = field.value else { return "未填写" }
+        switch value {
+        case .string(let string):
+            return string
+        case .number(let number):
+            return String(number)
+        case .boolean(let boolean):
+            return boolean ? "是" : "否"
+        case .list(let list):
+            return list.joined(separator: ", ")
+        }
     }
 }
 

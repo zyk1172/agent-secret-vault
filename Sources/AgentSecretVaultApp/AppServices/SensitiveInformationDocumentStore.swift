@@ -54,7 +54,18 @@ public actor SensitiveInformationDocumentStore {
 
     public func selectDocument(at url: URL?) throws {
         if let url {
-            try assertSafeFile(url)
+            guard url.pathExtension.lowercased() == "md" else {
+                throw SensitiveInformationDocumentStoreError.malformedDocument
+            }
+            if FileManager.default.fileExists(atPath: url.path) {
+                try assertSafeFile(url)
+            } else {
+                let parent = url.deletingLastPathComponent()
+                let values = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isDirectory == true, values.isSymbolicLink != true else {
+                    throw SensitiveInformationDocumentStoreError.malformedDocument
+                }
+            }
         }
         documentURL = url
     }
