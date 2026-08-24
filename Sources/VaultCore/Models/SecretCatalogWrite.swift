@@ -11,6 +11,10 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
     case revisionConflict
     case invalidOperation
     case approvalRequired
+    /// The Catalog write failed and at least one newly-created opaque record
+    /// could not be deleted. The ID is persisted in cleanup metadata for a
+    /// later orphan scan/reconciliation; plaintext is never included.
+    case cleanupRequired
 }
 
 /// The user-facing App-control setting for Agent catalog writes.  The

@@ -100,6 +100,7 @@ private struct CatalogMigrationJournal: Codable, Equatable {
     let previousIntegrityPath: String?
     let documentBackupPath: String
     let integrityBackupPath: String?
+    let targetRevision: UInt64?
     let expectedDocumentSHA256: String
     let expectedIntegritySHA256: String
 
@@ -110,6 +111,7 @@ private struct CatalogMigrationJournal: Codable, Equatable {
         previousIntegrityPath: String?,
         documentBackupPath: String,
         integrityBackupPath: String?,
+        targetRevision: UInt64?,
         expectedDocumentSHA256: String,
         expectedIntegritySHA256: String
     ) {
@@ -120,6 +122,7 @@ private struct CatalogMigrationJournal: Codable, Equatable {
         self.previousIntegrityPath = previousIntegrityPath
         self.documentBackupPath = documentBackupPath
         self.integrityBackupPath = integrityBackupPath
+        self.targetRevision = targetRevision
         self.expectedDocumentSHA256 = expectedDocumentSHA256
         self.expectedIntegritySHA256 = expectedIntegritySHA256
     }
@@ -132,9 +135,25 @@ private struct CatalogMigrationJournal: Codable, Equatable {
             previousIntegrityPath: previousIntegrityPath,
             documentBackupPath: documentBackupPath,
             integrityBackupPath: integrityBackupPath,
+            targetRevision: targetRevision,
             expectedDocumentSHA256: expectedDocumentSHA256,
             expectedIntegritySHA256: expectedIntegritySHA256
         )
+    }
+}
+
+/// Durable compensation state for secret records created before a Catalog
+/// commit. It deliberately contains only opaque record IDs; plaintext is
+/// never journaled or persisted by this store.
+private struct CatalogSecretCleanupRecord: Codable, Equatable {
+    let schemaVersion: Int
+    let referenceIDs: [String]
+    let updatedAt: String
+
+    init(referenceIDs: [String], updatedAt: String) {
+        self.schemaVersion = 1
+        self.referenceIDs = referenceIDs
+        self.updatedAt = updatedAt
     }
 }
 
@@ -231,6 +250,33 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     public func selectedDocumentURL() -> URL? { documentURL }
+
+    /// Records opaque secret IDs whose best-effort deletion failed while a
+    /// Catalog transaction was being compensated. This state is intentionally
+    /// separate from the integrity authority and can be reconciled later.
+    public func recordPendingSecretCleanup(referenceIDs: [String]) throws {
+        let normalized = try normalizedCleanupReferenceIDs(referenceIDs)
+        guard !normalized.isEmpty else { return }
+        try withCatalogLock(exclusive: true) {
+            let current = try readCleanupReferenceIDsUnlocked()
+            try writeCleanupReferenceIDsUnlocked(current + normalized)
+        }
+    }
+
+    public func pendingSecretCleanupReferenceIDs() throws -> [String] {
+        try withCatalogLock(exclusive: false) {
+            try readCleanupReferenceIDsUnlocked()
+        }
+    }
+
+    public func clearPendingSecretCleanup(referenceIDs: [String]) throws {
+        let normalized = try normalizedCleanupReferenceIDs(referenceIDs)
+        guard !normalized.isEmpty else { return }
+        try withCatalogLock(exclusive: true) {
+            let remaining = try readCleanupReferenceIDsUnlocked().filter { !normalized.contains($0) }
+            try writeCleanupReferenceIDsUnlocked(remaining)
+        }
+    }
 
     public func snapshot() throws -> SensitiveCatalogSnapshot {
         // Reconciliation may update raw auxiliary data or accepted state.
@@ -434,25 +480,32 @@ public actor SensitiveCatalogDocumentStore {
             let raw = try Data(contentsOf: url)
             guard SensitiveCatalogDocumentCodec.format(raw) == .managedV2 else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
             let decodedV2 = try decodeV2(raw)
-            let document: SecretCatalogDocument
+            let migration: SensitiveCatalogDocumentCodec.V2MigrationResult
             do {
-                document = try SensitiveCatalogDocumentCodec.migrateV2DocumentForV3(decodedV2)
+                migration = try SensitiveCatalogDocumentCodec.migrateV2DocumentForV3WithNotes(decodedV2)
             } catch {
                 // An ambiguous legacy policy-shaped index must fail closed;
                 // do not silently delete business data during migration.
                 throw SensitiveCatalogDocumentStoreError.malformedDocument
             }
-            let rendered = try SensitiveCatalogDocumentCodec.canonicalData(document)
+            let document = migration.document
+            let rendered = try SensitiveCatalogDocumentCodec.canonicalData(
+                document,
+                unmanagedMarkdown: migration.unmanagedMarkdown
+            )
             let reparsed = try SensitiveCatalogDocumentCodec.decode(rendered)
             guard reparsed == document, referenceSet(document) == referenceSet(reparsed) else { throw SensitiveCatalogDocumentStoreError.referenceSetChanged }
             let stateURL = try integrityURL()
             let sourceIntegrityURL = try v2IntegritySourceURL(activeURL: stateURL)
+            var legacyRevision: UInt64?
             if let sourceIntegrityURL {
                 try assertSafeFile(sourceIntegrityURL)
                 let legacy = try readLegacyIntegrityRecordV2(at: sourceIntegrityURL)
                 try verifyLegacyIntegrityV2(legacy, data: raw)
+                legacyRevision = legacy.revision
             }
-            let record = try makeRecord(document: reparsed, revision: 1, raw: rendered)
+            let targetRevision = try migrationRevision(after: legacyRevision)
+            let record = try makeRecord(document: reparsed, revision: targetRevision, raw: rendered)
             let integrityData = try encodedIntegrityData(record)
             guard let documentBackup = try backupCurrentDocumentUnlocked() else {
                 throw SensitiveCatalogDocumentStoreError.writeFailed
@@ -474,6 +527,7 @@ public actor SensitiveCatalogDocumentStore {
                 previousIntegrityPath: sourceIntegrityURL?.standardizedFileURL.path,
                 documentBackupPath: documentBackup.standardizedFileURL.path,
                 integrityBackupPath: sourceIntegrityURL == nil ? nil : integrityBackup?.standardizedFileURL.path,
+                targetRevision: targetRevision,
                 expectedDocumentSHA256: sha256Hex(rendered),
                 expectedIntegritySHA256: sha256Hex(integrityData)
             )
@@ -496,13 +550,13 @@ public actor SensitiveCatalogDocumentStore {
                 }
                 try writeMigrationJournal(committing.changingPhase(to: .completed), at: journalURL)
                 try removeMigrationJournal(at: journalURL)
-                return SensitiveCatalogSnapshot(document: reparsed, revision: 1, integrity: .verified)
+                return SensitiveCatalogSnapshot(document: reparsed, revision: targetRevision, integrity: .verified)
             } catch {
                 // A failure while writing the completed marker or deleting the
                 // journal must not roll back a pair that is already complete.
                 if migrationCommitMatches(committing) {
                     try? removeMigrationJournal(at: journalURL)
-                    return SensitiveCatalogSnapshot(document: reparsed, revision: 1, integrity: .verified)
+                    return SensitiveCatalogSnapshot(document: reparsed, revision: targetRevision, integrity: .verified)
                 }
 
                 do {
@@ -615,6 +669,11 @@ public actor SensitiveCatalogDocumentStore {
         let candidate = try decodeV3(raw)
         let stateURL = try integrityURL()
         try migrateLegacyV3IntegrityIfMatching(
+            candidate: candidate,
+            raw: raw,
+            activeURL: stateURL
+        )
+        try migrateRenamedV3IntegrityIfMatching(
             candidate: candidate,
             raw: raw,
             activeURL: stateURL
@@ -1046,6 +1105,56 @@ public actor SensitiveCatalogDocumentStore {
         }
     }
 
+    /// A path-scoped sidecar cannot follow an Obsidian rename by itself. When
+    /// the active path has no sidecar, conservatively rebind exactly one
+    /// already-authenticated sidecar whose accepted semantic document is an
+    /// exact match. Ambiguous matches fail closed and leave all old sidecars
+    /// intact for recovery.
+    private func migrateRenamedV3IntegrityIfMatching(
+        candidate: SecretCatalogDocument,
+        raw: Data,
+        activeURL: URL
+    ) throws {
+        guard !fileManager.fileExists(atPath: activeURL.path),
+              suppliedIntegrityURL == nil,
+              documentURL != nil
+        else {
+            return
+        }
+        let directory = try catalogIntegrityDirectoryURL()
+        let files = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        ).filter { url in
+            let name = url.lastPathComponent
+            return name.hasPrefix("catalog-integrity-")
+                && name.hasSuffix(".json")
+                && name != activeURL.lastPathComponent
+                && name.dropFirst("catalog-integrity-".count).dropLast(".json".count).count == 64
+                && name.dropFirst("catalog-integrity-".count).dropLast(".json".count).allSatisfy { $0.isHexDigit }
+        }
+
+        var matches: [(url: URL, record: CatalogIntegrityRecord)] = []
+        for file in files {
+            do {
+                let record = try readIntegrityRecord(at: file)
+                try verify(record)
+                if record.acceptedDocument == candidate {
+                    matches.append((file, record))
+                }
+            } catch {
+                // An unrelated, malformed, or unverifiable sidecar must not
+                // become a migration source for a different document.
+                continue
+            }
+        }
+        guard matches.count == 1 else { return }
+        let source = matches[0].record
+        let rebound = try makeRecord(document: candidate, revision: source.revision, raw: raw)
+        try atomicWriteIntegrity(rebound)
+    }
+
     private func readLegacyIntegrityRecordV2(at url: URL) throws -> LegacyCatalogIntegrityRecordV2 {
         do {
             return try JSONDecoder().decode(
@@ -1082,6 +1191,73 @@ public actor SensitiveCatalogDocumentStore {
         ))
         guard constantTimeEqual(computedMAC, expectedMAC) else {
             throw SensitiveCatalogDocumentStoreError.externalModification
+        }
+    }
+
+    private func migrationRevision(after legacyRevision: UInt64?) throws -> UInt64 {
+        guard let legacyRevision else { return 1 }
+        guard legacyRevision < UInt64.max else {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+        return legacyRevision + 1
+    }
+
+    private func normalizedCleanupReferenceIDs(_ referenceIDs: [String]) throws -> [String] {
+        var normalized = Set<String>()
+        for id in referenceIDs {
+            guard !id.isEmpty, (try? SecretReference("secret://\(id)")) != nil else {
+                throw SensitiveCatalogDocumentStoreError.invalidOperation
+            }
+            normalized.insert(id)
+        }
+        return normalized.sorted()
+    }
+
+    private func cleanupRecordURL() throws -> URL {
+        let integrity = try integrityURL()
+        return integrity.deletingLastPathComponent()
+            .appendingPathComponent("\(integrity.lastPathComponent).cleanup.json")
+    }
+
+    private func readCleanupReferenceIDsUnlocked() throws -> [String] {
+        let url = try cleanupRecordURL()
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        try assertSafeFile(url)
+        do {
+            let record = try JSONDecoder().decode(
+                CatalogSecretCleanupRecord.self,
+                from: Data(contentsOf: url)
+            )
+            guard record.schemaVersion == 1 else {
+                throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+            }
+            return try normalizedCleanupReferenceIDs(record.referenceIDs)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw error
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+    }
+
+    private func writeCleanupReferenceIDsUnlocked(_ referenceIDs: [String]) throws {
+        let url = try cleanupRecordURL()
+        let normalized = try normalizedCleanupReferenceIDs(referenceIDs)
+        if normalized.isEmpty {
+            try removeFileIfPresentUnlocked(url)
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        do {
+            let data = try encoder.encode(CatalogSecretCleanupRecord(
+                referenceIDs: normalized,
+                updatedAt: iso8601String(Date())
+            ))
+            try atomicWrite(data, to: url)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw error
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
         }
     }
 
@@ -1163,6 +1339,7 @@ public actor SensitiveCatalogDocumentStore {
               journalURL.standardizedFileURL.path == (try migrationJournalURL()).standardizedFileURL.path,
               journal.documentPath == documentURL.standardizedFileURL.path,
               journal.integrityPath == (try integrityURL()).standardizedFileURL.path,
+              (journal.targetRevision ?? 1) > 0,
               !journal.expectedDocumentSHA256.isEmpty,
               !journal.expectedIntegritySHA256.isEmpty
         else {
@@ -1254,7 +1431,7 @@ public actor SensitiveCatalogDocumentStore {
         else {
             return false
         }
-        return record.revision == 1
+        return record.revision == (journal.targetRevision ?? 1)
             && record.rawSHA256 == journal.expectedDocumentSHA256
             && record.acceptedDocument == document
     }

@@ -92,6 +92,7 @@ public struct AppControlRequestHandler: Sendable {
         case .revisionConflict: return "CATALOG_REVISION_CONFLICT"
         case .invalidOperation: return "CATALOG_INVALID_OPERATION"
         case .approvalRequired: return "CATALOG_APPROVAL_REQUIRED"
+        case .cleanupRequired: return "CATALOG_CLEANUP_REQUIRED"
         }
     }
 

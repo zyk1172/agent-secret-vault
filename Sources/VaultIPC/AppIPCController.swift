@@ -232,6 +232,8 @@ public final class AppIPCController: @unchecked Sendable {
                 code = "CATALOG_INVALID_OPERATION"
             case .approvalRequired:
                 code = "CATALOG_APPROVAL_REQUIRED"
+            case .cleanupRequired:
+                code = "CATALOG_CLEANUP_REQUIRED"
             }
             Self.log(code: code)
             return try IPCFrameCodec.encode(IPCResponse.failure(code: code))
