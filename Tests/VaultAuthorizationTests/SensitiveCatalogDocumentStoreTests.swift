@@ -181,3 +181,91 @@ private struct CatalogStoreFixture {
     #expect(try String(contentsOf: fixture.document, encoding: .utf8) == malformed)
     #expect(!FileManager.default.fileExists(atPath: fixture.integrity.path))
 }
+
+@Test func catalogAdoptionPreservesPolicyEntryAndSecretReferenceSet() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let policyIndexID = "0123456789ABCDEFGHJKMNPQRX"
+    let policyEntryID = "0123456789ABCDEFGHJKMNPQRY"
+    let policyRules = "敏感信息.md 是 SVLT managed Catalog；查询使用 secret_catalog_search / secret_catalog_get；修改使用 Catalog MCP；Secret 只能保存 secret://；普通 metadata 服从 agentVisible / searchable；不得修改 schema、id、indexId、revision 或 integrity marker；不支持的结构必须停止；修改后调用 secret_catalog_validate；写入需要 App 当前有效授权；用户明确选择 plaintext 或 external provider 时 SVLT 不强制接管；不得把 SVLT-derived plaintext 洗白。"
+
+    let credentialIndex = SecretCatalogIndex(id: storeIndexID, title: "QNAP")
+    let policyIndex = SecretCatalogIndex(id: policyIndexID, title: "SVLT 管理规范")
+    let credentialEntry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: storeIndexID,
+        title: "QNAP 登录",
+        fields: [
+            SecretCatalogFieldValue(
+                key: "password",
+                label: "密码",
+                type: .secret,
+                searchable: false,
+                secretRef: storeSecretReference
+            )
+        ]
+    )
+    let policyEntry = SecretCatalogEntry(
+        id: policyEntryID,
+        indexId: policyIndexID,
+        title: "Agent 写入规范",
+        type: "policy",
+        fields: [
+            SecretCatalogFieldValue(
+                key: "rules",
+                label: "写入规则",
+                type: .multiline,
+                value: .string(policyRules)
+            )
+        ]
+    )
+    let document = SecretCatalogDocument(
+        indexes: [credentialIndex, policyIndex],
+        entries: [credentialEntry, policyEntry]
+    )
+    let originalReferences = Set(document.entries.flatMap { entry in
+        entry.fields.compactMap(\.secretRef)
+    })
+    let originalMarkdown = try SensitiveCatalogDocumentCodec.encode(document)
+    try originalMarkdown.write(to: fixture.document, atomically: true, encoding: .utf8)
+
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let adopted = try await store.adoptExternalV2()
+
+    let adoptedReferences = Set(adopted.document.entries.flatMap { entry in
+        entry.fields.compactMap(\.secretRef)
+    })
+    #expect(adopted.revision == 1)
+    #expect(adopted.integrity == .verified)
+    #expect(adoptedReferences == originalReferences)
+    let hasPolicyEntry = adopted.document.entries.contains { entry in
+        let idMatches = entry.id == policyEntryID
+        let typeMatches = entry.type == "policy"
+        let titleMatches = entry.title == "Agent 写入规范"
+        return idMatches && typeMatches && titleMatches
+    }
+    #expect(hasPolicyEntry)
+
+    let search = SecretCatalogEntrySearchService()
+    let entryResult = search.search(query: "Agent 写入规范", document: adopted.document)
+    #expect(entryResult.status == .found)
+    #expect(entryResult.matches.count == 1)
+    #expect(entryResult.matches.first?.index.title == "SVLT 管理规范")
+    #expect(entryResult.matches.first?.entry.type == "policy")
+    #expect(entryResult.matches.first?.entry.fields.allSatisfy { $0.secretRef == nil } == true)
+
+    let indexResult = search.search(query: "SVLT 管理规范", document: adopted.document)
+    #expect(indexResult.status == .found)
+    #expect(indexResult.matches.first?.entry.title == "Agent 写入规范")
+
+    let rewritten = try String(contentsOf: fixture.document, encoding: .utf8)
+    #expect(rewritten.contains("Agent 写入规范"))
+    #expect(rewritten.contains("type\" : \"policy\""))
+    #expect(rewritten.contains(storeSecretReference))
+    #expect(FileManager.default.fileExists(atPath: fixture.integrity.path))
+}

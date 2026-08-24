@@ -222,6 +222,8 @@ The four non-secret scope labels are `SVLT_MANAGED_OPERATION`,
 “do not use SVLT” for the current operation, the selected external tool may use
 that user-provided value without SVLT lookup, comparison, replacement, import,
 or approval. SVLT must not compare it with an existing `secret://` value.
+The decision is per operation: a current user choice replaces an earlier SVLT
+or external-provider choice and is never inherited as sticky state.
 
 This does not permit unsafe persistence: repository `AGENTS.md`, tool, logging,
 network, and workspace rules still decide whether the value may be written or

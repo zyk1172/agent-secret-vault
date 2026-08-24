@@ -7,12 +7,12 @@ import Testing
     #expect(VaultFormat.legacyV1 == 1)
 }
 
-@Test func explicitPlaintextOverrideHasNoSecretPayloadAndIsValid() throws {
-    let override = ExplicitPlaintextOverride()
+@Test func explicitPlaintextOverrideHasNoSecretPayload() throws {
+    let override = ExplicitPlaintextOverride.userSuppliedForCurrentOperation
 
     #expect(override.scope == .userExplicitPlaintext)
     #expect(override.source == .userCurrentRequest)
-    #expect(override.isValid)
+    #expect(override == .userSuppliedForCurrentOperation)
 
     let encoded = try JSONEncoder().encode(override)
     let decoded = try JSONDecoder().decode(ExplicitPlaintextOverride.self, from: encoded)
@@ -21,28 +21,32 @@ import Testing
 }
 
 @Test func explicitNoSVLTSelectionAlsoUsesUserPlaintextScope() {
-    let scope = SVLTCredentialSelection.scope(
-        userSuppliedPlaintext: false,
-        userExplicitlyRequestedPlaintext: true,
-        userExplicitlySelectedNoSVLT: true
-    )
+    let selection = SVLTCredentialSelection.userPlaintext(.explicitlySelectedNoSVLT)
 
-    #expect(scope == .userExplicitPlaintext)
+    #expect(selection.scope == .userExplicitPlaintext)
+    #expect(selection.source == .userCurrentRequest)
+    #expect(selection.shouldSearchSVLT == false)
+    #expect(selection.shouldInvokeSVLT == false)
 }
 
-@Test func explicitSVLTSelectionWinsOnlyWhenUserAlsoSelectsSVLT() {
-    let directScope = SVLTCredentialSelection.scope(
-        userSuppliedPlaintext: true,
-        userExplicitlyRequestedPlaintext: true
-    )
-    let managedScope = SVLTCredentialSelection.scope(
-        userSuppliedPlaintext: true,
-        userExplicitlyRequestedPlaintext: true,
-        userExplicitlySelectedSVLT: true
-    )
+@Test func credentialSelectionIsPerOperationAndDoesNotInheritPreviousSVLT() {
+    let previous = SVLTCredentialSelection.svlt
+    let current = SVLTCredentialSelection.userPlaintext(.userSuppliedForCurrentOperation)
 
-    #expect(directScope == .userExplicitPlaintext)
-    #expect(managedScope == .svltManagedOperation)
+    #expect(previous.scope == .svltManagedOperation)
+    #expect(current.scope == .userExplicitPlaintext)
+    #expect(current.source == .userCurrentRequest)
+    #expect(current.shouldSearchSVLT == false)
+}
+
+@Test func credentialSelectionUsesTheCurrentSourceForEveryOperation() {
+    let previousExternal = SVLTCredentialSelection.externalProvider
+    let currentSVLT = SVLTCredentialSelection.svlt
+
+    #expect(previousExternal.scope == .externalProviderOperation)
+    #expect(currentSVLT.scope == .svltManagedOperation)
+    #expect(currentSVLT.source == .explicitSVLTReference)
+    #expect(currentSVLT.shouldInvokeSVLT)
 }
 
 @Test func SVLTDoesNotCompareIndependentUserPlaintextWithManagedSecret() {

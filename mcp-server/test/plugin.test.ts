@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const pluginRoot = path.join(repositoryRoot, "plugins", "svlt");
 const marketplacePath = path.join(repositoryRoot, ".agents", "plugins", "marketplace.json");
+const hookScriptPath = path.join(pluginRoot, "hooks", "validate_secret_output.js");
 
 describe("Codex plugin package", () => {
   it("declares a repo-local marketplace entry", async () => {
@@ -60,10 +62,7 @@ describe("Codex plugin package", () => {
       "utf8"
     );
     const hookConfig = await readFile(path.join(pluginRoot, "hooks", "hooks.json"), "utf8");
-    const hookScript = await readFile(
-      path.join(pluginRoot, "hooks", "validate_secret_output.js"),
-      "utf8"
-    );
+    const hookScript = await readFile(hookScriptPath, "utf8");
     const combined = `${skill}\n${hookConfig}\n${hookScript}`.toLowerCase();
 
     expect(combined).toContain("never request plaintext from mcp");
@@ -77,6 +76,40 @@ describe("Codex plugin package", () => {
     expect(hookScript).toContain("isSVLTManagedEvent");
     expect(hookScript).toContain("Unknown-origin events are therefore fail-open");
     expect(hookScript).toContain("USER_EXPLICIT_PLAINTEXT");
+    expect(hookScript).toContain("SVLT_TOOL_NAMES");
+    expect(hookScript).not.toContain('startsWith("secret_")');
+  });
+
+  it("requires explicit SVLT provenance before blocking a tool result", async () => {
+    const unknownThirdPartyTool = await runHook(hookScriptPath, {
+      tool_name: "secret_manager_query",
+      result: { plaintext: true }
+    });
+    const nearSVLTIdentity = await runHook(hookScriptPath, {
+      mcpServer: "svltish",
+      result: { plaintext: true }
+    });
+    const explicitUserPlaintext = await runHook(hookScriptPath, {
+      credentialScope: "USER_EXPLICIT_PLAINTEXT",
+      tool_name: "secret_search",
+      result: { plaintext: true }
+    });
+    const explicitSVLTIdentity = await runHook(hookScriptPath, {
+      mcpServer: "svlt",
+      toolName: "secret_search",
+      result: { plaintext: true }
+    });
+    const explicitSVLTScope = await runHook(hookScriptPath, {
+      credentialScope: "SVLT_MANAGED_OPERATION",
+      toolName: "third_party_tool",
+      result: { plaintext: true }
+    });
+
+    expect(unknownThirdPartyTool).toBe(0);
+    expect(nearSVLTIdentity).toBe(0);
+    expect(explicitUserPlaintext).toBe(0);
+    expect(explicitSVLTIdentity).toBe(1);
+    expect(explicitSVLTScope).toBe(1);
   });
 });
 
@@ -88,4 +121,15 @@ function expectResolvesUnderPluginRoot(relativePath: string): void {
   expect(relativePath.startsWith("./")).toBe(true);
   const resolved = path.resolve(pluginRoot, relativePath);
   expect(resolved === pluginRoot || resolved.startsWith(`${pluginRoot}${path.sep}`)).toBe(true);
+}
+
+function runHook(scriptPath: string, payload: unknown): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      stdio: ["pipe", "ignore", "ignore"]
+    });
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code ?? -1));
+    child.stdin.end(JSON.stringify(payload));
+  });
 }

@@ -2,7 +2,7 @@
   "hooks": [
     {
       "name": "validate-secret-output",
-      "description": "Blocks plaintext-shaped output only when the tool result is explicitly marked as SVLT-managed. Never request plaintext from MCP. User-selected plaintext and other providers remain outside this opt-in hook.",
+      "description": "Blocks plaintext-shaped output only with exact SVLT-managed scope, identity, or allowlisted tool provenance. Never request plaintext from MCP. User-selected plaintext and other providers remain outside this opt-in hook.",
       "events": [
         "tool_result"
       ],

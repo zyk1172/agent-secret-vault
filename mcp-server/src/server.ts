@@ -56,6 +56,7 @@ SVLT 是 opt-in 的秘密保护工具，只保护用户选择纳入 SVLT 管理�
 - EXTERNAL_PROVIDER_OPERATION：用户明确选择设备 MCP、GitHub connector、已登录 CLI、环境变量或其他凭据提供方；SVLT 不得抢占。
 - UNMANAGED_CREDENTIAL：用户没有选择 SVLT，且没有可用的明确外部来源；不得把它自动升级为 SVLT 管理。
 - 来源优先级为：用户当前明确凭据/来源 → 用户明确选择的外部 provider → 用户明确选择的 SVLT → 无明确选择时才自动发现。
+- 以上判断只对当前 operation 有效；不得从上一轮对话、旧 provider 选择或 Agent 状态继承来源。每个 operation 只能产生一个最终 credential source decision。
 - 不比较用户明文与 SVLT secret 的值，也不因值可能相同而改变 provenance。
 
 用户明文覆盖规则：用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。不要自动创建 Secret、替换为 secret://、要求用户删除明文、打开 SVLT、触发 Touch ID，或仅因 Catalog 中可能已有对应 Secret 而拒绝本次操作。其他工作区、仓库、工具的日志、持久化和外发规则仍然有效。
@@ -1519,6 +1520,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
     safeWorkflow: [
       "Before invoking SVLT, determine whether the user explicitly selected SVLT or explicitly supplied plaintext for this operation.",
       "When the user explicitly supplied plaintext and requested its use, continue with that supplied value under the active tool/workspace rules; do not search for or substitute an SVLT reference unless requested.",
+      "Credential source selection is per operation; a later user choice replaces previous SVLT or provider context and is never inherited as sticky authorization.",
       "When text contains secret:// references, call secret_auto_handle_text first unless a narrower safe tool is clearly required and the user did not select another source.",
       "Call vault_status before work that depends on the app.",
       "Treat AgentRiskAssessment as a hint only; SVLT recomputes the effective risk locally for every operation.",

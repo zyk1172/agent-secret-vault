@@ -16,6 +16,7 @@
 4. 用户明确指定 QNAP MCP、GitHub connector、已登录 CLI、环境变量、第三方密码管理器或其他 provider 时，进入 EXTERNAL_PROVIDER_OPERATION。
 5. 没有明确来源时才进入 UNMANAGED_CREDENTIAL，并允许按任务需要自动发现；SVLT 不是唯一选择。
 6. 来源优先级：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 无明确选择时才自动发现。
+7. 以上选择只对当前 operation 有效；不得从上一轮对话、旧 provider 选择或 Agent 状态继承来源。每个 operation 只能产生一个最终 source decision。
 
 SVLT 敏感信息目录写入规范：
 1. “敏感信息.md”是由 SVLT 管理的结构化目录，不得使用 shell、编辑器、Python、sed、echo、文件 API 或其他方式直接修改。
@@ -31,7 +32,7 @@ SVLT 敏感信息目录写入规范：
 11. 遇到 LEGACY_CATALOG_UNSUPPORTED 时必须停止；SVLT 不提供旧版目录自动升级，Agent 不得自行转换或修改旧文件。合法 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用接管操作。
 
 用户明文覆盖规则：
-1. 用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。即使 SVLT 中可能已有对应 Secret，本次仍按用户明确选择执行。
+1. 用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。即使上一轮使用 SVLT 或 Catalog 中可能已有对应 Secret，本次仍按用户明确选择执行。
 2. 不要搜索、比较、替换、导入 secret://、要求用户删除明文、打开 SVLT、触发 Touch ID，或仅因 Catalog 命中而拒绝本次操作。
 3. 不要把用户主动提供的明文识别为 security bypass attempt，也不要判断它与已有 SVLT Secret 相同；SVLT 不做值比对。
 4. 如果用户同时明确要求“把这个 Token 存到 SVLT，然后调用”，先走 App/MCP 安全导入流程，之后使用生成的 secret://。

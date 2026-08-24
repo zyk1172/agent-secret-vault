@@ -21,34 +21,23 @@ public enum SVLTCredentialSource: String, Codable, CaseIterable, Sendable {
 
 /// A user-selected plaintext decision contains only provenance and intent.
 /// The plaintext itself is deliberately not representable by this type.
-public struct ExplicitPlaintextOverride: Codable, Equatable, Sendable {
-    public let scope: SVLTCredentialScope
-    public let source: SVLTCredentialSource
-    public let userSuppliedForCurrentOperation: Bool
-    public let explicitlyRequestedForCurrentOperation: Bool
-    public let explicitlySelectedNoSVLT: Bool
+public enum ExplicitPlaintextOverride: String, Codable, CaseIterable, Sendable, Equatable {
+    case userSuppliedForCurrentOperation = "USER_SUPPLIED_FOR_CURRENT_OPERATION"
+    case explicitlySelectedNoSVLT = "EXPLICITLY_SELECTED_NO_SVLT"
 
-    public init(
-        source: SVLTCredentialSource = .userCurrentRequest,
-        userSuppliedForCurrentOperation: Bool = true,
-        explicitlyRequestedForCurrentOperation: Bool = true,
-        explicitlySelectedNoSVLT: Bool = false
-    ) {
-        self.scope = .userExplicitPlaintext
-        self.source = source
-        self.userSuppliedForCurrentOperation = userSuppliedForCurrentOperation
-        self.explicitlyRequestedForCurrentOperation = explicitlyRequestedForCurrentOperation
-        self.explicitlySelectedNoSVLT = explicitlySelectedNoSVLT
-    }
-
-    public var isValid: Bool {
-        scope == .userExplicitPlaintext
-            && explicitlyRequestedForCurrentOperation
-            && (userSuppliedForCurrentOperation || explicitlySelectedNoSVLT)
-    }
+    public var scope: SVLTCredentialScope { .userExplicitPlaintext }
+    public var source: SVLTCredentialSource { .userCurrentRequest }
 }
 
-public enum SVLTCredentialSelection {
+/// A single, per-operation credential decision. Previous turns or provider
+/// selections are intentionally not represented here and cannot become sticky
+/// state. Construct exactly one case for each operation.
+public enum SVLTCredentialSelection: Equatable, Sendable {
+    case userPlaintext(ExplicitPlaintextOverride)
+    case externalProvider
+    case svlt
+    case automatic
+
     public static let sourcePriority: [SVLTCredentialSource] = [
         .userCurrentRequest,
         .explicitExternalProvider,
@@ -56,23 +45,41 @@ public enum SVLTCredentialSelection {
         .automaticDiscovery
     ]
 
-    public static func scope(
-        userSuppliedPlaintext: Bool,
-        userExplicitlyRequestedPlaintext: Bool,
-        userExplicitlySelectedNoSVLT: Bool = false,
-        userExplicitlySelectedSVLT: Bool = false,
-        explicitlySelectedExternalProvider: Bool = false
-    ) -> SVLTCredentialScope {
-        if userExplicitlySelectedSVLT {
-            return .svltManagedOperation
-        }
-        if userExplicitlyRequestedPlaintext && (userSuppliedPlaintext || userExplicitlySelectedNoSVLT) {
+    public var scope: SVLTCredentialScope {
+        switch self {
+        case .userPlaintext:
             return .userExplicitPlaintext
-        }
-        if explicitlySelectedExternalProvider {
+        case .externalProvider:
             return .externalProviderOperation
+        case .svlt:
+            return .svltManagedOperation
+        case .automatic:
+            return .unmanagedCredential
         }
-        return .unmanagedCredential
+    }
+
+    public var source: SVLTCredentialSource {
+        switch self {
+        case .userPlaintext:
+            return .userCurrentRequest
+        case .externalProvider:
+            return .explicitExternalProvider
+        case .svlt:
+            return .explicitSVLTReference
+        case .automatic:
+            return .automaticDiscovery
+        }
+    }
+
+    public var shouldInvokeSVLT: Bool { self == .svlt }
+
+    public var shouldSearchSVLT: Bool {
+        switch self {
+        case .automatic, .svlt:
+            return true
+        case .userPlaintext, .externalProvider:
+            return false
+        }
     }
 }
 
@@ -130,6 +137,7 @@ public enum SVLTAgentCatalogPolicy {
     - EXTERNAL_PROVIDER_OPERATION：用户明确选择设备 MCP、GitHub connector、已登录 CLI、环境变量或其他凭据提供方；SVLT 不得抢占。
     - UNMANAGED_CREDENTIAL：用户没有选择 SVLT，且没有可用的明确外部来源；不得把它自动升级为 SVLT 管理。
     - 来源优先级为：用户当前明确凭据/来源 → 用户明确选择的外部 provider → 用户明确选择的 SVLT → 无明确选择时才自动发现。
+    - 以上判断只对当前 operation 有效；不得从上一轮对话、旧 provider 选择或 Agent 状态继承来源。每个 operation 只能产生一个最终 credential source decision。
     - 不比较用户明文与 SVLT secret 的值，也不因值可能相同而改变 provenance。
 
     用户明文覆盖规则：用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。不要自动创建 Secret、替换为 secret://、要求用户删除明文、打开 SVLT、触发 Touch ID，或仅因 Catalog 中可能已有对应 Secret 而拒绝本次操作。其他工作区、仓库、工具的日志、持久化和外发规则仍然有效。
@@ -159,6 +167,7 @@ public enum SVLTAgentCatalogPolicy {
     A field must never contain both value and secretRef. Secret plaintext is never stored in the catalog or returned by MCP. This catalog rule does not prohibit a user from choosing plaintext for a separate, current operation outside SVLT.
 
     Credential scopes: SVLT_MANAGED_OPERATION, USER_EXPLICIT_PLAINTEXT, EXTERNAL_PROVIDER_OPERATION, UNMANAGED_CREDENTIAL.
+    Credential selection is per-operation; a later user choice replaces an earlier provider choice.
     User plaintext is not compared with secretRef values. SVLT-derived plaintext remains inside the approved SVLT operation.
     """
 
