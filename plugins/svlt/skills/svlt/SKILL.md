@@ -25,6 +25,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `EXTERNAL_PROVIDER_OPERATION`：用户明确选择其他 MCP、connector、CLI、环境变量或密码管理器。
 - `UNMANAGED_CREDENTIAL`：用户没有指定来源；可以按任务需要发现可用 provider，但 SVLT 不是唯一选择。
 - 来源优先级：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 没有指定时才自动发现。
+- 以上选择只对当前 operation 有效；不得把上一轮对话、旧 provider 选择或 Agent 状态当成当前授权。每次 operation 只能有一个最终 source decision。
 - 不比较用户明文与 `secret://` 背后的值，不因可能相同而改变 provenance。
 
 ## 硬规则

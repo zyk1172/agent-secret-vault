@@ -51,7 +51,7 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 7. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` 发现 Entry-centric opaque 引用；用户已明确选择 plaintext 或外部 provider 时不要搜索并替换来源。
 8. 没有 SVLT 安全工具时，只对明确的 SVLT managed 操作停止并请求新增 allowlisted 工具；不得把 SVLT 派生明文降级到通用命令，也不得因 SVLT 缺失阻断用户已明确选择的外部工具/当前明文。
 
-来源优先级：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 无指定时才自动发现。`USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization。
+来源优先级（每个 operation 独立计算）：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 无指定时才自动发现。`USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization；当前用户选择覆盖上一轮的 SVLT/provider 选择，不继承为 sticky state。
 
 ## 工具选择规则
 

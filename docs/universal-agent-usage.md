@@ -14,7 +14,7 @@ SVLT 管理路径的正确使用方式是：
 
 Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明引用。SVLT 不比较用户独立提供的明文与引用背后的值。
 
-来源优先级为：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 没有指定时才自动发现。仅仅出现 password、token、API key 等词不会自动激活 SVLT。
+来源优先级（每个 operation 独立计算）：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 没有指定时才自动发现。上一轮的 provider 选择不是永久状态；仅仅出现 password、token、API key 等词不会自动激活 SVLT。
 
 ## 2. 普通用户本机安装
 
@@ -129,7 +129,7 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 8. Catalog 写入必须使用 App 当前有效的 metadata/structure 编辑授权（最长 10 分钟）；MCP 不携带或伪造 lease/nonce。写入后调用 `secret_catalog_validate`。Obsidian 不得直接写 managed catalog。
 9. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；SVLT 派生明文不得离开专用操作。用户明确选择 plaintext 或外部 provider 时，SVLT 的工具不可用、策略拒绝或 Catalog 命中不应单独阻断本次操作。
 
-10. `USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization。只有用户明确要求“存入 SVLT”或“使用 SVLT 中的那个”时，才进入 `SVLT_MANAGED_OPERATION`。
+10. `USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization。只有用户明确要求“存入 SVLT”或“使用 SVLT 中的那个”时，才进入 `SVLT_MANAGED_OPERATION`；当前选择覆盖上一轮的 SVLT 或 external provider 选择。
 
 ## 7. Agent 启动自检
 

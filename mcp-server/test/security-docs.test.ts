@@ -59,6 +59,8 @@ describe("security documentation", () => {
       "~/Library/Application Support/AgentSecretVault/MCP/dist/server.js",
       "$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js",
       "USER_EXPLICIT_PLAINTEXT",
+      "每个 operation 独立计算",
+      "sticky state",
       "opt-in"
     ]) {
       expect(integration).toContain(phrase);
