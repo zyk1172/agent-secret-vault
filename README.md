@@ -3,13 +3,16 @@
 ![SVLT app icon](AppAssets/AppIcon-source.png)
 
 SVLT is a macOS UI app plus a separate launchd-managed local Agent and MCP
-adapter. The UI can quit while the Agent continues serving Vault, MCP, and
-Obsidian IPC requests without loading SwiftUI or creating a window.
+adapter. SVLT is opt-in: it protects secrets the user chooses to manage with
+SVLT and does not claim ownership of every credential available to an Agent.
+The UI can quit while the Agent continues serving Vault, MCP, and Obsidian IPC
+requests without loading SwiftUI or creating a window.
 
 `SVLT.app` owns UI, settings, file selection, service registration, and local
 reveal presentation. `SVLTAgent` owns encryption, decryption, authorization,
 Unix-socket IPC, recovery, audit logging, migration, and controlled local
-execution. Agents receive only opaque references such as:
+execution. For SVLT-managed operations, Agents receive only opaque references
+such as:
 
 ```text
 secret://0123456789ABCDEFGHJKMNPQRS
@@ -30,7 +33,9 @@ For people who only use the app, do not run Xcode. Use the release zip:
 ```
 5. For Codex, Hermes, OpenClaw, or another MCP agent, paste the required
    [Agent sensitive-information policy](docs/svlt-agent-policy-zh-CN.md)
-   into its system prompt, project rule, or workspace instruction.
+   into its system prompt, project rule, or workspace instruction. The policy is
+   opt-in: a user-supplied plaintext credential explicitly selected for the
+   current operation is not automatically imported or replaced by SVLT.
 
 The installer places:
 
@@ -99,6 +104,7 @@ Short version:
 1. Open SVLT and select the `敏感信息.md` that will be the active
    SVLT-managed Catalog v2 document. It contains Index/Entry metadata and
    opaque `secret://` references; encrypted records remain in the local vault.
+   Only credentials the user chooses to manage with SVLT belong in this path.
 2. Use the generated MCP config:
 
 ```text
@@ -107,9 +113,11 @@ Short version:
 
 3. Paste the required [Agent sensitive-information policy](docs/svlt-agent-policy-zh-CN.md)
    into the agent's system prompt, project rule, or workspace instruction.
-   This makes the App-selected index and its `secret://` references the
-   mandatory path for sensitive data; agents must not read the index directly
-   or fall back to notes, logs, environment variables, or memory.
+   This makes the App-selected index authoritative for SVLT-managed data;
+   agents must not read the index directly or modify it outside Catalog MCP.
+   It does not override a user-selected QNAP MCP, external provider, logged-in
+   CLI, environment variable, third-party password manager, or explicitly
+   supplied plaintext for the current operation.
 
 For Codex skill installation:
 
@@ -118,8 +126,10 @@ For Codex skill installation:
 ```
 
 When a task names a service, device, host, account, or purpose but the Agent
-does not yet know a `secret://` reference, it should call the query-scoped MCP
-tool `secret_search` first. The tool returns Entry-centric results containing
+does not yet know a credential source, it may call the query-scoped MCP tool
+`secret_search` for automatic discovery. It must first honor an explicit user
+source: current plaintext and explicitly selected external providers take
+precedence over SVLT search. The tool returns Entry-centric results containing
 the Index, Entry, endpoint, allowed visible metadata, and opaque `secretRef`
 values; it never returns plaintext, catalog paths, or the full `敏感信息.md`.
 Managed catalog writes must use the Catalog MCP tools and the current App-controlled
@@ -146,9 +156,11 @@ engine before execution.
 
 ## Agent local-use tools
 
-For Codex, Claude, Hermes, or another MCP-capable agent, keep `secret://`
-references in the conversation and use narrow MCP tools when plaintext must be
-used locally:
+For Codex, Claude, Hermes, or another MCP-capable agent, keep SVLT-managed
+`secret://` references in the conversation and use narrow MCP tools when an
+SVLT-managed value must be used locally. A user may explicitly select a
+different provider or provide plaintext for the current operation; SVLT does
+not force conversion or substitution in that case.
 
 - `ssh_command_with_secret` for restricted local/private-network SSH.
 - `local_http_request_with_secret` for restricted local/private HTTP(S)
@@ -174,8 +186,9 @@ must never be returned to the agent.
 
 ## Security model
 
-- Plaintext is encrypted locally and replaced in Markdown with opaque
-  `secret://` references.
+- SVLT-managed plaintext is encrypted locally and represented in Markdown by
+  opaque `secret://` references. This is not a claim over credentials the user
+  keeps in another provider or explicitly supplies for one operation.
 - MCP tools never return decrypted values. Reveal requests display plaintext
   only in the macOS app, and Obsidian plugin reveal responses contain status
   only.
@@ -200,6 +213,22 @@ must never be returned to the agent.
 - Clipboard use is explicit and best-effort: the app clears only the
   app-owned clipboard value if nothing else has replaced it.
 - Bulk plaintext export is intentionally unsupported.
+
+## Opt-in scope and plaintext override
+
+The four non-secret scope labels are `SVLT_MANAGED_OPERATION`,
+`USER_EXPLICIT_PLAINTEXT`, `EXTERNAL_PROVIDER_OPERATION`, and
+`UNMANAGED_CREDENTIAL`. If the user says “use this password/token directly” or
+“do not use SVLT” for the current operation, the selected external tool may use
+that user-provided value without SVLT lookup, comparison, replacement, import,
+or approval. SVLT must not compare it with an existing `secret://` value.
+
+This does not permit unsafe persistence: repository `AGENTS.md`, tool, logging,
+network, and workspace rules still decide whether the value may be written or
+printed. Conversely, plaintext obtained by decrypting an SVLT-managed
+`secret://` must remain inside the approved SVLT operation and must not be
+passed to ordinary shell, curl, URL, header, environment variable, log, audit,
+or chat.
 
 See [docs/security/threat-model.md](docs/security/threat-model.md),
 [docs/security/crypto-hardening.md](docs/security/crypto-hardening.md),

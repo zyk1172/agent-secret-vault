@@ -29,7 +29,8 @@ import Foundation
     #expect(VaultWorkbenchCopy.mcpConfig.contains("Library/Application Support/AgentSecretVault/MCP/dist/server.js"))
     #expect(!VaultWorkbenchCopy.mcpConfig.contains("/Users/zhengyunkai/"))
     #expect(VaultWorkbenchCopy.agentPrompt.contains("secret://"))
-    #expect(VaultWorkbenchCopy.agentPrompt.contains("不要让我粘贴明文"))
+    #expect(VaultWorkbenchCopy.agentPrompt.contains("不受 SVLT 强制接管"))
+    #expect(VaultWorkbenchCopy.agentPrompt.contains("USER_EXPLICIT_PLAINTEXT"))
     #expect(!VaultWorkbenchCopy.agentPrompt.localizedLowercase.contains("qnap"))
 }
 
@@ -37,6 +38,9 @@ import Foundation
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("Index 和一个 Entry/SubIndex"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("secret_catalog_validate"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("不得使用 shell"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("SVLT 是 opt-in"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("USER_EXPLICIT_PLAINTEXT"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("不比较用户明文"))
     #expect(VaultWorkbenchCopy.catalogSchema.contains("secretRef"))
     #expect(VaultWorkbenchCopy.catalogSchema.contains("both value and secretRef"))
     #expect(!VaultWorkbenchCopy.catalogPolicy.contains("ASV_CANARY"))

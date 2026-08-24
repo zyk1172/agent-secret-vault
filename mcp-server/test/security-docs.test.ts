@@ -58,7 +58,8 @@ describe("security documentation", () => {
       "local_http_request_with_secret",
       "~/Library/Application Support/AgentSecretVault/MCP/dist/server.js",
       "$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js",
-      "不要让我粘贴明文"
+      "USER_EXPLICIT_PLAINTEXT",
+      "opt-in"
     ]) {
       expect(integration).toContain(phrase);
     }

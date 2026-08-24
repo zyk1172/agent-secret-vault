@@ -4,7 +4,7 @@ SVLT 不再把 `locked` 当作 Agent 的全局工作流门禁。`locked` 只保�
 
 ## 决策流程
 
-每个会使用 Secret 的请求都经过同一条本地路径：
+每个使用 SVLT-managed Secret 的请求都经过同一条本地路径。用户明确选择其他 provider 或当前明文的操作不由 SVLT 强制接管，也不应被已有 Catalog 记录抢占：
 
 ```text
 opaque descriptor
@@ -48,7 +48,7 @@ Secret metadata 支持 `allowedDestinations` 和 `allowedProtocols`。目的地�
 
 ## 明文边界
 
-低风险解密发生在 `SVLTAgent` 的进程内。MCP 只发送 `SecretOperationDescriptor`，其中包含不透明 `secret://` 引用和非敏感参数；MCP 不使用 `restoreReferences` 获取明文。专用 executor 只返回脱敏结果，并拒绝通用 shell、CLI 参数、环境变量、URL query 和日志传递 Secret。
+低风险解密发生在 `SVLTAgent` 的进程内。MCP 只发送 `SecretOperationDescriptor`，其中包含不透明 `secret://` 引用和非敏感参数；MCP 不使用 `restoreReferences` 获取明文。专用 executor 只返回脱敏结果，并拒绝把 SVLT 派生 Secret 传入通用 shell、CLI 参数、环境变量、URL query 和日志。用户独立提供的明文不由 SVLT 与 `secret://` 做值比较，但仍受选定工具、仓库和工作区安全规则约束。
 
 危险操作的认证使用 macOS `deviceOwnerAuthentication`，由系统选择 Touch ID 或登录密码 fallback。审批提示只显示动作、目标、Secret label 和风险原因，不显示 Secret 内容。
 

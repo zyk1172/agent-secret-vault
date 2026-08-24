@@ -2,9 +2,11 @@
 "use strict";
 
 // Safety contract:
-// - Never request plaintext from MCP.
-// - Never echo resolved credentials.
-// - Use `secret://` references.
+// - Never request plaintext from MCP for SVLT-managed credentials.
+// - Never echo resolved credentials from an SVLT-managed operation.
+// - Use `secret://` references for credentials the user chose to manage.
+// - This hook is opt-in too: it must not globally police another provider or
+//   user-selected plaintext. Unknown-origin events are therefore fail-open.
 
 const forbiddenKeyPattern = /plaintext|secretValue|resolvedArguments|masterKey/i;
 
@@ -25,6 +27,10 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
 
+  if (!isSVLTManagedEvent(payload)) {
+    process.exit(0);
+  }
+
   const forbiddenKeys = collectForbiddenKeys(payload);
   if (forbiddenKeys.length > 0) {
     process.stderr.write("Blocked SVLT output with disallowed sensitive fields.\n");
@@ -33,6 +39,46 @@ process.stdin.on("end", () => {
 
   process.exit(0);
 });
+
+function isSVLTManagedEvent(payload) {
+  if (payload === null || typeof payload !== "object") {
+    return false;
+  }
+
+  const scope = firstString(payload, ["credentialScope", "scope"]);
+  if (scope === "USER_EXPLICIT_PLAINTEXT" || scope === "EXTERNAL_PROVIDER_OPERATION") {
+    return false;
+  }
+  if (scope === "SVLT_MANAGED_OPERATION") {
+    return true;
+  }
+
+  const origin = firstString(payload, [
+    "provider",
+    "server",
+    "serverName",
+    "server_name",
+    "mcpServer",
+    "mcp_server",
+    "tool",
+    "toolName",
+    "tool_name"
+  ]);
+  if (!origin) {
+    return false;
+  }
+
+  return origin.toLowerCase().includes("svlt") || origin.toLowerCase().startsWith("secret_");
+}
+
+function firstString(value, keys) {
+  for (const key of keys) {
+    if (typeof value[key] === "string") {
+      return value[key];
+    }
+  }
+  return undefined;
+}
 
 function collectForbiddenKeys(value) {
   if (Array.isArray(value)) {

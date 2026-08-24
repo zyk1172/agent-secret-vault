@@ -17,7 +17,7 @@ public enum VaultWorkbenchCopy {
 
     public static let simpleUsageSteps = [
         "1. 在 Obsidian 选中敏感文字，右键选择“加密选中敏感信息”。",
-        "2. 笔记里只留下 secret:// 引用；Codex、Claude、Hermes 自动识别并调用安全工具。",
+        "2. 选择纳入 SVLT 管理的秘密才使用 secret://；Codex、Claude、Hermes 会在出现引用时调用安全工具。用户也可以明确选择本次直接使用自己的明文。",
         "3. 需要查看整段时，在这里粘贴段落，点“解密整个段落”。"
     ]
 
@@ -39,7 +39,8 @@ public enum VaultWorkbenchCopy {
 
     public static var agentPrompt: String {
         """
-        看到 secret:// 就自动使用 svlt；不要让我粘贴明文。
+        SVLT 是 opt-in。看到 secret:// 或用户明确要求使用 SVLT 时，使用 svlt；用户当前明确提供并要求使用的明文不受 SVLT 强制接管。
+        不要把 SVLT 解密得到的明文交给普通 shell/curl；也不要把用户明确选择的明文自动转换成 secret://。
 
         \(SVLTAgentCatalogPolicy.text)
         """
@@ -2180,7 +2181,7 @@ private struct SensitiveCatalogPolicyCard: View {
                 .disabled(validate == nil)
             }
 
-            Text("managed 敏感信息.md 只能由 SVLT Catalog Store 写入。Obsidian、MCP 和其他 Agent 不得直接拼接或覆盖 Markdown/JSON。")
+            Text("SVLT 是 opt-in：它只管理用户选择纳入的秘密。managed 敏感信息.md 只能由 SVLT Catalog Store 写入；Obsidian、MCP 和其他 Agent 不得直接拼接或覆盖 Markdown/JSON。用户明确选择本次直接使用明文时，SVLT 不会强制接管。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 

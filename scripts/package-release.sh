@@ -84,7 +84,8 @@ SVLT 安装方式
    ./install.sh "/你的/Obsidian/Vault/路径"
 6. 打开 SVLT，再把 MCP 配置粘贴到 Codex / Claude / Hermes / OpenClaw。
 7. 必须将 svlt-agent-policy-zh-CN.md 中的代码块粘贴到 Agent 的系统提示、项目规则或工作区规则。
-   Agent 只能通过 MCP 使用 App 选定的 敏感信息.md 和 secret:// 引用，不得直接读取索引或从笔记、日志、环境变量、历史和记忆中绕过获取敏感值。
+   对 SVLT managed 数据，Agent 只能通过 MCP 使用 App 选定的 敏感信息.md 和 secret:// 引用，不得直接读取索引或从笔记、日志、环境变量、历史和记忆中绕过获取敏感值。
+   用户当前明确选择的明文或其他 provider 不由 SVLT 强制接管。
 8. Catalog v2 字段与约束见 svlt-catalog-schema-v2.md；managed 文件不得由 Agent、Obsidian 或编辑器直接修改。
 
 完整中文教程见：USER_GUIDE_zh-CN.md
