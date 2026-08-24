@@ -190,6 +190,7 @@
 		CAEDD54069337C5E4687D70C /* SecretReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2505672E04071DB365029AD3 /* SecretReference.swift */; };
 		CB5FEA3C2FD2D443316E3B22 /* ParagraphRestoreBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 391B7EA61F337559990ACFAD /* ParagraphRestoreBuilderTests.swift */; };
 		CC958E5E9598F06F7A78CC21 /* SecurityBoundaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AAB93D5691841F8A5CDD71A /* SecurityBoundaryCard.swift */; };
+		CCDAFD910A96BC7CC11182BF /* SensitiveCatalogEditorPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 789685CA898EE7C3A92A1E10 /* SensitiveCatalogEditorPresetTests.swift */; };
 		CEA3A7D8DD9AC568BDE67B7C /* VaultCipherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33154C5926C0AD60B7A3BAD6 /* VaultCipherTests.swift */; };
 		CEEB7919574874D993EF9534 /* SecretCatalogV2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C831FC6FF58F27B2ADDDBCF2 /* SecretCatalogV2Tests.swift */; };
 		CF2EA463EB7846C168BA2D8D /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 869C6FAE8B4BDF3BF292E96C /* VaultCore.framework */; };
@@ -664,6 +665,7 @@
 		736DED4C825BC0FC40E62261 /* FileRecordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRecordStore.swift; sourceTree = "<group>"; };
 		75703E0755FD23FC27F695C0 /* AgentServiceStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentServiceStatusView.swift; sourceTree = "<group>"; };
 		768013F2F7664CD707423121 /* EncryptedRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedRecord.swift; sourceTree = "<group>"; };
+		789685CA898EE7C3A92A1E10 /* SensitiveCatalogEditorPresetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogEditorPresetTests.swift; sourceTree = "<group>"; };
 		78BBA1FE6BD05465B9F51546 /* ExecutionBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionBroker.swift; sourceTree = "<group>"; };
 		78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogDocumentStore.swift; sourceTree = "<group>"; };
 		7949F97D51F7993375EDB3D4 /* VaultIPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultIPC.swift; sourceTree = "<group>"; };
@@ -1109,6 +1111,7 @@
 				7D8BCEF42A6234D794F55BE2 /* SecretOperationServiceTests.swift */,
 				656B0F9F51F995034FFABD08 /* SecureViewerModelTests.swift */,
 				FADF63FEC36C554976D70D53 /* SensitiveCatalogDocumentStoreTests.swift */,
+				789685CA898EE7C3A92A1E10 /* SensitiveCatalogEditorPresetTests.swift */,
 				F0895005DE062C10330F3317 /* SensitiveInformationDocumentStoreTests.swift */,
 				BAD73FFDABD6B405BB48E189 /* SensitiveInformationScannerTests.swift */,
 				07796B9A54434E39DBC43F15 /* VaultAppServicesCatalogTests.swift */,
@@ -1834,6 +1837,7 @@
 				9970FC316B0F868C715EAFDB /* SecretOperationServiceTests.swift in Sources */,
 				957BBA0327494B6FBF4E4E9A /* SecureViewerModelTests.swift in Sources */,
 				E8BF8103E7002127F1E9BCCE /* SensitiveCatalogDocumentStoreTests.swift in Sources */,
+				CCDAFD910A96BC7CC11182BF /* SensitiveCatalogEditorPresetTests.swift in Sources */,
 				2631FD2C46D17C6B859FD6F9 /* SensitiveInformationDocumentStoreTests.swift in Sources */,
 				BF4ECCD5DD42D59FD701056E /* SensitiveInformationScannerTests.swift in Sources */,
 				66B225EBA2C055ADCC61E4BE /* VaultAppServicesCatalogTests.swift in Sources */,
