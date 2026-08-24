@@ -117,6 +117,13 @@ For Codex skill installation:
 ./scripts/install-codex-skill.sh
 ```
 
+When a task names a service, device, host, account, or purpose but the Agent
+does not yet know a `secret://` reference, it should call the query-scoped MCP
+tool `secret_search` first. The tool returns only opaque references and
+non-sensitive catalog metadata such as service, field, destination, purpose,
+label, and credential `groupID`; it never returns plaintext, catalog paths, or
+the full `敏感信息.md`.
+
 ## Obsidian workflow
 
 1. Open SVLT.
@@ -130,9 +137,10 @@ For Codex skill installation:
    app opens an app-owned temporary reveal window; the plugin receives status
    only, not decrypted values.
 
-MCP `secret_create_request` and `secure_execute` are first-release compatibility
-endpoints. They return non-sensitive unavailable statuses until the app-side
-selection and execution bridges are enabled.
+MCP `secret_create_request` remains a local app/plugin compatibility endpoint
+for creating opaque references. MCP does not expose a generic execution
+endpoint: operations must use a purpose-built tool and pass the local policy
+engine before execution.
 
 ## Agent local-use tools
 
@@ -152,7 +160,12 @@ used locally:
   fills.
 - `local_app_form_fill_with_secret` for specific macOS app form fills.
 
-These tools restore `secret://` values only inside the local MCP process or a
+`secret_search` is metadata-only discovery and does not grant reveal/export
+permission. Plaintext reveal, local export, writes, and external operations
+still go through the local `SecretOperationPolicyEngine`; an export to the
+Desktop remains approval-required.
+
+These tools resolve `secret://` values only inside the SVLTAgent process or a
 purpose-built local runner. Results are status/metadata/sanitized previews only;
 plaintext credentials, Authorization headers, cookies, and filled field values
 must never be returned to the agent.
@@ -164,15 +177,22 @@ must never be returned to the agent.
 - MCP tools never return decrypted values. Reveal requests display plaintext
   only in the macOS app, and Obsidian plugin reveal responses contain status
   only.
-- Authorization has separate risk classes for read, external-send/write, and
-  delete or credential-change operations.
-- Read authorization is held in memory until system sleep/lock, session
-  change, explicit lock, or Agent restart by default. An optional TTL is a
-  policy setting, not a fixed five-minute security model.
-- Credential authorization uses a configurable default ten-minute window;
-  one transaction/credential batch reuses one authorization. External-send
-  authorization is short-lived and destination-bound. Delete, export, security
-  setting, recovery, and key-rotation operations require fresh authorization.
+- Each secret operation is independently evaluated as `silent`,
+  `approvalRequired`, or `denied` by `SecretOperationPolicyEngine`.
+- `effectiveRisk = max(agentRisk, localRisk)`: the Agent hint may raise risk but
+  never lowers a local approval or denial.
+- Bound read-only SSH/HTTP/database/SFTP operations can run silently. New or
+  public destinations, writes, plaintext reveal/copy/export, deletes, and
+  security-setting changes require a short-lived one-shot `ApprovalTicket` or
+  are denied.
+- `locked` remains a compatibility field only. Agent gating uses
+  `available`/`ready`/`approvalPending`; quitting the GUI does not stop the
+  launchd Agent, while screen lock or session changes still clear protected
+  runtime state.
+- The Agent uses a `WhenUnlockedThisDeviceOnly` Keychain item for normal
+  low-risk cryptographic access. Dangerous data flows use macOS
+  `deviceOwnerAuthentication`, rather than prompting for every low-risk
+  decryption.
 - Audit writes use an independent Keychain audit key and never unlock the Vault
   merely to record status or connection activity.
 - Clipboard use is explicit and best-effort: the app clears only the
@@ -180,8 +200,9 @@ must never be returned to the agent.
 - Bulk plaintext export is intentionally unsupported.
 
 See [docs/security/threat-model.md](docs/security/threat-model.md),
-[docs/security/crypto-hardening.md](docs/security/crypto-hardening.md), and
-[docs/security/release-checklist.md](docs/security/release-checklist.md).
+[docs/security/crypto-hardening.md](docs/security/crypto-hardening.md),
+[docs/security/operation-authorization.md](docs/security/operation-authorization.md),
+and [docs/security/release-checklist.md](docs/security/release-checklist.md).
 
 ## Recovery
 

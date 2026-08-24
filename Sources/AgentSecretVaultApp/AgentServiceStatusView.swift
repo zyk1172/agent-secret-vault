@@ -1,10 +1,11 @@
 import SwiftUI
 
 public struct AgentServiceStatusView: View {
-    @State private var currentStatus: AgentServiceStatus
+    public let status: AgentServiceStatus
+    @State private var actionFailed = false
 
     public init(status: AgentServiceStatus) {
-        _currentStatus = State(initialValue: status)
+        self.status = status
     }
 
     public var body: some View {
@@ -12,11 +13,11 @@ public struct AgentServiceStatusView: View {
             HStack {
                 Label(
                     "后台 Agent",
-                    systemImage: currentStatus == .running ? "checkmark.circle.fill" : "server.rack"
+                    systemImage: status == .running ? "checkmark.circle.fill" : "server.rack"
                 )
                 Spacer()
-                Text(currentStatus.displayName)
-                    .foregroundStyle(currentStatus == .running ? .green : .secondary)
+                Text(status.displayName)
+                    .foregroundStyle(status == .running ? .green : .secondary)
             }
             HStack(spacing: 8) {
                 Button("启用") {
@@ -30,6 +31,11 @@ public struct AgentServiceStatusView: View {
                 }
             }
             .buttonStyle(.borderless)
+            if actionFailed {
+                Text("无法更新后台 Agent 状态")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             Text("SVLT.app 退出后 Agent 仍由 launchd 管理。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -38,16 +44,12 @@ public struct AgentServiceStatusView: View {
         .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func refresh() {
-        currentStatus = AgentServiceRegistration.shared.status
-    }
-
     private func perform(_ action: () throws -> Void) {
         do {
             try action()
-            refresh()
+            actionFailed = false
         } catch {
-            currentStatus = .unavailable
+            actionFailed = true
         }
     }
 }

@@ -209,6 +209,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private var sensitiveIndexStore: SensitiveInformationDocumentStore?
     private var started = false
     private var isStarting = false
+    private var readinessTask: Task<Void, Never>?
 
     func start() async {
         guard !started, !isStarting else {
@@ -234,28 +235,20 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 _ = try await sensitiveIndexStore.prepareSelectedDocument()
                 if let documentURL = await sensitiveIndexStore.selectedDocumentURL() {
                     SensitiveIndexSelectionStore.save(documentURL)
+                    persistCatalogSelection(at: documentURL)
                     sensitiveIndexURL = documentURL
                 }
             } catch {
                 sensitiveIndexError = "无法整理敏感信息.md"
             }
 
-            var lastStatus: WorkbenchStatus?
-            for attempt in 0..<3 {
-                do {
-                    lastStatus = try await client.workbenchStatus()
-                    break
-                } catch {
-                    guard attempt < 2 else { throw error }
-                    try await Task.sleep(for: .milliseconds(150))
-                }
-            }
-            status = lastStatus ?? status
-            agentServiceStatus = .running
-            await refreshSavedReferences()
             await refreshSensitiveIndex()
-            await presentPendingRevealSessions()
             started = true
+
+            if !(await connectToAgent(client)) {
+                markAgentDisconnected()
+                startReadinessMonitoring(client)
+            }
         } catch {
             NSLog("SVLT runtime startup failed [AGENT_START_FAILED]")
             sensitiveIndexError = "无法启动本地服务"
@@ -267,6 +260,76 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 pluginConnected: false
             )
         }
+    }
+
+    private func connectToAgent(_ client: VaultIPCClient) async -> Bool {
+        let retryDelays: [Duration] = [
+            .zero,
+            .milliseconds(100),
+            .milliseconds(250),
+            .milliseconds(500),
+            .seconds(1),
+            .seconds(2),
+            .seconds(2),
+            .seconds(2)
+        ]
+
+        for (index, delay) in retryDelays.enumerated() {
+            if index > 0 {
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return false
+                }
+            }
+
+            do {
+                status = try await client.workbenchStatus()
+                agentServiceStatus = .running
+                await refreshSavedReferences()
+                await refreshSensitiveIndex()
+                await presentPendingRevealSessions()
+                return true
+            } catch {
+                continue
+            }
+        }
+
+        return false
+    }
+
+    private func startReadinessMonitoring(_ client: VaultIPCClient) {
+        readinessTask?.cancel()
+        readinessTask = Task { @MainActor [weak self] in
+            let retryDelays: [Duration] = [.seconds(2), .seconds(4), .seconds(8), .seconds(10)]
+            var delayIndex = 0
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: retryDelays[delayIndex])
+                } catch {
+                    return
+                }
+
+                guard let self, self.started else {
+                    return
+                }
+                if await self.connectToAgent(client) {
+                    return
+                }
+                self.markAgentDisconnected()
+                delayIndex = min(delayIndex + 1, retryDelays.count - 1)
+            }
+        }
+    }
+
+    private func markAgentDisconnected() {
+        agentServiceStatus = AgentServiceRegistration.shared.status
+        status = WorkbenchStatus(
+            locked: true,
+            ipcAvailable: false,
+            activeKnowledgeBaseRoot: status.activeKnowledgeBaseRoot,
+            pluginConnected: false
+        )
     }
 
     func clearRevealSessions() async {
@@ -284,6 +347,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     func shutdown() async {
         // App termination is not Agent termination. launchd keeps the
         // independent SVLTAgent alive for MCP/Obsidian clients.
+        readinessTask?.cancel()
+        readinessTask = nil
         if let uiRequestObserver {
             DistributedNotificationCenter.default().removeObserver(uiRequestObserver)
             self.uiRequestObserver = nil
@@ -291,9 +356,15 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         RevealSessionLifecycle.clearAll()
         await uiRevealSessionStore.clearAll()
         presentedAgentSessionIDs.removeAll()
-        // Clear only UI reveal sessions in the independent Agent; do not stop
-        // it or invalidate ordinary read/credential authorization on App quit.
-        try? await agentClient?.clearRevealSessions()
+        // Clear only UI reveal sessions in the independent Agent; this is
+        // deliberately fire-and-forget so a dead/hung Agent can never prevent
+        // the GUI from terminating.
+        let client = agentClient
+        Task.detached {
+            try? await client?.clearRevealSessions()
+        }
+        agentClient = nil
+        started = false
     }
 
     private func startUIRequestObserver() {
@@ -439,6 +510,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             try await sensitiveIndexStore.selectDocument(at: url)
             _ = try await sensitiveIndexStore.prepareSelectedDocument()
             SensitiveIndexSelectionStore.save(url)
+            persistCatalogSelection(at: url)
             sensitiveIndexURL = url
             sensitiveIndexError = nil
             await refreshSensitiveIndex()
@@ -606,6 +678,13 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let selectedDocument = SensitiveIndexSelectionStore.selectedURL()
             ?? SensitiveInformationDocumentStore.defaultDocumentURL(scanTargetURL: selectedScanTarget)
         return SensitiveInformationDocumentStore(documentURL: selectedDocument)
+    }
+
+    private func persistCatalogSelection(at url: URL) {
+        guard let manifestURL = try? SecretCatalogSelectionStore.defaultManifestURL() else {
+            return
+        }
+        try? SecretCatalogSelectionStore(manifestURL: manifestURL).save(documentURL: url)
     }
 
     private func policy(for candidate: LocalSensitiveInformationCandidate) -> SecretPolicy {

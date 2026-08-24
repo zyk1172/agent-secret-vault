@@ -13,6 +13,7 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
     public let vaultRootURL: URL
     public let auditRootURL: URL
     public let ipcConfiguration: UnixSocketServerConfiguration
+    public let catalogSelectionURL: URL
     public let credentialAuthorizationTTL: TimeInterval
     public let externalSendAuthorizationTTL: TimeInterval
     public let readAuthorizationTTL: TimeInterval?
@@ -21,13 +22,19 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
         vaultRootURL: URL,
         auditRootURL: URL,
         ipcConfiguration: UnixSocketServerConfiguration,
+        catalogSelectionURL: URL? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
         readAuthorizationTTL: TimeInterval? = nil
     ) {
-        self.vaultRootURL = vaultRootURL.standardizedFileURL
+        let normalizedVaultRootURL = vaultRootURL.standardizedFileURL
+        self.vaultRootURL = normalizedVaultRootURL
         self.auditRootURL = auditRootURL.standardizedFileURL
         self.ipcConfiguration = ipcConfiguration
+        self.catalogSelectionURL = (catalogSelectionURL ?? normalizedVaultRootURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("sensitive-index-selection.json"))
+            .standardizedFileURL
         self.credentialAuthorizationTTL = credentialAuthorizationTTL
         self.externalSendAuthorizationTTL = externalSendAuthorizationTTL
         self.readAuthorizationTTL = readAuthorizationTTL
@@ -103,46 +110,90 @@ public actor VaultDaemonCore {
             deviceKeyStore: deviceKeyStore,
             wrappedStore: wrappedMasterKeyStore
         )
+        let legacyMigrationVerifier = LegacyVaultMigrationVerifier()
 
         let unlockUsingWrappingKey: @Sendable (Data, String) async throws -> Data = {
             localWrappingKey,
             reason in
-            let hasLegacyRecords = (try? await recordStore.recordIDs().isEmpty) == false
-            if try await wrappedMasterKeyStore.loadWrappedMasterKeySet() == nil,
-               hasLegacyRecords {
+            let wrappedMasterKeySet = try await wrappedMasterKeyStore.loadWrappedMasterKeySet()
+            let hasLegacyRecords = !(try await recordStore.recordIDs()).isEmpty
+            if wrappedMasterKeySet == nil, hasLegacyRecords {
                 return try await masterKeyCoordinator.adoptExistingVault(
                     reason: reason,
                     localWrappingKey: localWrappingKey,
-                    existingMasterKey: localWrappingKey
+                    verifyExistingMasterKey: {
+                        try await legacyMigrationVerifier.verifyAtLeastOneExistingRecord(
+                            masterKey: localWrappingKey,
+                            in: recordStore
+                        )
+                    }
                 )
             }
-            return try await masterKeyCoordinator.unlock(
+            let masterKey = try await masterKeyCoordinator.unlock(
                 reason: reason,
                 localWrappingKey: localWrappingKey
             )
+            // Never treat a successfully opened wrapper as proof that the
+            // records are still usable. Validate the current record set before
+            // allowing plaintext operations, without returning plaintext.
+            do {
+                try await legacyMigrationVerifier.verifyAtLeastOneExistingRecord(
+                    masterKey: masterKey,
+                    in: recordStore,
+                    requireAtLeastOne: false
+                )
+            } catch {
+                throw MasterKeyCoordinatorError.integrityFailed
+            }
+            return masterKey
         }
 
         let masterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
             policy,
             reason in
-            let localWrappingKey = try await protectionKeyStore.deviceKey(
+            let candidates = try await protectionKeyStore.deviceKeyCandidates(
                 for: policy,
                 reason: reason
             )
-            return SymmetricKey(
-                data: try await unlockUsingWrappingKey(localWrappingKey, reason)
-            )
+            var remainingCandidates = candidates
+            while !remainingCandidates.isEmpty {
+                var localWrappingKey = remainingCandidates.removeFirst()
+                do {
+                    let masterKey = try await unlockUsingWrappingKey(localWrappingKey, reason)
+                    await protectionKeyStore.rememberDeviceKey(localWrappingKey, for: policy)
+                    localWrappingKey.resetBytes(in: 0..<localWrappingKey.count)
+                    return SymmetricKey(data: masterKey)
+                } catch let error as MasterKeyCoordinatorError {
+                    localWrappingKey.resetBytes(in: 0..<localWrappingKey.count)
+                    guard error == .integrityFailed else {
+                        throw error
+                    }
+                }
+            }
+            throw MasterKeyCoordinatorError.integrityFailed
         }
         let freshMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
             policy,
             reason in
-            let localWrappingKey = try await protectionKeyStore.freshDeviceKey(
+            let candidates = try await protectionKeyStore.freshDeviceKeyCandidates(
                 for: policy,
                 reason: reason
             )
-            return SymmetricKey(
-                data: try await unlockUsingWrappingKey(localWrappingKey, reason)
-            )
+            var remainingCandidates = candidates
+            while !remainingCandidates.isEmpty {
+                var localWrappingKey = remainingCandidates.removeFirst()
+                do {
+                    let masterKey = try await unlockUsingWrappingKey(localWrappingKey, reason)
+                    localWrappingKey.resetBytes(in: 0..<localWrappingKey.count)
+                    return SymmetricKey(data: masterKey)
+                } catch let error as MasterKeyCoordinatorError {
+                    localWrappingKey.resetBytes(in: 0..<localWrappingKey.count)
+                    guard error == .integrityFailed else {
+                        throw error
+                    }
+                }
+            }
+            throw MasterKeyCoordinatorError.integrityFailed
         }
 
         let encryptor = EncryptSelectionCoordinator(
@@ -166,6 +217,7 @@ public actor VaultDaemonCore {
             recordLister: recordStore,
             recordDeleter: recordStore,
             recordResolver: VaultRecordResolver(recordStore: recordStore),
+            catalogService: SecretCatalogService(selectionManifestURL: configuration.catalogSelectionURL),
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
             clearProtectedKeyState: {

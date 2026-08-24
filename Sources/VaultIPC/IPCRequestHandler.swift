@@ -1,13 +1,27 @@
 import Foundation
 import VaultCore
+import VaultExecution
 
 public protocol WorkbenchServicing: Sendable {
     func recordPluginActivity() async
     func status() async -> WorkbenchStatus
     func inspectReference(_ reference: String) async throws -> SecretReferenceMetadata
     func savedSecretReferences() async throws -> [SecretReferenceMetadata]
+    func searchSecrets(
+        query: String,
+        field: SecretCatalogField?,
+        limit: Int
+    ) async throws -> SecretCatalogSearchResult
     func pendingRevealSessionIDs() async throws -> [String]
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
+    func encryptText(
+        _ plaintext: String,
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String]
+    ) async throws -> String
+    func performSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationOutput
     func deleteRecord(_ reference: String) async throws
     func authorizeHighRisk(reason: String) async throws
     func openRevealSession(references: [String], context: RevealContext) async throws -> String
@@ -26,8 +40,30 @@ public extension WorkbenchServicing {
         []
     }
 
+    func searchSecrets(
+        query _: String,
+        field _: SecretCatalogField?,
+        limit _: Int
+    ) async throws -> SecretCatalogSearchResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
     func pendingRevealSessionIDs() async throws -> [String] {
         []
+    }
+
+    func encryptText(
+        _ plaintext: String,
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations _: [String],
+        allowedProtocols _: [String]
+    ) async throws -> String {
+        try await encryptText(plaintext, label: label, policy: policy)
+    }
+
+    func performSecretOperation(_: SecretOperationDescriptor) async throws -> SecretOperationOutput {
+        throw IPCRequestHandlerError.unsupportedRequest
     }
 
     func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
@@ -66,6 +102,8 @@ public struct IPCRequestHandler: Sendable {
             return .workbenchStatus(await service.status())
         case .savedReferences:
             return .savedReferences(try await service.savedSecretReferences())
+        case let .searchCatalog(query, field, limit):
+            return .catalogSearchResult(try await service.searchSecrets(query: query, field: field, limit: limit))
         case .pendingRevealSessions:
             return .revealSessionIDs(try await service.pendingRevealSessionIDs())
         case let .inspectReference(reference):
@@ -98,6 +136,8 @@ public struct IPCRequestHandler: Sendable {
             return .displayedToUser
         case .encrypt:
             return .failure(code: "SELECTION_ENCRYPT_UNAVAILABLE")
+        case .encryptBound:
+            return .failure(code: "SELECTION_ENCRYPT_UNAVAILABLE")
         case let .encryptText(plaintext, label, policy):
             let reference = try await service.encryptText(plaintext, label: label, policy: policy)
             return .created(reference: reference)
@@ -117,6 +157,14 @@ public struct IPCRequestHandler: Sendable {
             return .orphanScan(try await service.scanOrphans(markdownReferences: markdownReferences))
         case .execute:
             return .failure(code: "EXECUTE_UNAVAILABLE")
+        case let .executeSecretOperation(descriptor):
+            do {
+                return .secretOperation(try await service.performSecretOperation(descriptor))
+            } catch let error as SecretOperationError {
+                return .failure(code: error.responseCode)
+            } catch {
+                return .failure(code: "ACTION_EXECUTION_FAILED")
+            }
         }
     }
 }

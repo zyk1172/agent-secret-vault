@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,13 +8,20 @@ import { z } from "zod";
 
 import { LocalIpcClient } from "./client.js";
 import {
-  ExecutionRequest,
+  AgentRiskAssessment,
   IpcRequest,
   IpcResponse,
+  SecretCatalogField,
+  SecretCatalogMatch,
   SecretPolicy,
+  SecretOperationDescriptor,
+  SecretOperationOutput,
+  SecretOperationProtocol,
   SecretReference,
   SecretReferenceMetadata
 } from "./protocol.js";
+
+const optionalAgentRiskAssessment = AgentRiskAssessment.optional();
 
 export interface VaultIpcClient {
   request(request: IpcRequest): Promise<IpcResponse>;
@@ -30,214 +36,16 @@ export interface VaultToolDefinition {
   handler(input: unknown): Promise<CallToolResult>;
 }
 
-export interface SafeHttpResponse {
-  status: number;
-  headers: { get(name: string): string | null };
-  text(): Promise<string>;
-}
-
-export type SafeHttpFetch = (
-  url: string,
-  init: {
-    method: "GET" | "HEAD" | "POST";
-    headers: Record<string, string>;
-    signal: AbortSignal;
-    redirect: "manual";
-    body?: string;
-  }
-) => Promise<SafeHttpResponse>;
-
-export interface SshCommandRequest {
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  command: string;
-  timeoutMs: number;
-}
-
-export interface SshCommandResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-export type SecretSshRunner = (request: SshCommandRequest) => Promise<SshCommandResult>;
-
-export interface DatabaseQueryRequest {
-  engine: "postgres" | "mysql";
-  host: string;
-  port?: number;
-  database: string;
-  username: string;
-  password: string;
-  query: string;
-  timeoutMs: number;
-  maxRows: number;
-}
-
-export interface DatabaseQueryResult {
-  rowCount?: number;
-  rowsPreview?: string;
-  stderr?: string;
-}
-
-export type SecretDatabaseRunner = (request: DatabaseQueryRequest) => Promise<DatabaseQueryResult>;
-
-export interface FileTransferRequest {
-  protocol: "sftp" | "scp";
-  operation: "list" | "download" | "upload";
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  remotePath: string;
-  localPath?: string;
-  timeoutMs: number;
-}
-
-export interface FileTransferResult {
-  listingPreview?: string;
-  localPath?: string;
-  remotePath?: string;
-  stderr?: string;
-}
-
-export type SecretFileTransferRunner = (request: FileTransferRequest) => Promise<FileTransferResult>;
-
-export interface BrowserLoginRequest {
-  browser: "Safari" | "Chrome";
-  url: string;
-  username?: string;
-  password: string;
-  usernameSelector?: string;
-  passwordSelector?: string;
-  submitSelector?: string;
-  submit: boolean;
-  timeoutMs: number;
-}
-
-export interface BrowserLoginResult {
-  url?: string;
-  note?: string;
-}
-
-export type SecretBrowserLoginRunner = (request: BrowserLoginRequest) => Promise<BrowserLoginResult>;
-
-export interface LocalAppFillRequest {
-  appName?: string;
-  bundleId?: string;
-  fields: Array<{ name: string; value: string }>;
-  submitButton?: string;
-  timeoutMs: number;
-}
-
-export interface LocalAppFillResult {
-  filledFields?: string[];
-  note?: string;
-}
-
-export type SecretLocalAppFillRunner = (request: LocalAppFillRequest) => Promise<LocalAppFillResult>;
-
-export interface SecretLocalActionPolicy {
-  hosts: {
-    allowLocalhost: boolean;
-    allowDotLocal: boolean;
-    allowPrivateIPv4: boolean;
-    allowedHosts: string[];
-  };
-  ssh: {
-    allowedRisks: Array<"read">;
-    allowedCommandNames: string[];
-    blockedCommandNames: string[];
-    blockShellSubstitution: boolean;
-    blockRedirection: boolean;
-    maxCommandLength: number;
-    defaultTimeoutMs: number;
-  };
-  output: {
-    maxChars: number;
-  };
-}
-
-export interface VaultToolOptions {
-  fetch?: SafeHttpFetch;
-  sshRunner?: SecretSshRunner;
-  databaseRunner?: SecretDatabaseRunner;
-  fileTransferRunner?: SecretFileTransferRunner;
-  browserLoginRunner?: SecretBrowserLoginRunner;
-  localAppFillRunner?: SecretLocalAppFillRunner;
-  policy?: SecretLocalActionPolicy;
-}
-
-export const defaultSecretLocalActionPolicy: SecretLocalActionPolicy = {
-  hosts: {
-    allowLocalhost: true,
-    allowDotLocal: true,
-    allowPrivateIPv4: true,
-    allowedHosts: []
-  },
-  ssh: {
-    allowedRisks: ["read"],
-    allowedCommandNames: [
-      "ls",
-      "cat",
-      "head",
-      "tail",
-      "grep",
-      "stat",
-      "df",
-      "du",
-      "ps",
-      "uptime",
-      "uname",
-      "whoami",
-      "id",
-      "hostname",
-      "date",
-      "free",
-      "w",
-      "last"
-    ],
-    blockedCommandNames: [
-      "rm",
-      "rmdir",
-      "mv",
-      "dd",
-      "mkfs",
-      "mount",
-      "umount",
-      "reboot",
-      "shutdown",
-      "poweroff",
-      "halt",
-      "init",
-      "sudo",
-      "su",
-      "passwd",
-      "chpasswd",
-      "useradd",
-      "userdel",
-      "groupadd",
-      "groupdel",
-      "chmod",
-      "chown",
-      "kill",
-      "killall",
-      "pkill"
-    ],
-    blockShellSubstitution: true,
-    blockRedirection: true,
-    maxCommandLength: 2_000,
-    defaultTimeoutMs: 15_000
-  },
-  output: {
-    maxChars: 16_384
-  }
-};
-
 const StatusOutput = z
   .union([
+    z
+      .object({
+        status: z.string().min(1),
+        available: z.boolean().optional(),
+        ready: z.boolean().optional(),
+        approvalPending: z.boolean().optional()
+      })
+      .strict(),
     z.object({ locked: z.boolean() }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
@@ -262,26 +70,6 @@ const CreateOutput = z
   ])
   .describe("New secret reference or non-sensitive status code");
 
-const ExecuteOutput = z
-  .union([
-    z
-      .object({
-        status: z.literal("COMPLETED"),
-        exitCode: z.number().int(),
-        stdout: z.string(),
-        stderr: z.string()
-      })
-      .strict(),
-    z
-      .object({
-        status: z.literal("QUARANTINED"),
-        reason: z.string().min(1)
-      })
-      .strict(),
-    z.object({ status: z.string().min(1) }).strict()
-  ])
-  .describe("Sanitized execution result or non-sensitive status code");
-
 const InspectOutput = z
   .union([
     z
@@ -289,6 +77,8 @@ const InspectOutput = z
         reference: SecretReference,
         policy: SecretPolicy,
         label: z.string().nullable(),
+        allowedDestinations: z.array(z.string()),
+        allowedProtocols: z.array(z.string()),
         createdAt: z.union([z.string(), z.number()]),
         updatedAt: z.union([z.string(), z.number()])
       })
@@ -296,6 +86,26 @@ const InspectOutput = z
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Non-sensitive metadata for a secret reference. Plaintext is never returned.");
+
+const SecretSearchInput = z
+  .object({
+    query: z.string().trim().min(1).max(256),
+    field: SecretCatalogField.optional(),
+    limit: z.number().int().min(1).max(20).default(10)
+  })
+  .strict();
+
+const SecretSearchOutput = z
+  .union([
+    z
+      .object({
+        status: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE"]),
+        matches: z.array(SecretCatalogMatch)
+      })
+      .strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Opaque secret catalog matches. Plaintext and catalog file locations are never returned.");
 
 const LocalHttpOutput = z
   .union([
@@ -310,7 +120,7 @@ const LocalHttpOutput = z
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("Local HTTP result. Secret material is used only inside the MCP process and is never returned.");
+  .describe("Local HTTP result. Secret material is used only inside SVLTAgent and is never returned.");
 
 const LocalSshOutput = z
   .union([
@@ -325,7 +135,7 @@ const LocalSshOutput = z
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("Local SSH result. Secret material is used only inside the MCP process and plaintext is never returned.");
+  .describe("Local SSH result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
 
 const ApiRequestOutput = z
   .union([
@@ -340,7 +150,7 @@ const ApiRequestOutput = z
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("API request result. Token material is used only inside the MCP process and plaintext is never returned.");
+  .describe("API request result. Token material is used only inside SVLTAgent and plaintext is never returned.");
 
 const DatabaseQueryOutput = z
   .union([
@@ -355,7 +165,7 @@ const DatabaseQueryOutput = z
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("Database query result. Secret material is used only inside the MCP process and plaintext is never returned.");
+  .describe("Database query result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
 
 const FileTransferOutput = z
   .union([
@@ -371,7 +181,7 @@ const FileTransferOutput = z
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("SFTP/SCP result. Secret material is used only inside the MCP process and plaintext is never returned.");
+  .describe("SFTP/SCP result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
 
 const BrowserLoginOutput = z
   .union([
@@ -385,7 +195,7 @@ const BrowserLoginOutput = z
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("Browser login fill result. Secret material is used only inside the MCP process and plaintext is never returned.");
+  .describe("Browser login fill result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
 
 const LocalAppFillOutput = z
   .union([
@@ -399,7 +209,7 @@ const LocalAppFillOutput = z
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("Local app form fill result. Secret material is used only inside the MCP process and plaintext is never returned.");
+  .describe("Local app form fill result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
 
 const AgentPolicyOutput = z
   .object({
@@ -430,7 +240,8 @@ const EmptyInput = z.object({}).strict();
 const RevealInput = z
   .object({
     reference: SecretReference,
-    reason: z.string().min(1)
+    reason: z.string().min(1),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict();
 
@@ -439,7 +250,8 @@ const ParagraphRevealInput = z
     text: z.string().min(1).optional(),
     references: z.array(SecretReference).min(1).optional(),
     template: z.string().min(1).optional(),
-    reason: z.string().min(1)
+    reason: z.string().min(1),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.text !== undefined || (value.references !== undefined && value.template !== undefined), {
@@ -452,7 +264,8 @@ const ExportResolvedTextInput = z
     references: z.array(SecretReference).min(1).optional(),
     template: z.string().min(1).optional(),
     reason: z.string().min(1),
-    destinationPath: z.string().min(1)
+    destinationPath: z.string().min(1),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.text !== undefined || (value.references !== undefined && value.template !== undefined), {
@@ -462,13 +275,11 @@ const ExportResolvedTextInput = z
 const CreateInput = z
   .object({
     label: z.string().nullable().optional(),
-    policy: SecretPolicy
+    policy: SecretPolicy,
+    allowedDestinations: z.array(z.string().min(1)).max(32).optional(),
+    allowedProtocols: z.array(SecretOperationProtocol).max(16).optional()
   })
   .strict();
-
-const ExecuteInput = ExecutionRequest.describe(
-  "Execution request with secret slots restricted to secret:// references"
-);
 
 const InspectInput = z
   .object({
@@ -479,12 +290,13 @@ const InspectInput = z
 const LocalHttpInput = z
   .object({
     url: z.string().url(),
-    method: z.enum(["GET", "HEAD"]).optional(),
+    method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]).optional(),
     username: z.string().min(1).max(256).optional(),
     usernameRef: SecretReference.optional(),
     passwordRef: SecretReference.optional(),
     includeBodyPreview: z.boolean().optional(),
-    timeoutMs: z.number().int().min(100).max(10_000).optional()
+    timeoutMs: z.number().int().min(100).max(10_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -500,7 +312,8 @@ const SshCommandInput = z
     passwordRef: SecretReference,
     command: z.string().min(1).max(2_000),
     risk: z.enum(["read"]).optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional()
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -510,13 +323,14 @@ const SshCommandInput = z
 const ApiRequestInput = z
   .object({
     url: z.string().url(),
-    method: z.enum(["GET", "HEAD", "POST"]).optional(),
+    method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]).optional(),
     tokenRef: SecretReference,
     headerName: z.string().min(1).max(128).optional(),
     headerScheme: z.string().min(1).max(64).optional(),
     body: z.string().max(65_536).optional(),
     includeBodyPreview: z.boolean().optional(),
-    timeoutMs: z.number().int().min(100).max(10_000).optional()
+    timeoutMs: z.number().int().min(100).max(10_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict();
 
@@ -531,7 +345,8 @@ const DatabaseQueryInput = z
     passwordRef: SecretReference,
     query: z.string().min(1).max(20_000),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    maxRows: z.number().int().min(1).max(100).optional()
+    maxRows: z.number().int().min(1).max(100).optional(),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -541,7 +356,7 @@ const DatabaseQueryInput = z
 const FileTransferInput = z
   .object({
     protocol: z.enum(["sftp", "scp"]).optional(),
-    operation: z.enum(["list", "download", "upload"]),
+    operation: z.enum(["list", "download", "upload", "overwrite", "delete"]),
     host: z.string().min(1).max(253),
     port: z.number().int().min(1).max(65_535).optional(),
     username: z.string().min(1).max(256).optional(),
@@ -549,7 +364,8 @@ const FileTransferInput = z
     passwordRef: SecretReference,
     remotePath: z.string().min(1).max(4_096),
     localPath: z.string().min(1).max(4_096).optional(),
-    timeoutMs: z.number().int().min(1_000).max(60_000).optional()
+    timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -567,7 +383,8 @@ const BrowserLoginInput = z
     passwordSelector: z.string().min(1).max(1_024),
     submitSelector: z.string().min(1).max(1_024).optional(),
     submit: z.boolean().optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional()
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -595,7 +412,8 @@ const LocalAppFillInput = z
         message: "Each field requires value or valueRef."
       })).min(1).max(20),
     submitButton: z.string().min(1).max(256).optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional()
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.appName !== undefined || value.bundleId !== undefined, {
@@ -638,18 +456,7 @@ const AutoHandleTextInput = z
   })
   .strict();
 
-export function createVaultToolDefinitions(
-  client: VaultIpcClient,
-  options: VaultToolOptions = {}
-): VaultToolDefinition[] {
-  const safeFetch = options.fetch ?? defaultSafeFetch;
-  const sshRunner = options.sshRunner ?? defaultSshRunner;
-  const databaseRunner = options.databaseRunner ?? defaultDatabaseRunner;
-  const fileTransferRunner = options.fileTransferRunner ?? defaultFileTransferRunner;
-  const browserLoginRunner = options.browserLoginRunner;
-  const localAppFillRunner = options.localAppFillRunner;
-  const policy = options.policy ?? defaultSecretLocalActionPolicy;
-
+export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDefinition[] {
   return [
     {
       name: "secret_action_router",
@@ -670,27 +477,27 @@ export function createVaultToolDefinitions(
       async handler(input) {
         const parsed = SecretActionRouterInput.parse(input);
         if (parsed.intent === "ssh_command") {
-          return handleSshCommandWithSecret(client, sshRunner, policy, parsed);
+          return handleSshCommandWithSecret(client, parsed);
         }
         if (parsed.intent === "local_http_request") {
-          return handleLocalHttpRequest(client, safeFetch, policy, parsed);
+          return handleLocalHttpRequest(client, parsed);
         }
         if (parsed.intent === "export_resolved_text") {
           return handleExportResolvedText(client, parsed);
         }
         if (parsed.intent === "api_request") {
-          return handleApiRequestWithToken(client, safeFetch, policy, parsed);
+          return handleApiRequestWithToken(client, parsed);
         }
         if (parsed.intent === "database_query") {
-          return handleDatabaseQueryWithSecret(client, databaseRunner, policy, parsed);
+          return handleDatabaseQueryWithSecret(client, parsed);
         }
         if (parsed.intent === "sftp_transfer") {
-          return handleFileTransferWithSecret(client, fileTransferRunner, policy, parsed);
+          return handleFileTransferWithSecret(client, parsed);
         }
         if (parsed.intent === "browser_web_login") {
-          return handleBrowserLoginWithSecret(client, browserLoginRunner, policy, parsed);
+          return handleBrowserLoginWithSecret(client, parsed);
         }
-        return handleLocalAppFillWithSecret(client, localAppFillRunner, policy, parsed);
+        return handleLocalAppFillWithSecret(client, parsed);
       }
     },
     {
@@ -743,7 +550,12 @@ export function createVaultToolDefinitions(
           context: {
             reason: parsed.reason ?? "Automatic local reveal for secret:// references",
             template: revealRequest.context.template,
-            ranges: revealRequest.context.ranges
+            ranges: revealRequest.context.ranges,
+            agentAssessment: {
+              declaredRisk: "silent",
+              reason: "Automatic local reveal request",
+              intendedEffect: "display to local user"
+            }
           }
         });
 
@@ -769,14 +581,19 @@ export function createVaultToolDefinitions(
       name: "vault_status",
       title: "Vault Status",
       description:
-        "Checks whether SVLT is available and locked. Plaintext is never returned.",
+        "Checks whether SVLT is available and the local operation policy engine is ready; locked is compatibility-only. Plaintext is never returned.",
       inputSchema: EmptyInput,
       outputSchema: StatusOutput,
       async handler(input) {
         EmptyInput.parse(input);
-        const response = await client.request({ type: "status" });
-        if (response.type === "status") {
-          return structuredResult({ locked: response.locked });
+        const response = await client.request({ type: "workbenchStatus" });
+        if (response.type === "workbenchStatus") {
+          return structuredResult({
+            status: response.status.ready ? "READY" : "UNAVAILABLE",
+            available: response.status.available,
+            ready: response.status.ready,
+            approvalPending: response.status.approvalPending
+          });
         }
         return structuredResult(statusOnly(response));
       }
@@ -801,6 +618,27 @@ export function createVaultToolDefinitions(
       }
     },
     {
+      name: "secret_search",
+      title: "Search Secret Catalog",
+      description:
+        "Finds opaque secret:// references by service, device, host, label, purpose, or field using the local SVLT catalog. It returns only non-sensitive metadata; it never returns plaintext or the catalog file path.",
+      inputSchema: SecretSearchInput,
+      outputSchema: SecretSearchOutput,
+      async handler(input) {
+        const parsed = SecretSearchInput.parse(input);
+        const response = await client.request({
+          type: "searchCatalog",
+          query: parsed.query,
+          field: parsed.field,
+          limit: parsed.limit
+        });
+        if (response.type === "catalogSearchResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
       name: "secret_reveal_request",
       title: "Request Secret Reveal",
       description:
@@ -810,11 +648,20 @@ export function createVaultToolDefinitions(
       async handler(input) {
         const parsed = RevealInput.parse(input);
         const response = await client.request({
-          type: "reveal",
-          reference: parsed.reference,
-          reason: parsed.reason
+          type: "revealReferences",
+          references: [parsed.reference],
+          context: {
+            reason: parsed.reason,
+            template: "{{0}}",
+            ranges: [{ index: 0, placeholder: "{{0}}" }],
+            agentAssessment: parsed.agentAssessment ?? {
+              declaredRisk: "silent",
+              reason: "Local reveal request",
+              intendedEffect: "display to local user"
+            }
+          }
         });
-        if (response.type === "displayedToUser") {
+        if (response.type === "revealSessionOpened") {
           return structuredResult({ status: "DISPLAYED_TO_USER" });
         }
         return structuredResult(statusOnly(response));
@@ -836,7 +683,12 @@ export function createVaultToolDefinitions(
           context: {
             reason: parsed.reason,
             template: revealRequest.context.template,
-            ranges: revealRequest.context.ranges
+            ranges: revealRequest.context.ranges,
+            agentAssessment: parsed.agentAssessment ?? {
+              declaredRisk: "silent",
+              reason: "Local reveal request",
+              intendedEffect: "display to local user"
+            }
           }
         });
         if (response.type === "revealSessionOpened") {
@@ -860,11 +712,11 @@ export function createVaultToolDefinitions(
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Uses a secret:// password inside the MCP process for a restricted local/private-network SSH command. Plaintext is never returned.",
+        "Uses a secret:// password inside SVLTAgent for a restricted local/private-network SSH command. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
-        return handleSshCommandWithSecret(client, sshRunner, policy, SshCommandInput.parse(input));
+        return handleSshCommandWithSecret(client, SshCommandInput.parse(input));
       }
     },
     {
@@ -877,9 +729,11 @@ export function createVaultToolDefinitions(
       async handler(input) {
         const parsed = CreateInput.parse(input);
         const response = await client.request({
-          type: "encrypt",
+          type: "encryptBound",
           label: parsed.label,
-          policy: parsed.policy
+          policy: parsed.policy,
+          allowedDestinations: parsed.allowedDestinations ?? [],
+          allowedProtocols: parsed.allowedProtocols ?? []
         });
         if (response.type === "created") {
           return structuredResult({ reference: response.reference });
@@ -888,80 +742,47 @@ export function createVaultToolDefinitions(
       }
     },
     {
-      name: "secure_execute",
-      title: "Secure Execute",
-      description:
-        "First-release compatibility endpoint for allowlisted local execution. It may return EXECUTE_UNAVAILABLE until the execution bridge is enabled. Plaintext is never returned.",
-      inputSchema: ExecuteInput,
-      outputSchema: ExecuteOutput,
-      async handler(input) {
-        const parsed = ExecuteInput.parse(input);
-        const response = await client.request({
-          type: "execute",
-          request: parsed
-        });
-
-        if (response.type !== "execution") {
-          return structuredResult(statusOnly(response));
-        }
-
-        if (response.result.type === "completed") {
-          return structuredResult({
-            status: "COMPLETED",
-            exitCode: response.result.exitCode,
-            stdout: response.result.stdout,
-            stderr: response.result.stderr
-          });
-        }
-
-        return structuredResult({
-          status: "QUARANTINED",
-          reason: response.result.reason
-        });
-      }
-    },
-    {
       name: "local_http_request_with_secret",
       title: "Local HTTP Request With Secret",
       description:
-        "Uses secret:// credentials inside the MCP process for a restricted local GET/HEAD HTTP request. Plaintext is never returned.",
+        "Uses secret:// credentials inside SVLTAgent for a restricted HTTP request. Plaintext is never returned.",
       inputSchema: LocalHttpInput,
       outputSchema: LocalHttpOutput,
       async handler(input) {
-        return handleLocalHttpRequest(client, safeFetch, policy, LocalHttpInput.parse(input));
+        return handleLocalHttpRequest(client, LocalHttpInput.parse(input));
       }
     },
     {
       name: "api_request_with_token",
       title: "API Request With Token",
       description:
-        "Uses a secret:// API token inside the MCP process for a restricted allowlisted GET/HEAD/POST API request. Plaintext is never returned.",
+        "Uses a secret:// API token inside SVLTAgent for a restricted allowlisted API request. Plaintext is never returned.",
       inputSchema: ApiRequestInput,
       outputSchema: ApiRequestOutput,
       async handler(input) {
-        return handleApiRequestWithToken(client, safeFetch, policy, ApiRequestInput.parse(input));
+        return handleApiRequestWithToken(client, ApiRequestInput.parse(input));
       }
     },
     {
       name: "database_query_with_secret",
       title: "Database Query With Secret",
       description:
-        "Uses secret:// database credentials inside a purpose-built local runner for a restricted read-only query. Plaintext is never returned.",
+        "Submits an opaque descriptor for a restricted database query; the purpose-built local runner never returns credentials. Plaintext is never returned.",
       inputSchema: DatabaseQueryInput,
       outputSchema: DatabaseQueryOutput,
       async handler(input) {
-        return handleDatabaseQueryWithSecret(client, databaseRunner, policy, DatabaseQueryInput.parse(input));
+        return handleDatabaseQueryWithSecret(client, DatabaseQueryInput.parse(input));
       }
     },
     {
       name: "sftp_transfer_with_secret",
       title: "SFTP/SCP Transfer With Secret",
       description:
-        "Uses secret:// credentials inside a purpose-built local runner for restricted SFTP/SCP list/download/upload actions. Plaintext is never returned.",
+        "Submits an opaque descriptor for restricted SFTP/SCP actions; the purpose-built local runner never returns credentials. Plaintext is never returned.",
       inputSchema: FileTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
-        return handleFileTransferWithSecret(client, fileTransferRunner, policy, FileTransferInput.parse(input));
+        return handleFileTransferWithSecret(client, FileTransferInput.parse(input));
       }
     },
     {
@@ -972,7 +793,7 @@ export function createVaultToolDefinitions(
       inputSchema: BrowserLoginInput,
       outputSchema: BrowserLoginOutput,
       async handler(input) {
-        return handleBrowserLoginWithSecret(client, browserLoginRunner, policy, BrowserLoginInput.parse(input));
+        return handleBrowserLoginWithSecret(client, BrowserLoginInput.parse(input));
       }
     },
     {
@@ -983,7 +804,7 @@ export function createVaultToolDefinitions(
       inputSchema: LocalAppFillInput,
       outputSchema: LocalAppFillOutput,
       async handler(input) {
-        return handleLocalAppFillWithSecret(client, localAppFillRunner, policy, LocalAppFillInput.parse(input));
+        return handleLocalAppFillWithSecret(client, LocalAppFillInput.parse(input));
       }
     }
   ];
@@ -992,7 +813,7 @@ export function createVaultToolDefinitions(
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "svlt",
-    version: "0.1.15"
+    version: "0.1.16"
   });
 
   registerVaultTools(server, client);
@@ -1058,6 +879,8 @@ function metadataResult(metadata: SecretReferenceMetadata): Record<string, unkno
     reference: metadata.reference,
     policy: metadata.policy,
     label: metadata.label,
+    allowedDestinations: metadata.allowedDestinations,
+    allowedProtocols: metadata.allowedProtocols,
     createdAt: metadata.createdAt,
     updatedAt: metadata.updatedAt
   };
@@ -1075,7 +898,12 @@ async function handleExportResolvedText(
     context: {
       reason: parsed.reason,
       template: revealRequest.context.template,
-      ranges: revealRequest.context.ranges
+      ranges: revealRequest.context.ranges,
+      agentAssessment: parsed.agentAssessment ?? {
+        declaredRisk: "silent",
+        reason: "Local file export request",
+        intendedEffect: "write local file"
+      }
     }
   });
   if (response.type === "exported") {
@@ -1084,473 +912,300 @@ async function handleExportResolvedText(
   return structuredResult(statusOnly(response));
 }
 
-async function handleLocalHttpRequest(
+type AgentRiskInput = { agentAssessment?: z.infer<typeof AgentRiskAssessment> };
+
+function agentAssessment(input: AgentRiskInput): z.infer<typeof AgentRiskAssessment> {
+  return input.agentAssessment ?? {
+    declaredRisk: "silent",
+    reason: "No additional agent risk hint",
+    intendedEffect: "purpose-built local secret operation"
+  };
+}
+
+async function executeOpaqueOperation(
   client: VaultIpcClient,
-  safeFetch: SafeHttpFetch,
-  policy: SecretLocalActionPolicy,
-  parsed: z.infer<typeof LocalHttpInput>
-): Promise<CallToolResult> {
-  const method = parsed.method ?? "GET";
-  const parsedUrl = new URL(parsed.url);
+  descriptor: z.infer<typeof SecretOperationDescriptor>
+): Promise<z.infer<typeof SecretOperationOutput> | { status: string }> {
+  const response = await client.request({
+    type: "executeSecretOperation",
+    descriptor
+  });
+  if (response.type === "secretOperation") {
+    return response.output;
+  }
+  return { status: response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE" };
+}
 
-  if (!isAllowedLocalUrl(parsedUrl, policy)) {
-    return structuredResult({ status: "URL_NOT_ALLOWED" });
-  }
-  if (parsedUrl.username !== "" || parsedUrl.password !== "") {
-    return structuredResult({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
-  }
-  const hasUsernameInput = parsed.username !== undefined || parsed.usernameRef !== undefined;
-  const hasPasswordInput = parsed.passwordRef !== undefined;
-  if (hasUsernameInput !== hasPasswordInput) {
-    return structuredResult({ status: "BASIC_AUTH_REQUIRES_USERNAME_AND_PASSWORD" });
-  }
-
-  const secretsUsed: string[] = [];
-  let username: string | undefined;
-  let password: string | undefined;
-  try {
-    username = parsed.usernameRef === undefined
-      ? parsed.username
-      : await resolveSingleSecret(client, parsed.usernameRef, "Use local device username", parsedUrl.host);
-    password = parsed.passwordRef === undefined
-      ? undefined
-      : await resolveSingleSecret(client, parsed.passwordRef, "Use local device password", parsedUrl.host);
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "REQUEST_FAILED") });
-  }
-  if (parsed.usernameRef !== undefined && username !== undefined) {
-    secretsUsed.push(username);
-  }
-  if (password !== undefined) {
-    secretsUsed.push(password);
-  }
-
-  const headers: Record<string, string> = {};
-  if (username !== undefined && password !== undefined) {
-    const basicToken = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
-    headers.Authorization = `Basic ${basicToken}`;
-    secretsUsed.push(basicToken);
-    secretsUsed.push(encodeURIComponent(username));
-    secretsUsed.push(encodeURIComponent(password));
-  } else if (username !== undefined || password !== undefined) {
-    return structuredResult({ status: "BASIC_AUTH_REQUIRES_USERNAME_AND_PASSWORD" });
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), parsed.timeoutMs ?? 5_000);
-  try {
-    const response = await safeFetch(parsedUrl.toString(), {
-      method,
-      headers,
-      signal: controller.signal,
-      redirect: "manual"
-    });
-    const rawContentType = response.headers.get("content-type");
-    const contentType = rawContentType === null
-      ? null
-      : sanitizeSecretText(rawContentType, secretsUsed, policy);
-    if (method === "HEAD" || parsed.includeBodyPreview !== true) {
-      return structuredResult({
-        status: "COMPLETED",
-        httpStatus: response.status,
-        contentType,
-        redacted: true
-      });
-    }
-    const body = await response.text();
-    return structuredResult({
-      status: "COMPLETED",
-      httpStatus: response.status,
-      contentType,
-      redacted: true,
-      bodyPreview: sanitizeSecretText(body, secretsUsed, policy)
-    });
-  } catch {
-    return structuredResult({ status: "REQUEST_FAILED" });
-  } finally {
-    clearTimeout(timeout);
-  }
+function isSecretOperationOutput(
+  value: z.infer<typeof SecretOperationOutput> | { status: string }
+): value is z.infer<typeof SecretOperationOutput> {
+  return "redacted" in value;
 }
 
 async function handleSshCommandWithSecret(
   client: VaultIpcClient,
-  sshRunner: SecretSshRunner,
-  policy: SecretLocalActionPolicy,
   parsed: z.infer<typeof SshCommandInput>
 ): Promise<CallToolResult> {
-  if (!isAllowedLocalHost(parsed.host, policy)) {
-    return structuredResult({ status: "HOST_NOT_ALLOWED" });
+  const refs = [
+    ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
+    parsed.passwordRef
+  ];
+  const parameters: Record<string, string> = {
+    passwordRef: parsed.passwordRef,
+    ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
+    ...(parsed.username === undefined ? {} : { username: parsed.username }),
+    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+  };
+  const output = await executeOpaqueOperation(client, {
+    actionType: "sshCommand",
+    secretReferences: refs,
+    destination: parsed.host,
+    port: parsed.port ?? 22,
+    protocolType: "ssh",
+    command: parsed.command,
+    requestedEffects: ["read-only"],
+    parameters,
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
   }
-  if (!isAllowedSshRisk(parsed.risk ?? "read", policy)) {
-    return structuredResult({ status: "RISK_NOT_ALLOWED" });
-  }
-  if (!isAllowedSshCommand(parsed.command, policy)) {
-    return structuredResult({ status: "COMMAND_NOT_ALLOWED" });
-  }
+  return structuredResult({
+    status: "COMPLETED",
+    exitCode: output.exitCode ?? -1,
+    stdout: output.stdout ?? "",
+    stderr: output.stderr ?? "",
+    redacted: true
+  });
+}
 
-  const secretsUsed: string[] = [];
-  let username: string | undefined;
-  try {
-    username = parsed.usernameRef === undefined
-      ? parsed.username
-      : await resolveSingleSecret(client, parsed.usernameRef, "Use SSH username for local device", parsed.host);
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "SSH_REQUEST_FAILED") });
+async function handleLocalHttpRequest(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof LocalHttpInput>
+): Promise<CallToolResult> {
+  const url = new URL(parsed.url);
+  const refs = [
+    ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
+    ...(parsed.passwordRef === undefined ? [] : [parsed.passwordRef])
+  ];
+  if ((parsed.username !== undefined || parsed.usernameRef !== undefined) !== (parsed.passwordRef !== undefined)) {
+    return structuredResult({ status: "BASIC_AUTH_REQUIRES_USERNAME_AND_PASSWORD" });
   }
-  if (parsed.usernameRef !== undefined && username !== undefined) {
-    secretsUsed.push(username);
+  if (url.username !== "" || url.password !== "") {
+    return structuredResult({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
   }
-  if (username === undefined) {
-    return structuredResult({ status: "SSH_USERNAME_REQUIRED" });
+  const parameters: Record<string, string> = {
+    ...(parsed.username === undefined ? {} : { username: parsed.username }),
+    ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
+    ...(parsed.passwordRef === undefined ? {} : { passwordRef: parsed.passwordRef }),
+    ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
+    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+  };
+  const output = await executeOpaqueOperation(client, {
+    actionType: "httpRequest",
+    secretReferences: refs,
+    destination: url.host,
+    port: url.port === "" ? null : Number(url.port),
+    protocolType: url.protocol === "https:" ? "https" : "http",
+    httpMethod: parsed.method ?? "GET",
+    url: parsed.url,
+    requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
+    parameters,
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
   }
-
-  let password: string;
-  try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use SSH password for local device", parsed.host);
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "SSH_REQUEST_FAILED") });
-  }
-  secretsUsed.push(password);
-
-  try {
-    const result = await sshRunner({
-      host: parsed.host,
-      port: parsed.port ?? 22,
-      username,
-      password,
-      command: parsed.command,
-      timeoutMs: parsed.timeoutMs ?? policy.ssh.defaultTimeoutMs
-    });
-
-    return structuredResult({
-      status: "COMPLETED",
-      exitCode: result.exitCode,
-      stdout: sanitizeSecretText(result.stdout, secretsUsed, policy),
-      stderr: sanitizeSecretText(result.stderr, secretsUsed, policy),
-      redacted: true
-    });
-  } catch {
-    return structuredResult({ status: "SSH_REQUEST_FAILED" });
-  }
+  return structuredResult({
+    status: "COMPLETED",
+    httpStatus: output.httpStatus ?? 0,
+    contentType: output.contentType ?? null,
+    ...(output.bodyPreview === undefined ? {} : { bodyPreview: output.bodyPreview }),
+    redacted: true
+  });
 }
 
 async function handleApiRequestWithToken(
   client: VaultIpcClient,
-  safeFetch: SafeHttpFetch,
-  policy: SecretLocalActionPolicy,
   parsed: z.infer<typeof ApiRequestInput>
 ): Promise<CallToolResult> {
-  const parsedUrl = new URL(parsed.url);
-  if (!isAllowedLocalUrl(parsedUrl, policy)) {
-    return structuredResult({ status: "URL_NOT_ALLOWED" });
-  }
-  if (parsedUrl.username !== "" || parsedUrl.password !== "") {
+  const url = new URL(parsed.url);
+  if (url.username !== "" || url.password !== "" || hasCredentialQueryParameter(url)) {
     return structuredResult({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
   }
-  if (hasCredentialQueryParameter(parsedUrl)) {
-    return structuredResult({ status: "URL_TOKEN_NOT_ALLOWED" });
+  if (parsed.body?.includes("secret://") === true) {
+    return structuredResult({ status: "PLAINTEXT_REFERENCE_NOT_ALLOWED" });
   }
-
-  const method = parsed.method ?? "GET";
-  const headerName = parsed.headerName ?? "Authorization";
-  const headerScheme = parsed.headerScheme ?? "Bearer";
-
-  let token: string;
-  try {
-    token = await resolveSingleSecret(client, parsed.tokenRef, "Use API token for restricted local/API request", parsedUrl.host);
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "REQUEST_FAILED") });
+  const parameters: Record<string, string> = {
+    tokenRef: parsed.tokenRef,
+    headerName: parsed.headerName ?? "Authorization",
+    headerScheme: parsed.headerScheme ?? "Bearer",
+    ...(parsed.body === undefined ? {} : { body: parsed.body }),
+    ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
+    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+  };
+  const output = await executeOpaqueOperation(client, {
+    actionType: "apiRequest",
+    secretReferences: [parsed.tokenRef],
+    destination: url.host,
+    port: url.port === "" ? null : Number(url.port),
+    protocolType: url.protocol === "https:" ? "https" : "http",
+    httpMethod: parsed.method ?? "GET",
+    url: parsed.url,
+    requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
+    parameters,
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
   }
-  const headerValue = headerScheme.length === 0 ? token : `${headerScheme} ${token}`;
-  const secretsUsed = [
-    token,
-    encodeURIComponent(token),
-    headerValue,
-    Buffer.from(token, "utf8").toString("base64")
-  ];
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), parsed.timeoutMs ?? 5_000);
-  try {
-    const response = await safeFetch(parsedUrl.toString(), {
-      method,
-      headers: { [headerName]: headerValue },
-      signal: controller.signal,
-      redirect: "manual",
-      body: parsed.body
-    });
-    const rawContentType = response.headers.get("content-type");
-    const contentType = rawContentType === null
-      ? null
-      : sanitizeSecretText(rawContentType, secretsUsed, policy);
-    if (method === "HEAD" || parsed.includeBodyPreview !== true) {
-      return structuredResult({
-        status: "COMPLETED",
-        httpStatus: response.status,
-        contentType,
-        redacted: true
-      });
-    }
-    const body = await response.text();
-    return structuredResult({
-      status: "COMPLETED",
-      httpStatus: response.status,
-      contentType,
-      redacted: true,
-      bodyPreview: sanitizeSecretText(body, secretsUsed, policy)
-    });
-  } catch {
-    return structuredResult({ status: "REQUEST_FAILED" });
-  } finally {
-    clearTimeout(timeout);
-  }
+  return structuredResult({
+    status: "COMPLETED",
+    httpStatus: output.httpStatus ?? 0,
+    contentType: output.contentType ?? null,
+    ...(output.bodyPreview === undefined ? {} : { bodyPreview: output.bodyPreview }),
+    redacted: true
+  });
 }
 
 async function handleDatabaseQueryWithSecret(
   client: VaultIpcClient,
-  databaseRunner: SecretDatabaseRunner | undefined,
-  policy: SecretLocalActionPolicy,
   parsed: z.infer<typeof DatabaseQueryInput>
 ): Promise<CallToolResult> {
-  if (!isAllowedLocalHost(parsed.host, policy)) {
-    return structuredResult({ status: "HOST_NOT_ALLOWED" });
-  }
-  if (!isReadOnlySingleStatement(parsed.query)) {
-    return structuredResult({ status: "QUERY_NOT_ALLOWED" });
-  }
-  if (databaseRunner === undefined) {
-    return structuredResult({ status: "DATABASE_RUNNER_UNAVAILABLE" });
-  }
-
-  const secretsUsed: string[] = [];
-  const usernameResult = await resolveOptionalUsername(
-    client,
-    parsed.username,
-    parsed.usernameRef,
-    "Use database username for local/private database",
-    parsed.host
-  );
-  if (!usernameResult.ok) {
-    return structuredResult({ status: usernameResult.status });
-  }
-  if (usernameResult.wasSecret && usernameResult.value !== undefined) {
-    secretsUsed.push(usernameResult.value);
-  }
-  if (usernameResult.value === undefined) {
-    return structuredResult({ status: "DATABASE_USERNAME_REQUIRED" });
-  }
-
-  let password: string;
-  try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use database password for local/private database", parsed.host);
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "DATABASE_REQUEST_FAILED") });
-  }
-  secretsUsed.push(password);
-
-  try {
-    const result = await databaseRunner({
-      engine: parsed.engine,
-      host: parsed.host,
-      port: parsed.port,
+  const refs = [
+    ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
+    parsed.passwordRef
+  ];
+  const output = await executeOpaqueOperation(client, {
+    actionType: "databaseQuery",
+    secretReferences: refs,
+    destination: parsed.host,
+    port: parsed.port ?? (parsed.engine === "postgres" ? 5432 : 3306),
+    protocolType: parsed.engine,
+    databaseStatement: parsed.query,
+    requestedEffects: ["database-read"],
+    parameters: {
       database: parsed.database,
-      username: usernameResult.value,
-      password,
-      query: parsed.query,
-      timeoutMs: parsed.timeoutMs ?? 10_000,
-      maxRows: parsed.maxRows ?? 20
-    });
-    return structuredResult({
-      status: "COMPLETED",
-      ...(result.rowCount === undefined ? {} : { rowCount: result.rowCount }),
-      ...(result.rowsPreview === undefined ? {} : { rowsPreview: sanitizeSecretText(result.rowsPreview, secretsUsed, policy) }),
-      ...(result.stderr === undefined ? {} : { stderr: sanitizeSecretText(result.stderr, secretsUsed, policy) }),
-      redacted: true
-    });
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "DATABASE_REQUEST_FAILED") });
+      passwordRef: parsed.passwordRef,
+      ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
+      ...(parsed.username === undefined ? {} : { username: parsed.username }),
+      ...(parsed.maxRows === undefined ? {} : { maxRows: String(parsed.maxRows) }),
+      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+    },
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
   }
+  return structuredResult({
+    status: "COMPLETED",
+    ...(output.rowCount === undefined ? {} : { rowCount: output.rowCount }),
+    ...(output.rowsPreview === undefined ? {} : { rowsPreview: output.rowsPreview }),
+    ...(output.stderr === undefined ? {} : { stderr: output.stderr }),
+    redacted: true
+  });
 }
 
 async function handleFileTransferWithSecret(
   client: VaultIpcClient,
-  fileTransferRunner: SecretFileTransferRunner | undefined,
-  policy: SecretLocalActionPolicy,
   parsed: z.infer<typeof FileTransferInput>
 ): Promise<CallToolResult> {
-  if (!isAllowedLocalHost(parsed.host, policy)) {
-    return structuredResult({ status: "HOST_NOT_ALLOWED" });
-  }
-  if (!isSafeTransferPath(parsed.remotePath) || (parsed.localPath !== undefined && !isSafeTransferPath(parsed.localPath))) {
-    return structuredResult({ status: "PATH_NOT_ALLOWED" });
-  }
-  if ((parsed.operation === "download" || parsed.operation === "upload") && parsed.localPath === undefined) {
-    return structuredResult({ status: "LOCAL_PATH_REQUIRED" });
-  }
-  if ((parsed.protocol ?? "sftp") === "scp" && parsed.operation === "list") {
-    return structuredResult({ status: "OPERATION_NOT_ALLOWED" });
-  }
-  if (fileTransferRunner === undefined) {
-    return structuredResult({ status: "FILE_TRANSFER_RUNNER_UNAVAILABLE" });
-  }
-
-  const secretsUsed: string[] = [];
-  const usernameResult = await resolveOptionalUsername(
-    client,
-    parsed.username,
-    parsed.usernameRef,
-    "Use SFTP/SCP username for local/private device",
-    parsed.host
-  );
-  if (!usernameResult.ok) {
-    return structuredResult({ status: usernameResult.status });
-  }
-  if (usernameResult.wasSecret && usernameResult.value !== undefined) {
-    secretsUsed.push(usernameResult.value);
-  }
-  if (usernameResult.value === undefined) {
-    return structuredResult({ status: "FILE_TRANSFER_USERNAME_REQUIRED" });
-  }
-
-  let password: string;
-  try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use SFTP/SCP password for local/private device", parsed.host);
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "FILE_TRANSFER_REQUEST_FAILED") });
-  }
-  secretsUsed.push(password);
-
-  try {
-    const result = await fileTransferRunner({
-      protocol: parsed.protocol ?? "sftp",
-      operation: parsed.operation,
-      host: parsed.host,
-      port: parsed.port ?? 22,
-      username: usernameResult.value,
-      password,
+  const refs = [
+    ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
+    parsed.passwordRef
+  ];
+  const output = await executeOpaqueOperation(client, {
+    actionType: "sftpTransfer",
+    secretReferences: refs,
+    destination: parsed.host,
+    port: parsed.port ?? 22,
+    protocolType: parsed.protocol ?? "sftp",
+    fileOperation: parsed.operation,
+    fileTarget: parsed.localPath ?? null,
+    requestedEffects: [parsed.operation === "list" || parsed.operation === "download" ? "read-only" : "remote-write"],
+    parameters: {
       remotePath: parsed.remotePath,
-      localPath: parsed.localPath,
-      timeoutMs: parsed.timeoutMs ?? 30_000
-    });
-    return structuredResult({
-      status: "COMPLETED",
-      ...(result.listingPreview === undefined ? {} : { listingPreview: sanitizeSecretText(result.listingPreview, secretsUsed, policy) }),
-      ...(result.localPath === undefined ? {} : { localPath: result.localPath }),
-      ...(result.remotePath === undefined ? {} : { remotePath: result.remotePath }),
-      ...(result.stderr === undefined ? {} : { stderr: sanitizeSecretText(result.stderr, secretsUsed, policy) }),
-      redacted: true
-    });
-  } catch {
-    return structuredResult({ status: "FILE_TRANSFER_REQUEST_FAILED" });
+      passwordRef: parsed.passwordRef,
+      ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
+      ...(parsed.username === undefined ? {} : { username: parsed.username }),
+      ...(parsed.localPath === undefined ? {} : { localPath: parsed.localPath }),
+      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+    },
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
   }
+  return structuredResult({
+    status: "COMPLETED",
+    ...(output.listingPreview === undefined ? {} : { listingPreview: output.listingPreview }),
+    ...(output.localPath === undefined ? {} : { localPath: output.localPath }),
+    ...(output.remotePath === undefined ? {} : { remotePath: output.remotePath }),
+    ...(output.stderr === undefined ? {} : { stderr: output.stderr }),
+    redacted: true
+  });
 }
 
 async function handleBrowserLoginWithSecret(
   client: VaultIpcClient,
-  browserLoginRunner: SecretBrowserLoginRunner | undefined,
-  policy: SecretLocalActionPolicy,
   parsed: z.infer<typeof BrowserLoginInput>
 ): Promise<CallToolResult> {
-  const parsedUrl = new URL(parsed.url);
-  if (!isAllowedLocalUrl(parsedUrl, policy)) {
-    return structuredResult({ status: "URL_NOT_ALLOWED" });
-  }
-  if (parsedUrl.username !== "" || parsedUrl.password !== "") {
-    return structuredResult({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
-  }
-  if (browserLoginRunner === undefined) {
-    return structuredResult({ status: "SAFE_AUTOFILL_UNAVAILABLE" });
-  }
-
-  const secretsUsed: string[] = [];
-  const usernameResult = await resolveOptionalUsername(
-    client,
-    parsed.username,
-    parsed.usernameRef,
-    "Use browser login username for local/private web form",
-    parsedUrl.host
-  );
-  if (!usernameResult.ok) {
-    return structuredResult({ status: usernameResult.status });
-  }
-  if (usernameResult.wasSecret && usernameResult.value !== undefined) {
-    secretsUsed.push(usernameResult.value);
-  }
-
-  let password: string;
-  try {
-    password = await resolveSingleSecret(client, parsed.passwordRef, "Use browser login password for local/private web form", parsedUrl.host);
-  } catch (error) {
-    return structuredResult({ status: statusFromError(error, "BROWSER_LOGIN_FAILED") });
-  }
-  secretsUsed.push(password);
-
-  try {
-    const result = await browserLoginRunner({
-      browser: parsed.browser ?? "Safari",
-      url: parsed.url,
-      username: usernameResult.value,
-      password,
-      usernameSelector: parsed.usernameSelector,
+  const url = new URL(parsed.url);
+  const refs = [
+    ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
+    parsed.passwordRef
+  ];
+  const output = await executeOpaqueOperation(client, {
+    actionType: "browserLogin",
+    secretReferences: refs,
+    destination: url.host,
+    port: url.port === "" ? null : Number(url.port),
+    protocolType: url.protocol === "https:" ? "https" : "http",
+    url: parsed.url,
+    requestedEffects: [parsed.submit === true ? "submit-form" : "fill-form"],
+    parameters: {
+      passwordRef: parsed.passwordRef,
+      ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
+      ...(parsed.username === undefined ? {} : { username: parsed.username }),
+      ...(parsed.browser === undefined ? {} : { browser: parsed.browser }),
+      ...(parsed.usernameSelector === undefined ? {} : { usernameSelector: parsed.usernameSelector }),
       passwordSelector: parsed.passwordSelector,
-      submitSelector: parsed.submitSelector,
-      submit: parsed.submit ?? false,
-      timeoutMs: parsed.timeoutMs ?? 15_000
-    });
-    return structuredResult({
-      status: "COMPLETED",
-      ...(result.url === undefined ? {} : { url: sanitizeSecretText(result.url, secretsUsed, policy) }),
-      ...(result.note === undefined ? {} : { note: sanitizeSecretText(result.note, secretsUsed, policy) }),
-      redacted: true
-    });
-  } catch {
-    return structuredResult({ status: "BROWSER_LOGIN_FAILED" });
+      ...(parsed.submitSelector === undefined ? {} : { submitSelector: parsed.submitSelector }),
+      submit: String(parsed.submit ?? false),
+      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+    },
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
   }
+  return structuredResult({ status: "COMPLETED", redacted: true });
 }
 
 async function handleLocalAppFillWithSecret(
   client: VaultIpcClient,
-  localAppFillRunner: SecretLocalAppFillRunner | undefined,
-  policy: SecretLocalActionPolicy,
   parsed: z.infer<typeof LocalAppFillInput>
 ): Promise<CallToolResult> {
-  if (localAppFillRunner === undefined) {
-    return structuredResult({ status: "SAFE_AUTOFILL_UNAVAILABLE" });
+  const refs = parsed.fields.flatMap((field) => field.valueRef === undefined ? [] : [field.valueRef]);
+  const output = await executeOpaqueOperation(client, {
+    actionType: "localAppFill",
+    secretReferences: refs,
+    destination: parsed.bundleId ?? parsed.appName ?? null,
+    protocolType: "localApp",
+    localAppBundleID: parsed.bundleId ?? null,
+    requestedEffects: ["fill-local-app"],
+    parameters: {
+      fields: JSON.stringify(parsed.fields),
+      ...(parsed.appName === undefined ? {} : { appName: parsed.appName }),
+      ...(parsed.submitButton === undefined ? {} : { submitButton: parsed.submitButton }),
+      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+    },
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
   }
-
-  const secretsUsed: string[] = [];
-  const fields: Array<{ name: string; value: string }> = [];
-  for (const field of parsed.fields) {
-    if (field.valueRef === undefined) {
-      fields.push({ name: field.name, value: field.value ?? "" });
-      continue;
-    }
-    try {
-      const value = await resolveSingleSecret(client, field.valueRef, `Use local app form field ${field.name}`, parsed.bundleId);
-      secretsUsed.push(value);
-      fields.push({ name: field.name, value });
-    } catch (error) {
-      return structuredResult({ status: statusFromError(error, "LOCAL_APP_FILL_FAILED") });
-    }
-  }
-
-  try {
-    const result = await localAppFillRunner({
-      appName: parsed.appName,
-      bundleId: parsed.bundleId,
-      fields,
-      submitButton: parsed.submitButton,
-      timeoutMs: parsed.timeoutMs ?? 15_000
-    });
-    return structuredResult({
-      status: "COMPLETED",
-      ...(result.filledFields === undefined ? {} : { filledFields: result.filledFields }),
-      ...(result.note === undefined ? {} : { note: sanitizeSecretText(result.note, secretsUsed, policy) }),
-      redacted: true
-    });
-  } catch {
-    return structuredResult({ status: "LOCAL_APP_FILL_FAILED" });
-  }
+  return structuredResult({ status: "COMPLETED", redacted: true });
 }
 
 function agentSecretUsagePolicy(): Record<string, unknown> {
@@ -1564,6 +1219,11 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
     safeWorkflow: [
       "When text contains secret:// references, call secret_auto_handle_text first unless a narrower safe tool is clearly required.",
       "Call vault_status before work that depends on the app.",
+      "Treat AgentRiskAssessment as a hint only; SVLT recomputes the effective risk locally for every operation.",
+      "A locked compatibility field never replaces per-operation policy evaluation.",
+      "When a task names a service, device, host, account, or purpose but no secret:// reference is known, call secret_search before asking the user for anything.",
+      "Use the service, field, destination, label, purpose, and groupID returned by secret_search to choose compatible opaque references; do not ask the user to copy reference IDs.",
+      "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
@@ -1589,6 +1249,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "secret_action_router",
       "secret_auto_handle_text",
       "vault_status",
+      "secret_search",
       "secret_inspect_reference",
       "secret_reveal_request",
       "paragraph_reveal_request",
@@ -1600,8 +1261,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "database_query_with_secret",
       "sftp_transfer_with_secret",
       "browser_web_login_with_secret",
-      "local_app_form_fill_with_secret",
-      "secure_execute"
+      "local_app_form_fill_with_secret"
     ]
   };
 }
@@ -1683,54 +1343,6 @@ function buildRevealRequestFromTemplate(references: string[], template: string):
   };
 }
 
-async function resolveSingleSecret(
-  client: VaultIpcClient,
-  reference: string,
-  reason: string,
-  destination?: string
-): Promise<string> {
-  const response = await client.request({
-    type: "restoreReferences",
-    references: [reference],
-    context: {
-      reason,
-      template: "{{0}}",
-      ranges: [{ index: 0, placeholder: "{{0}}" }],
-      ...(destination === undefined ? {} : { destination })
-    }
-  });
-
-  if (response.type !== "restoredText") {
-    throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
-  }
-  return response.text;
-}
-
-type ResolveOptionalUsernameResult =
-  | { ok: true; value: string | undefined; wasSecret: boolean }
-  | { ok: false; status: string };
-
-async function resolveOptionalUsername(
-  client: VaultIpcClient,
-  username: string | undefined,
-  usernameRef: string | undefined,
-  reason: string,
-  destination?: string
-): Promise<ResolveOptionalUsernameResult> {
-  if (usernameRef === undefined) {
-    return { ok: true, value: username, wasSecret: false };
-  }
-  try {
-    return {
-      ok: true,
-      value: await resolveSingleSecret(client, usernameRef, reason, destination),
-      wasSecret: true
-    };
-  } catch (error) {
-    return { ok: false, status: statusFromError(error, "REQUEST_FAILED") };
-  }
-}
-
 function hasCredentialQueryParameter(url: URL): boolean {
   for (const key of url.searchParams.keys()) {
     if (/password|passwd|pwd|token|secret|api[_-]?key|authorization|cookie/i.test(key)) {
@@ -1739,451 +1351,6 @@ function hasCredentialQueryParameter(url: URL): boolean {
   }
   return false;
 }
-
-function isAllowedLocalUrl(url: URL, policy: SecretLocalActionPolicy): boolean {
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return false;
-  }
-  return isAllowedLocalHost(url.hostname, policy);
-}
-
-function isAllowedLocalHost(hostname: string, policy: SecretLocalActionPolicy): boolean {
-  const normalized = hostname.toLowerCase();
-  return hostMatchesPolicy(normalized, policy.hosts.allowedHosts) ||
-    (policy.hosts.allowLocalhost && (normalized === "localhost" || normalized === "::1" || normalized === "[::1]")) ||
-    (policy.hosts.allowDotLocal && normalized.endsWith(".local")) ||
-    (policy.hosts.allowPrivateIPv4 && isAllowedPrivateIPv4(normalized));
-}
-
-function hostMatchesPolicy(hostname: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => {
-    const normalizedPattern = pattern.toLowerCase();
-    if (normalizedPattern.startsWith("*.")) {
-      return hostname.endsWith(normalizedPattern.slice(1));
-    }
-    return hostname === normalizedPattern;
-  });
-}
-
-function isAllowedPrivateIPv4(hostname: string): boolean {
-  const parts = hostname.split(".").map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return false;
-  }
-  const [first, second] = parts;
-  return first === 10 ||
-    first === 127 ||
-    (first === 192 && second === 168) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 169 && second === 254);
-}
-
-function isAllowedSshRisk(risk: "read", policy: SecretLocalActionPolicy): boolean {
-  return policy.ssh.allowedRisks.includes(risk);
-}
-
-function isAllowedSshCommand(command: string, policy: SecretLocalActionPolicy): boolean {
-  if (command.length > policy.ssh.maxCommandLength) {
-    return false;
-  }
-  if (/[\r\n\0]/.test(command)) {
-    return false;
-  }
-  if (/(^|\s)(&{1,2}|;|\|)/.test(command)) {
-    return false;
-  }
-  if (policy.ssh.blockShellSubstitution && (/[`]/.test(command) || /\$\(/.test(command))) {
-    return false;
-  }
-  if (policy.ssh.blockRedirection && /(^|\s)(>|>>|<|2>|2>>|&>)/.test(command)) {
-    return false;
-  }
-  if (/\bfind\b/i.test(command) && /(^|\s)-(exec|execdir|delete|ok)\b/i.test(command)) {
-    return false;
-  }
-  const commandName = command.trim().split(/\s+/)[0]?.toLowerCase();
-  if (policy.ssh.allowedCommandNames.length === 0) {
-    return false;
-  }
-  if (!policy.ssh.allowedCommandNames.includes(commandName)) {
-    return false;
-  }
-  const blocked = policy.ssh.blockedCommandNames
-    .map(escapeRegExp)
-    .join("|");
-  if (blocked.length > 0 && new RegExp(`\\b(${blocked})\\b`, "i").test(command)) {
-    return false;
-  }
-  return true;
-}
-
-function isReadOnlySingleStatement(query: string): boolean {
-  const trimmed = query.trim();
-  if (trimmed.length === 0) {
-    return false;
-  }
-  const withoutTrailingSemicolon = trimmed.endsWith(";") ? trimmed.slice(0, -1) : trimmed;
-  if (withoutTrailingSemicolon.includes(";")) {
-    return false;
-  }
-  if (!/^(select|with|show|describe|explain)\b/i.test(withoutTrailingSemicolon)) {
-    return false;
-  }
-  if (/\b(insert|update|delete|drop|alter|create|truncate|copy|grant|revoke|replace|merge|attach|detach|load|call|execute|do)\b/i.test(withoutTrailingSemicolon)) {
-    return false;
-  }
-  if (/--|\/\*|\*\//.test(withoutTrailingSemicolon)) {
-    return false;
-  }
-  return true;
-}
-
-function isSafeTransferPath(path: string): boolean {
-  if (/[\0\r\n]/.test(path)) {
-    return false;
-  }
-  if (path.includes("..")) {
-    return false;
-  }
-  if (/[*?[\]{};$`|&<>"\\]/.test(path)) {
-    return false;
-  }
-  return true;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function sanitizeSecretText(
-  text: string,
-  secretsUsed: string[],
-  policy: SecretLocalActionPolicy
-): string {
-  let sanitized = text.slice(0, policy.output.maxChars);
-  for (const secret of secretsUsed.filter((value) => value.length > 0)) {
-    sanitized = sanitized.split(secret).join("[REDACTED_SECRET]");
-  }
-  sanitized = sanitized
-    .replace(/secret:\/\/[0-9A-HJKMNP-TV-Z]{26}/g, "[REDACTED_REFERENCE]")
-    .replace(/(["']?(?:password|passwd|pwd|token|secret|api[_-]?key|credential|cookie|authorization)["']?\s*:\s*["'])[^"']+/gi, "$1[REDACTED_SECRET]")
-    .replace(/(password|passwd|pwd|token|secret|api[_-]?key)\s*[:=]\s*["']?[^"',\s}]+/gi, "$1=[REDACTED_SECRET]")
-    .replace(/Authorization:\s*Basic\s+[A-Za-z0-9+/=]+/gi, "Authorization: Basic [REDACTED_SECRET]")
-    .replace(/Authorization:\s*Bearer\s+[^"',\s}]+/gi, "Authorization: Bearer [REDACTED_SECRET]")
-    .replace(/(["']?authorization["']?\s*[:=]\s*["']?)Basic\s+[A-Za-z0-9+/=]+/gi, "$1Basic [REDACTED_SECRET]")
-    .replace(/(["']?authorization["']?\s*[:=]\s*["']?)Bearer\s+[^"',\s}]+/gi, "$1Bearer [REDACTED_SECRET]")
-    .replace(/(set-cookie|cookie)\s*[:=]\s*["']?[^"',\n\r}]+/gi, "$1=[REDACTED_SECRET]");
-  return sanitized;
-}
-
-const defaultSafeFetch: SafeHttpFetch = async (url, init) => fetch(url, init);
-
-const defaultDatabaseRunner: SecretDatabaseRunner = async (request) => {
-  if (request.engine === "postgres") {
-    const pg = await import("pg");
-    const client = new pg.Client({
-      host: request.host,
-      port: request.port ?? 5432,
-      database: request.database,
-      user: request.username,
-      password: request.password,
-      connectionTimeoutMillis: request.timeoutMs,
-      statement_timeout: request.timeoutMs
-    });
-    await client.connect();
-    try {
-      await client.query("BEGIN READ ONLY");
-      try {
-        const result = await client.query(request.query);
-        const rows = Array.isArray(result.rows) ? result.rows.slice(0, request.maxRows) : [];
-        return {
-          rowCount: typeof result.rowCount === "number" ? result.rowCount : rows.length,
-          rowsPreview: JSON.stringify(rows)
-        };
-      } finally {
-        await client.query("ROLLBACK").catch(() => undefined);
-      }
-    } finally {
-      await client.end();
-    }
-  }
-
-  const mysql = await import("mysql2/promise");
-  const connection = await mysql.createConnection({
-    host: request.host,
-    port: request.port ?? 3306,
-    database: request.database,
-    user: request.username,
-    password: request.password,
-    connectTimeout: request.timeoutMs
-  });
-  try {
-    await connection.query("SET TRANSACTION READ ONLY");
-    await connection.query("START TRANSACTION READ ONLY");
-    try {
-      const [rows] = await connection.query({
-        sql: request.query,
-        timeout: request.timeoutMs,
-        rowsAsArray: false
-      });
-      const rowArray = Array.isArray(rows) ? rows.slice(0, request.maxRows) : [];
-      return {
-        rowCount: Array.isArray(rows) ? rows.length : 0,
-        rowsPreview: JSON.stringify(rowArray)
-      };
-    } finally {
-      await connection.query("ROLLBACK").catch(() => undefined);
-    }
-  } finally {
-    await connection.end();
-  }
-};
-
-function buildExpectPasswordScript(timeoutSeconds: number, transferArgs: string[], commands: string[]): string {
-  return `
-set timeout ${timeoutSeconds}
-set transferArgs [list ${transferArgs.map(tclWord).join(" ")}]
-set commands [list ${commands.map(tclWord).join(" ")}]
-set commandIndex 0
-if {[gets stdin password] < 0} {
-  exit 125
-}
-log_user 0
-spawn {*}$transferArgs
-expect {
-  -re "(?i)are you sure you want to continue connecting" {
-    send -- "yes\\r"
-    exp_continue
-  }
-  -re "(?i)(password|passcode).*:" {
-    send -- "$password\\r"
-    log_user 1
-    exp_continue
-  }
-  -re "sftp> $" {
-    if {$commandIndex < [llength $commands]} {
-      send -- "[lindex $commands $commandIndex]\\r"
-      incr commandIndex
-      exp_continue
-    }
-  }
-  eof {}
-  timeout {
-    exit 124
-  }
-}
-set waitResult [wait]
-set exitCode [lindex $waitResult 3]
-exit $exitCode
-`;
-}
-
-function sftpPath(value: string): string {
-  return `"${value.replaceAll('"', '\\"')}"`;
-}
-
-function fileTransferArgsAndCommands(request: FileTransferRequest): {
-  args: string[];
-  commands: string[];
-} {
-  const timeoutSeconds = Math.max(1, Math.ceil(request.timeoutMs / 1_000));
-  const commonOptions = [
-    "-o", "BatchMode=no",
-    "-o", "PubkeyAuthentication=no",
-    "-o", "KbdInteractiveAuthentication=yes",
-    "-o", "PreferredAuthentications=password,keyboard-interactive",
-    "-o", "NumberOfPasswordPrompts=1",
-    "-o", `ConnectTimeout=${timeoutSeconds}`,
-    "-o", "StrictHostKeyChecking=accept-new"
-  ];
-  if (request.protocol === "sftp") {
-    const commands = request.operation === "list"
-      ? [`ls -la ${sftpPath(request.remotePath)}`, "bye"]
-      : request.operation === "download"
-        ? [`get ${sftpPath(request.remotePath)} ${sftpPath(request.localPath ?? "")}`, "bye"]
-        : [`put ${sftpPath(request.localPath ?? "")} ${sftpPath(request.remotePath)}`, "bye"];
-    return {
-      args: [
-        "sftp",
-        ...commonOptions,
-        "-P", String(request.port),
-        `${request.username}@${request.host}`
-      ],
-      commands
-    };
-  }
-
-  if (request.operation === "download") {
-    return {
-      args: [
-        "scp",
-        ...commonOptions,
-        "-P", String(request.port),
-        `${request.username}@${request.host}:${request.remotePath}`,
-        request.localPath ?? ""
-      ],
-      commands: []
-    };
-  }
-  return {
-    args: [
-      "scp",
-      ...commonOptions,
-      "-P", String(request.port),
-      request.localPath ?? "",
-      `${request.username}@${request.host}:${request.remotePath}`
-    ],
-    commands: []
-  };
-}
-
-const defaultFileTransferRunner: SecretFileTransferRunner = async (request) => new Promise((resolve, reject) => {
-  const timeoutSeconds = Math.max(1, Math.ceil(request.timeoutMs / 1_000));
-  const { args, commands } = fileTransferArgsAndCommands(request);
-  const child = spawn("/usr/bin/expect", [
-    "-c",
-    buildExpectPasswordScript(timeoutSeconds, args, commands)
-  ], {
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-
-  let stdout = "";
-  let stderr = "";
-  let settled = false;
-  const settle = (callback: () => void) => {
-    if (!settled) {
-      settled = true;
-      callback();
-    }
-  };
-  const timer = setTimeout(() => {
-    child.kill("SIGKILL");
-    settle(() => reject(new Error("FILE_TRANSFER_TIMEOUT")));
-  }, request.timeoutMs + 1_000);
-
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout += chunk.toString("utf8");
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr += chunk.toString("utf8");
-  });
-  child.on("error", (error) => {
-    clearTimeout(timer);
-    settle(() => reject(error));
-  });
-  child.on("close", (code) => {
-    clearTimeout(timer);
-    settle(() => {
-      if (code === 0) {
-        resolve({
-          ...(request.operation === "list" ? { listingPreview: stdout } : {}),
-          ...(request.localPath === undefined ? {} : { localPath: request.localPath }),
-          remotePath: request.remotePath,
-          stderr
-        });
-        return;
-      }
-      reject(new Error(`FILE_TRANSFER_EXIT_${code ?? "UNKNOWN"}`));
-    });
-  });
-
-  child.stdin.write(request.password);
-  child.stdin.write("\n");
-  child.stdin.end();
-});
-
-function buildExpectSshScript(timeoutSeconds: number, sshArgs: string[]): string {
-  return `
-set timeout ${timeoutSeconds}
-set sshArgs [list ${sshArgs.map(tclWord).join(" ")}]
-if {[gets stdin password] < 0} {
-  exit 125
-}
-log_user 0
-spawn {*}$sshArgs
-expect {
-  -re "(?i)are you sure you want to continue connecting" {
-    send -- "yes\\r"
-    exp_continue
-  }
-  -re "(?i)(password|passcode).*:" {
-    send -- "$password\\r"
-    log_user 1
-    exp_continue
-  }
-  eof {}
-  timeout {
-    exit 124
-  }
-}
-set waitResult [wait]
-set exitCode [lindex $waitResult 3]
-exit $exitCode
-`;
-}
-
-function tclWord(value: string): string {
-  return `{${value.replaceAll("\\", "\\\\").replaceAll("}", "\\}")}}`;
-}
-
-const defaultSshRunner: SecretSshRunner = async (request) => new Promise((resolve, reject) => {
-  const timeoutSeconds = Math.max(1, Math.ceil(request.timeoutMs / 1_000));
-  const sshArgs = [
-    "ssh",
-    "-o", "BatchMode=no",
-    "-o", "PubkeyAuthentication=no",
-    "-o", "KbdInteractiveAuthentication=yes",
-    "-o", "PreferredAuthentications=password,keyboard-interactive",
-    "-o", "NumberOfPasswordPrompts=1",
-    "-o", `ConnectTimeout=${timeoutSeconds}`,
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-p", String(request.port),
-    `${request.username}@${request.host}`,
-    request.command
-  ];
-  const child = spawn("/usr/bin/expect", [
-    "-c",
-    buildExpectSshScript(timeoutSeconds, sshArgs)
-  ], {
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-
-  let stdout = "";
-  let stderr = "";
-  let settled = false;
-  const settle = (callback: () => void) => {
-    if (!settled) {
-      settled = true;
-      callback();
-    }
-  };
-
-  const killTimer = setTimeout(() => {
-    child.kill("SIGTERM");
-  }, request.timeoutMs + 1_000);
-
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  child.on("error", (error) => {
-    clearTimeout(killTimer);
-    settle(() => reject(error));
-  });
-  child.on("close", (code) => {
-    clearTimeout(killTimer);
-    settle(() => resolve({
-      exitCode: code ?? -1,
-      stdout,
-      stderr
-    }));
-  });
-  child.stdin.end(`${request.password}\n`);
-});
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await runStdioServer();

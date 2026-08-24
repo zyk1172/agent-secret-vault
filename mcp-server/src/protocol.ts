@@ -19,9 +19,35 @@ export type SecretReference = z.infer<typeof SecretReference>;
 export const SecretPolicy = z.enum(["read", "externalSend", "credential"]);
 export type SecretPolicy = z.infer<typeof SecretPolicy>;
 
+export const SecretCatalogField = z.enum([
+  "username",
+  "password",
+  "token",
+  "apiKey",
+  "cookie",
+  "privateKey",
+  "other"
+]);
+export type SecretCatalogField = z.infer<typeof SecretCatalogField>;
+
+export const OperationRisk = z.enum(["silent", "approvalRequired", "denied"]);
+export type OperationRisk = z.infer<typeof OperationRisk>;
+
+export const AgentRiskAssessment = z
+  .object({
+    declaredRisk: OperationRisk,
+    reason: z.string().min(1).max(512),
+    intendedEffect: z.string().min(1).max(256)
+  })
+  .strict();
+export type AgentRiskAssessment = z.infer<typeof AgentRiskAssessment>;
+
 export const WorkbenchStatus = z.object({
   locked: z.boolean(),
   ipcAvailable: z.boolean(),
+  available: z.boolean().default(true),
+  ready: z.boolean().default(true),
+  approvalPending: z.boolean().default(false),
   activeKnowledgeBaseRoot: z.string().nullable(),
   pluginConnected: z.boolean()
 }).strict();
@@ -37,7 +63,8 @@ export const RevealContext = z.object({
   reason: z.string().min(1),
   template: z.string().min(1),
   ranges: z.array(ReferenceRange),
-  destination: z.string().min(1).optional()
+  destination: z.string().min(1).optional(),
+  agentAssessment: AgentRiskAssessment.optional()
 }).strict();
 export type RevealContext = z.infer<typeof RevealContext>;
 
@@ -51,30 +78,121 @@ export const SecretReferenceMetadata = z.object({
   reference: SecretReference,
   policy: SecretPolicy,
   label: z.string().nullable(),
+  allowedDestinations: z.array(z.string()).default([]),
+  allowedProtocols: z.array(z.string()).default([]),
   createdAt: z.union([z.string().min(1), z.number()]),
   updatedAt: z.union([z.string().min(1), z.number()])
 }).strict();
 export type SecretReferenceMetadata = z.infer<typeof SecretReferenceMetadata>;
 
-export const RiskClass = z.union([z.literal(0), z.literal(1), z.literal(2)]);
-export type RiskClass = z.infer<typeof RiskClass>;
+export const SecretCatalogMatch = z.object({
+  reference: SecretReference,
+  service: z.string().nullable().optional(),
+  field: SecretCatalogField,
+  label: z.string().nullable().optional(),
+  policy: SecretPolicy,
+  destinations: z.array(z.string()),
+  purpose: z.string().nullable().optional(),
+  groupID: z.string().nullable().optional()
+}).strict();
+export type SecretCatalogMatch = z.infer<typeof SecretCatalogMatch>;
 
-export const ExecutionRequest = z
+export const SecretCatalogSearchResult = z.object({
+  status: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE"]),
+  matches: z.array(SecretCatalogMatch)
+}).strict();
+export type SecretCatalogSearchResult = z.infer<typeof SecretCatalogSearchResult>;
+
+export const SecretOperationAction = z.enum([
+  "vaultStatus",
+  "usagePolicy",
+  "inspectReference",
+  "checkReferenceExists",
+  "sshCommand",
+  "httpRequest",
+  "apiRequest",
+  "databaseQuery",
+  "sftpTransfer",
+  "browserLogin",
+  "localAppFill",
+  "revealPlaintext",
+  "copyPlaintext",
+  "exportPlaintext",
+  "deleteSecret",
+  "changeSecretPolicy",
+  "changeDestinationBinding",
+  "changeAllowlist",
+  "changeAuthorizationRules",
+  "changeKeychain",
+  "migrateMasterKey",
+  "importRecoveryKey",
+  "exportRecoveryKey",
+  "restoreVault",
+  "clearVault",
+  "batchDelete",
+  "resetVault",
+  "localExecution"
+]);
+export type SecretOperationAction = z.infer<typeof SecretOperationAction>;
+
+export const SecretOperationProtocol = z.enum([
+  "ssh",
+  "http",
+  "https",
+  "sftp",
+  "scp",
+  "postgres",
+  "mysql",
+  "browser",
+  "localApp",
+  "file"
+]);
+export type SecretOperationProtocol = z.infer<typeof SecretOperationProtocol>;
+
+export const SecretFileOperation = z.enum([
+  "list",
+  "read",
+  "download",
+  "upload",
+  "write",
+  "overwrite",
+  "move",
+  "delete"
+]);
+export type SecretFileOperation = z.infer<typeof SecretFileOperation>;
+
+export const SecretOperationDescriptor = z
   .object({
-    templateID: z.string().min(1),
-    executable: z.string().min(1),
-    values: z.record(z.string(), z.string()),
-    secrets: z.record(z.string(), SecretReference),
-    destinationHost: z.string().nullable().optional(),
-    destinationPath: z.string().nullable().optional(),
-    requestedRisk: RiskClass
+    actionType: SecretOperationAction,
+    secretReferences: z.array(SecretReference),
+    destination: z.string().nullable().optional(),
+    port: z.number().int().nullable().optional(),
+    protocolType: SecretOperationProtocol.nullable().optional(),
+    command: z.string().nullable().optional(),
+    httpMethod: z.string().nullable().optional(),
+    url: z.string().nullable().optional(),
+    databaseStatement: z.string().nullable().optional(),
+    fileOperation: SecretFileOperation.nullable().optional(),
+    fileTarget: z.string().nullable().optional(),
+    localAppBundleID: z.string().nullable().optional(),
+    requestedEffects: z.array(z.string()),
+    parameters: z.record(z.string(), z.string()),
+    agentAssessment: AgentRiskAssessment
   })
   .strict();
-export type ExecutionRequest = z.infer<typeof ExecutionRequest>;
+export type SecretOperationDescriptor = z.infer<typeof SecretOperationDescriptor>;
 
 export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("status") }).strict(),
   z.object({ type: z.literal("workbenchStatus") }).strict(),
+  z
+    .object({
+      type: z.literal("searchCatalog"),
+      query: z.string().trim().min(1).max(256),
+      field: SecretCatalogField.optional(),
+      limit: z.number().int().min(1).max(20).default(10)
+    })
+    .strict(),
   z
     .object({
       type: z.literal("inspectReference"),
@@ -97,22 +215,16 @@ export const IpcRequest = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
-      type: z.literal("encryptText"),
-      plaintext: z.string(),
+      type: z.literal("encryptBound"),
       label: z.string().nullable().optional(),
-      policy: SecretPolicy
+      policy: SecretPolicy,
+      allowedDestinations: z.array(z.string().min(1)).max(32),
+      allowedProtocols: z.array(SecretOperationProtocol).max(16)
     })
     .strict(),
   z
     .object({
       type: z.literal("revealReferences"),
-      references: z.array(SecretReference).min(1),
-      context: RevealContext
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("restoreReferences"),
       references: z.array(SecretReference).min(1),
       context: RevealContext
     })
@@ -133,8 +245,8 @@ export const IpcRequest = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
-      type: z.literal("execute"),
-      request: ExecutionRequest
+      type: z.literal("executeSecretOperation"),
+      descriptor: SecretOperationDescriptor
     })
     .strict()
 ]);
@@ -148,31 +260,24 @@ export const AuthenticatedIpcRequest = z
   .strict();
 export type AuthenticatedIpcRequest = z.infer<typeof AuthenticatedIpcRequest>;
 
-export const OutputQuarantineReason = z.enum([
-  "binaryOutput",
-  "invalidUTF8",
-  "emptySecretMaterial",
-  "encodedSecretVariantDetected"
-]);
-export type OutputQuarantineReason = z.infer<typeof OutputQuarantineReason>;
-
-export const SanitizedExecutionResult = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("completed"),
-      exitCode: z.number().int(),
-      stdout: z.string(),
-      stderr: z.string()
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("quarantined"),
-      reason: OutputQuarantineReason
-    })
-    .strict()
-]);
-export type SanitizedExecutionResult = z.infer<typeof SanitizedExecutionResult>;
+export const SecretOperationOutput = z
+  .object({
+    status: z.string().min(1),
+    exitCode: z.number().int().optional(),
+    stdout: z.string().optional(),
+    stderr: z.string().optional(),
+    httpStatus: z.number().int().optional(),
+    contentType: z.string().nullable().optional(),
+    bodyPreview: z.string().optional(),
+    rowCount: z.number().int().min(0).optional(),
+    rowsPreview: z.string().optional(),
+    listingPreview: z.string().optional(),
+    localPath: z.string().optional(),
+    remotePath: z.string().optional(),
+    redacted: z.boolean()
+  })
+  .strict();
+export type SecretOperationOutput = z.infer<typeof SecretOperationOutput>;
 
 export const RevealSessionOpened = z.object({
   type: z.literal("revealSessionOpened"),
@@ -195,6 +300,12 @@ export const IpcResponse = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("catalogSearchResult"),
+      result: SecretCatalogSearchResult
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("referenceMetadata"),
       metadata: SecretReferenceMetadata
     })
@@ -207,7 +318,6 @@ export const IpcResponse = z.discriminatedUnion("type", [
     })
     .strict(),
   RevealSessionOpened,
-  z.object({ type: z.literal("restoredText"), text: z.string() }).strict(),
   z.object({ type: z.literal("exported"), path: z.string().min(1) }).strict(),
   z
     .object({
@@ -217,8 +327,8 @@ export const IpcResponse = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
-      type: z.literal("execution"),
-      result: SanitizedExecutionResult
+      type: z.literal("secretOperation"),
+      output: SecretOperationOutput
     })
     .strict(),
   z

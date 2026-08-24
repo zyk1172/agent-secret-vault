@@ -26,7 +26,17 @@ public protocol EncryptSelectionCoordinating: Sendable {
     ) async throws -> EncryptSelectionResult
 }
 
-public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEncrypting {
+public protocol DestinationBindingTextEncrypting: TextEncrypting {
+    func encryptText(
+        _ plaintext: String,
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String]
+    ) async throws -> SecretReference
+}
+
+public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, DestinationBindingTextEncrypting {
     private let recordStore: any RecordStore
     private let selectionReplacer: any SelectionReplacing
     private let masterKeyProvider: @Sendable (SecretPolicy, String) async throws -> Data
@@ -83,6 +93,22 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEnc
         label: String?,
         policy: SecretPolicy
     ) async throws -> SecretReference {
+        try await encryptText(
+            plaintext,
+            label: label,
+            policy: policy,
+            allowedDestinations: [],
+            allowedProtocols: []
+        )
+    }
+
+    public func encryptText(
+        _ plaintext: String,
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String]
+    ) async throws -> SecretReference {
         guard !plaintext.isEmpty else {
             throw EncryptSelectionError.emptyPlaintext
         }
@@ -104,6 +130,8 @@ public struct EncryptSelectionCoordinator: EncryptSelectionCoordinating, TextEnc
             version: 1,
             label: label,
             policy: policy,
+            allowedDestinations: allowedDestinations,
+            allowedProtocols: allowedProtocols,
             masterKey: SymmetricKey(data: keyData)
         )
 

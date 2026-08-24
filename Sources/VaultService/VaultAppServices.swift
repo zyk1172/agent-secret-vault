@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import VaultAuthorization
 import VaultCore
+import VaultExecution
 import VaultIPC
 
 public protocol RevealSessionPresenting: Sendable {
@@ -70,6 +71,7 @@ public actor VaultAppServices: WorkbenchServicing {
     private let recordLister: (any RecordListing)?
     private let recordDeleter: (any RecordDeleting)?
     private let recordResolver: VaultRecordResolver?
+    private let catalogService: SecretCatalogService?
     private let masterKey: SymmetricKey?
     private let masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
     private let freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
@@ -78,6 +80,11 @@ public actor VaultAppServices: WorkbenchServicing {
     private let revealSessionStore: RevealSessionStore
     private let revealSessionPresenter: any RevealSessionPresenting
     private let authorizationSession: AuthorizationSession
+    private let operationPolicyEngine: SecretOperationPolicyEngine
+    private let approvalTicketStore: ApprovalTicketStore
+    private let operationApprover: any OperationApproving
+    private let operationExecutor: any SecretOperationExecuting
+    private let operationApprovalTimeout: Duration
     private let agentDecryptAuthorizationTTL: TimeInterval?
     private let credentialAuthorizationTTL: TimeInterval
     private let externalSendAuthorizationTTL: TimeInterval
@@ -90,6 +97,7 @@ public actor VaultAppServices: WorkbenchServicing {
     private let exportDirectory: URL
     private var pluginConnectedAt: Date?
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
+    private var approvalPending = false
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -97,6 +105,7 @@ public actor VaultAppServices: WorkbenchServicing {
         recordLister: (any RecordListing)? = nil,
         recordDeleter: (any RecordDeleting)? = nil,
         recordResolver: VaultRecordResolver? = nil,
+        catalogService: SecretCatalogService? = nil,
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
@@ -105,6 +114,11 @@ public actor VaultAppServices: WorkbenchServicing {
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = NoopRevealSessionPresenter(),
         authorizationSession: AuthorizationSession = AuthorizationSession(),
+        operationPolicyEngine: SecretOperationPolicyEngine = SecretOperationPolicyEngine(),
+        approvalTicketStore: ApprovalTicketStore = ApprovalTicketStore(),
+        operationApprover: any OperationApproving = LocalOperationApprover(),
+        operationExecutor: any SecretOperationExecuting = LocalSecretOperationExecutor(),
+        operationApprovalTimeout: Duration = .seconds(30),
         agentDecryptAuthorizationTTL: TimeInterval? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
@@ -121,6 +135,7 @@ public actor VaultAppServices: WorkbenchServicing {
         self.recordLister = recordLister
         self.recordDeleter = recordDeleter
         self.recordResolver = recordResolver
+        self.catalogService = catalogService
         self.masterKey = masterKey
         self.masterKeyProvider = masterKeyProvider
         self.freshMasterKeyProvider = freshMasterKeyProvider
@@ -129,6 +144,11 @@ public actor VaultAppServices: WorkbenchServicing {
         self.revealSessionStore = revealSessionStore
         self.revealSessionPresenter = revealSessionPresenter
         self.authorizationSession = authorizationSession
+        self.operationPolicyEngine = operationPolicyEngine
+        self.approvalTicketStore = approvalTicketStore
+        self.operationApprover = operationApprover
+        self.operationExecutor = operationExecutor
+        self.operationApprovalTimeout = operationApprovalTimeout
         self.agentDecryptAuthorizationTTL = agentDecryptAuthorizationTTL
         self.credentialAuthorizationTTL = agentDecryptAuthorizationTTL ?? credentialAuthorizationTTL
         self.externalSendAuthorizationTTL = externalSendAuthorizationTTL
@@ -147,6 +167,7 @@ public actor VaultAppServices: WorkbenchServicing {
         recordLister: (any RecordListing)? = nil,
         recordDeleter: (any RecordDeleting)? = nil,
         recordResolver: VaultRecordResolver? = nil,
+        catalogService: SecretCatalogService? = nil,
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
@@ -155,6 +176,11 @@ public actor VaultAppServices: WorkbenchServicing {
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
         revealSessionPresenter: any RevealSessionPresenting = NoopRevealSessionPresenter(),
         authorizationSession: AuthorizationSession = AuthorizationSession(),
+        operationPolicyEngine: SecretOperationPolicyEngine = SecretOperationPolicyEngine(),
+        approvalTicketStore: ApprovalTicketStore = ApprovalTicketStore(),
+        operationApprover: any OperationApproving = LocalOperationApprover(),
+        operationExecutor: any SecretOperationExecuting = LocalSecretOperationExecutor(),
+        operationApprovalTimeout: Duration = .seconds(30),
         agentDecryptAuthorizationTTL: TimeInterval? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
@@ -172,6 +198,7 @@ public actor VaultAppServices: WorkbenchServicing {
             recordLister: recordLister,
             recordDeleter: recordDeleter,
             recordResolver: recordResolver,
+            catalogService: catalogService,
             masterKey: masterKey,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
@@ -180,6 +207,11 @@ public actor VaultAppServices: WorkbenchServicing {
             revealSessionStore: revealSessionStore,
             revealSessionPresenter: revealSessionPresenter,
             authorizationSession: authorizationSession,
+            operationPolicyEngine: operationPolicyEngine,
+            approvalTicketStore: approvalTicketStore,
+            operationApprover: operationApprover,
+            operationExecutor: operationExecutor,
+            operationApprovalTimeout: operationApprovalTimeout,
             agentDecryptAuthorizationTTL: agentDecryptAuthorizationTTL,
             credentialAuthorizationTTL: credentialAuthorizationTTL,
             externalSendAuthorizationTTL: externalSendAuthorizationTTL,
@@ -207,6 +239,9 @@ public actor VaultAppServices: WorkbenchServicing {
         WorkbenchStatus(
             locked: !(await isUnlockedProvider()),
             ipcAvailable: true,
+            available: true,
+            ready: true,
+            approvalPending: approvalPending,
             activeKnowledgeBaseRoot: activeRoot?.path,
             pluginConnected: isPluginConnected()
         )
@@ -237,6 +272,104 @@ public actor VaultAppServices: WorkbenchServicing {
         return reference.description
     }
 
+    public func encryptText(
+        _ plaintext: String,
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String]
+    ) async throws -> String {
+        let reference: SecretReference
+        if let bindingEncryptor = textEncryptor as? any DestinationBindingTextEncrypting {
+            reference = try await bindingEncryptor.encryptText(
+                plaintext,
+                label: label,
+                policy: policy,
+                allowedDestinations: allowedDestinations,
+                allowedProtocols: allowedProtocols
+            )
+        } else {
+            reference = try await textEncryptor.encryptText(
+                plaintext,
+                label: label,
+                policy: policy
+            )
+        }
+        await notifySavedReferencesChanged()
+        return reference.description
+    }
+
+    public func performSecretOperation(
+        _ descriptor: SecretOperationDescriptor
+    ) async throws -> SecretOperationOutput {
+        if descriptor.actionType == .vaultStatus {
+            let currentStatus = await status()
+            return SecretOperationOutput(
+                status: currentStatus.ready ? "READY" : "UNAVAILABLE"
+            )
+        }
+
+        let metadata = try await policyMetadata(for: descriptor.secretReferences)
+        let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
+        guard decision.risk != .denied else {
+            await emitAudit(
+                action: "Agent 操作被本地策略拒绝",
+                target: decision.policyRuleID,
+                referenceCount: descriptor.secretReferences.count,
+                result: "失败"
+            )
+            throw SecretOperationError.operationDenied
+        }
+
+        try await authorizeIfNeeded(
+            descriptor,
+            metadata: metadata,
+            decision: decision
+        )
+
+        guard let recordResolver else {
+            throw SecretOperationError.actionExecutionFailed
+        }
+
+        let key: SymmetricKey
+        do {
+            key = try await resolvedMasterKey(
+                for: authorizationPolicy(for: metadata.map(\.policy)),
+                reason: operationReason(for: descriptor),
+                allowsAgentDecryptReuse: false,
+                destination: decision.normalizedDestination
+            )
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+
+        do {
+            let output = try await operationExecutor.execute(
+                descriptor,
+                metadata: metadata,
+                resolve: { reference in
+                    try await recordResolver.resolve(
+                        reference: reference.description,
+                        masterKey: key
+                    )
+                }
+            )
+            await emitAudit(
+                action: "Agent 专用操作",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: output.status
+            )
+            return output
+        } catch SecretOperationExecutionError.redirectRequiresReview {
+            throw SecretOperationError.redirectRequiresReview
+        } catch SecretOperationExecutionError.outputQuarantined {
+            throw SecretOperationError.outputQuarantined
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+    }
+
     public func deleteRecord(_ reference: String) async throws {
         let parsed = try SecretReference(reference)
         guard let recordResolver else {
@@ -246,8 +379,36 @@ public actor VaultAppServices: WorkbenchServicing {
             throw VaultAppServicesSavedReferencesError.listUnavailable
         }
 
-        _ = try await recordResolver.metadata(reference: reference)
-        _ = try await freshMasterKey(for: .credential, reason: "删除本机加密记录")
+        let metadata = try await recordResolver.metadata(reference: reference)
+        let descriptor = SecretOperationDescriptor(
+            actionType: .deleteSecret,
+            secretReferences: [parsed],
+            requestedEffects: ["delete-record"]
+        )
+        let decision = operationPolicyEngine.evaluate(
+            descriptor,
+            metadata: [SecretPolicyMetadata(
+                reference: parsed,
+                policy: metadata.policy,
+                label: metadata.label,
+                allowedDestinations: metadata.allowedDestinations,
+                allowedProtocols: metadata.allowedProtocols
+            )]
+        )
+        guard decision.risk != .denied else {
+            throw SecretOperationError.operationDenied
+        }
+        try await authorizeIfNeeded(
+            descriptor,
+            metadata: [SecretPolicyMetadata(
+                reference: parsed,
+                policy: metadata.policy,
+                label: metadata.label,
+                allowedDestinations: metadata.allowedDestinations,
+                allowedProtocols: metadata.allowedProtocols
+            )],
+            decision: decision
+        )
         try await recordDeleter.delete(id: parsed.id)
         await notifySavedReferencesChanged()
         await emitAudit(
@@ -259,7 +420,12 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func authorizeHighRisk(reason: String) async throws {
-        _ = try await freshMasterKey(for: .credential, reason: reason)
+        let descriptor = SecretOperationDescriptor(
+            actionType: .changeAuthorizationRules,
+            requestedEffects: ["explicit-local-authorization"]
+        )
+        let decision = operationPolicyEngine.evaluate(descriptor, metadata: [])
+        try await authorizeIfNeeded(descriptor, metadata: [], decision: decision)
     }
 
     public func inspectReference(_ reference: String) async throws -> SecretReferenceMetadata {
@@ -293,7 +459,62 @@ public actor VaultAppServices: WorkbenchServicing {
         }
     }
 
+    public func searchSecrets(
+        query: String,
+        field: SecretCatalogField?,
+        limit: Int
+    ) async throws -> SecretCatalogSearchResult {
+        guard let catalogService else {
+            return SecretCatalogSearchResult(status: .notFound)
+        }
+
+        var recordMetadata: [SecretCatalogRecordMetadata] = []
+        if let recordLister, let recordResolver {
+            if let recordIDs = try? await recordLister.recordIDs() {
+                recordMetadata.reserveCapacity(recordIDs.count)
+                for id in recordIDs {
+                    let reference = "secret://\(id)"
+                    guard let metadata = try? await recordResolver.metadata(reference: reference) else {
+                        continue
+                    }
+                    recordMetadata.append(
+                        SecretCatalogRecordMetadata(
+                            reference: metadata.reference,
+                            policy: metadata.policy,
+                            label: metadata.label,
+                            allowedDestinations: metadata.allowedDestinations
+                        )
+                    )
+                }
+            }
+        }
+
+        let entries = (try? catalogService.selectedEntries()) ?? []
+        let result = catalogService.search(
+            query: query,
+            field: field,
+            limit: limit,
+            entries: entries,
+            metadata: recordMetadata
+        )
+        await emitAudit(
+            action: "搜索本机 Secret 目录",
+            target: "catalog-search",
+            referenceCount: result.matches.count,
+            result: result.status.rawValue
+        )
+        return result
+    }
+
     public func openRevealSession(references: [String], context: RevealContext) async throws -> String {
+        let (descriptor, metadata) = try await plaintextOperation(
+            action: .revealPlaintext,
+            references: references,
+            context: context,
+            effects: ["display-to-local-user"]
+        )
+        let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
+        try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
         let resolvedParagraph = try await resolveReferencesWithValues(references: references, context: context)
         let sessionID = await revealSessionStore.create(resolvedParagraph: resolvedParagraph)
         await revealSessionPresenter.present(sessionID: sessionID, store: revealSessionStore)
@@ -318,6 +539,14 @@ public actor VaultAppServices: WorkbenchServicing {
     }
 
     public func restoreReferences(references: [String], context: RevealContext) async throws -> String {
+        let (descriptor, metadata) = try await plaintextOperation(
+            action: .copyPlaintext,
+            references: references,
+            context: context,
+            effects: ["local-write-back"]
+        )
+        let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
+        try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
         let restored = try await resolveReferencesWithValues(references: references, context: context)
         await emitAudit(
             action: "本机脱密使用",
@@ -332,6 +561,14 @@ public actor VaultAppServices: WorkbenchServicing {
         references: [String],
         context: RevealContext
     ) async throws -> RestoredParagraph {
+        let (descriptor, metadata) = try await plaintextOperation(
+            action: .copyPlaintext,
+            references: references,
+            context: context,
+            effects: ["local-write-back"]
+        )
+        let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
+        try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
         let restored = try await resolveReferencesWithValues(references: references, context: context)
         await emitAudit(
             action: "本机脱密使用",
@@ -347,12 +584,26 @@ public actor VaultAppServices: WorkbenchServicing {
         context: RevealContext,
         destinationPath: String
     ) async throws -> String {
+        let destination = try validatedExportDestination(destinationPath)
+        let operationContext = RevealContext(
+            reason: context.reason,
+            template: context.template,
+            ranges: context.ranges,
+            destination: destination.path
+        )
+        let (descriptor, metadata) = try await plaintextOperation(
+            action: .exportPlaintext,
+            references: references,
+            context: operationContext,
+            effects: ["write-local-file"]
+        )
+        let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
+        try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
         let resolvedText = try await resolveReferences(
             references: references,
-            context: context,
+            context: operationContext,
             forceFreshAuthorization: true
         )
-        let destination = try validatedExportDestination(destinationPath)
         try resolvedText.write(to: destination, atomically: true, encoding: .utf8)
         await emitAudit(
             action: "写入本地文件",
@@ -361,6 +612,209 @@ public actor VaultAppServices: WorkbenchServicing {
             result: "成功"
         )
         return destination.path
+    }
+
+    private func policyMetadata(
+        for references: [SecretReference]
+    ) async throws -> [SecretPolicyMetadata] {
+        guard let recordResolver else {
+            throw VaultAppServicesRevealError.revealUnavailable
+        }
+
+        var metadata: [SecretPolicyMetadata] = []
+        metadata.reserveCapacity(references.count)
+        for reference in references {
+            let recordMetadata = try await recordResolver.metadata(reference: reference.description)
+            metadata.append(
+                SecretPolicyMetadata(
+                    reference: reference,
+                    policy: recordMetadata.policy,
+                    label: recordMetadata.label,
+                    allowedDestinations: recordMetadata.allowedDestinations,
+                    allowedProtocols: recordMetadata.allowedProtocols
+                )
+            )
+        }
+        return metadata
+    }
+
+    private func plaintextOperation(
+        action: SecretOperationAction,
+        references: [String],
+        context: RevealContext,
+        effects: [String]
+    ) async throws -> (SecretOperationDescriptor, [SecretPolicyMetadata]) {
+        guard !references.isEmpty else {
+            throw VaultAppServicesRevealError.invalidRevealContext
+        }
+
+        let parsedReferences: [SecretReference]
+        do {
+            parsedReferences = try references.map(SecretReference.init)
+        } catch {
+            throw VaultAppServicesRevealError.invalidReference
+        }
+        try validateRevealContext(context, referenceCount: parsedReferences.count)
+        let metadata = try await policyMetadata(for: parsedReferences)
+        let descriptor = SecretOperationDescriptor(
+            actionType: action,
+            secretReferences: parsedReferences,
+            destination: context.destination,
+            requestedEffects: effects,
+            agentAssessment: context.agentAssessment
+        )
+        return (descriptor, metadata)
+    }
+
+    private func authorizeIfNeeded(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        decision: PolicyDecision
+    ) async throws {
+        switch decision.risk {
+        case .silent:
+            return
+        case .denied:
+            throw SecretOperationError.operationDenied
+        case .approvalRequired:
+            break
+        }
+
+        let ticket = await approvalTicketStore.issue(for: descriptor, now: now())
+        let summary = approvalSummary(descriptor: descriptor, metadata: metadata, decision: decision)
+        approvalPending = true
+        await statusObserver?(status())
+
+        do {
+            try await approveWithTimeout(summary: summary)
+            guard await approvalTicketStore.consume(ticket, for: descriptor, now: now()) else {
+                throw SecretOperationError.operationDenied
+            }
+        } catch let error as SecretOperationError {
+            approvalPending = false
+            await statusObserver?(status())
+            throw error
+        } catch let error as OperationAuthorizationError {
+            approvalPending = false
+            await statusObserver?(status())
+            switch error {
+            case .cancelled:
+                throw SecretOperationError.authorizationCancelled
+            case .denied:
+                throw SecretOperationError.authorizationDenied
+            case .timeout:
+                throw SecretOperationError.authorizationTimeout
+            case .unavailable:
+                throw SecretOperationError.authorizationUnavailable
+            }
+        } catch {
+            approvalPending = false
+            await statusObserver?(status())
+            throw SecretOperationError.authorizationDenied
+        }
+
+        approvalPending = false
+        await statusObserver?(status())
+    }
+
+    private func approveWithTimeout(summary: String) async throws {
+        let approver = operationApprover
+        let timeout = operationApprovalTimeout
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await approver.approve(summary: summary)
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw OperationAuthorizationError.timeout
+            }
+            defer { group.cancelAll() }
+            try await group.next()
+        }
+    }
+
+    private func approvalSummary(
+        descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        decision: PolicyDecision
+    ) -> String {
+        let labels = metadata.compactMap(\.label)
+            .map(safeDisplayLabel)
+            .filter { !$0.isEmpty }
+        let labelText = labels.isEmpty ? "未命名 Secret" : labels.prefix(3).joined(separator: "、")
+        let target = safeDisplayLabel(decision.normalizedDestination ?? "本机")
+        let detail = safeDisplayLabel(operationDetail(for: descriptor))
+        return "SVLT 请求本机审批：\(displayName(for: descriptor.actionType))；操作：\(detail)；目标：\(target)；Secret：\(labelText)"
+    }
+
+    private func operationDetail(for descriptor: SecretOperationDescriptor) -> String {
+        switch descriptor.actionType {
+        case .sshCommand:
+            return descriptor.command ?? "未提供命令"
+        case .httpRequest, .apiRequest, .browserLogin:
+            let method = (descriptor.httpMethod ?? "GET").uppercased()
+            return "\(method) \(descriptor.normalizedPath ?? "/")"
+        case .databaseQuery:
+            return descriptor.databaseStatement?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
+                .first
+                .map(String.init) ?? "数据库查询"
+        case .sftpTransfer:
+            return "\(descriptor.fileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
+        case .localAppFill:
+            return descriptor.localAppBundleID ?? "本地 App 表单"
+        default:
+            return "受保护操作"
+        }
+    }
+
+    private func displayName(for action: SecretOperationAction) -> String {
+        switch action {
+        case .revealPlaintext:
+            return "显示明文"
+        case .copyPlaintext:
+            return "本机写回明文"
+        case .exportPlaintext:
+            return "导出明文"
+        case .deleteSecret:
+            return "删除 Secret"
+        case .changeSecretPolicy, .changeDestinationBinding, .changeAllowlist,
+             .changeAuthorizationRules, .changeKeychain:
+            return "修改安全设置"
+        case .sshCommand:
+            return "执行 SSH 操作"
+        case .httpRequest, .apiRequest:
+            return "发送 HTTP/API 请求"
+        case .databaseQuery:
+            return "执行数据库操作"
+        case .sftpTransfer:
+            return "执行 SFTP 操作"
+        default:
+            return "执行受保护操作"
+        }
+    }
+
+    private func safeDisplayLabel(_ value: String) -> String {
+        String(value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .prefix(80))
+    }
+
+    private func operationReason(for descriptor: SecretOperationDescriptor) -> String {
+        switch descriptor.actionType {
+        case .sshCommand:
+            return "Agent SSH 操作"
+        case .httpRequest, .apiRequest:
+            return "Agent HTTP/API 操作"
+        case .databaseQuery:
+            return "Agent 数据库操作"
+        case .sftpTransfer:
+            return "Agent SFTP 操作"
+        default:
+            return "Agent 受保护操作"
+        }
     }
 
     private func resolveReferences(

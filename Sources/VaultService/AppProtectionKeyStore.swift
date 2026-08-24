@@ -44,8 +44,7 @@ public actor AppProtectionKeyStore {
     /// Retained for explicit UI unlock actions. The daemon never calls this at
     /// startup; normal operation enters through `deviceKey(for:)` lazily.
     public func unlockLowProtection(reason: String = "打开知识库密文保险箱") async throws {
-        let key = try await deviceKeyStore.deviceKey(reason: reason)
-        lowProtectionKey = key
+        _ = try await deviceKey(for: .read, reason: reason)
     }
 
     public func deviceKey(
@@ -53,51 +52,97 @@ public actor AppProtectionKeyStore {
         reason: String,
         destination: String? = nil
     ) async throws -> Data {
+        let candidates = try await deviceKeyCandidates(
+            for: policy,
+            reason: reason,
+            destination: destination
+        )
+        guard let key = candidates.first else {
+            throw DeviceKeyStoreError.keychain(errSecItemNotFound)
+        }
+        rememberDeviceKey(key, for: policy, destination: destination)
+        return key
+    }
+
+    /// Returns all compatible local Keychain candidates after one
+    /// authentication. The daemon can prove which candidate opens the
+    /// existing wrapper/records before caching it.
+    public func deviceKeyCandidates(
+        for policy: SecretPolicy,
+        reason: String,
+        destination: String? = nil
+    ) async throws -> [Data] {
         switch policy {
         case .read:
             if let lowProtectionKey {
-                return lowProtectionKey
+                return [lowProtectionKey]
             }
-            let key = try await deviceKeyStore.deviceKey(reason: "打开知识库密文保险箱")
-            lowProtectionKey = key
-            return key
+            return try await deviceKeyStore.deviceKeyCandidates(
+                reason: "打开知识库密文保险箱"
+            )
         case .credential:
             if let credentialKey, now() < credentialKey.expiresAt {
-                return credentialKey.data
+                return [credentialKey.data]
             }
             self.credentialKey = nil
-            let key = try await deviceKeyStore.deviceKey(reason: reason)
-            if credentialTTL > 0 {
-                credentialKey = CachedKey(
-                    data: key,
-                    expiresAt: now().addingTimeInterval(credentialTTL)
-                )
-            }
-            return key
+            return try await deviceKeyStore.deviceKeyCandidates(reason: reason)
         case .externalSend:
             guard let destination, !destination.isEmpty else {
-                return try await deviceKeyStore.deviceKey(reason: reason)
+                return try await deviceKeyStore.deviceKeyCandidates(reason: reason)
             }
             if let cached = externalSendKeys[destination], now() < cached.expiresAt {
-                return cached.data
+                return [cached.data]
             }
             externalSendKeys[destination] = nil
-            let key = try await deviceKeyStore.deviceKey(reason: reason)
-            if externalSendTTL > 0 {
-                externalSendKeys[destination] = CachedKey(
-                    data: key,
-                    expiresAt: now().addingTimeInterval(externalSendTTL)
-                )
-            }
-            return key
+            return try await deviceKeyStore.deviceKeyCandidates(reason: reason)
         }
     }
 
     /// High-risk operations bypass every cached window and do not repopulate
     /// it. This is used for deletion, export, and security-setting changes.
     public func freshDeviceKey(for policy: SecretPolicy, reason: String) async throws -> Data {
+        let candidates = try await freshDeviceKeyCandidates(for: policy, reason: reason)
+        guard let key = candidates.first else {
+            throw DeviceKeyStoreError.keychain(errSecItemNotFound)
+        }
+        return key
+    }
+
+    public func freshDeviceKeyCandidates(
+        for policy: SecretPolicy,
+        reason: String
+    ) async throws -> [Data] {
         clearCachedKey(for: policy)
-        return try await deviceKeyStore.deviceKey(reason: reason)
+        return try await deviceKeyCandidates(for: policy, reason: reason)
+    }
+
+    /// Caches only the candidate that opened the vault. Failed migration
+    /// candidates therefore never become the session key.
+    public func rememberDeviceKey(
+        _ key: Data,
+        for policy: SecretPolicy,
+        destination: String? = nil
+    ) {
+        switch policy {
+        case .read:
+            lowProtectionKey = key
+        case .credential:
+            guard credentialTTL > 0 else {
+                return
+            }
+            credentialKey = CachedKey(
+                data: key,
+                expiresAt: now().addingTimeInterval(credentialTTL)
+            )
+        case .externalSend:
+            guard let destination, !destination.isEmpty, externalSendTTL > 0 else {
+                return
+            }
+            externalSendKeys[destination] = CachedKey(
+                data: key,
+                expiresAt: now().addingTimeInterval(externalSendTTL)
+            )
+        }
     }
 
     public func clearLowProtectionUnlock() {

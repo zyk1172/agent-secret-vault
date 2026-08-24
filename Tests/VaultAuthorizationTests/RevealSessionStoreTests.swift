@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Testing
+import VaultAuthorization
 import VaultCore
 import VaultIPC
 @testable import AgentSecretVaultApp
@@ -57,7 +58,8 @@ import VaultIPC
         textEncryptor: UnusedTextEncryptor(),
         activeRoot: nil,
         revealSessionStore: sessionStore,
-        revealSessionPresenter: SpyRevealSessionPresenter()
+        revealSessionPresenter: SpyRevealSessionPresenter(),
+        operationApprover: TestOperationApprover()
     )
 
     await services.clearRevealSessions()
@@ -89,7 +91,8 @@ import VaultIPC
         recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
         masterKey: key,
         revealSessionStore: sessionStore,
-        revealSessionPresenter: presenter
+        revealSessionPresenter: presenter,
+        operationApprover: TestOperationApprover()
     )
 
     let sessionID = try await services.openRevealSession(
@@ -131,7 +134,8 @@ import VaultIPC
         recordResolver: VaultRecordResolver(recordStore: recordStore, cipher: cipher),
         masterKey: key,
         revealSessionStore: RevealSessionStore(),
-        revealSessionPresenter: presenter
+        revealSessionPresenter: presenter,
+        operationApprover: TestOperationApprover()
     )
 
     let restored = try await services.restoreReferencesWithValues(
@@ -194,7 +198,8 @@ import VaultIPC
             await provider.masterKey(policy: policy, reason: reason)
         },
         revealSessionStore: RevealSessionStore(),
-        revealSessionPresenter: SpyRevealSessionPresenter()
+        revealSessionPresenter: SpyRevealSessionPresenter(),
+        operationApprover: TestOperationApprover()
     )
 
     let restored = try await services.restoreReferences(
@@ -258,6 +263,7 @@ import VaultIPC
         },
         revealSessionStore: RevealSessionStore(),
         revealSessionPresenter: SpyRevealSessionPresenter(),
+        operationApprover: TestOperationApprover(),
         agentDecryptAuthorizationTTL: 300,
         now: { clock.now }
     )
@@ -318,6 +324,7 @@ import VaultIPC
         },
         revealSessionStore: RevealSessionStore(),
         revealSessionPresenter: SpyRevealSessionPresenter(),
+        operationApprover: TestOperationApprover(),
         agentDecryptAuthorizationTTL: 300,
         now: { clock.now }
     )
@@ -374,6 +381,7 @@ import VaultIPC
         masterKey: key,
         revealSessionStore: RevealSessionStore(),
         revealSessionPresenter: SpyRevealSessionPresenter(),
+        operationApprover: TestOperationApprover(),
         auditObserver: { entry in
             await auditCollector.append(entry)
         }
@@ -427,6 +435,7 @@ import VaultIPC
         masterKey: key,
         revealSessionStore: RevealSessionStore(),
         revealSessionPresenter: SpyRevealSessionPresenter(),
+        operationApprover: TestOperationApprover(),
         auditLog: auditLog
     )
 
@@ -480,6 +489,7 @@ import VaultIPC
         masterKey: key,
         revealSessionStore: RevealSessionStore(),
         revealSessionPresenter: presenter,
+        operationApprover: TestOperationApprover(),
         exportDirectory: exportDirectory
     )
     let destination = exportDirectory.appendingPathComponent("nas.md")
@@ -506,7 +516,8 @@ import VaultIPC
         recordResolver: nil,
         masterKey: nil,
         revealSessionStore: RevealSessionStore(),
-        revealSessionPresenter: SpyRevealSessionPresenter()
+        revealSessionPresenter: SpyRevealSessionPresenter(),
+        operationApprover: TestOperationApprover()
     )
 
     await expectRevealError(.invalidRevealContext) {
@@ -525,6 +536,10 @@ private struct UnusedTextEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         throw UnusedTextEncryptorError.unexpectedCall
     }
+}
+
+private struct TestOperationApprover: OperationApproving {
+    func approve(summary: String) async throws {}
 }
 
 private enum UnusedTextEncryptorError: Error {

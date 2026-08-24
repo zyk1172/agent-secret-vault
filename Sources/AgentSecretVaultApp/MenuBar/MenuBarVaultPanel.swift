@@ -97,7 +97,7 @@ public struct MenuBarVaultPanel: View {
     }
     private var overview: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) { statusValue("本机通道", status.ipcAvailable); statusValue("保险箱", !status.locked); statusValue("插件", status.pluginConnected) }
+            HStack(spacing: 8) { statusValue("本机通道", status.ipcAvailable); statusValue("策略引擎", status.ready && !status.approvalPending); statusValue("插件", status.pluginConnected) }
             Text("快捷入口").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             HStack(spacing: 8) { shortcut(.paragraph); shortcut(.secrets); shortcut(.records) }
             Text("最近动作").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -146,7 +146,7 @@ public struct MenuBarVaultPanel: View {
     private func auditView(entries: [AgentAutomationAuditEntry]) -> some View { VStack(alignment: .leading, spacing: 8) { if entries.isEmpty { Text("还没有脱敏后的本机使用记录。").font(.callout).foregroundStyle(.secondary) } else { ForEach(entries) { entry in VStack(alignment: .leading, spacing: 3) { HStack { Text(entry.action).font(.callout.weight(.semibold)); Spacer(); Text(entry.result).font(.caption).foregroundStyle(.secondary) }; Text(entry.target).font(.caption).foregroundStyle(.secondary).lineLimit(2) }.padding(9).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous)) } } } }
     private var securityView: some View { VStack(alignment: .leading, spacing: 10) { Text("安全边界").font(.headline); fact("聊天中允许", "secret:// 引用和非敏感上下文"); fact("明文位置", "仅在本机授权后的窗口短暂显示"); fact("智能体禁止", "密码、token 和 Authorization header"); fact("高风险动作", "删除和外发都需要本机授权") } }
     private func fact(_ title: String, _ detail: String) -> some View { VStack(alignment: .leading, spacing: 2) { Text(title).font(.caption.weight(.semibold)); Text(detail).font(.caption).foregroundStyle(.secondary) } }
-    private var statusSummary: String { !status.ipcAvailable ? "本机通道未就绪" : (status.locked ? "保险箱已锁定" : (status.pluginConnected ? "本机通道和插件可用" : "等待 Obsidian 插件连接")) }
+    private var statusSummary: String { !status.ipcAvailable ? "本机通道未就绪" : (status.approvalPending ? "等待本机审批" : (!status.ready ? "策略引擎不可用" : (status.pluginConnected ? "本机通道和插件可用" : "等待 Obsidian 插件连接"))) }
     private func copy(_ text: String, for reference: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); copiedReference = reference }
     private func clearSensitiveState() { restoreState.clearSensitiveOutput(); Task { await clearRevealSessions() } }
 }

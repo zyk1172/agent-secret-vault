@@ -6,12 +6,31 @@ public struct SensitiveInformationDocumentReference: Identifiable, Equatable, Se
     public let reference: String
     public let title: String
     public let source: SensitiveSourceLocation
+    public let service: String?
+    public let field: SecretCatalogField
+    public let destinations: [String]
+    public let purpose: String?
+    public let groupID: String?
 
-    public init(reference: String, title: String, source: SensitiveSourceLocation) {
+    public init(
+        reference: String,
+        title: String,
+        source: SensitiveSourceLocation,
+        service: String? = nil,
+        field: SecretCatalogField = .other,
+        destinations: [String] = [],
+        purpose: String? = nil,
+        groupID: String? = nil
+    ) {
         self.id = "\(reference):\(source.line)"
         self.reference = reference
         self.title = title
         self.source = source
+        self.service = service
+        self.field = field
+        self.destinations = destinations
+        self.purpose = purpose
+        self.groupID = groupID
     }
 }
 
@@ -68,7 +87,22 @@ public actor SensitiveInformationDocumentStore {
             return []
         }
         try assertSafeFile(url)
-        return Self.references(in: try String(contentsOf: url, encoding: .utf8), filePath: url.path)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let catalogEntries = Dictionary(
+            uniqueKeysWithValues: SecretCatalogMarkdownParser.parse(text).map { ($0.reference, $0) }
+        )
+        return Self.references(in: text, filePath: url.path, catalogEntries: catalogEntries)
+    }
+
+    /// Returns only structured, non-sensitive catalog context.  The selected
+    /// file path and line numbers stay in the App-only `references()` model.
+    public func catalogEntries() throws -> [SecretCatalogEntry] {
+        let url = try requiredURL()
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return []
+        }
+        try assertSafeFile(url)
+        return SecretCatalogMarkdownParser.parse(try String(contentsOf: url, encoding: .utf8))
     }
 
     public func appendParagraph(_ paragraph: String, title: String, reference: String) throws {
@@ -141,7 +175,11 @@ public actor SensitiveInformationDocumentStore {
         return spacesRegex.stringByReplacingMatches(in: withRequiredSpace, range: spaceRange, withTemplate: " $1")
     }
 
-    private static func references(in text: String, filePath: String) -> [SensitiveInformationDocumentReference] {
+    private static func references(
+        in text: String,
+        filePath: String,
+        catalogEntries: [String: SecretCatalogEntry]
+    ) -> [SensitiveInformationDocumentReference] {
         guard let regex = try? NSRegularExpression(pattern: referencePattern) else {
             return []
         }
@@ -150,11 +188,17 @@ public actor SensitiveInformationDocumentStore {
         return matches.map { match in
             let reference = nsText.substring(with: match.range)
             let line = lineNumber(in: text, offset: match.range.location)
-            let title = title(in: text, match: match.range, fallback: "敏感信息")
+            let entry = catalogEntries[reference]
+            let title = entry?.label ?? title(in: text, match: match.range, fallback: "敏感信息")
             return SensitiveInformationDocumentReference(
                 reference: reference,
                 title: title,
-                source: SensitiveSourceLocation(filePath: filePath, line: line)
+                source: SensitiveSourceLocation(filePath: filePath, line: line),
+                service: entry?.service,
+                field: entry?.field ?? .other,
+                destinations: entry?.destinations ?? [],
+                purpose: entry?.purpose,
+                groupID: entry?.groupID
             )
         }
     }

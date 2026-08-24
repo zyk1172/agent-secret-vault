@@ -25,6 +25,8 @@ public struct VaultRecordResolver: Sendable {
             reference: parsed.description,
             policy: record.policy,
             label: record.label,
+            allowedDestinations: record.allowedDestinations,
+            allowedProtocols: record.allowedProtocols,
             createdAt: record.createdAt,
             updatedAt: record.updatedAt
         )

@@ -16,6 +16,8 @@ public struct VaultCipher: Sendable {
         version: Int,
         label: String?,
         policy: SecretPolicy,
+        allowedDestinations: [String] = [],
+        allowedProtocols: [String] = [],
         masterKey: SymmetricKey,
         formatVersion: Int = VaultFormat.current
     ) throws -> EncryptedRecord {
@@ -33,6 +35,9 @@ public struct VaultCipher: Sendable {
             recordVersion: version,
             label: label,
             policy: policy,
+            allowedDestinations: allowedDestinations,
+            allowedProtocols: allowedProtocols,
+            policyBindingVersion: formatVersion >= 2 ? 1 : 0,
             createdAt: now,
             updatedAt: now
         )
@@ -67,6 +72,9 @@ public struct VaultCipher: Sendable {
             keyDerivationSalt: keyDerivationSalt,
             label: label,
             policy: policy,
+            allowedDestinations: allowedDestinations,
+            allowedProtocols: allowedProtocols,
+            policyBindingVersion: formatVersion >= 2 ? 1 : 0,
             createdAt: now,
             updatedAt: now
         )
@@ -86,6 +94,9 @@ public struct VaultCipher: Sendable {
             recordVersion: record.recordVersion,
             label: record.label,
             policy: record.policy,
+            allowedDestinations: record.allowedDestinations,
+            allowedProtocols: record.allowedProtocols,
+            policyBindingVersion: record.policyBindingVersion,
             createdAt: record.createdAt,
             updatedAt: record.updatedAt
         )
@@ -130,6 +141,9 @@ public struct VaultCipher: Sendable {
         recordVersion: Int,
         label: String?,
         policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String],
+        policyBindingVersion: Int,
         createdAt: Date,
         updatedAt: Date
     ) -> Data {
@@ -143,6 +157,10 @@ public struct VaultCipher: Sendable {
         data.appendLengthPrefixed(Data(policy.rawValue.utf8))
         data.appendLengthPrefixed(Data(String(createdAt.timeIntervalSinceReferenceDate.bitPattern).utf8))
         data.appendLengthPrefixed(Data(String(updatedAt.timeIntervalSinceReferenceDate.bitPattern).utf8))
+        if policyBindingVersion > 0 {
+            data.appendLengthPrefixed(Data(allowedDestinations.sorted().joined(separator: "\u{1F}" ).utf8))
+            data.appendLengthPrefixed(Data(allowedProtocols.sorted().joined(separator: "\u{1F}" ).utf8))
+        }
         return data
     }
 

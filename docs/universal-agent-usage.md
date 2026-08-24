@@ -121,8 +121,10 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 2. 仅通过 MCP 使用 `secret://...` 引用或非敏感元数据，绝不直接读取或修改该文件或本地加密记录。
 3. 遵守文件顶部“必读：格式与使用”：每组信息为独立段落；敏感值以前置一个英文空格的未包裹 `secret://...` 表示。
 4. 禁止以笔记、历史、日志、缓存、环境变量或模型记忆作为敏感值的替代来源。
-5. 先检查保险库状态，再使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具。
-6. 工具不可用或找不到引用时停止，不索要或恢复明文。
+5. 先检查 SVLT 状态，再按具体动作提交风险提示并使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具；`locked` 不是全局门禁。
+6. 任务提到服务、设备、主机、账号或用途但没有引用时，先使用 `secret_search` 按非敏感上下文发现引用；不要要求用户复制 `secret://` ID。
+7. 用 `groupID`、服务、字段、目标和用途区分同一凭据组与多个候选；`secret_search` 不返回源文件路径、行号或完整目录内容。
+8. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；工具不可用、策略拒绝或审批取消时停止，不索要或恢复明文。
 
 ## 7. Agent 启动自检
 
@@ -133,10 +135,10 @@ Agent 接入后先做：
 
 预期：
 
-- `vault_status` 返回后台 Agent 可用状态或锁定状态。
+- `vault_status` 返回 `available`、`ready` 和 `approvalPending`；`locked` 仅为兼容字段。
 - `agent_secret_usage_policy` 返回可用工具和安全规则。
 
-普通操作不要求 SVLT.app 一直运行。若通道不可达，先打开一次 SVLT 完成 SMAppService 注册/批准；若仅显示锁定，下一次受保护操作会 lazy unlock。
+普通操作不要求 SVLT.app 一直运行。若通道不可达，先打开一次 SVLT 完成 SMAppService 注册/批准；如果状态中的 `locked` 为 true，仍应直接提交具体操作，让 Agent 本地策略决定是否需要认证。
 
 ## 8. 工具选择规则
 

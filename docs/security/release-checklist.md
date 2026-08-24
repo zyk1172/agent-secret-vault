@@ -25,7 +25,7 @@ git status --short
 4. Simulated credential echoes in stdout and stderr are removed before results reach Codex.
 5. Ambiguous or unsafe output is quarantined instead of returned.
 6. Write, external-send, delete, and credential-change operations cannot reuse a read authorization; credential windows are reused only within their configured scope and external-send is destination-bound.
-7. Agent startup is locked/lazy; lock, sleep, user switch, and explicit lock invalidate active authorization. Quitting the GUI App does not stop or unlock the Agent.
+7. `locked` is compatibility-only; operation readiness is reported by `available`/`ready`/`approvalPending`. Sleep, user switch, and explicit lock invalidate active runtime authorization. Quitting the GUI App does not stop the Agent or create a global Agent gate.
 8. A new Mac signed into the same Apple account can recover access only after successful platform authentication and installation of the correctly signed application.
 9. Every MCP success and error response passes automated plaintext-leak tests.
 10. Knowledge-base replacement failures preserve the source plaintext and the newly encrypted record for manual recovery.

@@ -22,7 +22,7 @@ import VaultCore
     #expect(await trace.snapshot() == [])
 }
 
-@Test func authorizationPrecedesSecretResolutionAndProcessLaunch() async throws {
+@Test func genericExecutionRejectsSecretInjectionBeforeAuthorizationOrLaunch() async throws {
     let trace = ExecutionTrace()
     let broker = ExecutionBroker(
         authorizer: RecordingAuthorizer(trace: trace, allowed: true),
@@ -40,14 +40,11 @@ import VaultCore
         )
     )
 
-    let result = try await broker.execute(validatedExecution())
+    await expectBrokerError(.secretInjectionNotAllowed) {
+        _ = try await broker.execute(validatedExecution())
+    }
 
-    #expect(await trace.snapshot() == [
-        "authorize:writeOrExternalSend",
-        "resolve:apiToken",
-        "run:/usr/bin/printf|--token|plain-token|hello"
-    ])
-    #expect(result == .completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: ""))
+    #expect(await trace.snapshot() == [])
 }
 
 @Test func cancellationPreventsProcessLaunch() async throws {
@@ -94,7 +91,7 @@ import VaultCore
         processRunner: runner
     )
 
-    await expectBrokerError(.authorizationRequired) {
+    await expectBrokerError(.secretInjectionNotAllowed) {
         _ = try await broker.execute(validatedExecution(risk: .writeOrExternalSend))
     }
 
@@ -119,9 +116,9 @@ import VaultCore
         )
     )
 
-    let result = try await broker.execute(validatedExecution())
-
-    #expect(result == .quarantined(reason: .binaryOutput))
+    await expectBrokerError(.secretInjectionNotAllowed) {
+        _ = try await broker.execute(validatedExecution())
+    }
 }
 
 private actor ExecutionTrace {

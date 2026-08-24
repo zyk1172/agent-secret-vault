@@ -22,6 +22,7 @@ public protocol SecretResolving: Sendable {
 
 public enum ExecutionBrokerError: Error, Equatable, Sendable {
     case authorizationRequired
+    case secretInjectionNotAllowed
     case invalidSecretUTF8(String)
     case sanitizedOutputInvalidUTF8
 }
@@ -138,6 +139,19 @@ public struct ExecutionBroker: Sendable {
     public func execute(_ execution: ValidatedExecution) async throws -> SanitizedExecutionResult {
         try Task.checkCancellation()
 
+        // Generic shell execution is deliberately no longer a secret
+        // transport. Purpose-built SecretOperationExecutor actions keep
+        // resolved bytes inside the Agent and pass only non-secret arguments
+        // to a narrowly defined runner.
+        if execution.arguments.contains(where: { argument in
+            if case .secret = argument {
+                return true
+            }
+            return false
+        }) {
+            throw ExecutionBrokerError.secretInjectionNotAllowed
+        }
+
         let isAuthorized: Bool
         if execution.risk == .writeOrExternalSend,
            let destination = execution.destinationHost,
@@ -153,13 +167,6 @@ public struct ExecutionBroker: Sendable {
 
         try Task.checkCancellation()
 
-        var secretBuffers: [Data] = []
-        defer {
-            for index in secretBuffers.indices {
-                secretBuffers[index].resetBytes(in: 0..<secretBuffers[index].count)
-            }
-        }
-
         var invocationArguments: [String] = []
         for argument in execution.arguments {
             switch argument {
@@ -167,15 +174,8 @@ public struct ExecutionBroker: Sendable {
                 invocationArguments.append(value)
             case let .value(_, value):
                 invocationArguments.append(value)
-            case let .secret(name, reference):
-                let secret = try await secretResolver.resolve(reference, named: name)
-                secretBuffers.append(secret)
-
-                guard let secretString = String(data: secret, encoding: .utf8) else {
-                    throw ExecutionBrokerError.invalidSecretUTF8(name)
-                }
-
-                invocationArguments.append(secretString)
+            case .secret:
+                throw ExecutionBrokerError.secretInjectionNotAllowed
             }
 
             try Task.checkCancellation()
@@ -191,7 +191,7 @@ public struct ExecutionBroker: Sendable {
             outputLimitBytes: outputLimitBytes
         )
 
-        switch sanitizer.sanitize(processResult, secrets: secretBuffers) {
+        switch sanitizer.sanitize(processResult, secrets: []) {
         case let .quarantined(reason):
             return .quarantined(reason: reason)
         case let .sanitized(result):

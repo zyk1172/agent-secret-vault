@@ -155,17 +155,24 @@ public struct MasterKeyCoordinator: Sendable {
     public func adoptExistingVault(
         reason: String,
         localWrappingKey: Data,
-        existingMasterKey: Data
+        verifyExistingMasterKey: @escaping @Sendable () async throws -> Void
     ) async throws -> Data {
         try validateKeySize(localWrappingKey)
-        try validateKeySize(existingMasterKey)
         guard try await wrappedStore.loadWrappedMasterKeySet() == nil else {
             return try await unlock(reason: reason, localWrappingKey: localWrappingKey)
+        }
+        do {
+            // A legacy vault used the device key directly as its record master
+            // key. The caller must prove that relationship by decrypting an
+            // existing record before this method creates any new wrapper file.
+            try await verifyExistingMasterKey()
+        } catch {
+            throw MasterKeyCoordinatorError.integrityFailed
         }
         return try await createNewVault(
             reason: reason,
             localWrappingKey: localWrappingKey,
-            masterKey: existingMasterKey
+            masterKey: localWrappingKey
         )
     }
 
