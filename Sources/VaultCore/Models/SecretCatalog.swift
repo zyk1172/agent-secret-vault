@@ -154,8 +154,9 @@ public struct SecretCatalogRecordMetadata: Equatable, Sendable {
     }
 }
 
-/// The only catalog payload allowed to cross the Swift IPC boundary.
-public struct SecretCatalogMatch: Codable, Equatable, Sendable {
+/// Legacy flat payload retained only for tests and migration compatibility.
+/// Managed v2 IPC uses `SecretCatalogMatch` below.
+public struct LegacySecretCatalogMatch: Codable, Equatable, Sendable {
     public let reference: String
     public let service: String?
     public let field: SecretCatalogField
@@ -191,6 +192,102 @@ public enum SecretCatalogSearchStatus: String, Codable, Sendable {
     case notFound = "NOT_FOUND"
     case invalidQuery = "INVALID_QUERY"
     case unavailable = "CATALOG_UNAVAILABLE"
+    case migrationRequired = "MIGRATION_REQUIRED"
+    case externalModification = "EXTERNAL_CATALOG_MODIFICATION"
+    case invalidCatalog = "CATALOG_INVALID"
+}
+
+public struct LegacySecretCatalogSearchResult: Codable, Equatable, Sendable {
+    public let status: SecretCatalogSearchStatus
+    public let matches: [LegacySecretCatalogMatch]
+
+    public init(status: SecretCatalogSearchStatus, matches: [LegacySecretCatalogMatch] = []) {
+        self.status = status
+        self.matches = matches
+    }
+}
+
+public struct SecretCatalogIndexMatch: Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let aliases: [String]
+    public let tags: [String]
+
+    public init(id: String, title: String, aliases: [String] = [], tags: [String] = []) {
+        self.id = id
+        self.title = title
+        self.aliases = aliases
+        self.tags = tags
+    }
+}
+
+public struct SecretCatalogFieldMatch: Codable, Equatable, Sendable {
+    public let key: String
+    public let label: String
+    public let type: SecretCatalogFieldType
+    public let value: SecretCatalogValue?
+    public let secretRef: String?
+
+    public init(
+        key: String,
+        label: String,
+        type: SecretCatalogFieldType,
+        value: SecretCatalogValue? = nil,
+        secretRef: String? = nil
+    ) {
+        self.key = key
+        self.label = label
+        self.type = type
+        self.value = value
+        self.secretRef = secretRef
+    }
+}
+
+public struct SecretCatalogEntryMatch: Codable, Equatable, Sendable {
+    public let id: String
+    public let indexId: String
+    public let title: String
+    public let type: String
+    public let aliases: [String]
+    public let endpoints: [CatalogEndpoint]
+    public let fields: [SecretCatalogFieldMatch]
+    public let notes: String?
+    public let tags: [String]
+
+    public init(
+        id: String,
+        indexId: String,
+        title: String,
+        type: String,
+        aliases: [String] = [],
+        endpoints: [CatalogEndpoint] = [],
+        fields: [SecretCatalogFieldMatch] = [],
+        notes: String? = nil,
+        tags: [String] = []
+    ) {
+        self.id = id
+        self.indexId = indexId
+        self.title = title
+        self.type = type
+        self.aliases = aliases
+        self.endpoints = endpoints
+        self.fields = fields
+        self.notes = notes
+        self.tags = tags
+    }
+}
+
+/// Entry-centric response shared by `secret_search` and
+/// `secret_catalog_search`.  It contains only allowed metadata plus opaque
+/// `secret://` handles; it never contains a decrypted value.
+public struct SecretCatalogMatch: Codable, Equatable, Sendable {
+    public let index: SecretCatalogIndexMatch
+    public let entry: SecretCatalogEntryMatch
+
+    public init(index: SecretCatalogIndexMatch, entry: SecretCatalogEntryMatch) {
+        self.index = index
+        self.entry = entry
+    }
 }
 
 public struct SecretCatalogSearchResult: Codable, Equatable, Sendable {

@@ -9,10 +9,17 @@ import { z } from "zod";
 import { LocalIpcClient } from "./client.js";
 import {
   AgentRiskAssessment,
+  CatalogDraft,
+  CatalogDraftRequest,
+  CatalogMetadataPatch,
+  CatalogWriteLease,
+  CatalogWriteResult,
+  CatalogValidationResult,
   IpcRequest,
   IpcResponse,
   SecretCatalogField,
   SecretCatalogMatch,
+  SecretCatalogSearchResult,
   SecretPolicy,
   SecretOperationDescriptor,
   SecretOperationOutput,
@@ -99,13 +106,84 @@ const SecretSearchOutput = z
   .union([
     z
       .object({
-        status: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE"]),
+        status: z.enum([
+          "FOUND",
+          "NOT_FOUND",
+          "INVALID_QUERY",
+          "CATALOG_UNAVAILABLE",
+          "MIGRATION_REQUIRED",
+          "EXTERNAL_CATALOG_MODIFICATION",
+          "CATALOG_INVALID"
+        ]),
         matches: z.array(SecretCatalogMatch)
       })
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Opaque secret catalog matches. Plaintext and catalog file locations are never returned.");
+
+const CatalogGetInput = z.object({ entryID: z.string().length(26) }).strict();
+
+const CatalogCreateDraftInput = z
+  .object({ request: CatalogDraftRequest, lease: CatalogWriteLease })
+  .strict();
+
+const CatalogPatchMetadataInput = z
+  .object({
+    entryID: z.string().length(26),
+    patch: CatalogMetadataPatch,
+    expectedRevision: z.number().int().nonnegative(),
+    lease: CatalogWriteLease
+  })
+  .strict();
+
+const CatalogCommitInput = z
+  .object({
+    draft: CatalogDraft,
+    expectedRevision: z.number().int().nonnegative(),
+    lease: CatalogWriteLease
+  })
+  .strict();
+
+const CatalogPlaceholderInput = z
+  .object({
+    entryID: z.string().length(26),
+    key: z.string().min(1),
+    label: z.string().min(1),
+    agentVisible: z.boolean().default(true),
+    searchable: z.boolean().default(true),
+    expectedRevision: z.number().int().nonnegative(),
+    lease: CatalogWriteLease
+  })
+  .strict();
+
+const CatalogBindInput = z
+  .object({
+    entryID: z.string().length(26),
+    key: z.string().min(1),
+    secretRef: SecretReference,
+    expectedRevision: z.number().int().nonnegative(),
+    lease: CatalogWriteLease
+  })
+  .strict();
+
+const CatalogWriteOutput = z
+  .union([
+    CatalogWriteResult,
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Catalog write result. Secret plaintext is never accepted or returned.");
+
+const CatalogDraftOutput = z
+  .union([CatalogDraft, z.object({ status: z.string().min(1) }).strict()])
+  .describe("Catalog draft containing only visible metadata and opaque secret references.");
+
+const CatalogValidationOutput = z
+  .union([
+    z.object({ status: z.string().min(1), revision: z.number().int().nonnegative().nullable().optional() }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Catalog validation status; it never returns document content.");
 
 const LocalHttpOutput = z
   .union([
@@ -621,19 +699,186 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_search",
       title: "Search Secret Catalog",
       description:
-        "Finds opaque secret:// references by service, device, host, label, purpose, or field using the local SVLT catalog. It returns only non-sensitive metadata; it never returns plaintext or the catalog file path.",
+        "Finds Entry-centric SVLT catalog records by index, entry, alias, tag, endpoint, note, or searchable metadata. It returns visible context and opaque secret:// references; it never returns plaintext or the catalog file path.",
       inputSchema: SecretSearchInput,
       outputSchema: SecretSearchOutput,
       async handler(input) {
         const parsed = SecretSearchInput.parse(input);
         const response = await client.request({
-          type: "searchCatalog",
+          type: "catalogSearch",
           query: parsed.query,
           field: parsed.field,
           limit: parsed.limit
         });
         if (response.type === "catalogSearchResult") {
           return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_search",
+      title: "Search SVLT Catalog (Entry)",
+      description:
+        "Entry-centric alias of secret_search. Searches the managed Index→Entry→Field catalog and returns only allowed metadata plus opaque secret:// references.",
+      inputSchema: SecretSearchInput,
+      outputSchema: SecretSearchOutput,
+      async handler(input) {
+        const parsed = SecretSearchInput.parse(input);
+        const response = await client.request({
+          type: "catalogSearch",
+          query: parsed.query,
+          field: parsed.field,
+          limit: parsed.limit
+        });
+        if (response.type === "catalogSearchResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_get",
+      title: "Get SVLT Catalog Entry",
+      description:
+        "Gets one Entry by opaque catalog ID. It returns visible metadata and secret:// references only; it never returns plaintext.",
+      inputSchema: CatalogGetInput,
+      outputSchema: SecretSearchOutput,
+      async handler(input) {
+        const parsed = CatalogGetInput.parse(input);
+        const response = await client.request({ type: "catalogGet", entryID: parsed.entryID });
+        if (response.type === "catalogSearchResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_create_draft",
+      title: "Create Catalog Draft",
+      description:
+        "Creates an Index Entry draft using a real App-issued structure lease. Secret fields may only be placeholders; binding an existing secret:// reference is a separate App-approved operation, and plaintext is never accepted.",
+      inputSchema: CatalogCreateDraftInput,
+      outputSchema: CatalogDraftOutput,
+      async handler(input) {
+        const parsed = CatalogCreateDraftInput.parse(input);
+        const response = await client.request({
+          type: "catalogCreateDraft",
+          request: parsed.request,
+          lease: parsed.lease
+        });
+        if (response.type === "catalogDraft") {
+          return structuredResult(response.draft);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_patch_metadata",
+      title: "Patch Catalog Metadata",
+      description:
+        "Patches ordinary Entry metadata under an App-issued metadata lease and expected revision. Secret transitions and secret replacement remain App-approved operations.",
+      inputSchema: CatalogPatchMetadataInput,
+      outputSchema: CatalogWriteOutput,
+      async handler(input) {
+        const parsed = CatalogPatchMetadataInput.parse(input);
+        const response = await client.request({
+          type: "catalogPatchMetadata",
+          entryID: parsed.entryID,
+          patch: parsed.patch,
+          expectedRevision: parsed.expectedRevision,
+          lease: parsed.lease
+        });
+        if (response.type === "catalogWriteResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_commit",
+      title: "Commit Catalog Draft",
+      description:
+        "Commits a previously issued catalog draft under an App-issued structure lease and optimistic revision. The Agent cannot self-issue or extend the lease.",
+      inputSchema: CatalogCommitInput,
+      outputSchema: CatalogWriteOutput,
+      async handler(input) {
+        const parsed = CatalogCommitInput.parse(input);
+        const response = await client.request({
+          type: "catalogCommit",
+          draft: parsed.draft,
+          expectedRevision: parsed.expectedRevision,
+          lease: parsed.lease
+        });
+        if (response.type === "catalogWriteResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_add_secret_placeholder",
+      title: "Add Secret Placeholder",
+      description:
+        "Adds a secret field placeholder under an App-issued structure lease. The user must fill the secret in SVLT App secure input; plaintext is never accepted here.",
+      inputSchema: CatalogPlaceholderInput,
+      outputSchema: CatalogWriteOutput,
+      async handler(input) {
+        const parsed = CatalogPlaceholderInput.parse(input);
+        const response = await client.request({
+          type: "catalogAddSecretPlaceholder",
+          entryID: parsed.entryID,
+          key: parsed.key,
+          label: parsed.label,
+          agentVisible: parsed.agentVisible,
+          searchable: parsed.searchable,
+          expectedRevision: parsed.expectedRevision,
+          lease: parsed.lease
+        });
+        if (response.type === "catalogWriteResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_bind_existing_secret",
+      title: "Bind Existing Secret",
+      description:
+        "Requests binding an existing opaque secret:// reference to a catalog field. SVLT applies local policy and may require App approval; this tool never accepts plaintext.",
+      inputSchema: CatalogBindInput,
+      outputSchema: CatalogWriteOutput,
+      async handler(input) {
+        const parsed = CatalogBindInput.parse(input);
+        const response = await client.request({
+          type: "catalogBindExistingSecret",
+          entryID: parsed.entryID,
+          key: parsed.key,
+          secretRef: parsed.secretRef,
+          expectedRevision: parsed.expectedRevision,
+          lease: parsed.lease
+        });
+        if (response.type === "catalogWriteResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_validate",
+      title: "Validate SVLT Catalog",
+      description:
+        "Validates the selected managed catalog, including integrity and revision state. It never returns catalog content or plaintext.",
+      inputSchema: EmptyInput,
+      outputSchema: CatalogValidationOutput,
+      async handler(input) {
+        EmptyInput.parse(input);
+        const response = await client.request({ type: "catalogValidate" });
+        if (response.type === "catalogValidation") {
+          return structuredResult({
+            status: response.catalogStatus,
+            revision: response.revision ?? null
+          });
         }
         return structuredResult(statusOnly(response));
       }
@@ -1222,7 +1467,9 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Treat AgentRiskAssessment as a hint only; SVLT recomputes the effective risk locally for every operation.",
       "A locked compatibility field never replaces per-operation policy evaluation.",
       "When a task names a service, device, host, account, or purpose but no secret:// reference is known, call secret_search before asking the user for anything.",
-      "Use the service, field, destination, label, purpose, and groupID returned by secret_search to choose compatible opaque references; do not ask the user to copy reference IDs.",
+      "Use the Index, Entry, endpoint, visible metadata, and opaque secretRef returned by secret_search or secret_catalog_search to choose compatible references; do not ask the user to copy reference IDs.",
+      "Use secret_catalog_get for one Entry, and use secret_catalog_validate after every catalog write.",
+      "Catalog writes require an App-issued lease; never invent, extend, or self-approve a lease.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",

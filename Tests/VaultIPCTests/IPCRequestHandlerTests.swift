@@ -3,6 +3,38 @@ import Testing
 import VaultCore
 import VaultIPC
 
+private let handlerIndexID = "0123456789ABCDEFGHJKMNPQRS"
+private let handlerEntryID = "0123456789ABCDEFGHJKMNPQRT"
+private let handlerSecretReference = "secret://0123456789ABCDEFGHJKMNPQRS"
+
+private func handlerCatalogMatch() -> SecretCatalogMatch {
+    SecretCatalogMatch(
+        index: SecretCatalogIndexMatch(id: handlerIndexID, title: "QNAP"),
+        entry: SecretCatalogEntryMatch(
+            id: handlerEntryID,
+            indexId: handlerIndexID,
+            title: "QNAP 管理后台登录",
+            type: "credential",
+            endpoints: [CatalogEndpoint(type: "https", host: "192.168.2.240", port: 443)],
+            fields: [
+                SecretCatalogFieldMatch(
+                    key: "username",
+                    label: "用户名",
+                    type: .text,
+                    value: .string("admin")
+                ),
+                SecretCatalogFieldMatch(
+                    key: "password",
+                    label: "密码",
+                    type: .secret,
+                    secretRef: handlerSecretReference
+                )
+            ],
+            notes: "媒体管理"
+        )
+    )
+}
+
 private actor SpyWorkbenchService: WorkbenchServicing {
     var encryptCalls: [String] = []
     var revealCalls: [[String]] = []
@@ -60,16 +92,7 @@ private actor SpyWorkbenchService: WorkbenchServicing {
         searchCalls.append((query: query, field: field, limit: limit))
         return SecretCatalogSearchResult(
             status: .found,
-            matches: [SecretCatalogMatch(
-                reference: "secret://0123456789ABCDEFGHJKMNPQRS",
-                service: "QNAP",
-                field: field ?? .password,
-                label: "QNAP 密码",
-                policy: .credential,
-                destinations: ["192.168.2.240"],
-                purpose: "媒体管理",
-                groupID: "group-qnap"
-            )]
+            matches: [handlerCatalogMatch()]
         )
     }
 }
@@ -167,16 +190,7 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     let response = try await handler.handle(.searchCatalog(query: "QNAP", field: .password, limit: 10))
     let expected = IPCResponse.catalogSearchResult(SecretCatalogSearchResult(
         status: .found,
-        matches: [SecretCatalogMatch(
-            reference: "secret://0123456789ABCDEFGHJKMNPQRS",
-            service: "QNAP",
-            field: .password,
-            label: "QNAP 密码",
-            policy: .credential,
-            destinations: ["192.168.2.240"],
-            purpose: "媒体管理",
-            groupID: "group-qnap"
-        )]
+        matches: [handlerCatalogMatch()]
     ))
 
     #expect(response == expected)

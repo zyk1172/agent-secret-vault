@@ -61,6 +61,9 @@ struct AgentSecretVaultApplication: App {
                 createCatalogEntry: { indexID, title, presetID in
                     await runtime.createCatalogEntry(indexID: indexID, title: title, presetID: presetID)
                 },
+                fillCatalogSecret: { entryID, key, label, plaintext in
+                    await runtime.fillCatalogSecret(entryID: entryID, key: key, label: label, plaintext: plaintext)
+                },
                 prepareSensitiveMigration: {
                     await runtime.prepareSensitiveMigration()
                 },
@@ -225,6 +228,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults + SensitiveScanRulePreferences.customRules()
 
     private var agentClient: VaultIPCClient?
+    private var appControlClient: AppControlIPCClient?
     private let uiRevealSessionStore = RevealSessionStore(defaultTTLSeconds: 60)
     private var uiRequestObserver: NSObjectProtocol?
     private var presentedAgentSessionIDs: Set<String> = []
@@ -247,6 +251,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             agentServiceStatus = registration.status
             let client = try VaultIPCClient.defaultClient()
             agentClient = client
+            appControlClient = try AppControlIPCClient.defaultClient()
             startUIRequestObserver()
             sensitiveIndexStore = try makeSensitiveIndexStore()
             sensitiveCatalogStore = try makeSensitiveCatalogStore()
@@ -563,17 +568,19 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func createCatalogIndex(title: String) async {
-        guard let sensitiveCatalogStore,
+        guard let appControlClient,
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
         do {
-            let revision = sensitiveCatalogSnapshot?.revision
-            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.createIndex(
+            let lease = try await appControlClient.issueCatalogLease(scope: .structure)
+            _ = try await appControlClient.catalogCreateIndex(
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                expectedRevision: revision
+                expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
             )
+            try? await appControlClient.revokeCatalogLease(nonce: lease.nonce)
+            await refreshSensitiveCatalog()
             sensitiveIndexError = nil
-        } catch SensitiveCatalogDocumentStoreError.revisionConflict {
+        } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
             await refreshSensitiveCatalog()
             sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
         } catch {
@@ -582,26 +589,53 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func createCatalogEntry(indexID: String, title: String, presetID: String) async {
-        guard let sensitiveCatalogStore,
+        guard let agentClient,
+              let appControlClient,
               let preset = SensitiveCatalogEntryPreset.all.first(where: { $0.id == presetID }),
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
         do {
-            let entry = try SecretCatalogEntry.generated(
-                indexId: indexID,
-                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                fields: preset.makeFields()
+            let lease = try await appControlClient.issueCatalogLease(scope: .structure)
+            let draft = try await agentClient.createCatalogDraft(
+                CatalogDraftRequest(
+                    indexID: indexID,
+                    title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    fields: preset.makeFields()
+                ),
+                lease: lease
             )
-            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.createEntry(
-                entry,
-                expectedRevision: sensitiveCatalogSnapshot?.revision
+            _ = try await agentClient.commitCatalogDraft(
+                draft,
+                expectedRevision: sensitiveCatalogSnapshot?.revision ?? draft.baseRevision,
+                lease: lease
             )
+            try? await appControlClient.revokeCatalogLease(nonce: lease.nonce)
+            await refreshSensitiveCatalog()
             sensitiveIndexError = nil
-        } catch SensitiveCatalogDocumentStoreError.revisionConflict {
+        } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
             await refreshSensitiveCatalog()
             sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
         } catch {
             sensitiveIndexError = "无法新增子索引"
+        }
+    }
+
+    func fillCatalogSecret(entryID: String, key: String, label: String, plaintext: String) async {
+        guard let appControlClient, !plaintext.isEmpty else { return }
+        do {
+            _ = try await appControlClient.catalogSecureInput(
+                entryID: entryID,
+                key: key,
+                label: label,
+                plaintext: plaintext,
+                policy: .credential
+            )
+            await refreshSensitiveCatalog()
+            sensitiveIndexError = nil
+        } catch {
+            // Do not include the secure input or error description in UI/audit
+            // text; the App-control handler already returns a safe status code.
+            sensitiveIndexError = "无法保存秘密字段，请验证目录状态后重试"
         }
     }
 

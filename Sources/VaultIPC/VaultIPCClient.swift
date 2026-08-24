@@ -60,11 +60,116 @@ public actor VaultIPCClient {
         field: SecretCatalogField? = nil,
         limit: Int = 20
     ) async throws -> SecretCatalogSearchResult {
-        let response = try await send(.searchCatalog(query: query, field: field, limit: limit))
+        let response = try await send(.catalogSearch(query: query, field: field, limit: limit))
         guard case let .catalogSearchResult(result) = response else {
             throw unexpected(response)
         }
         return result
+    }
+
+    public func getCatalogEntry(entryID: String) async throws -> SecretCatalogSearchResult {
+        let response = try await send(.catalogGet(entryID: entryID))
+        guard case let .catalogSearchResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func createCatalogDraft(
+        _ request: CatalogDraftRequest,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogDraft {
+        let response = try await send(.catalogCreateDraft(request: request, lease: lease))
+        guard case let .catalogDraft(draft) = response else {
+            throw unexpected(response)
+        }
+        return draft
+    }
+
+    public func patchCatalogMetadata(
+        entryID: String,
+        patch: CatalogMetadataPatch,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogPatchMetadata(
+            entryID: entryID,
+            patch: patch,
+            expectedRevision: expectedRevision,
+            lease: lease
+        ))
+        guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func commitCatalogDraft(
+        _ draft: CatalogDraft,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogCommit(
+            draft: draft,
+            expectedRevision: expectedRevision,
+            lease: lease
+        ))
+        guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func addCatalogSecretPlaceholder(
+        entryID: String,
+        key: String,
+        label: String,
+        agentVisible: Bool = true,
+        searchable: Bool = true,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogAddSecretPlaceholder(
+            entryID: entryID,
+            key: key,
+            label: label,
+            agentVisible: agentVisible,
+            searchable: searchable,
+            expectedRevision: expectedRevision,
+            lease: lease
+        ))
+        guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func bindCatalogExistingSecret(
+        entryID: String,
+        key: String,
+        secretRef: String,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogBindExistingSecret(
+            entryID: entryID,
+            key: key,
+            secretRef: secretRef,
+            expectedRevision: expectedRevision,
+            lease: lease
+        ))
+        guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func validateCatalog() async throws -> CatalogValidationResult {
+        let response = try await send(.catalogValidate)
+        guard case let .catalogValidation(status, revision) = response else {
+            throw unexpected(response)
+        }
+        return CatalogValidationResult(status: status, revision: revision)
     }
 
     public func pendingRevealSessionIDs() async throws -> [String] {

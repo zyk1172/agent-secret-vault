@@ -2,6 +2,7 @@ import Darwin
 import Dispatch
 import Foundation
 import os
+import VaultCore
 
 public enum AppIPCControllerError: Error, Equatable, Sendable {
     case notStarted
@@ -208,6 +209,34 @@ public final class AppIPCController: @unchecked Sendable {
         } catch IPCRequestHandlerError.unsupportedRequest {
             Self.log(code: "IPC_UNSUPPORTED_REQUEST")
             return try IPCFrameCodec.encode(IPCResponse.failure(code: "UNSUPPORTED_REQUEST"))
+        } catch let error as SecretCatalogAgentError {
+            let code: String
+            switch error {
+            case .unavailable:
+                code = "CATALOG_UNAVAILABLE"
+            case .migrationRequired:
+                code = "MIGRATION_REQUIRED"
+            case .externalModification:
+                code = "EXTERNAL_CATALOG_MODIFICATION"
+            case .invalidCatalog:
+                code = "CATALOG_INVALID"
+            case .missingLease:
+                code = "CATALOG_LEASE_REQUIRED"
+            case .invalidLease:
+                code = "CATALOG_LEASE_INVALID"
+            case .leaseExpired:
+                code = "CATALOG_LEASE_EXPIRED"
+            case .insufficientLeaseScope:
+                code = "CATALOG_LEASE_SCOPE_INSUFFICIENT"
+            case .revisionConflict:
+                code = "CATALOG_REVISION_CONFLICT"
+            case .invalidOperation:
+                code = "CATALOG_INVALID_OPERATION"
+            case .approvalRequired:
+                code = "CATALOG_APPROVAL_REQUIRED"
+            }
+            Self.log(code: code)
+            return try IPCFrameCodec.encode(IPCResponse.failure(code: code))
         } catch {
             Self.log(code: "IPC_REQUEST_FAILED")
             return try IPCFrameCodec.encode(IPCResponse.failure(code: "REQUEST_FAILED"))

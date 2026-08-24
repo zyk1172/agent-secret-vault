@@ -47,10 +47,10 @@ public struct SecretCatalogService: Sendable {
         limit: Int,
         entries: [LegacySecretCatalogEntry],
         metadata: [SecretCatalogRecordMetadata]
-    ) -> SecretCatalogSearchResult {
+    ) -> LegacySecretCatalogSearchResult {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else {
-            return SecretCatalogSearchResult(status: .invalidQuery)
+            return LegacySecretCatalogSearchResult(status: .invalidQuery)
         }
 
         let boundedLimit = min(max(limit, 1), Self.maximumLimit)
@@ -70,9 +70,9 @@ public struct SecretCatalogService: Sendable {
         .map { $0.candidate.match }
 
         guard !ranked.isEmpty else {
-            return SecretCatalogSearchResult(status: .notFound)
+            return LegacySecretCatalogSearchResult(status: .notFound)
         }
-        return SecretCatalogSearchResult(status: .found, matches: Array(ranked))
+        return LegacySecretCatalogSearchResult(status: .found, matches: Array(ranked))
     }
 
     private func mergedCandidates(
@@ -286,8 +286,8 @@ public struct SecretCatalogService: Sendable {
         let groupID: String?
         let contextTerms: [String]
 
-        var match: SecretCatalogMatch {
-            SecretCatalogMatch(
+        var match: LegacySecretCatalogMatch {
+            LegacySecretCatalogMatch(
                 reference: reference,
                 service: service,
                 field: field,

@@ -143,6 +143,7 @@ public struct VaultWorkbenchView: View {
     let refreshSensitiveCatalog: (() async -> Void)?
     let createCatalogIndex: ((String) async -> Void)?
     let createCatalogEntry: ((String, String, String) async -> Void)?
+    let fillCatalogSecret: ((String, String, String, String) async -> Void)?
     let prepareSensitiveMigration: (() async -> Void)?
     let confirmSensitiveMigration: (() async -> Void)?
     let chooseSensitiveScanRoot: (() -> Void)?
@@ -178,6 +179,7 @@ public struct VaultWorkbenchView: View {
         refreshSensitiveCatalog: (() async -> Void)? = nil,
         createCatalogIndex: ((String) async -> Void)? = nil,
         createCatalogEntry: ((String, String, String) async -> Void)? = nil,
+        fillCatalogSecret: ((String, String, String, String) async -> Void)? = nil,
         prepareSensitiveMigration: (() async -> Void)? = nil,
         confirmSensitiveMigration: (() async -> Void)? = nil,
         chooseSensitiveScanRoot: (() -> Void)? = nil,
@@ -211,6 +213,7 @@ public struct VaultWorkbenchView: View {
         self.refreshSensitiveCatalog = refreshSensitiveCatalog
         self.createCatalogIndex = createCatalogIndex
         self.createCatalogEntry = createCatalogEntry
+        self.fillCatalogSecret = fillCatalogSecret
         self.prepareSensitiveMigration = prepareSensitiveMigration
         self.confirmSensitiveMigration = confirmSensitiveMigration
         self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
@@ -326,6 +329,7 @@ public struct VaultWorkbenchView: View {
                         refresh: refreshSensitiveCatalog,
                         createIndex: createCatalogIndex,
                         createEntry: createCatalogEntry,
+                        fillSecret: fillCatalogSecret,
                         prepareMigration: prepareSensitiveMigration,
                         confirmMigration: confirmSensitiveMigration
                     )
@@ -805,6 +809,7 @@ private struct SensitiveCatalogEditorCard: View {
     let refresh: (() async -> Void)?
     let createIndex: ((String) async -> Void)?
     let createEntry: ((String, String, String) async -> Void)?
+    let fillSecret: ((String, String, String, String) async -> Void)?
     let prepareMigration: (() async -> Void)?
     let confirmMigration: (() async -> Void)?
 
@@ -1008,7 +1013,7 @@ private struct SensitiveCatalogEditorCard: View {
                                         .padding(.leading, 28)
                                 } else {
                                     ForEach(entries, id: \.id) { entry in
-                                        SensitiveCatalogEntryRow(entry: entry)
+                                        SensitiveCatalogEntryRow(entry: entry, fillSecret: fillSecret)
                                     }
                                 }
                             }
@@ -1031,33 +1036,15 @@ private struct SensitiveCatalogEditorCard: View {
 
 private struct SensitiveCatalogEntryRow: View {
     let entry: SecretCatalogEntry
+    let fillSecret: ((String, String, String, String) async -> Void)?
+    @State private var secretInput = ""
+    @State private var isSavingSecret = false
 
     var body: some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(entry.fields, id: \.key) { field in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: field.type.isSecret ? "lock.fill" : "circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(field.type.isSecret ? .orange : .secondary)
-                            .frame(width: 14)
-                        Text(field.label)
-                            .font(.caption.weight(.semibold))
-                        Text(fieldDisplayValue(field))
-                            .font(.system(.caption, design: field.type.isSecret ? .monospaced : .default))
-                            .foregroundStyle(field.type.isSecret ? .orange : .secondary)
-                            .textSelection(.enabled)
-                        Spacer()
-                        if !field.agentVisible {
-                            Text("Agent 隐藏")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        } else if field.searchable {
-                            Text("可搜索")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
+                    fieldRow(field)
                 }
                 if let notes = entry.notes, !notes.isEmpty {
                     Text(notes)
@@ -1104,6 +1091,64 @@ private struct SensitiveCatalogEntryRow: View {
             return boolean ? "是" : "否"
         case .list(let list):
             return list.joined(separator: ", ")
+        }
+    }
+
+    @ViewBuilder
+    private func fieldRow(_ field: SecretCatalogFieldValue) -> some View {
+        if field.type.isSecret, field.secretRef == nil {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .frame(width: 14)
+                    Text(field.label)
+                        .font(.caption.weight(.semibold))
+                    Text("待填写")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                HStack(spacing: 8) {
+                    SecureField("在 SVLT 安全表单中输入", text: $secretInput)
+                        .textFieldStyle(.roundedBorder)
+                    Button(isSavingSecret ? "保存中…" : "保存") {
+                        let plaintext = secretInput
+                        Task {
+                            isSavingSecret = true
+                            await fillSecret?(entry.id, field.key, field.label, plaintext)
+                            secretInput = ""
+                            isSavingSecret = false
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(secretInput.isEmpty || isSavingSecret || fillSecret == nil)
+                }
+            }
+        } else {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: field.type.isSecret ? "lock.fill" : "circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(field.type.isSecret ? .orange : .secondary)
+                    .frame(width: 14)
+                Text(field.label)
+                    .font(.caption.weight(.semibold))
+                Text(fieldDisplayValue(field))
+                    .font(.system(.caption, design: field.type.isSecret ? .monospaced : .default))
+                    .foregroundStyle(field.type.isSecret ? .orange : .secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                if !field.agentVisible {
+                    Text("Agent 隐藏")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else if field.searchable {
+                    Text("可搜索")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
         }
     }
 }
