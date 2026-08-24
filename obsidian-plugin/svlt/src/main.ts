@@ -4,6 +4,7 @@ import { encryptTextRange, inferReferenceTitle } from "./encrypt/encryptSelectio
 import { extractCurrentParagraph, type TextRange } from "./editor/selection";
 import { LocalVaultClient } from "./ipc/client";
 import type { IpcRequest } from "./ipc/protocol";
+import { isManagedCatalogText } from "./catalog/managedCatalog";
 import { interpretWorkbenchStatus } from "./pairing/pairing";
 import { applyReplacements, type PlannedReplacement } from "./replace/transactionalReplace";
 import { buildParagraphRestoreRequest, buildParagraphRevealRequest } from "./reveal/paragraphReveal";
@@ -23,7 +24,8 @@ export const commandDefinitions = [
   { id: "reveal-selection", name: "在 SVLT 中临时解密选中文本" },
   { id: "reveal-current-paragraph", name: "在 SVLT 中临时解密当前段落" },
   { id: "restore-selection", name: "还原选中文本中的密文引用" },
-  { id: "restore-current-paragraph", name: "还原当前段落中的密文引用" }
+  { id: "restore-current-paragraph", name: "还原当前段落中的密文引用" },
+  { id: "validate-catalog", name: "验证 SVLT 敏感信息目录" }
 ] as const;
 
 export default class AgentSecretVaultPlugin extends Plugin {
@@ -79,6 +81,13 @@ export default class AgentSecretVaultPlugin extends Plugin {
           ...command,
           editorCallback: async (editor: Editor) => {
             await this.restoreCurrentParagraph(editor);
+          }
+        });
+      } else if (definition.id === "validate-catalog") {
+        this.addCommand({
+          ...command,
+          callback: async () => {
+            await this.validateManagedCatalog();
           }
         });
       } else {
@@ -208,7 +217,39 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
   }
 
+  private async validateManagedCatalog(): Promise<void> {
+    try {
+      const response = await this.createVaultClient().request({ type: "catalogValidate" });
+      if (response.type === "catalogValidation") {
+        if (response.catalogStatus === "FOUND") {
+          new Notice("SVLT: managed sensitive-information catalog validated.");
+        } else {
+          new Notice(`SVLT: managed catalog validation failed (${response.catalogStatus}).`);
+        }
+        return;
+      }
+
+      new Notice(`SVLT: managed catalog validation failed (${response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE"}).`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+      new Notice(`SVLT: managed catalog validation failed (${message}).`);
+    }
+  }
+
+  private async refuseManagedCatalogMutation(documentText: string): Promise<boolean> {
+    if (!isManagedCatalogText(documentText)) {
+      return false;
+    }
+
+    await this.validateManagedCatalog();
+    new Notice("SVLT: managed 敏感信息.md 只能通过 SVLT App/MCP Catalog 工具修改；Obsidian 不会直接写入 Markdown/JSON。");
+    return true;
+  }
+
   private async encryptSelection(editor: Editor): Promise<void> {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+      return;
+    }
     const text = editor.getSelection();
     if (text.length === 0) {
       new Notice("SVLT: select text to encrypt.");
@@ -226,6 +267,9 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async encryptCurrentParagraph(editor: Editor): Promise<void> {
     const documentText = editor.getValue();
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+      return;
+    }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     if (range.text.trim().length === 0) {
       new Notice("SVLT: current paragraph is empty.");
@@ -262,6 +306,9 @@ export default class AgentSecretVaultPlugin extends Plugin {
   ): Promise<void> {
     try {
       const documentText = editor.getValue();
+      if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+        return;
+      }
       const result = await encryptTextRange({
         documentText,
         range,
@@ -325,11 +372,17 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async restoreCurrentParagraph(editor: Editor): Promise<void> {
     const documentText = editor.getValue();
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+      return;
+    }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     await this.restoreRange(editor, range, editor.offsetToPos(range.start), editor.offsetToPos(range.end), "SVLT: current paragraph has no secret reference.");
   }
 
   private async restoreSelection(editor: Editor): Promise<void> {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+      return;
+    }
     const text = editor.getSelection();
     if (text.trim().length === 0) {
       new Notice("SVLT: select text containing a secret reference to restore.");
@@ -378,6 +431,9 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async scanCurrentNote(editor: Editor): Promise<void> {
     const originalText = editor.getValue();
+    if (isManagedCatalogText(originalText) && await this.refuseManagedCatalogMutation(originalText)) {
+      return;
+    }
     const activeFilePath = this.app.workspace?.getActiveFile()?.path ?? "current-note.md";
     const findings = scanMarkdownFile(activeFilePath, originalText);
     new ReviewModal(this.app, findings, async (selectedFindings) => {
@@ -402,11 +458,21 @@ export default class AgentSecretVaultPlugin extends Plugin {
     const filesByPath = new Map(files.map((file) => [file.path, file]));
     const snapshots = new Map<string, string>();
     const allFindings: ScanFindingState[] = [];
+    let skippedManagedCatalog = false;
 
     for (const file of files) {
       const text = await this.app.vault.cachedRead(file);
       snapshots.set(file.path, text);
+      if (isManagedCatalogText(text)) {
+        skippedManagedCatalog = true;
+        continue;
+      }
       allFindings.push(...scanMarkdownFile(file.path, text));
+    }
+
+    if (skippedManagedCatalog) {
+      await this.validateManagedCatalog();
+      new Notice("SVLT: skipped managed 敏感信息.md; use the App/MCP Catalog tools for directory operations.");
     }
 
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
@@ -422,11 +488,21 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async scanOrphans(): Promise<void> {
     const references = new Set<string>();
+    let skippedManagedCatalog = false;
     for (const file of this.app.vault.getMarkdownFiles()) {
       const text = await this.app.vault.cachedRead(file);
+      if (isManagedCatalogText(text)) {
+        skippedManagedCatalog = true;
+        continue;
+      }
       for (const reference of extractSecretReferences(text)) {
         references.add(reference);
       }
+    }
+
+    if (skippedManagedCatalog) {
+      await this.validateManagedCatalog();
+      new Notice("SVLT: managed 敏感信息.md is validated by SVLT Catalog, not by Obsidian note scanning.");
     }
 
     try {
@@ -462,6 +538,13 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const file = filesByPath.get(filePath);
       const originalText = snapshots.get(filePath);
       if (!file || originalText === undefined) {
+        skippedCount += findings.length;
+        continue;
+      }
+
+      if (isManagedCatalogText(originalText)) {
+        await this.validateManagedCatalog();
+        new Notice("SVLT: managed 敏感信息.md was selected; no direct file write was performed.");
         skippedCount += findings.length;
         continue;
       }

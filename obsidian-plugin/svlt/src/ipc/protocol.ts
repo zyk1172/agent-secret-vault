@@ -3,6 +3,15 @@ import { z } from "zod";
 export const SecretReference = z.string().regex(/^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/);
 export const SecretPolicy = z.enum(["credential", "externalSend", "read"]);
 export const CapabilityToken = z.string().min(1);
+export const CatalogValidationStatus = z.enum([
+  "FOUND",
+  "NOT_FOUND",
+  "INVALID_QUERY",
+  "CATALOG_UNAVAILABLE",
+  "MIGRATION_REQUIRED",
+  "EXTERNAL_CATALOG_MODIFICATION",
+  "CATALOG_INVALID"
+]);
 
 export const RevealContext = z.object({
   reason: z.string().min(1),
@@ -16,6 +25,7 @@ export const RevealContext = z.object({
 
 export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("workbenchStatus") }).strict(),
+  z.object({ type: z.literal("catalogValidate") }).strict(),
   z.object({
     type: z.literal("encryptText"),
     plaintext: z.string().min(1),
@@ -66,6 +76,11 @@ export const IpcResponse = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("orphanScan"),
     result: OrphanScanResult
+  }).strict(),
+  z.object({
+    type: z.literal("catalogValidation"),
+    catalogStatus: CatalogValidationStatus,
+    revision: z.number().int().nonnegative().nullable().optional()
   }).strict(),
   z.object({ type: z.literal("failure"), code: z.string().min(1) }).strict()
 ]);

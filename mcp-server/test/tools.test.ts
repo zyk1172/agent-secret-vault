@@ -377,6 +377,10 @@ describe("MCP tool contracts", () => {
     expect(policy.safeWorkflow.join(" ")).toMatch(/secret_search/);
     expect(policy.safeWorkflow.join(" ")).toMatch(/Index.*Entry|entry-centric/i);
     expect(policy.safeWorkflow.join(" ")).toMatch(/secret_catalog_validate/);
+    expect(policy.catalogPolicy).toMatch(/敏感信息\.md/);
+    expect(policy.catalogPolicy).toMatch(/Index.*Entry.*Field|Index.*Entry\/SubIndex/);
+    expect(policy.catalogPolicy).toMatch(/直接修改|直接写入/);
+    expect(policy.catalogPolicy).toMatch(/placeholder/);
     expect(policy.forbidden.join(" ")).toMatch(/plaintext|shell|environment/i);
   });
 });

@@ -58,3 +58,19 @@ import VaultCore
     #expect(!encoded.contains(file.path))
     #expect(!encoded.contains("line"))
 }
+
+@Test func legacySensitiveInformationStoreRefusesCatalogV2Parsing() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("敏感信息.md")
+    try "<!-- SVLT-MANAGED-CATALOG schema=\"2\" -->\n# 敏感信息\n".write(to: file, atomically: true, encoding: .utf8)
+
+    let store = SensitiveInformationDocumentStore(documentURL: file)
+    do {
+        _ = try await store.references()
+        Issue.record("legacy store unexpectedly parsed a managed catalog")
+    } catch let error as SensitiveInformationDocumentStoreError {
+        #expect(error == .managedCatalogRequiresCatalogStore)
+    }
+}

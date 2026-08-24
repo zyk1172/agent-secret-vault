@@ -37,9 +37,16 @@ public enum VaultWorkbenchCopy {
         """
     }
 
-    public static let agentPrompt = """
-    看到 secret:// 就自动使用 svlt；不要让我粘贴明文。
-    """
+    public static var agentPrompt: String {
+        """
+        看到 secret:// 就自动使用 svlt；不要让我粘贴明文。
+
+        \(SVLTAgentCatalogPolicy.text)
+        """
+    }
+
+    public static let catalogPolicy = SVLTAgentCatalogPolicy.text
+    public static let catalogSchema = SVLTAgentCatalogPolicy.schema
 }
 
 public enum VaultWorkbenchRenderingPolicy {
@@ -141,6 +148,7 @@ public struct VaultWorkbenchView: View {
     let createSensitiveIndex: (() -> Void)?
     let refreshSensitiveIndex: (() async -> Void)?
     let refreshSensitiveCatalog: (() async -> Void)?
+    let validateSensitiveCatalog: (() async -> Void)?
     let createCatalogIndex: ((String) async -> Void)?
     let createCatalogEntry: ((String, String, String) async -> Void)?
     let fillCatalogSecret: ((String, String, String, String) async -> Void)?
@@ -177,6 +185,7 @@ public struct VaultWorkbenchView: View {
         createSensitiveIndex: (() -> Void)? = nil,
         refreshSensitiveIndex: (() async -> Void)? = nil,
         refreshSensitiveCatalog: (() async -> Void)? = nil,
+        validateSensitiveCatalog: (() async -> Void)? = nil,
         createCatalogIndex: ((String) async -> Void)? = nil,
         createCatalogEntry: ((String, String, String) async -> Void)? = nil,
         fillCatalogSecret: ((String, String, String, String) async -> Void)? = nil,
@@ -211,6 +220,7 @@ public struct VaultWorkbenchView: View {
         self.createSensitiveIndex = createSensitiveIndex
         self.refreshSensitiveIndex = refreshSensitiveIndex
         self.refreshSensitiveCatalog = refreshSensitiveCatalog
+        self.validateSensitiveCatalog = validateSensitiveCatalog
         self.createCatalogIndex = createCatalogIndex
         self.createCatalogEntry = createCatalogEntry
         self.fillCatalogSecret = fillCatalogSecret
@@ -360,7 +370,10 @@ public struct VaultWorkbenchView: View {
             }
         case .automation:
             WorkbenchPage(title: "智能体自动化", subtitle: "只显示脱敏审计。密码、token、Authorization header 不会进入这里。", systemImage: selectedSection.systemImage) {
-                AgentAutomationAuditCard(entries: auditEntries)
+                VStack(spacing: 14) {
+                    SensitiveCatalogPolicyCard(validate: validateSensitiveCatalog)
+                    AgentAutomationAuditCard(entries: auditEntries)
+                }
             }
         case .security:
             WorkbenchPage(title: "安全边界", subtitle: "明确哪些动作允许、哪些动作必须由本机授权。", systemImage: selectedSection.systemImage) {
@@ -723,7 +736,7 @@ private struct SensitiveIndexLibraryCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                Label("敏感信息.md", systemImage: "doc.badge.lock")
+                Label("目录文件选择", systemImage: "doc.badge.lock")
                     .font(.title3.weight(.semibold))
                 Spacer()
                 Text("\(entries.count) 条")
@@ -760,9 +773,9 @@ private struct SensitiveIndexLibraryCard: View {
 
                 if entries.isEmpty {
                     ContentUnavailableView(
-                        "索引为空",
+                        "由结构化目录管理",
                         systemImage: "doc.text",
-                        description: Text("此文件中还没有 secret:// 引用。可在此维护现有引用，或从本地扫描写入。")
+                        description: Text("v2 Index/Entry 内容由上方结构化编辑器显示；旧格式只通过迁移预览读取。")
                     )
                     .frame(maxWidth: .infinity, minHeight: 170)
                 } else {
@@ -1368,7 +1381,7 @@ private struct LocalSensitiveCandidateRow: View {
                     .padding(10)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                Text("加密后会写入敏感信息.md 的对应段落，原文统一替换为 secret:// 引用。")
+                Text("普通笔记中的命中值会被替换为 secret:// 引用；managed 敏感信息.md 不会由本地扫描直接写入。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -1761,5 +1774,51 @@ private struct AgentAutomationAuditCard: View {
             return "cable.connector"
         }
         return "bolt.horizontal.circle"
+    }
+}
+
+private struct SensitiveCatalogPolicyCard: View {
+    let validate: (() async -> Void)?
+    @State private var schemaExpanded = false
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center) {
+                Label("敏感信息目录规范", systemImage: "book.closed.fill")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Button(copied ? "已复制" : "复制 Agent 规范") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(VaultWorkbenchCopy.catalogPolicy, forType: .string)
+                    copied = true
+                }
+                .buttonStyle(.bordered)
+                Button("验证目录") {
+                    Task { await validate?() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(validate == nil)
+            }
+
+            Text("managed 敏感信息.md 只能由 SVLT Catalog Store 写入。Obsidian、MCP 和其他 Agent 不得直接拼接或覆盖 Markdown/JSON。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            DisclosureGroup("查看 Schema", isExpanded: $schemaExpanded) {
+                ScrollView {
+                    Text(VaultWorkbenchCopy.catalogSchema)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .frame(maxHeight: 220)
+                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }

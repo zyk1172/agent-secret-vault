@@ -48,7 +48,7 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 4. 文本/段落/工具输出中含引用时，默认先调用 `secret_auto_handle_text`；若任务已经明确是本地动作，则直接用 `secret_action_router` 或更具体的安全工具。
 5. 用户需要亲自查看明文时，用 `secret_reveal_request` 或 `paragraph_reveal_request` 让本地 app 展示；聊天里只报告 `DISPLAYED_TO_USER`。
 6. 只用 `secret_inspect_reference` 查看非敏感元数据。
-7. 任务提到服务、设备、主机、账号或用途但没有引用时，先用 `secret_search` 发现 opaque 引用；不要要求用户复制 `secret://` ID。
+7. 任务提到服务、设备、主机、账号或用途但没有引用时，先用 `secret_search` 发现 Entry-centric opaque 引用；不要要求用户复制 `secret://` ID。
 8. 没有安全工具时停止并请求新增 allowlisted 工具，不降级为通用命令、浏览器填表或索要明文。
 
 ## 工具选择规则
@@ -68,7 +68,7 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 | 本地文件导出 | `secret_action_router` 的 `export_resolved_text`，或 `export_resolved_text_to_local_file` | 用户明确要求导出时使用；只返回状态和路径。 |
 | 用户本地查看明文 | `secret_reveal_request` / `paragraph_reveal_request` | 明文显示在本地 app，不进入聊天。 |
 | 元数据检查 | `secret_inspect_reference` | 只返回 reference、policy、label、时间等非敏感字段。 |
-| 服务/设备/主机发现 | `secret_search` | 按服务名、设备名、NAS、地址、用途或字段查询；只返回 opaque 引用和非敏感 catalog metadata。 |
+| 服务/设备/主机发现 | `secret_search` / `secret_catalog_search` | 按 Index、Entry、alias、tag、NAS、endpoint 或允许搜索的字段查询；只返回 Entry-centric opaque 引用和非敏感 catalog metadata。 |
 | 创建引用 | `secret_create_request` | 从本地 app 选择/输入生成 `secret://`。 |
 
 `secret_action_router` 支持的 intent：
@@ -91,7 +91,7 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 | `secret_auto_handle_text` | First-choice automatic handler for paragraphs or note excerpts containing `secret://`; detects references, redacts text, or opens a local app reveal. |
 | `vault_status` | Checks whether the local channel and operation policy engine are ready; `locked` is compatibility-only. |
 | `secret_inspect_reference` | Returns metadata only: reference, policy, label, timestamps. |
-| `secret_search` | Finds opaque references by service, device, host, purpose, label, or field without exposing catalog paths or plaintext. |
+| `secret_search` / `secret_catalog_search` | Finds Entry-centric opaque references by Index, Entry, alias, tag, endpoint, or searchable metadata without exposing catalog paths or plaintext. |
 | `secret_create_request` | Asks the app to encrypt selected local text and return a `secret://` reference. |
 | `secret_reveal_request` | Asks the app to display one secret locally to the user. |
 | `paragraph_reveal_request` | Asks the app to display a paragraph locally with all referenced secrets filled in. |

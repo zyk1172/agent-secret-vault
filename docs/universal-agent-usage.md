@@ -117,14 +117,15 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 
 策略要求 Agent：
 
-1. 将 App 选定的 `敏感信息.md` 视为唯一权威目录；每个引用对应本地保险箱中的独立加密记录。
-2. 仅通过 MCP 使用 `secret://...` 引用或非敏感元数据，绝不直接读取或修改该文件或本地加密记录。
-3. 遵守文件顶部“必读：格式与使用”：每组信息为独立段落；敏感值以前置一个英文空格的未包裹 `secret://...` 表示。
+1. 将 App 选定的 v2 `敏感信息.md` 视为唯一权威目录；每条数据属于 Index → Entry → Field，每个引用对应本地保险箱中的独立加密记录。
+2. 仅通过 Catalog MCP/IPC 使用 `secret://...` 引用或允许返回的非敏感元数据，绝不直接读取、解析或修改 managed 文件。
+3. 遵守 `svlt-catalog-schema-v2.md`：普通字段使用 `value`，秘密字段只使用 `secretRef`，禁止秘密明文。
 4. 禁止以笔记、历史、日志、缓存、环境变量或模型记忆作为敏感值的替代来源。
 5. 先检查 SVLT 状态，再按具体动作提交风险提示并使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具；`locked` 不是全局门禁。
 6. 任务提到服务、设备、主机、账号或用途但没有引用时，先使用 `secret_search` 按非敏感上下文发现引用；不要要求用户复制 `secret://` ID。
-7. 用 `groupID`、服务、字段、目标和用途区分同一凭据组与多个候选；`secret_search` 不返回源文件路径、行号或完整目录内容。
-8. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；工具不可用、策略拒绝或审批取消时停止，不索要或恢复明文。
+7. 用 Index、Entry、alias、tag、endpoint 和允许返回的字段区分候选；同一目标下的不同 Entry 不得合并。`secret_search` 不返回源文件路径、行号或完整目录内容。
+8. Catalog 写入必须使用 App 签发的 metadata/structure lease；写入后调用 `secret_catalog_validate`。Obsidian 不得直接写 managed catalog。
+9. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；工具不可用、策略拒绝或审批取消时停止，不索要或恢复明文。
 
 ## 7. Agent 启动自检
 

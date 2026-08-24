@@ -66,6 +66,24 @@ describe("IPC protocol", () => {
     });
   });
 
+  it("parses managed catalog validation without accepting document content", () => {
+    expect(IpcRequest.parse({ type: "catalogValidate" })).toEqual({ type: "catalogValidate" });
+    expect(IpcResponse.parse({
+      type: "catalogValidation",
+      catalogStatus: "FOUND",
+      revision: 7
+    })).toEqual({
+      type: "catalogValidation",
+      catalogStatus: "FOUND",
+      revision: 7
+    });
+    expect(() => IpcResponse.parse({
+      type: "catalogValidation",
+      catalogStatus: "FOUND",
+      document: "must not be returned"
+    })).toThrow();
+  });
+
   it("parses Swift-shaped orphan scan responses", () => {
     expect(IpcResponse.parse({
       type: "orphanScan",

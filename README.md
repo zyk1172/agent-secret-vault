@@ -97,8 +97,8 @@ For Codex, Claude, Hermes, or another MCP-capable agent, follow
 Short version:
 
 1. Open SVLT and select the `敏感信息.md` that will be the active
-   human-maintained sensitive-information catalog. It contains context and
-   unwrapped `secret://` references; encrypted records remain in the local vault.
+   SVLT-managed Catalog v2 document. It contains Index/Entry metadata and
+   opaque `secret://` references; encrypted records remain in the local vault.
 2. Use the generated MCP config:
 
 ```text
@@ -119,10 +119,11 @@ For Codex skill installation:
 
 When a task names a service, device, host, account, or purpose but the Agent
 does not yet know a `secret://` reference, it should call the query-scoped MCP
-tool `secret_search` first. The tool returns only opaque references and
-non-sensitive catalog metadata such as service, field, destination, purpose,
-label, and credential `groupID`; it never returns plaintext, catalog paths, or
-the full `敏感信息.md`.
+tool `secret_search` first. The tool returns Entry-centric results containing
+the Index, Entry, endpoint, allowed visible metadata, and opaque `secretRef`
+values; it never returns plaintext, catalog paths, or the full `敏感信息.md`.
+Managed catalog writes must use the Catalog MCP tools and an App-issued lease;
+Obsidian and agents must not directly edit the Markdown/JSON representation.
 
 ## Obsidian workflow
 

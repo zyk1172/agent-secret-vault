@@ -55,6 +55,9 @@ struct AgentSecretVaultApplication: App {
                 refreshSensitiveCatalog: {
                     await runtime.refreshSensitiveCatalog()
                 },
+                validateSensitiveCatalog: {
+                    await runtime.validateSensitiveCatalog()
+                },
                 createCatalogIndex: { title in
                     await runtime.createCatalogIndex(title: title)
                 },
@@ -490,21 +493,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func refreshSensitiveIndex() async {
-        guard let sensitiveIndexStore else {
-            sensitiveIndexEntries = []
-            return
-        }
-
-        do {
-            sensitiveIndexEntries = try await sensitiveIndexStore.references()
-            sensitiveIndexError = nil
-        } catch SensitiveInformationDocumentStoreError.noSelectedDocument {
-            sensitiveIndexEntries = []
-            sensitiveIndexError = nil
-        } catch {
-            sensitiveIndexEntries = []
-            sensitiveIndexError = "无法读取所选敏感信息.md"
-        }
+        // The legacy heuristic parser is migration-only.  The structured
+        // Catalog snapshot is the only normal runtime representation.
+        sensitiveIndexEntries = []
     }
 
     func refreshSensitiveCatalog() async {
@@ -530,6 +521,34 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         } catch {
             sensitiveCatalogSnapshot = nil
             sensitiveIndexError = "敏感信息目录校验失败"
+        }
+    }
+
+    func validateSensitiveCatalog() async {
+        guard let agentClient else {
+            sensitiveIndexError = "本机 Agent 服务不可用，无法验证敏感信息目录"
+            return
+        }
+
+        do {
+            let result = try await agentClient.validateCatalog()
+            switch result.status {
+            case .found:
+                await refreshSensitiveCatalog()
+                if sensitiveCatalogSnapshot?.integrity == .verified {
+                    sensitiveIndexError = nil
+                }
+            case .migrationRequired:
+                sensitiveIndexError = "当前敏感信息.md 是旧格式，请先生成并确认迁移预览"
+            case .externalModification:
+                sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
+            case .invalidCatalog:
+                sensitiveIndexError = "敏感信息目录校验失败，未继续使用"
+            case .unavailable, .notFound, .invalidQuery:
+                sensitiveIndexError = "敏感信息目录当前不可用"
+            }
+        } catch {
+            sensitiveIndexError = "无法验证敏感信息目录"
         }
     }
 
@@ -735,13 +754,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func encryptSensitiveCandidates(_ ids: Set<String>) async {
-        guard !ids.isEmpty, let agentClient, let sensitiveIndexStore else {
-            return
-        }
-
-        if let sensitiveCatalogStore,
-           await sensitiveCatalogStore.integrityStatus() == .verified {
-            sensitiveScanError = "结构化目录必须通过 Catalog 编辑器写入，不能追加 Markdown 段落"
+        guard !ids.isEmpty, let agentClient else {
             return
         }
 
@@ -752,6 +765,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         var failed = false
 
         for fileGroup in groupedByFile.values {
+            guard let first = fileGroup.first else { continue }
+            if first.fileURL.standardizedFileURL == sensitiveIndexURL?.standardizedFileURL {
+                failed = true
+                continue
+            }
+
             do {
                 try LocalSensitiveInformationWriter.validate(fileGroup)
                 var references: [String] = []
@@ -776,33 +795,15 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                     }
                     throw error
                 }
-
-                let paragraphGroups = Dictionary(grouping: zip(fileGroup, references)) { pair in
-                    "\(pair.0.paragraphStartUTF16):\(pair.0.paragraphEndUTF16)"
-                }
-                for paragraphGroup in paragraphGroups.values {
-                    let first = paragraphGroup[0].0
-                    let updatedParagraph = LocalSensitiveInformationWriter.replacingValues(
-                        in: first.paragraph,
-                        candidates: paragraphGroup.map(\.0),
-                        references: paragraphGroup.map(\.1)
-                    )
-                    try await sensitiveIndexStore.appendParagraph(
-                        updatedParagraph,
-                        title: first.title,
-                        reference: paragraphGroup[0].1
-                    )
-                }
             } catch {
                 failed = true
             }
         }
 
-        await refreshSensitiveIndex()
         await refreshSavedReferences()
         await scanSensitiveInformation()
         if failed {
-            sensitiveScanError = "部分候选未写回：文件可能已修改，或尚未选择敏感信息.md"
+            sensitiveScanError = "部分候选未写回：文件可能已修改，或 managed 敏感信息目录必须使用 Catalog 编辑器"
         }
     }
 
