@@ -472,10 +472,10 @@ private struct OverviewStatusStrip: View {
                     tint: status.pluginConnected ? .green : .orange
                 )
                 OverviewMetricTile(
-                    title: "保险箱",
-                    value: status.locked ? "已锁定" : "已解锁",
-                    systemImage: status.locked ? "lock.fill" : "lock.open.fill",
-                    tint: status.locked ? .gray : .blue
+                    title: "策略引擎",
+                    value: status.approvalPending ? "待审批" : (status.ready ? "已就绪" : "不可用"),
+                    systemImage: status.approvalPending ? "person.badge.key.fill" : (status.ready ? "checkmark.shield.fill" : "exclamationmark.shield.fill"),
+                    tint: status.approvalPending ? .orange : (status.ready ? .blue : .red)
                 )
                 OverviewMetricTile(
                     title: "本机通道",
@@ -657,8 +657,8 @@ private struct SidebarStatusStrip: View {
         VStack(alignment: .leading, spacing: 10) {
             Label(status.ipcAvailable ? "本机通道可用" : "本机通道未就绪", systemImage: status.ipcAvailable ? "bolt.horizontal.circle.fill" : "bolt.slash.circle.fill")
                 .foregroundStyle(status.ipcAvailable ? .green : .orange)
-            Label(status.locked ? "保险箱已锁定" : "保险箱已解锁", systemImage: status.locked ? "lock.fill" : "lock.open.fill")
-                .foregroundStyle(status.locked ? Color.secondary : Color.blue)
+            Label(status.approvalPending ? "等待本机审批" : (status.ready ? "策略引擎已就绪" : "策略引擎不可用"), systemImage: status.approvalPending ? "person.badge.key.fill" : (status.ready ? "checkmark.shield.fill" : "exclamationmark.shield.fill"))
+                .foregroundStyle(status.approvalPending ? Color.orange : (status.ready ? Color.blue : Color.red))
         }
         .font(.caption.weight(.medium))
         .padding(12)

@@ -23,3 +23,38 @@ import VaultCore
     #expect(updated.contains("`\(second)`") == false)
     #expect(references.map(\.reference) == [first, second])
 }
+
+@Test func sensitiveInformationDocumentExposesCatalogContextWithoutSourceFieldsToAgentCatalog() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let username = "secret://0123456789ABCDEFGHJKMNPQRS"
+    let password = "secret://0123456789ABCDEFGHJKMNPQRT"
+    let canary = "ASV_CANARY_DOCUMENT_FIELD_VALUE"
+    let file = directory.appendingPathComponent("敏感信息.md")
+    try """
+    ### QNAP
+    服务: QNAP
+    设备: NAS
+    地址: 192.168.2.240
+    用途: 媒体管理
+    账号: \(username) (\(canary))
+    密码: \(password) (\(canary))
+    """.write(to: file, atomically: true, encoding: .utf8)
+
+    let store = SensitiveInformationDocumentStore(documentURL: file)
+    let references = try await store.references()
+    let entries = try await store.catalogEntries()
+
+    #expect(references.map(\.reference) == [username, password])
+    #expect(references.map(\.service) == ["QNAP", "QNAP"])
+    #expect(references.map(\.destinations) == [["192.168.2.240"], ["192.168.2.240"]])
+    #expect(references.map(\.purpose) == ["媒体管理", "媒体管理"])
+    #expect(references[0].groupID == references[1].groupID)
+    #expect(entries.map(\.field) == [.username, .password])
+    let encoded = String(decoding: try JSONEncoder().encode(entries), as: UTF8.self)
+    #expect(!encoded.contains(canary))
+    #expect(!encoded.contains(file.path))
+    #expect(!encoded.contains("line"))
+}

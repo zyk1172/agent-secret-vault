@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import VaultCore
+import VaultExecution
 
 public enum VaultIPCClientError: Error, Equatable, Sendable {
     case endpointUnavailable
@@ -17,6 +18,9 @@ public enum VaultIPCClientError: Error, Equatable, Sendable {
 /// trusted local integrations. It rereads the token for every connection so a
 /// restarted Agent invalidates all previous capabilities.
 public actor VaultIPCClient {
+    private static let connectTimeoutMilliseconds: Int32 = 2_000
+    private static let ioTimeoutSeconds: Int32 = 3
+
     private let configuration: UnixSocketServerConfiguration
 
     public init(configuration: UnixSocketServerConfiguration) {
@@ -51,6 +55,18 @@ public actor VaultIPCClient {
         return references
     }
 
+    public func searchSecrets(
+        query: String,
+        field: SecretCatalogField? = nil,
+        limit: Int = 20
+    ) async throws -> SecretCatalogSearchResult {
+        let response = try await send(.searchCatalog(query: query, field: field, limit: limit))
+        guard case let .catalogSearchResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
     public func pendingRevealSessionIDs() async throws -> [String] {
         let response = try await send(.pendingRevealSessions)
         guard case let .revealSessionIDs(sessionIDs) = response else {
@@ -65,6 +81,34 @@ public actor VaultIPCClient {
         policy: SecretPolicy
     ) async throws -> String {
         let response = try await send(.encryptText(plaintext: plaintext, label: label, policy: policy))
+        guard case let .created(reference) = response else {
+            throw unexpected(response)
+        }
+        return reference
+    }
+
+    public func performSecretOperation(
+        _ descriptor: SecretOperationDescriptor
+    ) async throws -> SecretOperationOutput {
+        let response = try await send(.executeSecretOperation(descriptor))
+        guard case let .secretOperation(output) = response else {
+            throw unexpected(response)
+        }
+        return output
+    }
+
+    public func encryptSelection(
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String]
+    ) async throws -> String {
+        let response = try await send(.encryptBound(
+            label: label,
+            policy: policy,
+            allowedDestinations: allowedDestinations,
+            allowedProtocols: allowedProtocols
+        ))
         guard case let .created(reference) = response else {
             throw unexpected(response)
         }
@@ -189,6 +233,15 @@ public actor VaultIPCClient {
         }
         do {
             try setNoSIGPIPE(on: fileDescriptor)
+            try setIOTimeouts(on: fileDescriptor)
+            let originalFlags = Darwin.fcntl(fileDescriptor, F_GETFL, 0)
+            guard originalFlags >= 0 else {
+                throw VaultIPCClientError.operationFailed("fcntl-getfl", errno: errno)
+            }
+            guard Darwin.fcntl(fileDescriptor, F_SETFL, originalFlags | O_NONBLOCK) >= 0 else {
+                throw VaultIPCClientError.operationFailed("fcntl-setnonblock", errno: errno)
+            }
+
             var address = try sockaddrUnix(for: configuration.socketURL.path)
             let result = withUnsafePointer(to: &address) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { rebound in
@@ -199,8 +252,50 @@ public actor VaultIPCClient {
                     )
                 }
             }
-            guard result == 0 else {
-                throw VaultIPCClientError.operationFailed("connect", errno: errno)
+
+            if result != 0 {
+                guard errno == EINPROGRESS else {
+                    throw VaultIPCClientError.operationFailed("connect", errno: errno)
+                }
+
+                var descriptor = pollfd(
+                    fd: fileDescriptor,
+                    events: Int16(POLLOUT),
+                    revents: 0
+                )
+                let pollResult = Darwin.poll(
+                    &descriptor,
+                    1,
+                    Self.connectTimeoutMilliseconds
+                )
+                guard pollResult > 0 else {
+                    if pollResult == 0 {
+                        throw VaultIPCClientError.operationFailed("connect-timeout", errno: ETIMEDOUT)
+                    }
+                    throw VaultIPCClientError.operationFailed("poll", errno: errno)
+                }
+
+                var socketError: Int32 = 0
+                var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+                let errorResult = withUnsafeMutablePointer(to: &socketError) { pointer in
+                    getsockopt(
+                        fileDescriptor,
+                        SOL_SOCKET,
+                        SO_ERROR,
+                        pointer,
+                        &socketErrorLength
+                    )
+                }
+                guard errorResult == 0 else {
+                    throw VaultIPCClientError.operationFailed("getsockopt", errno: errno)
+                }
+                guard socketError == 0 else {
+                    throw VaultIPCClientError.operationFailed("connect", errno: socketError)
+                }
+            }
+
+            guard Darwin.fcntl(fileDescriptor, F_SETFL, originalFlags) >= 0 else {
+                throw VaultIPCClientError.operationFailed("fcntl-restore", errno: errno)
             }
             return fileDescriptor
         } catch {
@@ -242,7 +337,7 @@ public actor VaultIPCClient {
     }
 
     private func setIOTimeouts(on fileDescriptor: Int32) throws {
-        var timeout = timeval(tv_sec: 30, tv_usec: 0)
+        var timeout = timeval(tv_sec: Int(Self.ioTimeoutSeconds), tv_usec: 0)
         let receiveResult = withUnsafePointer(to: &timeout) { pointer in
             setsockopt(fileDescriptor, SOL_SOCKET, SO_RCVTIMEO, pointer, socklen_t(MemoryLayout<timeval>.size))
         }

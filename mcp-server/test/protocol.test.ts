@@ -38,8 +38,29 @@ describe("IPC response schema", () => {
         status: {
           locked: false,
           ipcAvailable: true,
+          available: true,
+          ready: true,
+          approvalPending: false,
           activeKnowledgeBaseRoot: null,
           pluginConnected: true
+        }
+      },
+      {
+        type: "catalogSearchResult",
+        result: {
+          status: "FOUND",
+          matches: [
+            {
+              reference: validReference,
+              service: "QNAP",
+              field: "password",
+              label: "QNAP 密码",
+              policy: "credential",
+              destinations: ["192.168.2.240"],
+              purpose: "媒体管理",
+              groupID: "group-qnap"
+            }
+          ]
         }
       },
       {
@@ -48,6 +69,8 @@ describe("IPC response schema", () => {
           reference: validReference,
           policy: "read",
           label: "NAS password",
+          allowedDestinations: [],
+          allowedProtocols: [],
           createdAt: 1,
           updatedAt: 2
         }
@@ -55,16 +78,17 @@ describe("IPC response schema", () => {
       { type: "displayedToUser" },
       { type: "created", reference: validReference },
       { type: "revealSessionOpened", sessionID: "session-1" },
-      { type: "restoredText", text: "ASV_CANARY_RESTORED_FOR_MCP_INTERNAL_USE" },
       { type: "exported", path: "/Users/example/Desktop/NAS.md" },
       { type: "orphanScan", result: { missingRecords: [], unreferencedRecords: [] } },
       {
-        type: "execution",
-        result: { type: "completed", exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "" }
-      },
-      {
-        type: "execution",
-        result: { type: "quarantined", reason: "binaryOutput" }
+        type: "secretOperation",
+        output: {
+          status: "COMPLETED",
+          httpStatus: 200,
+          contentType: "application/json",
+          bodyPreview: "{\"status\":\"ok\"}",
+          redacted: true
+        }
       },
       { type: "failure", code: "APP_UNAVAILABLE" }
     ];
@@ -85,40 +109,112 @@ describe("IPC response schema", () => {
         status: {
           locked: false,
           ipcAvailable: true,
+          available: true,
+          ready: true,
+          approvalPending: false,
           activeKnowledgeBaseRoot: null,
           pluginConnected: true
         },
         plaintext: "leak"
       })
     ).toThrow();
-    expect(() =>
-      IpcResponse.parse({
-        type: "execution",
-        result: {
-          type: "completed",
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          resolvedArguments: ["leak"]
-        }
-      })
-    ).toThrow();
+  });
+
+  it("keeps catalog search responses metadata-only", () => {
+    const response = IpcResponse.parse({
+      type: "catalogSearchResult",
+      result: {
+        status: "FOUND",
+        matches: [{
+          reference: validReference,
+          service: "QNAP",
+          field: "password",
+          label: "QNAP 密码",
+          policy: "credential",
+          destinations: ["192.168.2.240"],
+          purpose: "媒体管理",
+          groupID: "group-qnap"
+        }]
+      }
+    });
+    expect(JSON.stringify(response)).not.toContain("plaintext");
+    expect(JSON.stringify(response)).not.toContain("sensitive-index-selection");
+    expect(() => IpcResponse.parse({
+      type: "catalogSearchResult",
+      result: {
+        status: "FOUND",
+        matches: [{
+          reference: validReference,
+          service: "QNAP",
+          field: "password",
+          label: "QNAP 密码",
+          policy: "credential",
+          destinations: [],
+          purpose: null,
+          groupID: null,
+          plaintext: "leak"
+        }]
+      }
+    })).toThrow();
+  });
+
+  it("accepts Swift's omitted optional catalog metadata", () => {
+    const response = IpcResponse.parse({
+      type: "catalogSearchResult",
+      result: {
+        status: "FOUND",
+        matches: [{
+          reference: validReference,
+          field: "password",
+          policy: "credential",
+          destinations: []
+        }]
+      }
+    });
+    expect(response.type).toBe("catalogSearchResult");
   });
 });
 
 describe("IPC request schema", () => {
-  it("accepts every Swift IPCRequest case", () => {
+  it("rejects legacy plaintext and generic execution request shapes", () => {
+    expect(() =>
+      IpcRequest.parse({
+        type: "encryptText",
+        plaintext: "leak",
+        label: null,
+        policy: "credential"
+      })
+    ).toThrow();
+    expect(() =>
+      IpcRequest.parse({
+        type: "restoreReferences",
+        references: [validReference],
+        context: {
+          reason: "legacy",
+          template: "{{0}}",
+          ranges: [{ index: 0, placeholder: "{{0}}" }]
+        }
+      })
+    ).toThrow();
+    expect(() =>
+      IpcResponse.parse({ type: "restoredText", text: "leak" })
+    ).toThrow();
+  });
+
+  it("accepts every public non-plaintext IPCRequest case", () => {
     const fixtures = [
       { type: "status" },
       { type: "workbenchStatus" },
+      { type: "searchCatalog", query: "QNAP", field: "password", limit: 10 },
       { type: "inspectReference", reference: validReference },
       { type: "reveal", reference: validReference, reason: "show to user" },
       { type: "encrypt", label: "api token", policy: "externalSend" },
       {
-        type: "encryptText",
-        plaintext: "local-only plaintext",
-        label: null,
-        policy: "credential"
+        type: "encryptBound",
+        label: "QNAP credential",
+        policy: "credential",
+        allowedDestinations: ["qnap.local", "192.168.2.240"],
+        allowedProtocols: ["ssh", "https"]
       },
       {
         type: "revealReferences",
@@ -126,15 +222,6 @@ describe("IPC request schema", () => {
         context: {
           reason: "Paragraph reveal",
           template: "Token: {{0}}",
-          ranges: [{ index: 0, placeholder: "{{0}}" }]
-        }
-      },
-      {
-        type: "restoreReferences",
-        references: [validReference],
-        context: {
-          reason: "MCP internal local operation",
-          template: "{{0}}",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       },
@@ -150,15 +237,21 @@ describe("IPC request schema", () => {
       },
       { type: "scanOrphans", markdownReferences: [validReference] },
       {
-        type: "execute",
-        request: {
-          templateID: "send-message",
-          executable: "/usr/bin/printf",
-          values: { message: "hello" },
-          secrets: { apiToken: validReference },
-          destinationHost: "api.example.com",
-          destinationPath: "/v1/send",
-          requestedRisk: 2
+        type: "executeSecretOperation",
+        descriptor: {
+          actionType: "sshCommand",
+          secretReferences: [validReference],
+          destination: "qnap.local",
+          port: 22,
+          protocolType: "ssh",
+          command: "hostname",
+          requestedEffects: ["read-only"],
+          parameters: { passwordRef: validReference },
+          agentAssessment: {
+            declaredRisk: "silent",
+            reason: "read-only diagnostic",
+            intendedEffect: "read status"
+          }
         }
       }
     ];
@@ -166,6 +259,16 @@ describe("IPC request schema", () => {
     for (const fixture of fixtures) {
       expect(IpcRequest.parse(fixture)).toEqual(fixture);
     }
+  });
+
+  it("rejects empty and unbounded catalog queries", () => {
+    expect(() => IpcRequest.parse({ type: "searchCatalog", query: "   " })).toThrow();
+    expect(() => IpcRequest.parse({ type: "searchCatalog", query: "QNAP", limit: 21 })).toThrow();
+    expect(IpcRequest.parse({ type: "searchCatalog", query: " QNAP " })).toEqual({
+      type: "searchCatalog",
+      query: "QNAP",
+      limit: 10
+    });
   });
 });
 
@@ -188,12 +291,14 @@ describe("authenticated IPC request schema", () => {
   it("accepts authenticated workbench request cases", () => {
     const requests = [
       { type: "workbenchStatus" },
+      { type: "searchCatalog", query: "NAS", limit: 10 },
       { type: "inspectReference", reference: validReference },
       {
-        type: "encryptText",
-        plaintext: "local-only plaintext",
-        label: null,
-        policy: "credential"
+        type: "encryptBound",
+        label: "QNAP credential",
+        policy: "credential",
+        allowedDestinations: ["qnap.local"],
+        allowedProtocols: ["ssh"]
       },
       {
         type: "revealReferences",
@@ -201,15 +306,6 @@ describe("authenticated IPC request schema", () => {
         context: {
           reason: "Paragraph reveal",
           template: "Token: {{0}}",
-          ranges: [{ index: 0, placeholder: "{{0}}" }]
-        }
-      },
-      {
-        type: "restoreReferences",
-        references: [validReference],
-        context: {
-          reason: "MCP internal local operation",
-          template: "{{0}}",
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       },
@@ -223,7 +319,26 @@ describe("authenticated IPC request schema", () => {
           ranges: [{ index: 0, placeholder: "{{0}}" }]
         }
       },
-      { type: "scanOrphans", markdownReferences: [validReference] }
+      { type: "scanOrphans", markdownReferences: [validReference] },
+      {
+        type: "executeSecretOperation",
+        descriptor: {
+          actionType: "httpRequest",
+          secretReferences: [validReference],
+          destination: "qnap.local",
+          port: null,
+          protocolType: "https",
+          httpMethod: "GET",
+          url: "https://qnap.local/status",
+          requestedEffects: ["read-only"],
+          parameters: { passwordRef: validReference },
+          agentAssessment: {
+            declaredRisk: "silent",
+            reason: "read-only diagnostic",
+            intendedEffect: "read status"
+          }
+        }
+      }
     ];
 
     for (const request of requests) {

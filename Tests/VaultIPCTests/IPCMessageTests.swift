@@ -11,6 +11,7 @@ import VaultExecution
         .status,
         .workbenchStatus,
         .savedReferences,
+        .searchCatalog(query: "QNAP", field: .password, limit: 10),
         .pendingRevealSessions,
         .inspectReference(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
         .deleteRecord(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
@@ -20,6 +21,12 @@ import VaultExecution
         .revealSessionData(sessionID: "session-1"),
         .reveal(reference: "secret://0123456789ABCDEFGHJKMNPQRS", reason: "show to user"),
         .encrypt(label: "api token", policy: .externalSend),
+        .encryptBound(
+            label: "QNAP credential",
+            policy: .credential,
+            allowedDestinations: ["qnap.local", "192.168.2.240"],
+            allowedProtocols: ["ssh", "https"]
+        ),
         .restoreReferences(
             references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
             context: RevealContext(
@@ -45,6 +52,21 @@ import VaultExecution
             destinationHost: "api.example.com",
             destinationPath: "/v1/send",
             requestedRisk: .writeOrExternalSend
+        )),
+        .executeSecretOperation(SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")],
+            destination: "qnap.local",
+            port: 22,
+            protocolType: .ssh,
+            command: "hostname",
+            requestedEffects: ["read-only"],
+            parameters: ["passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"],
+            agentAssessment: AgentRiskAssessment(
+                declaredRisk: .silent,
+                reason: "read-only diagnostic",
+                intendedEffect: "read status"
+            )
         ))
     ]
 
@@ -61,6 +83,19 @@ import VaultExecution
         .status(locked: false),
         .workbenchStatus(WorkbenchStatus(locked: true, ipcAvailable: true, activeKnowledgeBaseRoot: nil, pluginConnected: false)),
         .savedReferences([]),
+        .catalogSearchResult(SecretCatalogSearchResult(
+            status: .found,
+            matches: [SecretCatalogMatch(
+                reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+                service: "QNAP",
+                field: .password,
+                label: "QNAP 密码",
+                policy: .credential,
+                destinations: ["192.168.2.240"],
+                purpose: "媒体管理",
+                groupID: "group-qnap"
+            )]
+        )),
         .referenceMetadata(SecretReferenceMetadata(
             reference: "secret://0123456789ABCDEFGHJKMNPQRS",
             policy: .read,
@@ -74,6 +109,7 @@ import VaultExecution
         .exported(path: "/Users/example/Desktop/token.md"),
         .execution(.completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "")),
         .execution(.quarantined(reason: .binaryOutput)),
+        .secretOperation(SecretOperationOutput(status: "COMPLETED", httpStatus: 200, contentType: "application/json", bodyPreview: "{\"ok\":true}")),
         .failure(code: "APP_UNAVAILABLE")
     ]
 

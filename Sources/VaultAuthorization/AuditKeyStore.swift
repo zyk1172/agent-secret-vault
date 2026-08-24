@@ -45,26 +45,28 @@ public struct KeychainAuditKeyStore: AuditKeyStoring {
     }
 
     public func loadOrCreateAuditKeyData() async throws -> Data {
-        var query = baseQuery
-        query[kSecReturnData as String] = kCFBooleanTrue
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        for queryBase in [legacyBaseQuery, dataProtectionBaseQuery] {
+            var query = queryBase
+            query[kSecReturnData as String] = kCFBooleanTrue
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
 
-        let result = keychain.copyMatching(query)
-        switch result.status {
-        case errSecSuccess:
-            guard let data = result.data else {
+            let result = keychain.copyMatching(query)
+            switch result.status {
+            case errSecSuccess:
+                guard let data = result.data else {
+                    throw AuditKeyStoreError.keychain(result.status)
+                }
+                try validate(data)
+                return data
+            case errSecItemNotFound, errSecMissingEntitlement, errSecParam, errSecNotAvailable:
+                continue
+            default:
                 throw AuditKeyStoreError.keychain(result.status)
             }
-            try validate(data)
-            return data
-        case errSecItemNotFound:
-            break
-        default:
-            throw AuditKeyStoreError.keychain(result.status)
         }
 
         let data = try randomKeyDataProvider()
-        var attributes = baseQuery
+        var attributes = legacyBaseQuery
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 
@@ -73,7 +75,7 @@ public struct KeychainAuditKeyStore: AuditKeyStoring {
         case errSecSuccess:
             return data
         case errSecDuplicateItem:
-            var retryQuery = baseQuery
+            var retryQuery = legacyBaseQuery
             retryQuery[kSecReturnData as String] = kCFBooleanTrue
             retryQuery[kSecMatchLimit as String] = kSecMatchLimitOne
             let retry = keychain.copyMatching(retryQuery)
@@ -92,9 +94,18 @@ public struct KeychainAuditKeyStore: AuditKeyStoring {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
-            kSecUseDataProtectionKeychain as String: true
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any
         ]
+    }
+
+    private var legacyBaseQuery: [String: Any] {
+        baseQuery
+    }
+
+    private var dataProtectionBaseQuery: [String: Any] {
+        var query = baseQuery
+        query[kSecUseDataProtectionKeychain as String] = true
+        return query
     }
 
     private func validate(_ data: Data) throws {

@@ -15,9 +15,10 @@ public enum RecoveryKeyStoreError: Error, Equatable, Sendable {
     case keychain(OSStatus)
 }
 
-/// Stores the recovery wrapper only in the synchronizable Keychain item. A
-/// production build must not silently replace the required protection with a
-/// weaker local item when iCloud Keychain controls are unavailable.
+/// Prefers a synchronizable Keychain item for recovery, while retaining a
+/// local compatibility path for installations that cannot create iCloud
+/// Keychain items. Existing recovery material is never regenerated merely
+/// because the stronger namespace is unavailable.
 public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
     public let service: String
     public let account: String
@@ -64,23 +65,41 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
     }
 
     public func loadRecoveryKeyData() async throws -> Data? {
-        let result = keychain.copyMatching(loadQuery(from: synchronizedBaseQuery))
-        switch result.status {
-        case errSecSuccess:
-            guard let data = result.data else {
+        let lookups: [([String: Any], Bool)] = [
+            // A build without iCloud Keychain entitlement can report the
+            // synchronizable lookup as unsupported even though the local
+            // compatibility item is readable.
+            (synchronizedBaseQuery, true),
+            (localFallbackBaseQuery, true),
+            // Read the short-lived Data Protection namespace only for
+            // migration. New recovery keys use the normal user Keychain.
+            (dataProtectionSynchronizedBaseQuery, true)
+        ]
+
+        for (baseQuery, tolerateUnsupportedControls) in lookups {
+            let result = keychain.copyMatching(loadQuery(from: baseQuery))
+            switch result.status {
+            case errSecSuccess:
+                guard let data = result.data else {
+                    throw RecoveryKeyStoreError.keychain(result.status)
+                }
+                guard data.count == 32 else {
+                    throw RecoveryKeyStoreError.invalidKeySize(data.count)
+                }
+                return data
+            case errSecItemNotFound:
+                continue
+            case errSecParam, errSecMissingEntitlement, errSecNotAvailable:
+                if tolerateUnsupportedControls {
+                    continue
+                }
+                throw RecoveryKeyStoreError.unsupportedRequiredKeychainControls
+            default:
                 throw RecoveryKeyStoreError.keychain(result.status)
             }
-            guard data.count == 32 else {
-                throw RecoveryKeyStoreError.invalidKeySize(data.count)
-            }
-            return data
-        case errSecItemNotFound:
-            return nil
-        case errSecParam, errSecMissingEntitlement, errSecNotAvailable:
-            throw RecoveryKeyStoreError.unsupportedRequiredKeychainControls
-        default:
-            throw RecoveryKeyStoreError.keychain(result.status)
         }
+
+        return nil
     }
 
     public func loadOrCreateRecoveryKeyData() async throws -> Data {
@@ -109,8 +128,21 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: kCFBooleanTrue as Any,
-            kSecUseDataProtectionKeychain as String: true
+            kSecAttrSynchronizable as String: kCFBooleanTrue as Any
+        ]
+    }
+
+    private var dataProtectionSynchronizedBaseQuery: [String: Any] {
+        var query = synchronizedBaseQuery
+        query[kSecUseDataProtectionKeychain as String] = true
+        return query
+    }
+
+    private var localFallbackBaseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
         ]
     }
 
@@ -133,7 +165,14 @@ public struct KeychainRecoveryKeyStore: RecoveryKeyStoring {
         let status = keychain.add(attributes)
         guard status == errSecSuccess else {
             if status == errSecParam || status == errSecMissingEntitlement || status == errSecNotAvailable {
-                throw RecoveryKeyStoreError.unsupportedRequiredKeychainControls
+                var fallbackAttributes = localFallbackBaseQuery
+                fallbackAttributes[kSecValueData as String] = keyData
+                fallbackAttributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+                let fallbackStatus = keychain.add(fallbackAttributes)
+                guard fallbackStatus == errSecSuccess else {
+                    throw RecoveryKeyStoreError.keychain(fallbackStatus)
+                }
+                return
             }
             throw RecoveryKeyStoreError.keychain(status)
         }

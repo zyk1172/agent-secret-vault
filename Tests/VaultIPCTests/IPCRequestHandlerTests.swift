@@ -8,6 +8,7 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     var revealCalls: [[String]] = []
     var restoreCalls: [[String]] = []
     var exportCalls: [(references: [String], destinationPath: String)] = []
+    var searchCalls: [(query: String, field: SecretCatalogField?, limit: Int)] = []
 
     func status() async -> WorkbenchStatus {
         WorkbenchStatus(locked: false, ipcAvailable: true, activeKnowledgeBaseRoot: "/tmp/kb", pluginConnected: true)
@@ -49,6 +50,27 @@ private actor SpyWorkbenchService: WorkbenchServicing {
 
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult {
         OrphanScanResult(missingRecords: [], unreferencedRecords: [])
+    }
+
+    func searchSecrets(
+        query: String,
+        field: SecretCatalogField?,
+        limit: Int
+    ) async throws -> SecretCatalogSearchResult {
+        searchCalls.append((query: query, field: field, limit: limit))
+        return SecretCatalogSearchResult(
+            status: .found,
+            matches: [SecretCatalogMatch(
+                reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+                service: "QNAP",
+                field: field ?? .password,
+                label: "QNAP 密码",
+                policy: .credential,
+                destinations: ["192.168.2.240"],
+                purpose: "媒体管理",
+                groupID: "group-qnap"
+            )]
+        )
     }
 }
 
@@ -136,4 +158,53 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     #expect(encrypted == .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"))
     let encoded = try JSONEncoder().encode(encrypted)
     #expect(!String(decoding: encoded, as: UTF8.self).contains("ASV_CANARY_HANDLER"))
+}
+
+@Test func handlerRoutesCatalogSearchAsOpaqueMetadataOnly() async throws {
+    let service = SpyWorkbenchService()
+    let handler = IPCRequestHandler(service: service)
+
+    let response = try await handler.handle(.searchCatalog(query: "QNAP", field: .password, limit: 10))
+    let expected = IPCResponse.catalogSearchResult(SecretCatalogSearchResult(
+        status: .found,
+        matches: [SecretCatalogMatch(
+            reference: "secret://0123456789ABCDEFGHJKMNPQRS",
+            service: "QNAP",
+            field: .password,
+            label: "QNAP 密码",
+            policy: .credential,
+            destinations: ["192.168.2.240"],
+            purpose: "媒体管理",
+            groupID: "group-qnap"
+        )]
+    ))
+
+    #expect(response == expected)
+    let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
+    #expect(!encoded.contains("ASV_CANARY_CATALOG_PLAINTEXT"))
+    #expect(!encoded.contains("/敏感信息.md"))
+    #expect(!encoded.contains("line"))
+}
+
+@Test func handlerRoutesOpaqueSecretOperationAndNeverReturnsSecretMaterial() async throws {
+    let service = SpyWorkbenchService()
+    let handler = IPCRequestHandler(service: service)
+    let reference = "secret://0123456789ABCDEFGHJKMNPQRS"
+    let response = try await handler.handle(.executeSecretOperation(SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [try SecretReference(reference)],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname",
+        requestedEffects: ["read-only"],
+        parameters: ["passwordRef": reference],
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .silent,
+            reason: "diagnostic",
+            intendedEffect: "read status"
+        )
+    )))
+
+    #expect(response == .failure(code: "ACTION_EXECUTION_FAILED"))
 }

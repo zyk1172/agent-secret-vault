@@ -3,7 +3,7 @@ import LocalAuthentication
 import Testing
 @testable import VaultAuthorization
 
-@Test func deviceKeyStoreReturnsKeyAfterSuccessfulAuthentication() async throws {
+@Test func deviceKeyStoreLoadsAccessibleKeyWithoutAuthenticationPrompt() async throws {
     let expectedKey = Data(repeating: 0xA5, count: 32)
     let authenticator = FakeBiometricAuthorizer(result: .success(()))
     let materialStore = FakeDeviceKeyMaterialStore(result: .success(expectedKey))
@@ -12,44 +12,44 @@ import Testing
     let actualKey = try await store.deviceKey(reason: "Open vault")
 
     #expect(actualKey == expectedKey)
-    #expect(await authenticator.evaluatedReasons == ["Open vault"])
+    #expect(await authenticator.evaluatedReasons.isEmpty)
     #expect(await materialStore.loadCount == 1)
 }
 
 @Test func deviceKeyStorePropagatesUserCancellationWithoutLoadingKey() async throws {
     let authenticator = FakeBiometricAuthorizer(result: .failure(BiometricAuthorizationError.cancelled))
-    let materialStore = FakeDeviceKeyMaterialStore(result: .success(Data(repeating: 0x11, count: 32)))
+    let materialStore = LegacyAuthRequiredDeviceKeyMaterialStore(key: Data(repeating: 0x11, count: 32))
     let store = DeviceKeyStore(authenticator: authenticator, materialStore: materialStore)
 
     await expectBiometricError(.cancelled) {
         _ = try await store.deviceKey(reason: "Send externally")
     }
 
-    #expect(await materialStore.loadCount == 0)
+    #expect(await materialStore.loadCount == 1)
 }
 
 @Test func deviceKeyStorePropagatesBiometricLockout() async throws {
     let authenticator = FakeBiometricAuthorizer(result: .failure(BiometricAuthorizationError.lockout))
-    let materialStore = FakeDeviceKeyMaterialStore(result: .success(Data(repeating: 0x22, count: 32)))
+    let materialStore = LegacyAuthRequiredDeviceKeyMaterialStore(key: Data(repeating: 0x22, count: 32))
     let store = DeviceKeyStore(authenticator: authenticator, materialStore: materialStore)
 
     await expectBiometricError(.lockout) {
         _ = try await store.deviceKey(reason: "Open vault")
     }
 
-    #expect(await materialStore.loadCount == 0)
+    #expect(await materialStore.loadCount == 1)
 }
 
 @Test func deviceKeyStorePropagatesUnavailableBiometrics() async throws {
     let authenticator = FakeBiometricAuthorizer(result: .failure(BiometricAuthorizationError.unavailable))
-    let materialStore = FakeDeviceKeyMaterialStore(result: .success(Data(repeating: 0x33, count: 32)))
+    let materialStore = LegacyAuthRequiredDeviceKeyMaterialStore(key: Data(repeating: 0x33, count: 32))
     let store = DeviceKeyStore(authenticator: authenticator, materialStore: materialStore)
 
     await expectBiometricError(.unavailable) {
         _ = try await store.deviceKey(reason: "Open vault")
     }
 
-    #expect(await materialStore.loadCount == 0)
+    #expect(await materialStore.loadCount == 1)
 }
 
 @Test func localAuthenticatorUsesSystemPasswordFallbackPolicy() {
@@ -88,7 +88,7 @@ import Testing
     }
 }
 
-@Test func deviceKeyStorePassesOneEvaluatedContextIntoKeychainQuery() async throws {
+@Test func deviceKeyStoreDoesNotCreateAuthenticationContextForAccessibleKeychainQuery() async throws {
     let expectedKey = Data(repeating: 0x4A, count: 32)
     let keychain = FakeKeychainClient(
         copyResults: [(errSecSuccess, expectedKey)],
@@ -107,13 +107,13 @@ import Testing
     )
 
     #expect(try await store.deviceKey(reason: "one operation") == expectedKey)
-    #expect(await evaluator.count == 1)
+    #expect(await evaluator.count == 0)
     #expect(keychain.copyQueries.count == 2)
-    #expect(keychain.copyQueries[0][kSecUseAuthenticationContext as String] != nil)
-    #expect(keychain.copyQueries[1][kSecUseAuthenticationContext as String] != nil)
+    #expect(keychain.copyQueries[0][kSecUseAuthenticationContext as String] == nil)
+    #expect(keychain.copyQueries[1][kSecUseAuthenticationContext as String] == nil)
 }
 
-@Test func existingAccessibleOnlyKeychainItemFailsClosed() async {
+@Test func existingAccessibleOnlyKeychainItemRemainsUsableAfterAuthentication() async throws {
     let keychain = FakeKeychainClient(
         copyResults: [(errSecSuccess, Data(repeating: 0x55, count: 32))],
         addResults: [],
@@ -126,16 +126,14 @@ import Testing
         randomKeyData: { Data(repeating: 0x55, count: 32) }
     )
 
-    await #expect(throws: DeviceKeyStoreError.unsupportedRequiredKeychainControls) {
-        _ = try await store.loadOrCreateDeviceKeyData()
-    }
+    #expect(try await store.loadOrCreateDeviceKeyData() == Data(repeating: 0x55, count: 32))
 }
 
-@Test func keychainMaterialStoreFailsClosedWhenAccessControlIsUnavailable() async {
+@Test func keychainMaterialStoreFallsBackToLegacyKeychainWhenAccessControlIsUnavailable() async throws {
     let expectedKey = Data(repeating: 0x44, count: 32)
     let keychain = FakeKeychainClient(
         copyResults: [(errSecItemNotFound, nil)],
-        addResults: [errSecMissingEntitlement]
+        addResults: [errSecSuccess]
     )
     let store = KeychainDeviceKeyMaterialStore(
         service: "com.agent-secret-vault.test",
@@ -144,18 +142,21 @@ import Testing
         randomKeyData: { expectedKey }
     )
 
-    await #expect(throws: DeviceKeyStoreError.unsupportedRequiredKeychainControls) {
-        _ = try await store.loadOrCreateDeviceKeyData()
-    }
+    #expect(try await store.loadOrCreateDeviceKeyData() == expectedKey)
     #expect(keychain.addedAttributes.count == 1)
-    #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] != nil)
+    #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] == nil)
+    #expect((keychain.addedAttributes[0][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 }
 
-@Test func recoveryKeyStoreFailsClosedWhenSynchronizableProtectionIsUnavailable() async {
+@Test func recoveryKeyStoreFallsBackToLocalKeychainWhenSynchronizableProtectionIsUnavailable() async throws {
     let expectedKey = Data(repeating: 0x45, count: 32)
     let keychain = FakeKeychainClient(
-        copyResults: [(errSecItemNotFound, nil)],
-        addResults: [errSecMissingEntitlement]
+        copyResults: [
+            (errSecItemNotFound, nil),
+            (errSecItemNotFound, nil),
+            (errSecItemNotFound, nil)
+        ],
+        addResults: [errSecMissingEntitlement, errSecSuccess]
     )
     let store = KeychainRecoveryKeyStore(
         service: "com.agent-secret-vault.test.recovery",
@@ -164,18 +165,19 @@ import Testing
         randomKeyData: { expectedKey }
     )
 
-    await #expect(throws: RecoveryKeyStoreError.unsupportedRequiredKeychainControls) {
-        _ = try await store.loadOrCreateRecoveryKeyData()
-    }
-    #expect(keychain.addedAttributes.count == 1)
+    #expect(try await store.loadOrCreateRecoveryKeyData() == expectedKey)
+    #expect(keychain.addedAttributes.count == 2)
     #expect((keychain.addedAttributes[0][kSecAttrSynchronizable as String] as? Bool) == true)
     #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] != nil)
+    #expect(keychain.addedAttributes[1][kSecAttrSynchronizable as String] == nil)
+    #expect(keychain.addedAttributes[1][kSecAttrAccessControl as String] == nil)
+    #expect((keychain.addedAttributes[1][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlocked as String))
 }
 
 @Test func auditKeyStoreUsesNoUserPresenceProtection() async throws {
     let expectedKey = Data(repeating: 0x49, count: 32)
     let keychain = FakeKeychainClient(
-        copyResults: [(errSecItemNotFound, nil)],
+        copyResults: [(errSecItemNotFound, nil), (errSecItemNotFound, nil)],
         addResults: [errSecSuccess]
     )
     let store = KeychainAuditKeyStore(
@@ -191,9 +193,13 @@ import Testing
     #expect((keychain.addedAttributes[0][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 }
 
-@Test func recoveryKeyStoreDoesNotUseAWeakerLocalFallback() async {
+@Test func recoveryKeyStoreTreatsUnavailableLookupsAsMissingBeforeCreation() async throws {
     let keychain = FakeKeychainClient(
-        copyResults: [(errSecMissingEntitlement, nil)],
+        copyResults: [
+            (errSecMissingEntitlement, nil),
+            (errSecMissingEntitlement, nil),
+            (errSecMissingEntitlement, nil)
+        ],
         addResults: []
     )
     let store = KeychainRecoveryKeyStore(
@@ -206,9 +212,7 @@ import Testing
         }
     )
 
-    await #expect(throws: RecoveryKeyStoreError.unsupportedRequiredKeychainControls) {
-        _ = try await store.loadRecoveryKeyData()
-    }
+    #expect(try await store.loadRecoveryKeyData() == nil)
     #expect(keychain.addedAttributes.isEmpty)
 }
 
@@ -259,6 +263,30 @@ private actor FakeDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
     func loadOrCreateDeviceKeyData() async throws -> Data {
         storedLoadCount += 1
         return try result.get()
+    }
+}
+
+private actor LegacyAuthRequiredDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
+    private let key: Data
+    private(set) var loadCount = 0
+
+    init(key: Data) {
+        self.key = key
+    }
+
+    func loadOrCreateDeviceKeyData() async throws -> Data {
+        loadCount += 1
+        throw DeviceKeyStoreError.authenticationRequired
+    }
+
+    func loadDeviceKeyDataCandidates(
+        authenticationContext: LocalAuthenticationContext?
+    ) async throws -> [Data] {
+        loadCount += 1
+        guard authenticationContext != nil else {
+            throw DeviceKeyStoreError.authenticationRequired
+        }
+        return [key]
     }
 }
 

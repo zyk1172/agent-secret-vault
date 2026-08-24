@@ -36,6 +36,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
     sources:
       - Sources/VaultAuthorization
+    dependencies:
+      - target: VaultCore
 
   VaultExecution:
     type: framework
@@ -104,6 +106,7 @@ targets:
       base:
         PRODUCT_NAME: SVLTAgent
         PRODUCT_BUNDLE_IDENTIFIER: com.agent-secret-vault.SVLT.agent
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     sources:
       - Sources/SVLTAgent
     dependencies:
@@ -123,6 +126,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: SVLT
         PRODUCT_BUNDLE_IDENTIFIER: com.agent-secret-vault.SVLT
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     sources:
       - Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift
       - AppAssets/Assets.xcassets
@@ -134,8 +138,8 @@ targets:
     info:
       path: Config/Info.plist
       properties:
-        CFBundleShortVersionString: "0.1.15"
-        CFBundleVersion: "15"
+        CFBundleShortVersionString: "0.1.17"
+        CFBundleVersion: "17"
     dependencies:
       - target: AgentSecretVaultApp
       - target: VaultIPC

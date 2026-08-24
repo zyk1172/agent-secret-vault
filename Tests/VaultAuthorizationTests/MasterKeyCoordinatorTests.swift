@@ -85,7 +85,7 @@ import Testing
     let adopted = try await coordinator.adoptExistingVault(
         reason: "Adopt existing vault",
         localWrappingKey: legacyLocalAndMasterKey,
-        existingMasterKey: legacyLocalAndMasterKey
+        verifyExistingMasterKey: {}
     )
 
     #expect(adopted == legacyLocalAndMasterKey)
@@ -97,7 +97,6 @@ import Testing
 @Test func adoptExistingVaultDoesNotOverwriteExistingWrappedMasterKey() async throws {
     let localKey = Data(repeating: 0x38, count: 32)
     let existingMasterKey = Data(repeating: 0x39, count: 32)
-    let attemptedLegacyMasterKey = Data(repeating: 0x3A, count: 32)
     let wrapped = try WrappedMasterKeySet(local: .seal(existingMasterKey, using: localKey), recovery: nil)
     let store = MemoryWrappedMasterKeyStore(initial: wrapped)
     let coordinator = MasterKeyCoordinator(
@@ -109,11 +108,34 @@ import Testing
     let unlocked = try await coordinator.adoptExistingVault(
         reason: "Do not replace existing vault",
         localWrappingKey: localKey,
-        existingMasterKey: attemptedLegacyMasterKey
+        verifyExistingMasterKey: {
+            Issue.record("Existing wrapper must bypass legacy verification.")
+        }
     )
 
     #expect(unlocked == existingMasterKey)
     #expect(await store.current == wrapped)
+}
+
+@Test func adoptExistingVaultRefusesToCreateWrapperWhenLegacyVerificationFails() async throws {
+    let localKey = Data(repeating: 0x3B, count: 32)
+    let store = MemoryWrappedMasterKeyStore()
+    let coordinator = MasterKeyCoordinator(
+        deviceKeyStore: FixedDeviceKeyStore(key: localKey),
+        recoveryKeyStore: MemoryRecoveryKeyStore(key: Data(repeating: 0x3C, count: 32)),
+        wrappedStore: store
+    )
+
+    await expectMasterKeyError(.integrityFailed) {
+        _ = try await coordinator.adoptExistingVault(
+            reason: "Reject unverified legacy vault",
+            localWrappingKey: localKey,
+            verifyExistingMasterKey: {
+                throw MasterKeyCoordinatorError.integrityFailed
+            }
+        )
+    }
+    #expect(await store.current == nil)
 }
 
 @Test func unlockUsesRecoveryWrapperWhenLocalWrapperIsMissing() async throws {

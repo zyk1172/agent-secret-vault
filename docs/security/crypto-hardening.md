@@ -35,8 +35,11 @@ Current runtime path:
 4. Copying the wrapped vault data to a different local device key must not
    decrypt the vault.
 
-The `SVLTAgent` starts with no unwrapped master key. LocalAuthentication and
-Keychain access occur only at the first protected operation; the App and
+The `SVLTAgent` obtains the wrapped master key through the device-local
+`WhenUnlockedThisDeviceOnly` Keychain item when a permitted operation needs it.
+This cryptographic access is separate from operation authorization: silent
+bound read-only actions do not trigger a user-presence prompt, while dangerous
+data flows are approved through macOS `deviceOwnerAuthentication`. The App and
 launchd startup path never calls `unlockLowProtection()`.
 
 Audit events use a separate 256-bit Keychain key with `WhenUnlockedThisDeviceOnly`

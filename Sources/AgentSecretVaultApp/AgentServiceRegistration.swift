@@ -34,6 +34,7 @@ public final class AgentServiceRegistration {
     private let service: SMAppService
     private let defaults: UserDefaults
     private let disabledKey = "agentServiceExplicitlyDisabled"
+    private let registeredVersionKey = "agentServiceRegisteredBundleVersion"
 
     public init(
         service: SMAppService? = nil,
@@ -61,6 +62,7 @@ public final class AgentServiceRegistration {
     public func register() throws {
         try service.register()
         defaults.set(false, forKey: disabledKey)
+        defaults.set(Self.currentBundleVersion, forKey: registeredVersionKey)
     }
 
     public func unregister() throws {
@@ -77,9 +79,36 @@ public final class AgentServiceRegistration {
     /// explicitly unregisters the service is not trapped in an auto-register
     /// loop; settings can call `register()` again.
     public func registerIfNeeded() throws {
-        guard !defaults.bool(forKey: disabledKey), service.status == .notRegistered else {
+        guard !defaults.bool(forKey: disabledKey) else {
             return
         }
-        try register()
+
+        switch service.status {
+        case .notRegistered:
+            try register()
+        case .enabled:
+            guard defaults.string(forKey: registeredVersionKey) != Self.currentBundleVersion else {
+                return
+            }
+            // SMAppService keeps the old submitted executable alive across an
+            // App copy/update. Re-register once per App bundle version so the
+            // launchd Agent actually runs the new embedded binary.
+            try service.unregister()
+            try register()
+        case .requiresApproval, .notFound:
+            return
+        @unknown default:
+            return
+        }
+    }
+
+    private static var currentBundleVersion: String {
+        let shortVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "unknown"
+        let buildVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "unknown"
+        return "\(shortVersion) (\(buildVersion))"
     }
 }

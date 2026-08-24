@@ -65,6 +65,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case status
     case workbenchStatus
     case savedReferences
+    case searchCatalog(query: String, field: SecretCatalogField?, limit: Int)
     case pendingRevealSessions
     case inspectReference(reference: String)
     case deleteRecord(reference: String)
@@ -75,11 +76,18 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case reveal(reference: String, reason: String)
     case encrypt(label: String?, policy: SecretPolicy)
     case encryptText(plaintext: String, label: String?, policy: SecretPolicy)
+    case encryptBound(
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String]
+    )
     case revealReferences(references: [String], context: RevealContext)
     case restoreReferences(references: [String], context: RevealContext)
     case exportResolvedText(references: [String], context: RevealContext, destinationPath: String)
     case scanOrphans(markdownReferences: [String])
     case execute(ExecutionRequest)
+    case executeSecretOperation(SecretOperationDescriptor)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -88,18 +96,25 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case references
         case reason
         case sessionID
+        case query
+        case field
+        case limit
         case label
         case policy
+        case allowedDestinations
+        case allowedProtocols
         case context
         case destinationPath
         case markdownReferences
         case request
+        case descriptor
     }
 
     private enum RequestType: String, Codable {
         case status
         case workbenchStatus
         case savedReferences
+        case searchCatalog
         case pendingRevealSessions
         case inspectReference
         case deleteRecord
@@ -110,11 +125,13 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case reveal
         case encrypt
         case encryptText
+        case encryptBound
         case revealReferences
         case restoreReferences
         case exportResolvedText
         case scanOrphans
         case execute
+        case executeSecretOperation
     }
 
     public init(from decoder: any Decoder) throws {
@@ -126,6 +143,12 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .workbenchStatus
         case .savedReferences:
             self = .savedReferences
+        case .searchCatalog:
+            self = .searchCatalog(
+                query: try container.decode(String.self, forKey: .query),
+                field: try container.decodeIfPresent(SecretCatalogField.self, forKey: .field),
+                limit: try container.decode(Int.self, forKey: .limit)
+            )
         case .pendingRevealSessions:
             self = .pendingRevealSessions
         case .inspectReference:
@@ -164,6 +187,13 @@ public enum IPCRequest: Codable, Equatable, Sendable {
                 label: try container.decodeIfPresent(String.self, forKey: .label),
                 policy: try container.decode(SecretPolicy.self, forKey: .policy)
             )
+        case .encryptBound:
+            self = .encryptBound(
+                label: try container.decodeIfPresent(String.self, forKey: .label),
+                policy: try container.decode(SecretPolicy.self, forKey: .policy),
+                allowedDestinations: try container.decode([String].self, forKey: .allowedDestinations),
+                allowedProtocols: try container.decode([String].self, forKey: .allowedProtocols)
+            )
         case .revealReferences:
             self = .revealReferences(
                 references: try container.decode([String].self, forKey: .references),
@@ -186,6 +216,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             )
         case .execute:
             self = .execute(try container.decode(ExecutionRequest.self, forKey: .request))
+        case .executeSecretOperation:
+            self = .executeSecretOperation(try container.decode(SecretOperationDescriptor.self, forKey: .descriptor))
         }
     }
 
@@ -198,6 +230,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.workbenchStatus, forKey: .type)
         case .savedReferences:
             try container.encode(RequestType.savedReferences, forKey: .type)
+        case let .searchCatalog(query, field, limit):
+            try container.encode(RequestType.searchCatalog, forKey: .type)
+            try container.encode(query, forKey: .query)
+            try container.encodeIfPresent(field, forKey: .field)
+            try container.encode(limit, forKey: .limit)
         case .pendingRevealSessions:
             try container.encode(RequestType.pendingRevealSessions, forKey: .type)
         case let .inspectReference(reference):
@@ -229,6 +266,12 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(plaintext, forKey: .plaintext)
             try container.encodeIfPresent(label, forKey: .label)
             try container.encode(policy, forKey: .policy)
+        case let .encryptBound(label, policy, allowedDestinations, allowedProtocols):
+            try container.encode(RequestType.encryptBound, forKey: .type)
+            try container.encodeIfPresent(label, forKey: .label)
+            try container.encode(policy, forKey: .policy)
+            try container.encode(allowedDestinations, forKey: .allowedDestinations)
+            try container.encode(allowedProtocols, forKey: .allowedProtocols)
         case let .revealReferences(references, context):
             try container.encode(RequestType.revealReferences, forKey: .type)
             try container.encode(references, forKey: .references)
@@ -248,19 +291,30 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .execute(request):
             try container.encode(RequestType.execute, forKey: .type)
             try container.encode(request, forKey: .request)
+        case let .executeSecretOperation(descriptor):
+            try container.encode(RequestType.executeSecretOperation, forKey: .type)
+            try container.encode(descriptor, forKey: .descriptor)
         }
     }
 }
 
 public struct WorkbenchStatus: Codable, Equatable, Sendable {
+    /// Kept for wire compatibility only. Agent workflows must use ready and
+    /// approvalPending instead of treating this field as a global gate.
     public let locked: Bool
     public let ipcAvailable: Bool
+    public let available: Bool
+    public let ready: Bool
+    public let approvalPending: Bool
     public let activeKnowledgeBaseRoot: String?
     public let pluginConnected: Bool
 
     private enum CodingKeys: String, CodingKey {
         case locked
         case ipcAvailable
+        case available
+        case ready
+        case approvalPending
         case activeKnowledgeBaseRoot
         case pluginConnected
     }
@@ -268,19 +322,41 @@ public struct WorkbenchStatus: Codable, Equatable, Sendable {
     public init(
         locked: Bool,
         ipcAvailable: Bool,
+        available: Bool = true,
+        ready: Bool = true,
+        approvalPending: Bool = false,
         activeKnowledgeBaseRoot: String?,
         pluginConnected: Bool
     ) {
         self.locked = locked
         self.ipcAvailable = ipcAvailable
+        self.available = available
+        self.ready = ready
+        self.approvalPending = approvalPending
         self.activeKnowledgeBaseRoot = activeKnowledgeBaseRoot
         self.pluginConnected = pluginConnected
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            locked: try container.decode(Bool.self, forKey: .locked),
+            ipcAvailable: try container.decode(Bool.self, forKey: .ipcAvailable),
+            available: try container.decodeIfPresent(Bool.self, forKey: .available) ?? true,
+            ready: try container.decodeIfPresent(Bool.self, forKey: .ready) ?? true,
+            approvalPending: try container.decodeIfPresent(Bool.self, forKey: .approvalPending) ?? false,
+            activeKnowledgeBaseRoot: try container.decodeIfPresent(String.self, forKey: .activeKnowledgeBaseRoot),
+            pluginConnected: try container.decode(Bool.self, forKey: .pluginConnected)
+        )
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(locked, forKey: .locked)
         try container.encode(ipcAvailable, forKey: .ipcAvailable)
+        try container.encode(available, forKey: .available)
+        try container.encode(ready, forKey: .ready)
+        try container.encode(approvalPending, forKey: .approvalPending)
         if let activeKnowledgeBaseRoot {
             try container.encode(activeKnowledgeBaseRoot, forKey: .activeKnowledgeBaseRoot)
         } else {
@@ -314,6 +390,8 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
     public let reference: String
     public let policy: SecretPolicy
     public let label: String?
+    public let allowedDestinations: [String]
+    public let allowedProtocols: [String]
     public let createdAt: Date
     public let updatedAt: Date
 
@@ -321,14 +399,52 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
         reference: String,
         policy: SecretPolicy,
         label: String?,
+        allowedDestinations: [String] = [],
+        allowedProtocols: [String] = [],
         createdAt: Date,
         updatedAt: Date
     ) {
         self.reference = reference
         self.policy = policy
         self.label = label
+        self.allowedDestinations = allowedDestinations
+        self.allowedProtocols = allowedProtocols
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case reference
+        case policy
+        case label
+        case allowedDestinations
+        case allowedProtocols
+        case createdAt
+        case updatedAt
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            reference: try container.decode(String.self, forKey: .reference),
+            policy: try container.decode(SecretPolicy.self, forKey: .policy),
+            label: try container.decodeIfPresent(String.self, forKey: .label),
+            allowedDestinations: try container.decodeIfPresent([String].self, forKey: .allowedDestinations) ?? [],
+            allowedProtocols: try container.decodeIfPresent([String].self, forKey: .allowedProtocols) ?? [],
+            createdAt: try container.decode(Date.self, forKey: .createdAt),
+            updatedAt: try container.decode(Date.self, forKey: .updatedAt)
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(reference, forKey: .reference)
+        try container.encode(policy, forKey: .policy)
+        try container.encodeIfPresent(label, forKey: .label)
+        try container.encode(allowedDestinations, forKey: .allowedDestinations)
+        try container.encode(allowedProtocols, forKey: .allowedProtocols)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -336,6 +452,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case status(locked: Bool)
     case workbenchStatus(WorkbenchStatus)
     case savedReferences([SecretReferenceMetadata])
+    case catalogSearchResult(SecretCatalogSearchResult)
     case revealSessionIDs([String])
     case referenceMetadata(SecretReferenceMetadata)
     case displayedToUser
@@ -348,6 +465,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case exported(path: String)
     case orphanScan(OrphanScanResult)
     case execution(SanitizedExecutionResult)
+    case secretOperation(SecretOperationOutput)
     case failure(code: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -355,6 +473,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case locked
         case status
         case references
+        case result
         case sessionIDs
         case metadata
         case reference
@@ -362,7 +481,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case paragraph
         case text
         case path
-        case result
+        case output
         case code
     }
 
@@ -370,6 +489,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case status
         case workbenchStatus
         case savedReferences
+        case catalogSearchResult
         case revealSessionIDs
         case referenceMetadata
         case displayedToUser
@@ -382,6 +502,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case exported
         case orphanScan
         case execution
+        case secretOperation
         case failure
     }
 
@@ -394,6 +515,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .workbenchStatus(try container.decode(WorkbenchStatus.self, forKey: .status))
         case .savedReferences:
             self = .savedReferences(try container.decode([SecretReferenceMetadata].self, forKey: .references))
+        case .catalogSearchResult:
+            self = .catalogSearchResult(try container.decode(SecretCatalogSearchResult.self, forKey: .result))
         case .revealSessionIDs:
             self = .revealSessionIDs(try container.decode([String].self, forKey: .sessionIDs))
         case .referenceMetadata:
@@ -418,6 +541,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .orphanScan(try container.decode(OrphanScanResult.self, forKey: .result))
         case .execution:
             self = .execution(try container.decode(SanitizedExecutionResult.self, forKey: .result))
+        case .secretOperation:
+            self = .secretOperation(try container.decode(SecretOperationOutput.self, forKey: .output))
         case .failure:
             self = .failure(code: try container.decode(String.self, forKey: .code))
         }
@@ -435,6 +560,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .savedReferences(references):
             try container.encode(ResponseType.savedReferences, forKey: .type)
             try container.encode(references, forKey: .references)
+        case let .catalogSearchResult(result):
+            try container.encode(ResponseType.catalogSearchResult, forKey: .type)
+            try container.encode(result, forKey: .result)
         case let .revealSessionIDs(sessionIDs):
             try container.encode(ResponseType.revealSessionIDs, forKey: .type)
             try container.encode(sessionIDs, forKey: .sessionIDs)
@@ -468,6 +596,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .execution(result):
             try container.encode(ResponseType.execution, forKey: .type)
             try container.encode(result, forKey: .result)
+        case let .secretOperation(output):
+            try container.encode(ResponseType.secretOperation, forKey: .type)
+            try container.encode(output, forKey: .output)
         case let .failure(code):
             try container.encode(ResponseType.failure, forKey: .type)
             try container.encode(code, forKey: .code)

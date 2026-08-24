@@ -49,6 +49,25 @@ import VaultCore
     ])
 }
 
+@Test func protectionKeyStoreCachesOnlyTheCandidateSelectedByVaultVerification() async throws {
+    let rejectedKey = Data(repeating: 0x51, count: 32)
+    let acceptedKey = Data(repeating: 0x52, count: 32)
+    let deviceKeyStore = CandidateDeviceKeyStore(candidates: [rejectedKey, acceptedKey])
+    let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
+
+    #expect(try await protectionKeyStore.deviceKeyCandidates(
+        for: .read,
+        reason: "Open vault"
+    ) == [rejectedKey, acceptedKey])
+    await protectionKeyStore.rememberDeviceKey(acceptedKey, for: .read)
+
+    #expect(try await protectionKeyStore.deviceKey(
+        for: .read,
+        reason: "Open vault"
+    ) == acceptedKey)
+    #expect(await deviceKeyStore.candidateRequestCount == 1)
+}
+
 private actor CountingDeviceKeyStore: DeviceKeyStoring {
     private let keyData: Data
     private(set) var reasons: [String] = []
@@ -60,5 +79,23 @@ private actor CountingDeviceKeyStore: DeviceKeyStoring {
     func deviceKey(reason: String) async throws -> Data {
         reasons.append(reason)
         return keyData
+    }
+}
+
+private actor CandidateDeviceKeyStore: DeviceKeyStoring {
+    private let candidates: [Data]
+    private(set) var candidateRequestCount = 0
+
+    init(candidates: [Data]) {
+        self.candidates = candidates
+    }
+
+    func deviceKey(reason: String) async throws -> Data {
+        candidates[0]
+    }
+
+    func deviceKeyCandidates(reason: String) async throws -> [Data] {
+        candidateRequestCount += 1
+        return candidates
     }
 }

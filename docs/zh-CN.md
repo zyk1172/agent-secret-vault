@@ -87,7 +87,7 @@ Agent 接入后可以先测试：
 1. 调用 `vault_status`
 2. 调用 `agent_secret_usage_policy`
 
-普通状态、元数据、加密和受控 MCP 操作不要求 SVLT.app 一直打开。Agent 启动时保持 locked；第一次真正访问受保护密钥时才 lazy unlock。睡眠、锁屏、用户会话切换或手动锁定后会清除内存授权，下一次访问再授权。真正需要图形界面的 reveal 会通过 Agent → App UI 请求桥按需激活 App。
+普通状态、元数据、加密和受控 MCP 操作不要求 SVLT.app 一直打开。Agent 启动时可以报告兼容字段 `locked`，但它不再是 Agent 的全局门禁；具体操作由本地策略决定静默、审批或拒绝。睡眠、锁屏、用户会话切换或手动锁定后会清除内存中的运行时授权，下一次操作按需重新获取。真正需要图形界面的 reveal 会通过 Agent → App UI 请求桥按需激活 App。
 
 ## 4. 日常使用流程
 

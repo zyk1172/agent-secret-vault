@@ -63,21 +63,28 @@ The first release also excludes:
 
 ## Authorization model
 
-Risk classes are separated:
+Every protected request is represented by a `SecretOperationDescriptor` and
+evaluated by the local `SecretOperationPolicyEngine`. The effective result is
+`max(agentRisk, localRisk)` over the explicit states `silent`,
+`approvalRequired`, and `denied`; the Agent risk field can never downgrade a
+local decision. Exact destination/protocol bindings are checked before any
+record is resolved.
 
-- Read: in-memory session authorization until system sleep/lock, user-session
-  change, explicit lock, or Agent restart by default. A configured TTL may be
-  enabled as a policy.
-- Credential: configurable short authorization window (default ten minutes)
-  reused by one transaction/batch rather than once per secret.
-- External-send: short authorization bound to the exact destination/integration;
-  it cannot be reused for another host.
-- Delete, export, credential change, recovery, and security-setting changes:
-  fresh authorization for each operation.
+Bound read-only SSH/HTTP/database/SFTP operations may be silent. New private
+destinations and all writes, external sends, plaintext reveal/copy/export,
+deletes, and security-setting changes need a fresh, short-lived,
+operation-bound `ApprovalTicket`. Public unbound destinations, generic shell,
+ambiguous SQL, and other requests that cannot be safely constrained are denied.
+The ticket is one-shot and binds operation hash, Secret references, destination,
+command/method/path/database/file details, expiry, and nonce.
 
-Write, external-send, delete, and credential-change operations cannot reuse a
-read authorization. Audit records use a separate non-userPresence Keychain key
-and recording status never unlocks the Vault.
+`locked` in `WorkbenchStatus` is compatibility-only; it is not an Agent gate.
+`available`, `ready`, and `approvalPending` describe the current operation
+channel. LocalAuthentication uses macOS `deviceOwnerAuthentication` for the
+approval step. Normal low-risk Keychain access uses the device-local
+`WhenUnlockedThisDeviceOnly` item without a per-decryption user-presence
+prompt. Audit records use a separate non-userPresence Keychain key and status
+recording never unlocks the Vault.
 
 ## Recovery limitations
 

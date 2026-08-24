@@ -21,10 +21,10 @@ public struct ConnectionStatusCard: View {
                     tint: status.pluginConnected ? .green : .orange
                 )
                 StatusPill(
-                    title: "保险箱",
-                    value: status.locked ? "已锁定" : "已解锁",
-                    systemImage: status.locked ? "lock.fill" : "lock.open.fill",
-                    tint: status.locked ? .gray : .blue
+                    title: "策略引擎",
+                    value: status.approvalPending ? "待审批" : (status.ready ? "已就绪" : "不可用"),
+                    systemImage: status.approvalPending ? "person.badge.key.fill" : (status.ready ? "checkmark.shield.fill" : "exclamationmark.shield.fill"),
+                    tint: status.approvalPending ? .orange : (status.ready ? .blue : .red)
                 )
                 StatusPill(
                     title: "本机通道",
