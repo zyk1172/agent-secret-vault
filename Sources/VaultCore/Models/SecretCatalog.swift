@@ -63,7 +63,10 @@ public enum SecretCatalogField: String, Codable, CaseIterable, Sendable {
 /// A parsed entry from the human-maintained sensitive-information catalog.
 /// `contextTerms` is kept local for deterministic matching and is never part
 /// of the MCP result.
-public struct SecretCatalogEntry: Codable, Equatable, Sendable {
+/// Legacy flat entry produced by the pre-v2 heuristic parser.  It remains
+/// available only as migration input and must not be used as the managed
+/// catalog model.
+public struct LegacySecretCatalogEntry: Codable, Equatable, Sendable {
     public let reference: String
     public let service: String?
     public let field: SecretCatalogField
