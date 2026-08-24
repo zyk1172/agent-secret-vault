@@ -102,7 +102,16 @@ import VaultService
     )
     try await store.selectDocument(at: documentURL)
     _ = try await store.canonicalWrite(SecretCatalogDocument(
-        indexes: [SecretCatalogIndex(id: "0123456789ABCDEFGHJKMNPQRS", title: "QNAP")]
+        indexes: [SecretCatalogIndex(id: "0123456789ABCDEFGHJKMNPQRS", title: "QNAP")],
+        entries: [SecretCatalogEntry(
+            id: "0123456789ABCDEFGHJKMNPQRT",
+            indexId: "0123456789ABCDEFGHJKMNPQRS",
+            title: "NAS 管理员登录",
+            fields: [
+                SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("admin")),
+                SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)
+            ]
+        )]
     ))
     try SecretCatalogSelectionStore(manifestURL: selectionURL).save(documentURL: documentURL)
 
@@ -126,23 +135,74 @@ import VaultService
     let result = try await client.catalogCreateEntry(
         CatalogDraftRequest(
             indexID: "0123456789ABCDEFGHJKMNPQRS",
-            title: "音乐服务器",
-            endpoints: [CatalogEndpoint(type: "http", host: "192.168.2.240", port: 4533)],
-            fields: [
-                SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("zyk")),
-                SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)
-            ]
+            title: "API Token Entry",
+            fields: SensitiveCatalogEntryPreset.all.first(where: { $0.id == "api-token" })?.makeFields() ?? []
         ),
-        expectedRevision: 1
+        // Deliberately stale UI revision. App-control must re-read the
+        // authoritative store revision and retry this safe creation once.
+        expectedRevision: 0
     )
 
     #expect(result.revision == 2)
-    #expect(result.entry?.title == "音乐服务器")
+    #expect(result.entry?.title == "API Token Entry")
     let verified = try await store.snapshot()
     #expect(verified.revision == 2)
     #expect(verified.integrity == .verified)
-    #expect(verified.document.entries.first?.fields.first(where: { $0.key == "username" })?.value == .string("zyk"))
-    #expect(verified.document.entries.first?.fields.first(where: { $0.key == "password" })?.secretRef == nil)
+    let created = try #require(verified.document.entries.first(where: { $0.title == "API Token Entry" }))
+    #expect(created.fields.first(where: { $0.key == "token" })?.secretRef == nil)
+
+    let metadataUpdated = SecretCatalogEntry(
+        id: created.id,
+        indexId: created.indexId,
+        title: created.title,
+        type: created.type,
+        aliases: created.aliases,
+        endpoints: [CatalogEndpoint(type: "https", host: "192.168.2.240", port: 4533)],
+        fields: created.fields.map { field in
+            switch field.key {
+            case "service":
+                return SecretCatalogFieldValue(
+                    key: field.key,
+                    label: field.label,
+                    type: field.type,
+                    agentVisible: field.agentVisible,
+                    searchable: field.searchable,
+                    value: .string("QNAP 音乐服务器")
+                )
+            case "baseURL":
+                return SecretCatalogFieldValue(
+                    key: field.key,
+                    label: field.label,
+                    type: field.type,
+                    agentVisible: field.agentVisible,
+                    searchable: field.searchable,
+                    value: .string("https://192.168.2.240:4533")
+                )
+            default:
+                return field
+            }
+        },
+        notes: "fixture metadata",
+        tags: ["QNAP"],
+        schema: created.schema
+    )
+    let updated = try await client.catalogUpdateEntry(metadataUpdated, expectedRevision: result.revision)
+    #expect(updated.revision == 3)
+
+    let bound = try await client.catalogSecureInput(
+        entryID: created.id,
+        key: "token",
+        label: "API Key / Token",
+        plaintext: "fixture-secret-canary",
+        policy: .credential
+    )
+    #expect(bound.revision == 4)
+    #expect(bound.reference.hasPrefix("secret://"))
+
+    let final = try await store.snapshot()
+    let finalEntry = try #require(final.document.entries.first(where: { $0.id == created.id }))
+    #expect(finalEntry.fields.first(where: { $0.key == "service" })?.value == .string("QNAP 音乐服务器"))
+    #expect(finalEntry.fields.first(where: { $0.key == "token" })?.secretRef == bound.reference)
 }
 
 private actor ControllerSpyWorkbenchService: WorkbenchServicing {

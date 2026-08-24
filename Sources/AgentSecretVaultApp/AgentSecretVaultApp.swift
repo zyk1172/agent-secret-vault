@@ -726,8 +726,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             message = "目录刚被其他本机客户端更新，自动重试后仍冲突"
         case "CATALOG_UNAVAILABLE":
             message = "敏感信息目录当前不可用"
-        case "CATALOG_INVALID", "CATALOG_INVALID_OPERATION":
-            message = "目录数据或新增内容无效"
+        case "CATALOG_INVALID":
+            message = "目录数据无效；请检查字段 key、类型和值"
+        case "CATALOG_INVALID_OPERATION":
+            message = "目录中不存在对应 Index/Entry，或操作参数无效"
         case "EXTERNAL_CATALOG_MODIFICATION":
             message = "检测到目录被外部修改，已暂停写入"
         case "APP_CONTROL_UNAUTHORIZED", "INVALID_APP_CONTROL_TOKEN":
