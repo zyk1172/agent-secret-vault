@@ -179,9 +179,8 @@ public struct VaultWorkbenchView: View {
     let approveExternalCatalogChange: (() async -> Void)?
     let createCatalogIndex: ((String) async -> CatalogMutationUIResult)?
     let createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)?
-    let updateCatalogEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
+    let commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
-    let fillCatalogSecret: ((String, String, String, String) async -> String?)?
     let enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
     let revokeCatalogAgentWrite: (() async -> Void)?
     let chooseSensitiveScanRoot: (() -> Void)?
@@ -228,9 +227,8 @@ public struct VaultWorkbenchView: View {
         approveExternalCatalogChange: (() async -> Void)? = nil,
         createCatalogIndex: ((String) async -> CatalogMutationUIResult)? = nil,
         createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)? = nil,
-        updateCatalogEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)? = nil,
+        commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)? = nil,
         applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)? = nil,
-        fillCatalogSecret: ((String, String, String, String) async -> String?)? = nil,
         enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)? = nil,
         revokeCatalogAgentWrite: (() async -> Void)? = nil,
         chooseSensitiveScanRoot: (() -> Void)? = nil,
@@ -275,9 +273,8 @@ public struct VaultWorkbenchView: View {
         self.approveExternalCatalogChange = approveExternalCatalogChange
         self.createCatalogIndex = createCatalogIndex
         self.createCatalogEntry = createCatalogEntry
-        self.updateCatalogEntry = updateCatalogEntry
+        self.commitCatalogEntryEdit = commitCatalogEntryEdit
         self.applyCatalogBatch = applyCatalogBatch
-        self.fillCatalogSecret = fillCatalogSecret
         self.enableCatalogAgentWrite = enableCatalogAgentWrite
         self.revokeCatalogAgentWrite = revokeCatalogAgentWrite
         self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
@@ -403,9 +400,8 @@ public struct VaultWorkbenchView: View {
                         refresh: refreshSensitiveCatalog,
                         createIndex: createCatalogIndex,
                         createEntry: createCatalogEntry,
-                        updateEntry: updateCatalogEntry,
+                        commitEntryEdit: commitCatalogEntryEdit,
                         applyBatch: applyCatalogBatch,
-                        fillSecret: fillCatalogSecret,
                         catalogAgentWriteStatus: catalogAgentWriteStatus,
                         catalogAgentWriteError: catalogAgentWriteError,
                         enableAgentWrite: enableCatalogAgentWrite,
@@ -881,6 +877,20 @@ private struct SensitiveIndexLibraryCard: View {
     }
 }
 
+private struct CatalogDeletionRequest: Identifiable {
+    enum Kind {
+        case indexes
+        case entries
+    }
+
+    let id: String
+    let kind: Kind
+    let ids: [String]
+    let itemCount: Int
+    let entryCount: Int
+    let secretFieldCount: Int
+}
+
 private struct SensitiveCatalogEditorCard: View {
     let snapshot: SensitiveCatalogSnapshot?
     let errorMessage: String?
@@ -892,9 +902,8 @@ private struct SensitiveCatalogEditorCard: View {
     let refresh: (() async -> Void)?
     let createIndex: ((String) async -> CatalogMutationUIResult)?
     let createEntry: ((String, String, String) async -> CatalogMutationUIResult)?
-    let updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
+    let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
-    let fillSecret: ((String, String, String, String) async -> String?)?
     let catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus
     let catalogAgentWriteError: String?
     let enableAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
@@ -905,6 +914,8 @@ private struct SensitiveCatalogEditorCard: View {
     @State private var createIndexError: CatalogMutationUIError?
     @State private var selectedIndexID: String?
     @State private var selectedIndexIDs: Set<String> = []
+    @State private var isSelectingIndexes = false
+    @State private var pendingIndexDeletion: CatalogDeletionRequest?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1092,49 +1103,52 @@ private struct SensitiveCatalogEditorCard: View {
                     .frame(maxWidth: .infinity, minHeight: 120)
                 } else {
                     HStack(spacing: 8) {
-                        Button(selectedIndexIDs.count == snapshot.document.indexes.count ? "取消全选" : "全选分组") {
-                            if selectedIndexIDs.count == snapshot.document.indexes.count {
-                                selectedIndexIDs.removeAll()
-                            } else {
-                                selectedIndexIDs = Set(snapshot.document.indexes.map(\.id))
+                        if isSelectingIndexes {
+                            Button(selectedIndexIDs.count == snapshot.document.indexes.count ? "取消全选" : "全选") {
+                                if selectedIndexIDs.count == snapshot.document.indexes.count {
+                                    selectedIndexIDs.removeAll()
+                                } else {
+                                    selectedIndexIDs = Set(snapshot.document.indexes.map(\.id))
+                                }
                             }
-                        }
-                        .buttonStyle(.bordered)
-                        Button("删除选中分组", role: .destructive) {
-                            let ids = selectedIndexIDs
-                            guard !ids.isEmpty else { return }
-                            Task {
-                                isWorking = true
-                                _ = await applyBatch?(CatalogBatchMutation(
-                                    operations: ids.sorted().map { .deleteIndex(id: $0) }
-                                ))
-                                selectedIndexIDs.removeAll()
-                                isWorking = false
+                            .buttonStyle(.bordered)
+                            Button("删除选中", role: .destructive) {
+                                prepareIndexDeletion(snapshot: snapshot)
                             }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isWorking || selectedIndexIDs.isEmpty || applyBatch == nil)
-                        if !selectedIndexIDs.isEmpty {
-                            Text("已选 " + String(selectedIndexIDs.count) + " 个分组")
-                                .font(.caption)
+                            .buttonStyle(.bordered)
+                            .disabled(isWorking || selectedIndexIDs.isEmpty || applyBatch == nil)
+                            Text("已选 \(selectedIndexIDs.count)")
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
+                            Button("完成") {
+                                isSelectingIndexes = false
+                                selectedIndexIDs.removeAll()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        } else {
+                            Button("选择") {
+                                isSelectingIndexes = true
+                                selectedIndexIDs.removeAll()
+                            }
+                            .buttonStyle(.bordered)
                         }
                         Spacer()
                     }
 
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
+                    let columns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 3)
+                    LazyVGrid(columns: columns, spacing: 14) {
                         ForEach(snapshot.document.indexes, id: \.id) { index in
                             let entries = snapshot.document.entries.filter { $0.indexId == index.id }
+                            let secretFieldCount = entries.flatMap(\.fields).filter { $0.type.isSecret }.count
+                            let isSelected = selectedIndexIDs.contains(index.id)
                             VStack(alignment: .leading, spacing: 12) {
-                                HStack(alignment: .top, spacing: 10) {
-                                    Toggle("", isOn: Binding(
-                                        get: { selectedIndexIDs.contains(index.id) },
-                                        set: { value in
-                                            if value { selectedIndexIDs.insert(index.id) }
-                                            else { selectedIndexIDs.remove(index.id) }
-                                        }
-                                    ))
-                                    .labelsHidden()
+                                HStack(alignment: .center, spacing: 10) {
+                                    if isSelectingIndexes {
+                                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                            .font(.title3)
+                                            .foregroundStyle(isSelected ? .blue : .secondary)
+                                            .accessibilityLabel(isSelected ? "已选择" : "未选择")
+                                    }
                                     Image(systemName: "folder.fill")
                                         .font(.title2)
                                         .foregroundStyle(.blue)
@@ -1143,7 +1157,7 @@ private struct SensitiveCatalogEditorCard: View {
                                             .font(.headline)
                                         if !index.aliases.isEmpty {
                                             Text(index.aliases.joined(separator: "、"))
-                                                .font(.caption)
+                                                .font(.callout)
                                                 .foregroundStyle(.secondary)
                                         }
                                     }
@@ -1152,35 +1166,28 @@ private struct SensitiveCatalogEditorCard: View {
 
                                 HStack(spacing: 12) {
                                     Label("条目 " + String(entries.count), systemImage: "list.bullet")
-                                    Label("密码字段 " + String(entries.flatMap { $0.fields }.filter { $0.type.isSecret }.count), systemImage: "lock.fill")
+                                    Label("密码字段 " + String(secretFieldCount), systemImage: "lock.fill")
                                 }
-                                .font(.caption)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
-
-                                HStack(spacing: 8) {
-                                    Button("打开分组") { selectedIndexID = index.id }
-                                        .buttonStyle(.borderedProminent)
-                                    Button("删除", role: .destructive) {
-                                        Task {
-                                            isWorking = true
-                                            _ = await applyBatch?(CatalogBatchMutation(operations: [.deleteIndex(id: index.id)]))
-                                            selectedIndexIDs.remove(index.id)
-                                            isWorking = false
-                                        }
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .disabled(isWorking || applyBatch == nil)
-                                }
                             }
                             .padding(16)
-                            .frame(maxWidth: .infinity, minHeight: 150, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .aspectRatio(1.618, contentMode: .fit)
                             .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .stroke(selectedIndexIDs.contains(index.id) ? Color.blue.opacity(0.55) : Color.secondary.opacity(0.12))
+                                    .stroke(isSelected ? Color.blue.opacity(0.65) : Color.secondary.opacity(0.12), lineWidth: isSelected ? 2 : 1)
                             )
                             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .onTapGesture { selectedIndexID = index.id }
+                            .onTapGesture {
+                                if isSelectingIndexes {
+                                    if isSelected { selectedIndexIDs.remove(index.id) }
+                                    else { selectedIndexIDs.insert(index.id) }
+                                } else {
+                                    selectedIndexID = index.id
+                                }
+                            }
                         }
                     }
                 }
@@ -1204,15 +1211,48 @@ private struct SensitiveCatalogEditorCard: View {
                     index: index,
                     entries: currentSnapshot.document.entries.filter { $0.indexId == index.id },
                     createEntry: createEntry,
-                    updateEntry: updateEntry,
+                    commitEntryEdit: commitEntryEdit,
                     applyBatch: applyBatch,
-                    fillSecret: fillSecret
                 )
-                .frame(minWidth: 720, minHeight: 560)
+                .frame(minWidth: 760, idealWidth: 900)
             } else {
                 ContentUnavailableView("分组已不存在", systemImage: "folder.badge.questionmark")
                     .frame(minWidth: 520, minHeight: 300)
             }
+        }
+        .alert(item: $pendingIndexDeletion) { request in
+            Alert(
+                title: Text("删除 \(request.itemCount) 个分组？"),
+                message: Text("其中包含 \(request.entryCount) 个条目、\(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
+                primaryButton: .destructive(Text("删除")) {
+                    deleteIndexes(request.ids)
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
+    }
+
+    private func prepareIndexDeletion(snapshot: SensitiveCatalogSnapshot) {
+        let ids = selectedIndexIDs.sorted()
+        guard !ids.isEmpty else { return }
+        let selectedEntries = snapshot.document.entries.filter { ids.contains($0.indexId) }
+        pendingIndexDeletion = CatalogDeletionRequest(
+            id: ids.joined(separator: ","),
+            kind: .indexes,
+            ids: ids,
+            itemCount: ids.count,
+            entryCount: selectedEntries.count,
+            secretFieldCount: selectedEntries.flatMap(\.fields).filter { $0.type.isSecret }.count
+        )
+    }
+
+    private func deleteIndexes(_ ids: [String]) {
+        Task {
+            isWorking = true
+            _ = await applyBatch?(CatalogBatchMutation(operations: ids.map { .deleteIndex(id: $0) }))
+            selectedIndexIDs.subtract(ids)
+            pendingIndexDeletion = nil
+            isWorking = false
         }
     }
 }
@@ -1221,15 +1261,16 @@ private struct SensitiveCatalogGroupSheet: View {
     let index: SecretCatalogIndex
     let entries: [SecretCatalogEntry]
     let createEntry: ((String, String, String) async -> CatalogMutationUIResult)?
-    let updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
+    let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
-    let fillSecret: ((String, String, String, String) async -> String?)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var isAdding = false
     @State private var newEntryTitle = ""
     @State private var selectedPresetID = SensitiveCatalogEntryPreset.all.first?.id ?? "credential"
     @State private var selectedEntryIDs: Set<String> = []
+    @State private var isSelectingEntries = false
+    @State private var pendingEntryDeletion: CatalogDeletionRequest?
     @State private var newlyCreatedEntryID: String?
     @State private var isWorking = false
     @State private var createError: CatalogEntryCreationError?
@@ -1253,33 +1294,40 @@ private struct SensitiveCatalogGroupSheet: View {
             }
 
             HStack(spacing: 8) {
-                Button("新增条目") {
-                    isAdding = true
-                    createError = nil
-                }
-                .buttonStyle(.borderedProminent)
-                Button(selectedEntryIDs.count == entries.count ? "取消全选" : "全选条目") {
-                    if selectedEntryIDs.count == entries.count {
-                        selectedEntryIDs.removeAll()
-                    } else {
-                        selectedEntryIDs = Set(entries.map(\.id))
+                if isSelectingEntries {
+                    Button(selectedEntryIDs.count == entries.count ? "取消全选" : "全选") {
+                        if selectedEntryIDs.count == entries.count {
+                            selectedEntryIDs.removeAll()
+                        } else {
+                            selectedEntryIDs = Set(entries.map(\.id))
+                        }
                     }
-                }
-                .buttonStyle(.bordered)
-                Button("删除选中条目", role: .destructive) {
-                    let ids = selectedEntryIDs
-                    guard !ids.isEmpty else { return }
-                    Task {
-                        isWorking = true
-                        _ = await applyBatch?(CatalogBatchMutation(
-                            operations: ids.sorted().map { .deleteEntry(id: $0) }
-                        ))
-                        selectedEntryIDs.removeAll()
-                        isWorking = false
+                    .buttonStyle(.bordered)
+                    Button("删除选中", role: .destructive) {
+                        prepareEntryDeletion()
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(isWorking || selectedEntryIDs.isEmpty || applyBatch == nil)
+                    Text("已选 \(selectedEntryIDs.count)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("完成") {
+                        isSelectingEntries = false
+                        selectedEntryIDs.removeAll()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("新增条目") {
+                        isAdding = true
+                        createError = nil
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("选择") {
+                        isSelectingEntries = true
+                        selectedEntryIDs.removeAll()
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
-                .disabled(isWorking || selectedEntryIDs.isEmpty || applyBatch == nil)
                 Spacer()
             }
 
@@ -1343,39 +1391,73 @@ private struct SensitiveCatalogGroupSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(entries, id: \.id) { entry in
-                            HStack(alignment: .top, spacing: 8) {
-                                Toggle("", isOn: Binding(
-                                    get: { selectedEntryIDs.contains(entry.id) },
-                                    set: { value in
-                                        if value { selectedEntryIDs.insert(entry.id) }
-                                        else { selectedEntryIDs.remove(entry.id) }
-                                    }
-                                ))
-                                .labelsHidden()
-                                SensitiveCatalogEntryRow(
-                                    entry: entry,
-                                    autoEdit: newlyCreatedEntryID == entry.id,
-                                    updateEntry: updateEntry,
-                                    applyBatch: applyBatch,
-                                    fillSecret: fillSecret
-                                )
-                            }
+                            SensitiveCatalogEntryRow(
+                                entry: entry,
+                                autoEdit: newlyCreatedEntryID == entry.id,
+                                isSelecting: isSelectingEntries,
+                                isSelected: selectedEntryIDs.contains(entry.id),
+                                toggleSelection: {
+                                    if selectedEntryIDs.contains(entry.id) { selectedEntryIDs.remove(entry.id) }
+                                    else { selectedEntryIDs.insert(entry.id) }
+                                },
+                                commitEntryEdit: commitEntryEdit,
+                                applyBatch: applyBatch,
+                                requestDelete: { prepareEntryDeletion(for: entry) }
+                            )
                         }
                     }
                 }
+                .frame(maxHeight: 520)
             }
         }
         .padding(22)
         .background(Color(nsColor: .windowBackgroundColor))
+        .alert(item: $pendingEntryDeletion) { request in
+            Alert(
+                title: Text("删除 \(request.itemCount) 个条目？"),
+                message: Text("其中包含 \(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
+                primaryButton: .destructive(Text("删除")) {
+                    deleteEntries(request.ids)
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
+    }
+
+    private func prepareEntryDeletion(for entry: SecretCatalogEntry? = nil) {
+        let ids = (entry.map { [$0.id] } ?? selectedEntryIDs.sorted())
+        guard !ids.isEmpty else { return }
+        let selectedEntries = entries.filter { ids.contains($0.id) }
+        pendingEntryDeletion = CatalogDeletionRequest(
+            id: ids.joined(separator: ","),
+            kind: .entries,
+            ids: ids,
+            itemCount: ids.count,
+            entryCount: 0,
+            secretFieldCount: selectedEntries.flatMap(\.fields).filter { $0.type.isSecret }.count
+        )
+    }
+
+    private func deleteEntries(_ ids: [String]) {
+        Task {
+            isWorking = true
+            _ = await applyBatch?(CatalogBatchMutation(operations: ids.map { .deleteEntry(id: $0) }))
+            selectedEntryIDs.subtract(ids)
+            pendingEntryDeletion = nil
+            isWorking = false
+        }
     }
 }
 
 private struct SensitiveCatalogEntryRow: View {
     let entry: SecretCatalogEntry
     let autoEdit: Bool
-    let updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
+    let isSelecting: Bool
+    let isSelected: Bool
+    let toggleSelection: () -> Void
+    let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
-    let fillSecret: ((String, String, String, String) async -> String?)?
+    let requestDelete: () -> Void
 
     @State private var editing = false
     @State private var draftTitle: String
@@ -1392,15 +1474,21 @@ private struct SensitiveCatalogEntryRow: View {
     init(
         entry: SecretCatalogEntry,
         autoEdit: Bool = false,
-        updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?,
+        isSelecting: Bool = false,
+        isSelected: Bool = false,
+        toggleSelection: @escaping () -> Void = {},
+        commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?,
         applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?,
-        fillSecret: ((String, String, String, String) async -> String?)?
+        requestDelete: @escaping () -> Void = {}
     ) {
         self.entry = entry
         self.autoEdit = autoEdit
-        self.updateEntry = updateEntry
+        self.isSelecting = isSelecting
+        self.isSelected = isSelected
+        self.toggleSelection = toggleSelection
+        self.commitEntryEdit = commitEntryEdit
         self.applyBatch = applyBatch
-        self.fillSecret = fillSecret
+        self.requestDelete = requestDelete
         _draftTitle = State(initialValue: entry.title)
         _draftAliases = State(initialValue: entry.aliases.joined(separator: ", "))
         _draftTags = State(initialValue: entry.tags.joined(separator: ", "))
@@ -1412,66 +1500,90 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                if editing {
-                    editorBody
-                } else {
-                    displayBody
+        Group {
+            if isSelecting {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isSelected ? .blue : .secondary)
+                        .accessibilityLabel(isSelected ? "已选择" : "未选择")
+                    entrySummary
                 }
-            }
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "key.horizontal")
-                    .foregroundStyle(.green)
-                Text(entry.title)
-                    .font(.callout.weight(.semibold))
-                if !entry.aliases.isEmpty {
-                    Text(entry.aliases.joined(separator: "、"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(entry.id)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                Button(editing ? "取消" : "编辑") {
-                    if editing {
-                        load(entry)
-                        editing = false
-                    } else {
-                        // Existing entries start collapsed.  Entering edit
-                        // mode must reveal the editor; newly-created entries
-                        // already use autoEdit and are expanded in init.
-                        editing = true
-                        // The button is inside the DisclosureGroup label. The
-                        // group handles its own tap after the button action,
-                        // so defer the expansion until that label event has
-                        // finished; otherwise it immediately collapses again.
-                        DispatchQueue.main.async {
-                            expanded = true
+                .contentShape(Rectangle())
+                .onTapGesture(perform: toggleSelection)
+            } else {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if editing {
+                            editorBody
+                        } else {
+                            displayBody
                         }
                     }
-                    editorError = nil
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                Button(role: .destructive) {
-                    Task {
-                        _ = await applyBatch?(CatalogBatchMutation(operations: [.deleteEntry(id: entry.id)]))
-                    }
+                    .padding(.top, 6)
                 } label: {
-                    Image(systemName: "trash")
+                    HStack(alignment: .center, spacing: 8) {
+                        entrySummary
+                        Spacer(minLength: 8)
+                        entryAdvancedMenu
+                        Button(editing ? "取消" : "编辑") {
+                            if editing {
+                                load(entry)
+                                editing = false
+                            } else {
+                                editing = true
+                                DispatchQueue.main.async {
+                                    expanded = true
+                                }
+                            }
+                            editorError = nil
+                        }
+                        .buttonStyle(.bordered)
+                        Button(role: .destructive, action: requestDelete) {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(applyBatch == nil)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(applyBatch == nil)
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onDisappear {
+            pendingSecretInputs.removeAll()
+        }
+    }
+
+    private var entrySummary: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "key.horizontal")
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(.headline.weight(.semibold))
+                if !entry.aliases.isEmpty {
+                    Text(entry.aliases.joined(separator: "、"))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var entryAdvancedMenu: some View {
+        Menu {
+            Text(entry.id)
+                .font(.system(.caption, design: .monospaced))
+            Button("复制 Entry ID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(entry.id, forType: .string)
+            }
+        } label: {
+            Label("更多", systemImage: "ellipsis")
+        }
+        .menuStyle(.borderlessButton)
     }
 
     private var displayBody: some View {
@@ -1483,19 +1595,19 @@ private struct SensitiveCatalogEntryRow: View {
                         .foregroundStyle(field.type.isSecret ? .orange : .secondary)
                         .frame(width: 14)
                     Text(field.label)
-                        .font(.caption.weight(.semibold))
+                        .font(.body.weight(.semibold))
                     Text(displayValue(field))
-                        .font(.system(.caption, design: field.type.isSecret ? .monospaced : .default))
+                        .font(.system(.body, design: field.type.isSecret ? .monospaced : .default))
                         .foregroundStyle(field.type.isSecret ? .orange : .secondary)
                         .textSelection(.enabled)
                     Spacer()
                     if !field.agentVisible {
                         Text("智能体隐藏")
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundStyle(.tertiary)
                     } else if field.searchable {
                         Text("可搜索")
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
                 }
@@ -1545,8 +1657,6 @@ private struct SensitiveCatalogEntryRow: View {
             ForEach(draftFields, id: \.key) { field in
                 SensitiveCatalogFieldEditorRow(
                     field: field,
-                    entryID: entry.id,
-                    fillSecret: fillSecret,
                     secretInput: Binding(
                         get: { pendingSecretInputs[field.key] ?? "" },
                         set: { value in
@@ -1596,7 +1706,7 @@ private struct SensitiveCatalogEntryRow: View {
                     saveEntry()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isSaving || updateEntry == nil)
+                .disabled(isSaving || commitEntryEdit == nil)
             }
         }
     }
@@ -1623,10 +1733,6 @@ private struct SensitiveCatalogEntryRow: View {
             tags: Self.csv(draftTags),
             schema: entry.schema
         )
-        guard pendingSecretInputs.values.allSatisfy(\.isEmpty) else {
-            editorError = "请先点击对应字段的“填写密码”；未提交的输入不会写入目录"
-            return
-        }
         do {
             try SecretCatalogDocument(
                 indexes: [SecretCatalogIndex(id: entry.indexId, title: "validation")],
@@ -1638,7 +1744,14 @@ private struct SensitiveCatalogEntryRow: View {
         }
         Task {
             isSaving = true
-            let result = await updateEntry?(updated)
+            let secretInputs = draftFields.compactMap { field -> CatalogSecretInput? in
+                guard field.type.isSecret,
+                      let plaintext = pendingSecretInputs[field.key],
+                      !plaintext.isEmpty
+                else { return nil }
+                return CatalogSecretInput(key: field.key, label: field.label, plaintext: plaintext)
+            }
+            let result = await commitEntryEdit?(updated, secretInputs)
             isSaving = false
             switch result {
             case .success:
@@ -1667,7 +1780,7 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     private func displayValue(_ field: SecretCatalogFieldValue) -> String {
-        if field.type.isSecret { return field.secretRef ?? "待填写（仅在 SVLT 安全表单输入）" }
+        if field.type.isSecret { return field.secretRef ?? "未绑定（保存时设置）" }
         guard field.agentVisible else { return "已隐藏" }
         guard let value = field.value else { return "未填写" }
         switch value {
@@ -1707,8 +1820,6 @@ private struct SensitiveCatalogEntryRow: View {
 
 private struct SensitiveCatalogFieldEditorRow: View {
     let field: SecretCatalogFieldValue
-    let entryID: String
-    let fillSecret: ((String, String, String, String) async -> String?)?
     @Binding var secretInput: String
     let onUpdate: (SecretCatalogFieldValue) -> Void
     let onDelete: () -> Void
@@ -1723,13 +1834,11 @@ private struct SensitiveCatalogFieldEditorRow: View {
     @State private var draftBoolean: Bool
     @State private var draftAgentVisible: Bool
     @State private var draftSearchable: Bool
-    @State private var isSavingSecret = false
+    @State private var showsSecret = true
     @State private var errorMessage: String?
 
     init(
         field: SecretCatalogFieldValue,
-        entryID: String,
-        fillSecret: ((String, String, String, String) async -> String?)?,
         secretInput: Binding<String>,
         onUpdate: @escaping (SecretCatalogFieldValue) -> Void,
         onDelete: @escaping () -> Void,
@@ -1737,8 +1846,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
         onMoveDown: @escaping () -> Void
     ) {
         self.field = field
-        self.entryID = entryID
-        self.fillSecret = fillSecret
         self._secretInput = secretInput
         self.onUpdate = onUpdate
         self.onDelete = onDelete
@@ -1761,7 +1868,13 @@ private struct SensitiveCatalogFieldEditorRow: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("字段标签", text: $draftLabel)
                     .textFieldStyle(.roundedBorder)
-                Picker("类型", selection: $draftType) {
+                Picker("类型", selection: Binding(
+                    get: { draftType },
+                    set: { value in
+                        if value != .secret { secretInput = "" }
+                        draftType = value
+                    }
+                )) {
                     ForEach(SecretCatalogFieldType.allCases, id: \.self) { type in
                         Text(Self.typeName(type)).tag(type)
                     }
@@ -1786,34 +1899,19 @@ private struct SensitiveCatalogFieldEditorRow: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     } else {
-                        SecureField("在 SVLT 安全表单中输入", text: $secretInput)
-                            .textFieldStyle(.roundedBorder)
-                        Button(isSavingSecret ? "保存中…" : "填写密码") {
-                            let plaintext = secretInput
-                            Task {
-                                isSavingSecret = true
-                                if let fillSecret,
-                                   let secretRef = await fillSecret(entryID, draftKey, draftLabel, plaintext) {
-                                    // Keep the newly generated opaque reference in this
-                                    // field's draft state. Saving another Entry metadata
-                                    // change afterwards must not drop the secret just filled.
-                                    onUpdate(SecretCatalogFieldValue(
-                                        key: draftKey,
-                                        label: draftLabel,
-                                        type: .secret,
-                                        agentVisible: draftAgentVisible,
-                                        searchable: draftSearchable,
-                                        secretRef: secretRef
-                                    ))
-                                }
-                                secretInput = ""
-                                isSavingSecret = false
-                            }
+                        if showsSecret {
+                            TextField("输入密码", text: $secretInput)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            SecureField("输入密码", text: $secretInput)
+                                .textFieldStyle(.roundedBorder)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(secretInput.isEmpty || isSavingSecret || fillSecret == nil || draftKey.isEmpty)
-                        Text("先点“填写密码”，再保存条目")
-                            .font(.caption2)
+                        Button(showsSecret ? "隐藏" : "显示") {
+                            showsSecret.toggle()
+                        }
+                        .buttonStyle(.borderless)
+                        Text("点击“应用字段”后，保存条目时一次提交")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }

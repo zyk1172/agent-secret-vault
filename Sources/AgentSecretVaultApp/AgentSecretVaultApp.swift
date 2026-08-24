@@ -86,14 +86,11 @@ struct AgentSecretVaultApplication: App {
                 createCatalogEntry: { indexID, title, presetID in
                     await runtime.createCatalogEntry(indexID: indexID, title: title, presetID: presetID)
                 },
-                updateCatalogEntry: { entry in
-                    await runtime.updateCatalogEntry(entry)
+                commitCatalogEntryEdit: { entry, secretInputs in
+                    await runtime.commitCatalogEntryEdit(entry: entry, secretInputs: secretInputs)
                 },
                 applyCatalogBatch: { mutation in
                     await runtime.applyCatalogBatch(mutation)
-                },
-                fillCatalogSecret: { entryID, key, label, plaintext in
-                    await runtime.fillCatalogSecret(entryID: entryID, key: key, label: label, plaintext: plaintext)
                 },
                 enableCatalogAgentWrite: { mode in
                     await runtime.enableCatalogAgentWrite(mode: mode)
@@ -970,28 +967,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         return CatalogMutationUIError(code: code, message: message)
     }
 
-    func fillCatalogSecret(entryID: String, key: String, label: String, plaintext: String) async -> String? {
-        guard let appControlClient, !plaintext.isEmpty else { return nil }
-        do {
-            let result = try await appControlClient.catalogSecureInput(
-                entryID: entryID,
-                key: key,
-                label: label,
-                plaintext: plaintext,
-                policy: .credential
-            )
-            await refreshSensitiveCatalog()
-            sensitiveIndexError = nil
-            return result.reference
-        } catch {
-            // Do not include the secure input or error description in UI/audit
-            // text; the App-control handler already returns a safe status code.
-            sensitiveIndexError = "无法保存密码字段，请验证目录状态后重试"
-            return nil
-        }
-    }
-
-    func updateCatalogEntry(_ entry: SecretCatalogEntry) async -> CatalogMutationUIResult {
+    func commitCatalogEntryEdit(
+        entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput]
+    ) async -> CatalogMutationUIResult {
         guard let appControlClient else {
             let error = CatalogMutationUIError(
                 code: "APP_CONTROL_UNAVAILABLE",
@@ -1001,8 +980,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             return .failure(error)
         }
         do {
-            let result = try await appControlClient.catalogUpdateEntry(
+            let result = try await appControlClient.catalogCommitEntryEdit(
                 entry,
+                secretInputs: secretInputs,
                 expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
             )
             await refreshSensitiveCatalog()

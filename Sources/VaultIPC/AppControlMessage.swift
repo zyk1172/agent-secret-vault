@@ -21,6 +21,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
     )
     case catalogCreateEntry(request: CatalogDraftRequest, expectedRevision: UInt64)
     case catalogUpdateEntry(entry: SecretCatalogEntry, expectedRevision: UInt64)
+    case catalogCommitEntryEdit(
+        entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput],
+        expectedRevision: UInt64
+    )
     case catalogApplyBatch(mutation: CatalogBatchMutation, expectedRevision: UInt64)
     case catalogBindExistingSecret(
         entryID: String,
@@ -54,6 +59,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case mode
         case request
         case entry
+        case secretInputs
         case mutation
     }
 
@@ -68,6 +74,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case catalogCreateIndex
         case catalogCreateEntry
         case catalogUpdateEntry
+        case catalogCommitEntryEdit
         case catalogApplyBatch
         case catalogBindExistingSecret
         case catalogSecureInput
@@ -112,6 +119,12 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case .catalogUpdateEntry:
             self = .catalogUpdateEntry(
                 entry: try container.decode(SecretCatalogEntry.self, forKey: .entry),
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
+            )
+        case .catalogCommitEntryEdit:
+            self = .catalogCommitEntryEdit(
+                entry: try container.decode(SecretCatalogEntry.self, forKey: .entry),
+                secretInputs: try container.decode([CatalogSecretInput].self, forKey: .secretInputs),
                 expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogApplyBatch:
@@ -172,6 +185,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case let .catalogUpdateEntry(entry, expectedRevision):
             try container.encode(RequestType.catalogUpdateEntry, forKey: .type)
             try container.encode(entry, forKey: .entry)
+            try container.encode(expectedRevision, forKey: .expectedRevision)
+        case let .catalogCommitEntryEdit(entry, secretInputs, expectedRevision):
+            try container.encode(RequestType.catalogCommitEntryEdit, forKey: .type)
+            try container.encode(entry, forKey: .entry)
+            try container.encode(secretInputs, forKey: .secretInputs)
             try container.encode(expectedRevision, forKey: .expectedRevision)
         case let .catalogApplyBatch(mutation, expectedRevision):
             try container.encode(RequestType.catalogApplyBatch, forKey: .type)
@@ -303,6 +321,11 @@ public protocol AppControlServicing: Sendable {
     ) async throws -> CatalogWriteResult
     func catalogUpdateEntry(
         _ entry: SecretCatalogEntry,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult
+    func catalogCommitEntryEdit(
+        _ entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput],
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func catalogApplyBatch(

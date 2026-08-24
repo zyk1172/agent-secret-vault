@@ -145,6 +145,21 @@ public struct CatalogDraft: Codable, Equatable, Sendable {
     }
 }
 
+/// Plaintext supplied only for the duration of an App-controlled Entry edit.
+/// It is never a Catalog value and is consumed by the service before the
+/// resulting opaque reference is written to Markdown.
+public struct CatalogSecretInput: Codable, Equatable, Sendable {
+    public let key: String
+    public let label: String
+    public let plaintext: String
+
+    public init(key: String, label: String, plaintext: String) {
+        self.key = key
+        self.label = label
+        self.plaintext = plaintext
+    }
+}
+
 public struct CatalogWriteResult: Codable, Equatable, Sendable {
     public let revision: UInt64
     public let entry: SecretCatalogEntryMatch?

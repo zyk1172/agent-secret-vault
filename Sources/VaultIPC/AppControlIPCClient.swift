@@ -104,6 +104,20 @@ public actor AppControlIPCClient {
         return result
     }
 
+    public func catalogCommitEntryEdit(
+        _ entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput],
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogCommitEntryEdit(
+            entry: entry,
+            secretInputs: secretInputs,
+            expectedRevision: expectedRevision
+        ))
+        guard case let .catalogWriteResult(result) = response else { throw unexpected(response) }
+        return result
+    }
+
     public func catalogApplyBatch(
         _ mutation: CatalogBatchMutation,
         expectedRevision: UInt64

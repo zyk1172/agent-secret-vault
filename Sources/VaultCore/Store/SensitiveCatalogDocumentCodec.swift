@@ -63,6 +63,53 @@ public enum SensitiveCatalogDocumentCodec {
         Data(try encode(document).utf8)
     }
 
+    /// Remove the two-entry policy catalog that was emitted by the v2 App.
+    /// The matcher is intentionally structural and content-based: an index
+    /// with only one coincidental title is not deleted during migration.
+    public static func migrateV2DocumentForV3(_ document: SecretCatalogDocument) throws -> SecretCatalogDocument {
+        try document.validate()
+        let policyIndexes = document.indexes.filter { $0.title == "SVLT 管理规范" }
+        guard policyIndexes.isEmpty == false else { return document }
+        guard policyIndexes.count == 1, let policyIndex = policyIndexes.first else {
+            throw SecretCatalogValidationError.ambiguousLegacyPolicy
+        }
+
+        let policyEntries = document.entries.filter { $0.indexId == policyIndex.id }
+        let expectedTitles: Set<String> = ["Agent 写入规范", "目录说明"]
+        guard policyEntries.count == expectedTitles.count,
+              Set(policyEntries.map(\.title)) == expectedTitles,
+              policyEntries.allSatisfy({ $0.fields.allSatisfy { $0.secretRef == nil } })
+        else {
+            throw SecretCatalogValidationError.ambiguousLegacyPolicy
+        }
+
+        let supportingText = policyEntries
+            .flatMap { entry in
+                [entry.notes ?? ""]
+                    + entry.aliases
+                    + entry.tags
+                    + entry.fields.flatMap { field in
+                        [field.label] + Self.visibleStrings(field.value)
+                    }
+            }
+            .joined(separator: "\n")
+        let hasAgentPolicyMarker = supportingText.localizedCaseInsensitiveContains("agent")
+            || supportingText.contains("智能体")
+        let hasCatalogPolicyMarker = supportingText.localizedCaseInsensitiveContains("catalog")
+            || supportingText.contains("写入")
+            || supportingText.contains("secret://")
+            || supportingText.contains("SVLT")
+        guard hasAgentPolicyMarker && hasCatalogPolicyMarker else {
+            throw SecretCatalogValidationError.ambiguousLegacyPolicy
+        }
+
+        let remainingIndexes = document.indexes.filter { $0.id != policyIndex.id }
+        let remainingEntries = document.entries.filter { $0.indexId != policyIndex.id }
+        let migrated = SecretCatalogDocument(indexes: remainingIndexes, entries: remainingEntries)
+        try migrated.validate()
+        return migrated
+    }
+
     /// v2 is input-only and exists for the explicit App migration flow.
     public static func encodeV2(_ document: SecretCatalogDocument) throws -> String {
         try document.validate()
@@ -633,6 +680,15 @@ private extension SensitiveCatalogDocumentCodec {
         guard root, !inFence else { throw SecretCatalogValidationError.malformedJSON }
         try finish(entryTitle, entryCount); try finish(indexTitle, indexCount)
         let document = SecretCatalogDocument(indexes: indexes, entries: entries); try document.validate(); return document
+    }
+
+    static func visibleStrings(_ value: SecretCatalogValue?) -> [String] {
+        guard let value else { return [] }
+        switch value {
+        case .string(let value): return [value]
+        case .list(let values): return values
+        case .number, .boolean: return []
+        }
     }
     static func decodeV2Block(_ json: String, level: Int, indexTitle: String?, entryTitle: String?, active: SecretCatalogIndex?, indexes: inout [SecretCatalogIndex], entries: inout [SecretCatalogEntry], indexCount: inout Int, entryCount: inout Int, current: inout SecretCatalogIndex?) throws {
         guard let data = json.data(using: .utf8), let envelope = try? JSONDecoder().decode(Envelope.self, from: data) else { throw SecretCatalogValidationError.malformedJSON }

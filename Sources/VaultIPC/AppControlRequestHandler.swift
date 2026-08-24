@@ -46,6 +46,12 @@ public struct AppControlRequestHandler: Sendable {
                 return .catalogWriteResult(try await service.catalogCreateEntry(request, expectedRevision: expectedRevision))
             case let .catalogUpdateEntry(entry, expectedRevision):
                 return .catalogWriteResult(try await service.catalogUpdateEntry(entry, expectedRevision: expectedRevision))
+            case let .catalogCommitEntryEdit(entry, secretInputs, expectedRevision):
+                return .catalogWriteResult(try await service.catalogCommitEntryEdit(
+                    entry,
+                    secretInputs: secretInputs,
+                    expectedRevision: expectedRevision
+                ))
             case let .catalogApplyBatch(mutation, expectedRevision):
                 return .catalogWriteResult(try await service.catalogApplyBatch(mutation, expectedRevision: expectedRevision))
             case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision):

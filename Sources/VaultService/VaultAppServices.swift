@@ -1013,6 +1013,189 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
+    /// Commit one App entry edit together with any newly entered secret
+    /// values. Plaintext is consumed here and never becomes a Catalog value;
+    /// newly-created records are deleted again if the catalog commit fails.
+    public func catalogCommitEntryEdit(
+        _ entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput],
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        let snapshot = try await catalogSnapshotForAgent()
+        guard expectedRevision == snapshot.revision else {
+            throw SecretCatalogAgentError.revisionConflict
+        }
+        guard let currentEntry = snapshot.document.entries.first(where: { $0.id == entry.id }),
+              currentEntry.indexId == entry.indexId
+        else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+
+        var inputsByKey: [String: CatalogSecretInput] = [:]
+        for input in secretInputs {
+            guard !input.key.isEmpty,
+                  !input.label.isEmpty,
+                  !input.plaintext.isEmpty,
+                  inputsByKey[input.key] == nil
+            else {
+                throw SecretCatalogAgentError.invalidOperation
+            }
+            inputsByKey[input.key] = input
+        }
+
+        guard Set(entry.fields.map(\.key)).count == entry.fields.count else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+        let currentFields = Dictionary(uniqueKeysWithValues: currentEntry.fields.map { ($0.key, $0) })
+        let candidateFields = Dictionary(uniqueKeysWithValues: entry.fields.map { ($0.key, $0) })
+        for input in secretInputs {
+            guard let candidateField = candidateFields[input.key],
+                  candidateField.type.isSecret,
+                  candidateField.secretRef == nil
+            else {
+                // Replacing an already-bound secret stays on the explicit
+                // approval path; this transaction only creates new records.
+                throw SecretCatalogAgentError.invalidOperation
+            }
+            if currentFields[input.key]?.secretRef != nil {
+                throw SecretCatalogAgentError.invalidOperation
+            }
+        }
+
+        for field in entry.fields {
+            let oldReference = currentFields[field.key]?.secretRef
+            if field.secretRef != oldReference {
+                if field.secretRef != nil && inputsByKey[field.key] == nil {
+                    // A new opaque reference must be created by this request,
+                    // never smuggled in as ordinary Entry metadata.
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+                if oldReference != nil && inputsByKey[field.key] != nil {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+            }
+        }
+
+        let draftFields = entry.fields.map { field in
+            guard inputsByKey[field.key] != nil else { return field }
+            return SecretCatalogFieldValue(
+                key: field.key,
+                label: field.label,
+                type: field.type,
+                agentVisible: field.agentVisible,
+                searchable: field.searchable,
+                secretRef: nil
+            )
+        }
+        let draftEntry = SecretCatalogEntry(
+            id: entry.id,
+            indexId: entry.indexId,
+            title: entry.title,
+            type: entry.type,
+            aliases: entry.aliases,
+            endpoints: entry.endpoints,
+            fields: draftFields,
+            notes: entry.notes,
+            tags: entry.tags,
+            schema: entry.schema
+        )
+        var draftEntries = snapshot.document.entries
+        guard let entryOffset = draftEntries.firstIndex(where: { $0.id == entry.id }) else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+        draftEntries[entryOffset] = draftEntry
+        let draftDocument: SecretCatalogDocument
+        do {
+            draftDocument = SecretCatalogDocument(indexes: snapshot.document.indexes, entries: draftEntries)
+            try draftDocument.validate()
+        } catch {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+
+        let draftDiff = CatalogSemanticDiff.between(old: snapshot.document, new: draftDocument)
+        try await authorizeCatalogDiff(
+            draftDiff,
+            transport: .directManagedFileWrite,
+            requireAgentSafeWrite: false
+        )
+
+        guard !secretInputs.isEmpty else {
+            do {
+                let updated = try await catalogDocumentStore!.updateEntry(entry, expectedRevision: expectedRevision)
+                return CatalogWriteResult(
+                    revision: updated.revision,
+                    entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
+                )
+            } catch let error as SensitiveCatalogDocumentStoreError {
+                throw catalogAgentError(for: error)
+            }
+        }
+
+        guard let recordDeleter else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+
+        var createdReferences: [SecretReference] = []
+        do {
+            for input in secretInputs {
+                let reference = try await textEncryptor.encryptText(
+                    input.plaintext,
+                    label: input.label,
+                    policy: .credential
+                )
+                createdReferences.append(reference)
+            }
+
+            // Match generated references to input keys by position rather than
+            // exposing any plaintext in a temporary model or error.
+            let referencesByKey = Dictionary(uniqueKeysWithValues: zip(secretInputs.map(\.key), createdReferences).map { ($0.0, $0.1) })
+            let boundFields = entry.fields.map { field in
+                guard let reference = referencesByKey[field.key] else { return field }
+                return SecretCatalogFieldValue(
+                    key: field.key,
+                    label: field.label,
+                    type: field.type,
+                    agentVisible: field.agentVisible,
+                    searchable: field.searchable,
+                    secretRef: reference.description
+                )
+            }
+            let finalEntry = SecretCatalogEntry(
+                id: entry.id,
+                indexId: entry.indexId,
+                title: entry.title,
+                type: entry.type,
+                aliases: entry.aliases,
+                endpoints: entry.endpoints,
+                fields: boundFields,
+                notes: entry.notes,
+                tags: entry.tags,
+                schema: entry.schema
+            )
+            var finalEntries = snapshot.document.entries
+            finalEntries[entryOffset] = finalEntry
+            let finalDocument = SecretCatalogDocument(indexes: snapshot.document.indexes, entries: finalEntries)
+            try finalDocument.validate()
+
+            let updated = try await catalogDocumentStore!.updateEntry(finalEntry, expectedRevision: expectedRevision)
+            await notifySavedReferencesChanged()
+            return CatalogWriteResult(
+                revision: updated.revision,
+                entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
+            )
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            for reference in createdReferences {
+                try? await recordDeleter.delete(id: reference.id)
+            }
+            throw catalogAgentError(for: error)
+        } catch {
+            for reference in createdReferences {
+                try? await recordDeleter.delete(id: reference.id)
+            }
+            throw error
+        }
+    }
+
     public func catalogApplyBatch(
         _ mutation: CatalogBatchMutation,
         expectedRevision: UInt64

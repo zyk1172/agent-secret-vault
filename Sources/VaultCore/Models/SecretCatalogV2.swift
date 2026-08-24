@@ -429,6 +429,7 @@ public enum SecretCatalogValidationError: Error, Equatable, Sendable {
     case referenceSetChanged
     case pendingExternalChange
     case invalidPolicyBlock
+    case ambiguousLegacyPolicy
 }
 
 public enum SecretCatalogOpaqueID {

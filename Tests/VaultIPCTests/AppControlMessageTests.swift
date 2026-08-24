@@ -61,6 +61,15 @@ private struct ControlService: AppControlServicing {
         CatalogWriteResult(revision: expectedRevision + 1)
     }
 
+    func catalogCommitEntryEdit(
+        _ entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput],
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        _ = (entry, secretInputs)
+        return CatalogWriteResult(revision: expectedRevision + 1)
+    }
+
     func catalogBindExistingSecret(
         entryID: String,
         key: String,
@@ -114,6 +123,22 @@ private struct ControlService: AppControlServicing {
         from: JSONEncoder().encode(bindRequest)
     )
     #expect(decodedBindRequest == bindRequest)
+
+    let commitRequest = AppControlRequest.catalogCommitEntryEdit(
+        entry: SecretCatalogEntry(
+            id: "0123456789ABCDEFGHJKMNPQRT",
+            indexId: "0123456789ABCDEFGHJKMNPQRS",
+            title: "QNAP",
+            fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)]
+        ),
+        secretInputs: [CatalogSecretInput(key: "password", label: "密码", plaintext: "ASV_ENTRY_EDIT_CANARY")],
+        expectedRevision: 3
+    )
+    let decodedCommitRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(commitRequest)
+    )
+    #expect(decodedCommitRequest == commitRequest)
 
     let approvalRequest = AppControlRequest.catalogApproveExternalChange(
         expectedRevision: 7,

@@ -433,7 +433,15 @@ public actor SensitiveCatalogDocumentStore {
             try assertSafeFile(url)
             let raw = try Data(contentsOf: url)
             guard SensitiveCatalogDocumentCodec.format(raw) == .managedV2 else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
-            let document = try decodeV2(raw)
+            let decodedV2 = try decodeV2(raw)
+            let document: SecretCatalogDocument
+            do {
+                document = try SensitiveCatalogDocumentCodec.migrateV2DocumentForV3(decodedV2)
+            } catch {
+                // An ambiguous legacy policy-shaped index must fail closed;
+                // do not silently delete business data during migration.
+                throw SensitiveCatalogDocumentStoreError.malformedDocument
+            }
             let rendered = try SensitiveCatalogDocumentCodec.canonicalData(document)
             let reparsed = try SensitiveCatalogDocumentCodec.decode(rendered)
             guard reparsed == document, referenceSet(document) == referenceSet(reparsed) else { throw SensitiveCatalogDocumentStoreError.referenceSetChanged }

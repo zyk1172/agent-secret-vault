@@ -643,6 +643,88 @@ private func writeManagedV2WithLegacySidecar(
     #expect(current.acceptedDocument == document)
 }
 
+@Test func catalogStoreMigratesTheRealV2LegacyPolicyCatalogOutOfBusinessData() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let policyIndex = SecretCatalogIndex(id: storeSecondIndexID, title: "SVLT 管理规范")
+    let legacyAgentPolicy = SecretCatalogEntry(
+        id: storeSecondEntryID,
+        indexId: policyIndex.id,
+        title: "Agent 写入规范",
+        notes: "Agent 必须通过 SVLT Catalog 工具写入；普通字段可写入，密码绑定需要批准。"
+    )
+    let legacyCatalogDescription = SecretCatalogEntry(
+        id: storeTemporaryEntryID,
+        indexId: policyIndex.id,
+        title: "目录说明",
+        notes: "SVLT 目录使用 Markdown 作为真实主文档，secretRef 只保存不透明引用。"
+    )
+    let businessDocument = SecretCatalogDocument(
+        indexes: [
+            SecretCatalogIndex(id: storeIndexID, title: "QNAP"),
+            policyIndex
+        ],
+        entries: [
+            SecretCatalogEntry(
+                id: storeEntryID,
+                indexId: storeIndexID,
+                title: "QNAP 登录",
+                fields: [SecretCatalogFieldValue(
+                    key: "password",
+                    label: "密码",
+                    type: .secret,
+                    secretRef: storeSecretReference
+                )]
+            ),
+            legacyAgentPolicy,
+            legacyCatalogDescription
+        ]
+    )
+    _ = try writeManagedV2WithLegacySidecar(document: businessDocument, fixture: fixture)
+
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let adopted = try await store.adoptExternalV2()
+
+    #expect(adopted.document.indexes.map(\.title) == ["QNAP"])
+    #expect(adopted.document.entries.map(\.title) == ["QNAP 登录"])
+    #expect(adopted.document.entries.first?.fields.first?.secretRef == storeSecretReference)
+    let rewritten = try String(contentsOf: fixture.document, encoding: .utf8)
+    #expect(rewritten.contains("SVLT-POLICY-BEGIN"))
+    #expect(rewritten.contains("## SVLT 管理规范") == false)
+    #expect(rewritten.contains("### Agent 写入规范") == false)
+    #expect(rewritten.contains("### 目录说明") == false)
+}
+
+@Test func catalogStoreFailsClosedForAnAmbiguousPolicyShapedV2Index() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let ambiguous = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: storeSecondIndexID, title: "SVLT 管理规范")],
+        entries: [SecretCatalogEntry(
+            id: storeSecondEntryID,
+            indexId: storeSecondIndexID,
+            title: "业务条目",
+            notes: "这是用户自己的业务数据。"
+        )]
+    )
+    let original = try writeManagedV2WithLegacySidecar(document: ambiguous, fixture: fixture).document
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
+        _ = try await store.adoptExternalV2()
+    }
+    #expect(try Data(contentsOf: fixture.document) == original)
+}
+
 @Test func catalogStoreRollsBackV2MigrationWhenNewSidecarCreationFails() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
