@@ -25,6 +25,17 @@ struct AgentSecretVaultApplication: App {
             VaultWorkbenchView(
                 status: runtime.status,
                 agentServiceStatus: runtime.agentServiceStatus,
+                agentServiceActionInFlight: runtime.agentServiceActionInFlight,
+                agentServiceActionErrorMessage: runtime.agentServiceActionErrorMessage,
+                enableAgentService: {
+                    await runtime.enableAgentService()
+                },
+                disableAgentService: {
+                    await runtime.disableAgentService()
+                },
+                restartAgentService: {
+                    await runtime.restartAgentService()
+                },
                 orphanScanResult: runtime.orphanScanResult,
                 auditEntries: runtime.auditEntries,
                 savedReferences: runtime.savedReferences,
@@ -223,6 +234,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         pluginConnected: false
     )
     @Published var agentServiceStatus: AgentServiceStatus = .notRegistered
+    @Published var agentServiceActionInFlight = false
+    @Published var agentServiceActionErrorMessage: String?
     @Published var orphanScanResult: OrphanScanResult?
     @Published var auditEntries: [AgentAutomationAuditEntry] = []
     @Published var savedReferences: [SecretReferenceMetadata] = []
@@ -313,6 +326,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     private func connectToAgent(_ client: VaultIPCClient) async -> Bool {
+        guard !AgentServiceRegistration.shared.isExplicitlyDisabled else {
+            return false
+        }
+
         let retryDelays: [Duration] = [
             .zero,
             .milliseconds(100),
@@ -360,7 +377,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                     return
                 }
 
-                guard let self, self.started else {
+                guard let self,
+                      self.started,
+                      !AgentServiceRegistration.shared.isExplicitlyDisabled
+                else {
                     return
                 }
                 if await self.connectToAgent(client) {
@@ -373,6 +393,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     private func markAgentDisconnected() {
+        if AgentServiceRegistration.shared.isExplicitlyDisabled {
+            markAgentDisabled()
+            return
+        }
         agentServiceStatus = AgentServiceRegistration.shared.status
         status = WorkbenchStatus(
             locked: true,
@@ -380,6 +404,97 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             activeKnowledgeBaseRoot: status.activeKnowledgeBaseRoot,
             pluginConnected: false
         )
+    }
+
+    private func markAgentDisabled() {
+        agentServiceStatus = .disabled
+        status = WorkbenchStatus(
+            locked: true,
+            ipcAvailable: false,
+            available: false,
+            ready: false,
+            activeKnowledgeBaseRoot: status.activeKnowledgeBaseRoot,
+            pluginConnected: false
+        )
+    }
+
+    private func reconnectAfterServiceAction() async {
+        readinessTask?.cancel()
+        readinessTask = nil
+
+        let registration = AgentServiceRegistration.shared
+        agentServiceStatus = registration.status
+        guard !registration.isExplicitlyDisabled else {
+            agentClient = nil
+            appControlClient = nil
+            markAgentDisabled()
+            return
+        }
+
+        do {
+            let client = try VaultIPCClient.defaultClient()
+            agentClient = client
+            appControlClient = try AppControlIPCClient.defaultClient()
+            if let appControlClient {
+                catalogAgentWriteStatus = (try? await appControlClient.catalogAgentWriteStatus())
+                    ?? CatalogAgentWriteAuthorizationStatus(mode: .disabled)
+            }
+            if !(await connectToAgent(client)) {
+                markAgentDisconnected()
+                startReadinessMonitoring(client)
+            }
+        } catch {
+            agentClient = nil
+            appControlClient = nil
+            markAgentDisconnected()
+        }
+    }
+
+    private func performAgentServiceAction(
+        failureCode: String,
+        failureMessage: String,
+        operation: () async throws -> Void
+    ) async {
+        guard !agentServiceActionInFlight else { return }
+        agentServiceActionInFlight = true
+        agentServiceActionErrorMessage = nil
+        defer { agentServiceActionInFlight = false }
+
+        do {
+            try await operation()
+            await reconnectAfterServiceAction()
+        } catch {
+            NSLog("SVLT Agent service action failed [\(failureCode)]")
+            agentServiceActionErrorMessage = failureMessage
+            agentServiceStatus = AgentServiceRegistration.shared.status
+        }
+    }
+
+    func enableAgentService() async {
+        await performAgentServiceAction(
+            failureCode: "AGENT_SERVICE_ENABLE_FAILED",
+            failureMessage: "无法启用后台 Agent，请检查本机登录项权限"
+        ) {
+            try AgentServiceRegistration.shared.register()
+        }
+    }
+
+    func disableAgentService() async {
+        await performAgentServiceAction(
+            failureCode: "AGENT_SERVICE_DISABLE_FAILED",
+            failureMessage: "无法停用后台 Agent"
+        ) {
+            try await AgentServiceRegistration.shared.unregisterAndWait()
+        }
+    }
+
+    func restartAgentService() async {
+        await performAgentServiceAction(
+            failureCode: "AGENT_SERVICE_RESTART_FAILED",
+            failureMessage: "无法重启后台 Agent"
+        ) {
+            try await AgentServiceRegistration.shared.restart()
+        }
     }
 
     func clearRevealSessions() async {
@@ -489,6 +604,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func refreshSavedReferences() async {
+        guard !AgentServiceRegistration.shared.isExplicitlyDisabled else {
+            savedReferences = []
+            markAgentDisabled()
+            return
+        }
         guard let agentClient else {
             savedReferences = []
             return

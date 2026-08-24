@@ -2,10 +2,26 @@ import SwiftUI
 
 public struct AgentServiceStatusView: View {
     public let status: AgentServiceStatus
-    @State private var actionFailed = false
+    public let actionInFlight: Bool
+    public let actionErrorMessage: String?
+    public let enableAgent: (() async -> Void)?
+    public let disableAgent: (() async -> Void)?
+    public let restartAgent: (() async -> Void)?
 
-    public init(status: AgentServiceStatus) {
+    public init(
+        status: AgentServiceStatus,
+        actionInFlight: Bool = false,
+        actionErrorMessage: String? = nil,
+        enableAgent: (() async -> Void)? = nil,
+        disableAgent: (() async -> Void)? = nil,
+        restartAgent: (() async -> Void)? = nil
+    ) {
         self.status = status
+        self.actionInFlight = actionInFlight
+        self.actionErrorMessage = actionErrorMessage
+        self.enableAgent = enableAgent
+        self.disableAgent = disableAgent
+        self.restartAgent = restartAgent
     }
 
     public var body: some View {
@@ -21,25 +37,25 @@ public struct AgentServiceStatusView: View {
             }
             HStack(spacing: 8) {
                 Button("启用") {
-                    perform { try AgentServiceRegistration.shared.register() }
+                    run(enableAgent)
                 }
+                .disabled(actionInFlight || enableAgent == nil || status == .running || status == .registered)
                 Button("停用") {
-                    perform { try AgentServiceRegistration.shared.unregister() }
+                    run(disableAgent)
                 }
+                .disabled(actionInFlight || disableAgent == nil || status == .disabled || status == .notRegistered)
                 Button("重启") {
-                    Task { @MainActor in
-                        do {
-                            try await AgentServiceRegistration.shared.restart()
-                            actionFailed = false
-                        } catch {
-                            actionFailed = true
-                        }
-                    }
+                    run(restartAgent)
                 }
+                .disabled(actionInFlight || restartAgent == nil || status == .notRegistered)
             }
             .buttonStyle(.borderless)
-            if actionFailed {
-                Text("无法更新后台 Agent 状态")
+            if actionInFlight {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            if let actionErrorMessage {
+                Text(actionErrorMessage)
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -51,12 +67,8 @@ public struct AgentServiceStatusView: View {
         .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func perform(_ action: () throws -> Void) {
-        do {
-            try action()
-            actionFailed = false
-        } catch {
-            actionFailed = true
-        }
+    private func run(_ action: (() async -> Void)?) {
+        guard let action else { return }
+        Task { await action() }
     }
 }

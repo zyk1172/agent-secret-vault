@@ -6,6 +6,7 @@ public enum AgentServiceStatus: String, Equatable, Sendable {
     case running
     case requiresApproval
     case notRegistered
+    case disabled
     case unavailable
 
     public var displayName: String {
@@ -18,6 +19,8 @@ public enum AgentServiceStatus: String, Equatable, Sendable {
             return "需要用户批准"
         case .notRegistered:
             return "未注册"
+        case .disabled:
+            return "已停用"
         case .unavailable:
             return "异常"
         }
@@ -46,6 +49,9 @@ public final class AgentServiceRegistration {
     }
 
     public var status: AgentServiceStatus {
+        if isExplicitlyDisabled {
+            return .disabled
+        }
         switch service.status {
         case .enabled:
             return .registered
@@ -60,6 +66,10 @@ public final class AgentServiceRegistration {
         }
     }
 
+    public var isExplicitlyDisabled: Bool {
+        defaults.bool(forKey: disabledKey)
+    }
+
     public func register() throws {
         try service.register()
         defaults.set(false, forKey: disabledKey)
@@ -72,8 +82,20 @@ public final class AgentServiceRegistration {
         defaults.set(true, forKey: disabledKey)
     }
 
+    /// Waits until ServiceManagement has finished unregistering the job.
+    /// The synchronous API can return while launchd is still reaping the
+    /// previous Agent process, which makes an immediate status read stale.
+    public func unregisterAndWait() async throws {
+        try await unregisterAndWaitForLaunchd()
+        defaults.set(true, forKey: disabledKey)
+    }
+
     public func restart() async throws {
-        try await unregisterAndWait()
+        if isExplicitlyDisabled {
+            try register()
+            return
+        }
+        try await unregisterAndWaitForLaunchd()
         try register()
     }
 
@@ -81,7 +103,7 @@ public final class AgentServiceRegistration {
     /// explicitly unregisters the service is not trapped in an auto-register
     /// loop; settings can call `register()` again.
     public func registerIfNeeded() async throws {
-        guard !defaults.bool(forKey: disabledKey) else {
+        guard !isExplicitlyDisabled else {
             return
         }
 
@@ -98,7 +120,7 @@ public final class AgentServiceRegistration {
             // App copy/update. Re-register when either the release identity or
             // the embedded executable changes so same-version test installs
             // also run the binary that is currently inside this App bundle.
-            try await unregisterAndWait()
+            try await unregisterAndWaitForLaunchd()
             try register()
         case .requiresApproval:
             return
@@ -117,7 +139,7 @@ public final class AgentServiceRegistration {
     /// reaped a running helper. Re-registering in that window can leave the
     /// managed job pointing at the old bundle-relative executable. Await the
     /// completion callback before installing a changed Agent.
-    private func unregisterAndWait() async throws {
+    private func unregisterAndWaitForLaunchd() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             service.unregister { error in
                 if let error {

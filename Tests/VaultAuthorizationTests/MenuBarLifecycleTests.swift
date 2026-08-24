@@ -43,6 +43,22 @@ import Testing
     #expect(!source.contains("controller?.stop()"))
 }
 
+@Test func agentServiceActionsRoundTripThroughRuntimeState() throws {
+    let source = try appSource()
+
+    #expect(source.contains("agentServiceActionInFlight"))
+    #expect(source.contains("func enableAgentService() async"))
+    #expect(source.contains("func disableAgentService() async"))
+    #expect(source.contains("func restartAgentService() async"))
+    #expect(source.contains("unregisterAndWait()"))
+    #expect(source.contains("reconnectAfterServiceAction()"))
+    #expect(source.contains("AGENT_SERVICE_DISABLE_FAILED"))
+}
+
+@Test func disabledAgentStatusHasExplicitPresentation() {
+    #expect(AgentServiceStatus.disabled.displayName == "已停用")
+}
+
 @Test func menuBarProtectedDeleteRequestDeletesTheRecord() throws {
     let source = try appSource()
 

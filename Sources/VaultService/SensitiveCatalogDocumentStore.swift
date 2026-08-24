@@ -103,17 +103,9 @@ public actor SensitiveCatalogDocumentStore {
     public func selectedDocumentURL() -> URL? { documentURL }
 
     public func snapshot() throws -> SensitiveCatalogSnapshot {
-        guard let url = documentURL else {
-            throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+        try withCatalogLock(exclusive: false) {
+            try snapshotUnlocked()
         }
-        guard fileManager.fileExists(atPath: url.path) else {
-            return SensitiveCatalogSnapshot(
-                document: SecretCatalogDocument(),
-                revision: 0,
-                integrity: .uninitialized
-            )
-        }
-        return try verifiedSnapshot(at: url)
     }
 
     public func validate() throws -> SensitiveCatalogSnapshot {
@@ -140,8 +132,10 @@ public actor SensitiveCatalogDocumentStore {
         expectedRevision: UInt64? = nil
     ) throws -> SensitiveCatalogSnapshot {
         try document.validate()
-        let current = try mutationBase(expectedRevision: expectedRevision)
-        return try write(document, previousRevision: current.revision)
+        return try withCatalogLock(exclusive: true) {
+            let current = try mutationBaseUnlocked(expectedRevision: expectedRevision)
+            return try writeUnlocked(document, previousRevision: current.revision)
+        }
     }
 
     @discardableResult
@@ -376,6 +370,12 @@ public actor SensitiveCatalogDocumentStore {
     /// Creates the timestamped backup used before an explicit external-v2
     /// adoption or restore.
     public func backupCurrentDocument() throws -> URL? {
+        try withCatalogLock(exclusive: false) {
+            try backupCurrentDocumentUnlocked()
+        }
+    }
+
+    private func backupCurrentDocumentUnlocked() throws -> URL? {
         guard let url = documentURL else {
             throw SensitiveCatalogDocumentStoreError.noSelectedDocument
         }
@@ -403,52 +403,72 @@ public actor SensitiveCatalogDocumentStore {
     /// revision 1; an already managed document is not silently re-imported.
     @discardableResult
     public func adoptExternalV2() throws -> SensitiveCatalogSnapshot {
-        guard let url = documentURL else {
-            throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+        try withCatalogLock(exclusive: true) {
+            guard let url = documentURL else {
+                throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+            }
+            try assertSafeFile(url)
+            let document = try decodeDocument(at: url)
+            let integrityURL = try self.integrityURL()
+            guard !fileManager.fileExists(atPath: integrityURL.path) else {
+                throw SensitiveCatalogDocumentStoreError.invalidOperation
+            }
+            _ = try backupCurrentDocumentUnlocked()
+            return try writeUnlocked(document, previousRevision: 0)
         }
-        try assertSafeFile(url)
-        let document = try decodeDocument(at: url)
-        let integrityURL = try self.integrityURL()
-        guard !fileManager.fileExists(atPath: integrityURL.path) else {
-            throw SensitiveCatalogDocumentStoreError.invalidOperation
-        }
-        _ = try backupCurrentDocument()
-        return try write(document, previousRevision: 0)
     }
 
     @discardableResult
     public func restoreV2Document(from backupURL: URL) throws -> SensitiveCatalogSnapshot {
-        guard let url = documentURL else {
-            throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+        try withCatalogLock(exclusive: true) {
+            guard let url = documentURL else {
+                throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+            }
+            try assertSafeFile(backupURL)
+            let data = try Data(contentsOf: backupURL)
+            let document: SecretCatalogDocument
+            do {
+                document = try SensitiveCatalogDocumentCodec.decode(data)
+            } catch {
+                throw SensitiveCatalogDocumentStoreError.malformedDocument
+            }
+            let oldRevision = (try? readIntegrityRecord()).map(\.revision) ?? 0
+            _ = url
+            return try writeUnlocked(document, previousRevision: oldRevision)
         }
-        try assertSafeFile(backupURL)
-        let data = try Data(contentsOf: backupURL)
-        let document: SecretCatalogDocument
-        do {
-            document = try SensitiveCatalogDocumentCodec.decode(data)
-        } catch {
-            throw SensitiveCatalogDocumentStoreError.malformedDocument
-        }
-        let oldRevision = (try? readIntegrityRecord()).map(\.revision) ?? 0
-        _ = url
-        return try write(document, previousRevision: oldRevision)
     }
 
     private func mutate(
         expectedRevision: UInt64?,
         _ transform: (SecretCatalogDocument) throws -> SecretCatalogDocument
     ) throws -> SensitiveCatalogSnapshot {
-        let base = try mutationBase(expectedRevision: expectedRevision)
-        let document = try transform(base.document)
-        return try write(document, previousRevision: base.revision)
+        try withCatalogLock(exclusive: true) {
+            let base = try mutationBaseUnlocked(expectedRevision: expectedRevision)
+            let document = try transform(base.document)
+            return try writeUnlocked(document, previousRevision: base.revision)
+        }
     }
 
-    private func mutationBase(expectedRevision: UInt64?) throws -> SensitiveCatalogSnapshot {
-        let current = try snapshot()
+    private func mutationBaseUnlocked(expectedRevision: UInt64?) throws -> SensitiveCatalogSnapshot {
+        let current = try snapshotUnlocked()
         if let expectedRevision, expectedRevision != current.revision {
             throw SensitiveCatalogDocumentStoreError.revisionConflict
         }
         return current
+    }
+
+    private func snapshotUnlocked() throws -> SensitiveCatalogSnapshot {
+        guard let url = documentURL else {
+            throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+        }
+        guard fileManager.fileExists(atPath: url.path) else {
+            return SensitiveCatalogSnapshot(
+                document: SecretCatalogDocument(),
+                revision: 0,
+                integrity: .uninitialized
+            )
+        }
+        return try verifiedSnapshot(at: url)
     }
 
     private func verifiedSnapshot(at url: URL) throws -> SensitiveCatalogSnapshot {
@@ -492,7 +512,7 @@ public actor SensitiveCatalogDocumentStore {
         }
     }
 
-    private func write(
+    private func writeUnlocked(
         _ document: SecretCatalogDocument,
         previousRevision: UInt64
     ) throws -> SensitiveCatalogSnapshot {
@@ -618,6 +638,41 @@ public actor SensitiveCatalogDocumentStore {
         let directory = appSupport.appendingPathComponent("AgentSecretVault", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return directory.appendingPathComponent("catalog-integrity.json")
+    }
+
+    /// The Markdown file and its integrity sidecar are two filesystem objects.
+    /// A process that reads them between the two atomic replacements would
+    /// otherwise mistake SVLT's own write for an external edit.  Both the App
+    /// and the launchd Agent use this per-sidecar advisory lock so a snapshot
+    /// always observes a consistent pair.
+    private func withCatalogLock<T>(
+        exclusive: Bool,
+        _ operation: () throws -> T
+    ) throws -> T {
+        let lockURL = try integrityURL().appendingPathExtension("lock")
+        let parent = lockURL.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: parent,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        if fileManager.fileExists(atPath: lockURL.path) {
+            try assertSafeFile(lockURL)
+        }
+
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR, mode_t(0o600))
+        guard descriptor >= 0 else {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+        defer { close(descriptor) }
+
+        let operationType = exclusive ? LOCK_EX : LOCK_SH
+        guard flock(descriptor, operationType) == 0 else {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+        defer { _ = flock(descriptor, LOCK_UN) }
+
+        return try operation()
     }
 
     private func atomicWrite(_ data: Data, to url: URL) throws {
