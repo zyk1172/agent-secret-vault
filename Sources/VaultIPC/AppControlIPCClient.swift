@@ -30,6 +30,26 @@ public actor AppControlIPCClient {
         return status
     }
 
+    public func adoptCatalogExternalV3() async throws -> CatalogValidationResult {
+        let response = try await send(.catalogAdoptExternalV3)
+        guard case let .catalogStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
+    public func approveCatalogExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) async throws -> CatalogValidationResult {
+        let response = try await send(.catalogApproveExternalChange(
+            expectedRevision: expectedRevision,
+            expectedRawSHA256: expectedRawSHA256,
+            expectedSemanticSHA256: expectedSemanticSHA256
+        ))
+        guard case let .catalogStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
     public func setCatalogAgentWriteMode(
         mode: CatalogAgentWriteMode,
         duration: TimeInterval? = 600
@@ -80,6 +100,29 @@ public actor AppControlIPCClient {
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
         let response = try await send(.catalogUpdateEntry(entry: entry, expectedRevision: expectedRevision))
+        guard case let .catalogWriteResult(result) = response else { throw unexpected(response) }
+        return result
+    }
+
+    public func catalogCommitEntryEdit(
+        _ entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput],
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogCommitEntryEdit(
+            entry: entry,
+            secretInputs: secretInputs,
+            expectedRevision: expectedRevision
+        ))
+        guard case let .catalogWriteResult(result) = response else { throw unexpected(response) }
+        return result
+    }
+
+    public func catalogApplyBatch(
+        _ mutation: CatalogBatchMutation,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogApplyBatch(mutation: mutation, expectedRevision: expectedRevision))
         guard case let .catalogWriteResult(result) = response else { throw unexpected(response) }
         return result
     }

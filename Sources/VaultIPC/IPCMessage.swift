@@ -96,6 +96,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         secretRef: String,
         expectedRevision: UInt64
     )
+    case catalogApplyBatch(mutation: CatalogBatchMutation, expectedRevision: UInt64)
     case catalogValidate
     case pendingRevealSessions
     case inspectReference(reference: String)
@@ -150,6 +151,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case destinationPath
         case markdownReferences
         case descriptor
+        case mutation
     }
 
     private enum RequestType: String, Codable {
@@ -166,6 +168,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case catalogCommit
         case catalogAddSecretPlaceholder
         case catalogBindExistingSecret
+        case catalogApplyBatch
         case catalogValidate
         case pendingRevealSessions
         case inspectReference
@@ -248,6 +251,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
                 entryID: try container.decode(String.self, forKey: .entryID),
                 key: try container.decode(String.self, forKey: .key),
                 secretRef: try container.decode(String.self, forKey: .secretRef),
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
+            )
+        case .catalogApplyBatch:
+            self = .catalogApplyBatch(
+                mutation: try container.decode(CatalogBatchMutation.self, forKey: .mutation),
                 expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogValidate:
@@ -379,6 +387,10 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(entryID, forKey: .entryID)
             try container.encode(key, forKey: .key)
             try container.encode(secretRef, forKey: .secretRef)
+            try container.encode(expectedRevision, forKey: .expectedRevision)
+        case let .catalogApplyBatch(mutation, expectedRevision):
+            try container.encode(RequestType.catalogApplyBatch, forKey: .type)
+            try container.encode(mutation, forKey: .mutation)
             try container.encode(expectedRevision, forKey: .expectedRevision)
         case .catalogValidate:
             try container.encode(RequestType.catalogValidate, forKey: .type)

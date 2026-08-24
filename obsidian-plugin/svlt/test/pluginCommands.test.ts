@@ -156,7 +156,7 @@ describe("plugin commands", () => {
     obsidianMock.registeredCommands[0].callback?.();
 
     expect(obsidianMock.notices).toEqual([
-      "SVLT: encrypt-selection is not connected yet."
+      "SVLT：加密选中文本 暂不可用，请先连接本机服务。"
     ]);
   });
 

@@ -12,6 +12,19 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 1)
     }
 
+    func adoptCatalogExternalV3() async throws -> CatalogValidationResult {
+        CatalogValidationResult(status: .found, revision: 1)
+    }
+
+    func approveCatalogExternalChange(
+        expectedRevision: UInt64,
+        expectedRawSHA256: String,
+        expectedSemanticSHA256: String
+    ) async throws -> CatalogValidationResult {
+        _ = (expectedRevision, expectedRawSHA256, expectedSemanticSHA256)
+        return CatalogValidationResult(status: .found, revision: 2)
+    }
+
     func setCatalogAgentWriteMode(
         mode: CatalogAgentWriteMode,
         duration: TimeInterval?
@@ -48,6 +61,15 @@ private struct ControlService: AppControlServicing {
         CatalogWriteResult(revision: expectedRevision + 1)
     }
 
+    func catalogCommitEntryEdit(
+        _ entry: SecretCatalogEntry,
+        secretInputs: [CatalogSecretInput],
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        _ = (entry, secretInputs)
+        return CatalogWriteResult(revision: expectedRevision + 1)
+    }
+
     func catalogBindExistingSecret(
         entryID: String,
         key: String,
@@ -65,6 +87,14 @@ private struct ControlService: AppControlServicing {
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64) {
         ("secret://0123456789ABCDEFGHJKMNPQRS", 4)
+    }
+
+    func catalogApplyBatch(
+        _ mutation: CatalogBatchMutation,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        _ = mutation
+        return CatalogWriteResult(revision: expectedRevision + 1)
     }
 }
 
@@ -93,6 +123,33 @@ private struct ControlService: AppControlServicing {
         from: JSONEncoder().encode(bindRequest)
     )
     #expect(decodedBindRequest == bindRequest)
+
+    let commitRequest = AppControlRequest.catalogCommitEntryEdit(
+        entry: SecretCatalogEntry(
+            id: "0123456789ABCDEFGHJKMNPQRT",
+            indexId: "0123456789ABCDEFGHJKMNPQRS",
+            title: "QNAP",
+            fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)]
+        ),
+        secretInputs: [CatalogSecretInput(key: "password", label: "密码", plaintext: "ASV_ENTRY_EDIT_CANARY")],
+        expectedRevision: 3
+    )
+    let decodedCommitRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(commitRequest)
+    )
+    #expect(decodedCommitRequest == commitRequest)
+
+    let approvalRequest = AppControlRequest.catalogApproveExternalChange(
+        expectedRevision: 7,
+        expectedRawSHA256: String(repeating: "a", count: 64),
+        expectedSemanticSHA256: String(repeating: "b", count: 64)
+    )
+    let decodedApprovalRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(approvalRequest)
+    )
+    #expect(decodedApprovalRequest == approvalRequest)
 
     let response = await AppControlRequestHandler(service: ControlService()).handle(request)
     let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)

@@ -20,6 +20,14 @@ public struct AppControlRequestHandler: Sendable {
                 return .catalogStatus(try await service.catalogStatus())
             case .catalogAdoptExternalV2:
                 return .catalogStatus(try await service.adoptCatalogExternalV2())
+            case .catalogAdoptExternalV3:
+                return .catalogStatus(try await service.adoptCatalogExternalV3())
+            case let .catalogApproveExternalChange(expectedRevision, expectedRawSHA256, expectedSemanticSHA256):
+                return .catalogStatus(try await service.approveCatalogExternalChange(
+                    expectedRevision: expectedRevision,
+                    expectedRawSHA256: expectedRawSHA256,
+                    expectedSemanticSHA256: expectedSemanticSHA256
+                ))
             case let .setCatalogAgentWriteMode(mode, duration):
                 return .catalogAgentWriteStatus(try await service.setCatalogAgentWriteMode(mode: mode, duration: duration))
             case .revokeCatalogAgentWrite:
@@ -38,6 +46,14 @@ public struct AppControlRequestHandler: Sendable {
                 return .catalogWriteResult(try await service.catalogCreateEntry(request, expectedRevision: expectedRevision))
             case let .catalogUpdateEntry(entry, expectedRevision):
                 return .catalogWriteResult(try await service.catalogUpdateEntry(entry, expectedRevision: expectedRevision))
+            case let .catalogCommitEntryEdit(entry, secretInputs, expectedRevision):
+                return .catalogWriteResult(try await service.catalogCommitEntryEdit(
+                    entry,
+                    secretInputs: secretInputs,
+                    expectedRevision: expectedRevision
+                ))
+            case let .catalogApplyBatch(mutation, expectedRevision):
+                return .catalogWriteResult(try await service.catalogApplyBatch(mutation, expectedRevision: expectedRevision))
             case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision):
                 return .catalogWriteResult(try await service.catalogBindExistingSecret(
                     entryID: entryID,
@@ -70,6 +86,7 @@ public struct AppControlRequestHandler: Sendable {
         case .legacyCatalogUnsupported: return "LEGACY_CATALOG_UNSUPPORTED"
         case .integrityMissing: return "INTEGRITY_MISSING"
         case .externalModification: return "EXTERNAL_CATALOG_MODIFICATION"
+        case .pendingExternalChange: return "PENDING_EXTERNAL_CHANGE"
         case .invalidCatalog: return "CATALOG_INVALID"
         case .agentWriteNotAllowed: return "CATALOG_AGENT_WRITE_NOT_ALLOWED"
         case .revisionConflict: return "CATALOG_REVISION_CONFLICT"

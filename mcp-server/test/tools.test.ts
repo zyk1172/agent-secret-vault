@@ -45,6 +45,7 @@ describe("MCP tool contracts", () => {
       "secret_catalog_get",
       "secret_catalog_create_index",
       "secret_catalog_create_entry",
+      "secret_catalog_batch",
       "secret_catalog_create_draft",
       "secret_catalog_patch_metadata",
       "secret_catalog_commit",
@@ -211,6 +212,92 @@ describe("MCP tool contracts", () => {
     const validation = await tool(client, "secret_catalog_validate").handler({});
     expect(validation.structuredContent).toEqual({ status: "FOUND", revision: 2 });
     expect(client.requests[1]).toEqual({ type: "catalogValidate" });
+  });
+
+  it("serializes a v3 batch as one IPC mutation and keeps secret fields opaque", async () => {
+    const client = new FakeClient([{
+      type: "catalogWriteResult",
+      result: { revision: 8, entry: null }
+    }]);
+    const indexID = "0123456789ABCDEFGHJKMNPQRY";
+    const entryID = "0123456789ABCDEFGHJKMNPQRW";
+
+    const result = await tool(client, "secret_catalog_batch").handler({
+      expectedRevision: 7,
+      operations: [
+        {
+          type: "createIndex",
+          index: {
+            schema: "svlt.catalog.index/v3",
+            id: indexID,
+            title: "Obsidian",
+            aliases: [],
+            tags: ["笔记"]
+          }
+        },
+        {
+          type: "createEntry",
+          entry: {
+            schema: "svlt.catalog.entry/v3",
+            id: entryID,
+            indexId: indexID,
+            title: "本机笔记",
+            type: "credential",
+            aliases: [],
+            endpoints: [],
+            fields: [{
+              key: "password",
+              label: "密码",
+              type: "secret",
+              agentVisible: true,
+              searchable: false
+            }],
+            tags: []
+          }
+        }
+      ]
+    });
+
+    expect(result.structuredContent).toEqual({ revision: 8, entry: null });
+    expect(client.requests).toEqual([{
+      type: "catalogApplyBatch",
+      mutation: {
+        operations: [
+          {
+            type: "createIndex",
+            index: {
+              schema: "svlt.catalog.index/v3",
+              id: indexID,
+              title: "Obsidian",
+              aliases: [],
+              tags: ["笔记"]
+            }
+          },
+          {
+            type: "createEntry",
+            entry: {
+              schema: "svlt.catalog.entry/v3",
+              id: entryID,
+              indexId: indexID,
+              title: "本机笔记",
+              type: "credential",
+              aliases: [],
+              endpoints: [],
+              fields: [{
+                key: "password",
+                label: "密码",
+                type: "secret",
+                agentVisible: true,
+                searchable: false
+              }],
+              tags: []
+            }
+          }
+        ]
+      },
+      expectedRevision: 7
+    }]);
+    expect(JSON.stringify(client.requests)).not.toContain("plaintext");
   });
 
   it("creates a safe Entry in one call without a lease, reference, or plaintext", async () => {
@@ -429,8 +516,8 @@ describe("MCP tool contracts", () => {
     expect(policy.safeWorkflow.join(" ")).toMatch(/Index.*Entry|entry-centric/i);
     expect(policy.safeWorkflow.join(" ")).toMatch(/secret_catalog_validate/);
     expect(policy.catalogPolicy).toMatch(/敏感信息\.md/);
-    expect(policy.catalogPolicy).toMatch(/Index.*Entry.*Field|Index.*Entry\/SubIndex/);
-    expect(policy.catalogPolicy).toMatch(/直接修改|直接写入/);
+    expect(policy.catalogPolicy).toMatch(/分组|条目|字段/);
+    expect(policy.catalogPolicy).toMatch(/可以使用 App、MCP、Obsidian|最小修改/);
     expect(policy.catalogPolicy).toMatch(/placeholder/);
     expect(policy.forbidden.join(" ")).toMatch(/plaintext|shell|environment/i);
   });

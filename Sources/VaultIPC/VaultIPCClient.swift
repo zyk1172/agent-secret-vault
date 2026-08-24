@@ -175,6 +175,17 @@ public actor VaultIPCClient {
         return result
     }
 
+    public func applyCatalogBatch(
+        _ mutation: CatalogBatchMutation,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogApplyBatch(mutation: mutation, expectedRevision: expectedRevision))
+        guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
     public func validateCatalog() async throws -> CatalogValidationResult {
         let response = try await send(.catalogValidate)
         guard case let .catalogValidation(status, revision) = response else {

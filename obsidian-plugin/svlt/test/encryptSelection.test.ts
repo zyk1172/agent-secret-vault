@@ -224,7 +224,7 @@ describe("encrypt selection", () => {
     expect(editor.text).toBe("token = USER_EDITED_VALUE");
     expect(editor.setValueCalls).toBe(0);
     expect(editor.replaceCalls).toEqual([]);
-    expect(obsidianMock.notices).toContain("SVLT: note changed before encryption completed; leaving text unchanged.");
+    expect(obsidianMock.notices).toContain("SVLT：加密完成前笔记已变化，未写入修改。");
   });
 
   it("refuses direct encryption inside a managed catalog", async () => {
@@ -249,7 +249,7 @@ describe("encrypt selection", () => {
     expect(editor.text).toContain("ASV_CANARY_PLUGIN");
     expect(editor.replaceCalls).toEqual([]);
     expect(requests).toEqual([{ type: "catalogValidate" }]);
-    expect(obsidianMock.notices).toContain("SVLT: managed 敏感信息.md 只能通过 SVLT App/MCP Catalog 工具修改；Obsidian 不会直接写入 Markdown/JSON。");
+    expect(obsidianMock.notices).toContain("SVLT：v2 或旧版敏感信息目录请先在 SVLT App 中升级；Obsidian 不会直接改写旧结构。");
   });
 
   it("encrypts only detected sensitive snippets in the current paragraph", async () => {
@@ -310,5 +310,114 @@ describe("encrypt selection", () => {
       replacement: "token = hunter2 for server",
       origin: "svlt-restore"
     });
+  });
+
+  it("refuses paragraph restore in a managed v3 catalog", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\ntoken = secret://0123456789ABCDEFGHJKMNPQRS';
+    const editor = new TestEditor(text, text.length, text.length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      restoreCurrentParagraph: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "catalogValidation", catalogStatus: "FOUND", revision: 1 };
+      }
+    });
+
+    await plugin.restoreCurrentParagraph(editor);
+
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(editor.replaceCalls).toEqual([]);
+    expect(editor.text).toBe(text);
+    expect(obsidianMock.notices).toContain("SVLT：v3 敏感信息目录禁止在 Obsidian 中还原 secret://；明文只可在 SVLT App 安全窗口中临时查看。");
+  });
+
+  it("refuses selection restore in a managed v3 catalog", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\ntoken = secret://0123456789ABCDEFGHJKMNPQRS';
+    const start = text.indexOf("secret://");
+    const editor = new TestEditor(text, start, text.length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      restoreSelection: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "catalogValidation", catalogStatus: "FOUND", revision: 1 };
+      }
+    });
+
+    await plugin.restoreSelection(editor);
+
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(editor.replaceCalls).toEqual([]);
+    expect(editor.text).toBe(text);
+  });
+
+  it("allows reveal from a managed v3 catalog without editing the file", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\ntoken = secret://0123456789ABCDEFGHJKMNPQRS';
+    const start = text.indexOf("secret://");
+    const editor = new TestEditor(text, start, text.length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      revealSelection: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "revealSessionOpened", sessionID: "session-1" };
+      }
+    });
+
+    await plugin.revealSelection(editor);
+
+    expect(requests).toEqual([{
+      type: "revealReferences",
+      references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+      context: {
+        reason: "Reveal current paragraph",
+        template: "{{0}}",
+        ranges: [{ index: 0, placeholder: "{{0}}" }]
+      }
+    }]);
+    expect(editor.replaceCalls).toEqual([]);
+    expect(editor.text).toBe(text);
+  });
+
+  it("refuses plugin encryption in a v3 catalog ordinary field", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-CATALOG schema="3" -->\npassword = ASV_CANARY_PLUGIN';
+    const start = text.indexOf("ASV_CANARY_PLUGIN");
+    const editor = new TestEditor(text, start, start + "ASV_CANARY_PLUGIN".length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      encryptSelection: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        if ((request as { type: string }).type === "catalogValidate") {
+          return { type: "catalogValidation", catalogStatus: "FOUND", revision: 1 };
+        }
+        return { type: "created", reference: "secret://0123456789ABCDEFGHJKMNPQRS" };
+      }
+    });
+
+    await plugin.encryptSelection(editor);
+
+    expect(requests[0]).toEqual({ type: "catalogValidate" });
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(editor.text).toContain("ASV_CANARY_PLUGIN");
+    expect(editor.replaceCalls).toEqual([]);
+    expect(obsidianMock.notices).toContain("SVLT：v3 敏感信息目录中的普通字段不能直接加密；请先在 SVLT App 中把字段设为密码字段。手工 Markdown 编辑仍然可用。");
   });
 });

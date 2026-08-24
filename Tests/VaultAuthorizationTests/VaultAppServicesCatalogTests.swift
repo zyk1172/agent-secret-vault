@@ -22,6 +22,38 @@ private struct CatalogMultiSecretEncryptor: TextEncrypting {
     }
 }
 
+private actor CatalogDeletingRecorder: RecordDeleting {
+    private(set) var deletedIDs: [String] = []
+
+    func delete(id: String) async throws {
+        deletedIDs.append(id)
+    }
+}
+
+private struct CatalogRaceEncryptor: TextEncrypting {
+    let store: SensitiveCatalogDocumentStore
+
+    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
+        _ = (plaintext, label, policy)
+        let snapshot = try await store.snapshot()
+        let entry = try #require(snapshot.document.entries.first)
+        let concurrentEntry = SecretCatalogEntry(
+            id: entry.id,
+            indexId: entry.indexId,
+            title: "并发修改",
+            type: entry.type,
+            aliases: entry.aliases,
+            endpoints: entry.endpoints,
+            fields: entry.fields,
+            notes: entry.notes,
+            tags: entry.tags,
+            schema: entry.schema
+        )
+        _ = try await store.updateEntry(concurrentEntry, expectedRevision: snapshot.revision)
+        return try SecretReference(servicePasswordRef)
+    }
+}
+
 private enum CatalogMetadataStoreError: Error {
     case unexpectedWrite
     case missingRecord
@@ -101,6 +133,50 @@ private struct CatalogFixture {
     }
 }
 
+private struct ExternalCatalogAdoptionFixture {
+    let root: URL
+    let documentURL: URL
+    let integrityURL: URL
+    let selectionURL: URL
+    let store: SensitiveCatalogDocumentStore
+    let agentAuthorization: CatalogAgentWriteAuthorization
+
+    init(reference: String) async throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("svlt-adoption-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        documentURL = root.appendingPathComponent("敏感信息.md")
+        integrityURL = root.appendingPathComponent("catalog-integrity.json")
+        selectionURL = root.appendingPathComponent("selection.json")
+        store = SensitiveCatalogDocumentStore(
+            documentURL: documentURL,
+            integrityURL: integrityURL,
+            keyStore: try FixedCatalogIntegrityKeyStore(key: Data(repeating: 7, count: 32))
+        )
+        try await store.selectDocument(at: documentURL)
+        let document = SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: serviceIndexID, title: "QNAP")],
+            entries: [SecretCatalogEntry(
+                id: serviceEntryID,
+                indexId: serviceIndexID,
+                title: "管理后台",
+                fields: [SecretCatalogFieldValue(
+                    key: "password",
+                    label: "密码",
+                    type: .secret,
+                    secretRef: reference
+                )]
+            )]
+        )
+        try SensitiveCatalogDocumentCodec.encode(document).write(to: documentURL, atomically: true, encoding: .utf8)
+        try SecretCatalogSelectionStore(manifestURL: selectionURL).save(documentURL: documentURL)
+        agentAuthorization = CatalogAgentWriteAuthorization()
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
 @Test func appServiceUsesEntryCentricCatalogAndNeverReturnsPlaintext() async throws {
     let fixture = try await CatalogFixture()
     defer { fixture.cleanup() }
@@ -151,6 +227,27 @@ private struct CatalogFixture {
         _ = try await service.createCatalogDraft(CatalogDraftRequest(indexID: serviceIndexID, title: "Komga"))
     }
     #expect(error == .agentWriteNotAllowed)
+}
+
+@Test func appServiceKeepsAgentCatalogWriteToggleOperational() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    #expect(await service.catalogAgentWriteStatus().mode == .safe)
+    await service.revokeCatalogAgentWrite()
+    #expect(await service.catalogAgentWriteStatus().mode == .disabled)
+    let enabled = try await service.setCatalogAgentWriteMode(mode: .safe, duration: nil)
+    #expect(enabled.mode == .safe)
+    #expect(await service.catalogAgentWriteStatus().mode == .safe)
+    await service.revokeCatalogAgentWrite()
+    #expect(await service.catalogAgentWriteStatus().mode == .disabled)
 }
 
 @Test func agentSafeCreateEntryWritesMetadataAndEmptySecretPlaceholderWithoutLease() async throws {
@@ -233,6 +330,78 @@ private struct CatalogFixture {
         )
     }
     #expect(approvalError == .approvalRequired)
+}
+
+@Test func appServiceRejectsV3AdoptionWhenSecretReferenceDoesNotExist() async throws {
+    let fixture = try await ExternalCatalogAdoptionFixture(reference: servicePrivateKeyRef)
+    defer { fixture.cleanup() }
+    let recordStore = CatalogMetadataRecordStore(record: EncryptedRecord(
+        formatVersion: 2,
+        id: String(servicePasswordRef.dropFirst("secret://".count)),
+        recordVersion: 1,
+        ciphertext: Data(),
+        nonce: Data(),
+        tag: Data(),
+        wrappedDataKey: Data(),
+        wrappedDataKeyNonce: Data(),
+        wrappedDataKeyTag: Data(),
+        label: "QNAP credential",
+        policy: .credential,
+        createdAt: Date(),
+        updatedAt: Date()
+    ))
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let error = await serviceCatalogError {
+        _ = try await service.adoptCatalogExternalV3()
+    }
+
+    #expect(error == .invalidOperation)
+    #expect(!FileManager.default.fileExists(atPath: fixture.integrityURL.path))
+}
+
+@Test func appServiceRequiresLocalApprovalForExistingSecretDuringV3Adoption() async throws {
+    let fixture = try await ExternalCatalogAdoptionFixture(reference: servicePasswordRef)
+    defer { fixture.cleanup() }
+    let recordStore = CatalogMetadataRecordStore(record: EncryptedRecord(
+        formatVersion: 2,
+        id: String(servicePasswordRef.dropFirst("secret://".count)),
+        recordVersion: 1,
+        ciphertext: Data(),
+        nonce: Data(),
+        tag: Data(),
+        wrappedDataKey: Data(),
+        wrappedDataKeyNonce: Data(),
+        wrappedDataKeyTag: Data(),
+        label: "QNAP credential",
+        policy: .credential,
+        createdAt: Date(),
+        updatedAt: Date()
+    ))
+    let approver = CatalogApprovalRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+
+    let result = try await service.adoptCatalogExternalV3()
+
+    #expect(result.status == .found)
+    #expect(result.revision == 1)
+    #expect(await approver.count == 1)
+    #expect(FileManager.default.fileExists(atPath: fixture.integrityURL.path))
 }
 
 @Test func appControlSecretEndpointChangeRequiresAndUsesLocalApproval() async throws {
@@ -351,6 +520,85 @@ private struct CatalogFixture {
     let markdown = try String(contentsOf: fixture.documentURL, encoding: .utf8)
     #expect(!markdown.contains("password-canary"))
     #expect(!markdown.contains("private-key-canary"))
+}
+
+@Test func appServiceCommitsNewSecretFieldWithEntryMetadataInOneCall() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let deleter = CatalogDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordDeleter: deleter,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+    let initial = try await fixture.store.snapshot()
+    let entry = try #require(initial.document.entries.first)
+    let draft = SecretCatalogEntry(
+        id: entry.id,
+        indexId: entry.indexId,
+        title: "QNAP 管理后台登录（已编辑）",
+        type: entry.type,
+        aliases: entry.aliases,
+        endpoints: entry.endpoints,
+        fields: entry.fields + [SecretCatalogFieldValue(key: "apiKey", label: "API 密钥", type: .secret)],
+        notes: entry.notes,
+        tags: entry.tags,
+        schema: entry.schema
+    )
+
+    let result = try await service.catalogCommitEntryEdit(
+        draft,
+        secretInputs: [CatalogSecretInput(key: "apiKey", label: "API 密钥", plaintext: "commit-canary")],
+        expectedRevision: initial.revision
+    )
+
+    #expect(result.entry?.title == "QNAP 管理后台登录（已编辑）")
+    let final = try await fixture.store.snapshot()
+    #expect(final.document.entries.first?.fields.first(where: { $0.key == "apiKey" })?.secretRef == servicePasswordRef)
+    #expect(try String(contentsOf: fixture.documentURL, encoding: .utf8).contains("commit-canary") == false)
+    #expect(await deleter.deletedIDs.isEmpty)
+}
+
+@Test func appServiceRollsBackNewSecretRecordWhenEntryCommitConflicts() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let deleter = CatalogDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogRaceEncryptor(store: fixture.store),
+        activeRoot: nil,
+        recordDeleter: deleter,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+    let initial = try await fixture.store.snapshot()
+    let entry = try #require(initial.document.entries.first)
+    let draft = SecretCatalogEntry(
+        id: entry.id,
+        indexId: entry.indexId,
+        title: entry.title,
+        type: entry.type,
+        aliases: entry.aliases,
+        endpoints: entry.endpoints,
+        fields: entry.fields + [SecretCatalogFieldValue(key: "apiKey", label: "API 密钥", type: .secret)],
+        notes: entry.notes,
+        tags: entry.tags,
+        schema: entry.schema
+    )
+
+    await #expect(throws: SecretCatalogAgentError.revisionConflict) {
+        _ = try await service.catalogCommitEntryEdit(
+            draft,
+            secretInputs: [CatalogSecretInput(key: "apiKey", label: "API 密钥", plaintext: "rollback-canary")],
+            expectedRevision: initial.revision
+        )
+    }
+    #expect(await deleter.deletedIDs == [String(servicePasswordRef.dropFirst("secret://".count))])
+    let final = try await fixture.store.snapshot()
+    #expect(final.document.entries.first?.fields.contains(where: { $0.key == "apiKey" }) == false)
 }
 
 private func serviceCatalogError(

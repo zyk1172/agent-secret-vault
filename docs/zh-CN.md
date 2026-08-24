@@ -80,7 +80,7 @@ Obsidian 插件安装方式：
 
 然后重启或刷新 Agent 客户端。
 
-接着，把 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Codex、Claude、Hermes、OpenClaw 或其他 Agent 的系统提示、项目规则或工作区规则。这是连接 MCP 后的必做步骤：它要求 Agent 对 SVLT managed 数据使用 App 选定的 `敏感信息.md` 和 `secret://...` 引用，不得直接读取索引；但用户明确选择的 QNAP MCP、其他 provider、已登录 CLI、环境变量或当前明文不由 SVLT 抢占。
+接着，把 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Codex、Claude、Hermes、OpenClaw 或其他 Agent 的系统提示、项目规则或工作区规则。这是连接 MCP 后的必做步骤：它要求 Agent 遵守 v3 marker、secret 引用和语义审批边界；合法的用户、Obsidian、脚本或其他 writer 不因渠道不同而被拒绝。用户明确选择的 QNAP MCP、其他 provider、已登录 CLI、环境变量或当前明文不由 SVLT 抢占。
 
 Agent 接入后可以先测试：
 
@@ -93,9 +93,9 @@ Agent 接入后可以先测试：
 
 ### 加密敏感信息
 
-在 App 的“敏感信息”中选择或新建 `敏感信息.md`。它是 SVLT managed 数据的权威目录：使用 Index → Entry → Field 结构保存服务、地址、账号、用途等允许暴露的非敏感上下文，并用 `secret://...` 引用对应本地保险箱中的独立加密记录。v2 managed 文件只能由 Catalog Store 写入。
+在 App 的“敏感信息”中选择或新建 `敏感信息.md`。它是 SVLT managed 数据的 v3 目录：使用真实的 `##` 分组、`###` 条目和普通 Markdown 字段保存服务、地址、账号、用途等允许暴露的非敏感上下文，并用 `secret://...` 引用对应本地保险箱中的独立加密记录。标题、备注、空行和 `[[WikiLink]]` 可以按 Obsidian 习惯编辑；SVLT 只在目标 source range 上做最小 patch。
 
-需要批量检查时，在 App 的“本地扫描”中选择单个 Markdown 文件或文件夹。规则只在本机运行，候选默认不选中；确认后只把原笔记中的命中值替换为无符号包裹的引用。managed `敏感信息.md` 不会被本地扫描直接写入，目录记录请使用结构化编辑器或 Catalog MCP。
+需要批量检查时，在 App 的“本地扫描”中选择单个 Markdown 文件或文件夹。规则只在本机运行，候选默认不选中；确认后只把原笔记中的命中值替换为无符号包裹的引用。managed `敏感信息.md` 不会被本地扫描直接写入；目录记录可以由 App、Catalog MCP、Obsidian、编辑器或脚本编辑，但写入后必须符合 v3 并通过 Catalog validation。
 
 笔记中只保存引用，例如：
 
@@ -118,7 +118,7 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 
 ## 5. Agent 应遵守的规则
 
-将 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Agent 的系统提示、项目规则或工作区规则。策略要求 Agent 只经 MCP 使用 SVLT managed `敏感信息.md` 中的独立密文记录和 `secret://...` 引用；不能直接读取或修改索引。用户当前明确提供并要求使用的明文或明确选择的其他 provider 不需要 SVLT lookup 或转换。
+将 [SVLT 敏感信息使用策略](svlt-agent-policy-zh-CN.md) 中的代码块原样放进 Agent 的系统提示、项目规则或工作区规则。策略要求 Agent 识别 v3 真实 Markdown 结构、保留非目标内容、禁止秘密明文，并按 semantic diff 处理高风险引用变化；它不把 App/MCP 视为唯一写入渠道。用户当前明确提供并要求使用的明文或明确选择的其他 provider 不需要 SVLT lookup 或转换。
 
 ## 6. Obsidian 使用建议
 
@@ -129,8 +129,8 @@ App 会在本机显示填充后的内容。聊天里不应该返回明文。
 1. 先备份 Obsidian vault。
 2. 在 App 的“本地扫描”中选择笔记文件夹，先看清候选和完整段落，再决定是否加密。
 3. 只加密真正敏感的字段，不要整段加密。
-4. Obsidian 仅保留手动兜底：选中文字后使用“加密选中文本”。
-5. 加密后检查笔记是否只留下前置一个英文空格的 `secret://` 引用，没有链接、反引号或方括号包裹。
+4. 在 Obsidian 中正常编辑 v3 文件的标题、备注、空行和 `[[WikiLink]]`；插件会在短暂 debounce 后请求校验，并报告非法或需要审批的语义变化。
+5. 只加密真正敏感的字段，不要整段加密；加密后检查敏感字段只留下合法 `secret://...` 引用或空 placeholder。
 6. 对选择纳入 SVLT 的片段保留 `secret://...` 引用，删除对应明文；用户没有选择纳入 SVLT 的当前操作不由此规则强制改写。
 
 重点：加密目标是“敏感片段”，不是整篇笔记。

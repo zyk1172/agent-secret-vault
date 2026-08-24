@@ -67,6 +67,7 @@ public enum SecretCatalogSearchStatus: String, Codable, Sendable {
     case legacyCatalogUnsupported = "LEGACY_CATALOG_UNSUPPORTED"
     case integrityMissing = "INTEGRITY_MISSING"
     case externalModification = "EXTERNAL_CATALOG_MODIFICATION"
+    case pendingExternalChange = "PENDING_EXTERNAL_CHANGE"
     case invalidCatalog = "CATALOG_INVALID"
 }
 

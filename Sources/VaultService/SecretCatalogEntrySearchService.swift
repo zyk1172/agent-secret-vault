@@ -1,7 +1,7 @@
 import Foundation
 import VaultCore
 
-/// Searches a validated v2 document and projects complete Entries without
+/// Searches a validated v3 document and projects complete Entries without
 /// exposing hidden metadata or secret plaintext.
 public struct SecretCatalogEntrySearchService: Sendable {
     public static let maximumLimit = 20

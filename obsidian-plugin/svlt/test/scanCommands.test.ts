@@ -112,7 +112,7 @@ describe("scan commands", () => {
 
     expect(editor.text).toBe(`password = ${makeReference(1)}`);
     expect(editor.setValueCalls).toEqual([`password = ${makeReference(1)}`]);
-    expect(obsidianMock.notices).toContain("SVLT: encrypted 1 finding.");
+    expect(obsidianMock.notices).toContain("SVLT：已加密 1 处敏感内容。");
     expect(requests).toContainEqual(expect.objectContaining({
       type: "encryptText",
       label: "password = [[ASV_REFERENCE]]"
@@ -148,7 +148,7 @@ describe("scan commands", () => {
 
     expect(contents.get("a.md")).toBe(`api password = ${makeReference(3)}`);
     expect(contents.get("b.md")).toBe("no secrets here");
-    expect(obsidianMock.notices).toContain("SVLT: encrypted 1 finding.");
+    expect(obsidianMock.notices).toContain("SVLT：已加密 1 处敏感内容。");
   });
 
   it("reports skipped findings when vault files changed after scan", async () => {
@@ -176,7 +176,7 @@ describe("scan commands", () => {
     await reviewMock.apply?.(reviewMock.findings);
 
     expect(contents.get("a.md")).toBe("password = user-edited");
-    expect(obsidianMock.notices).toContain("SVLT: encrypted 0 findings; skipped 1 changed finding.");
+    expect(obsidianMock.notices).toContain("SVLT：已加密 0 处敏感内容；有 1 处文件已变化，已跳过。");
   });
 
   it("does not scan or write an SVLT managed catalog through Obsidian", async () => {
@@ -209,7 +209,7 @@ describe("scan commands", () => {
     expect(reviewMock.findings).toEqual([]);
     expect(modifyCalls).toBe(0);
     expect(requests).toEqual([{ type: "catalogValidate" }]);
-    expect(obsidianMock.notices).toContain("SVLT: skipped managed 敏感信息.md; use the App/MCP Catalog tools for directory operations.");
+    expect(obsidianMock.notices).toContain("SVLT：已跳过受管敏感信息.md；密码字段请在 SVLT App 中管理，普通 Markdown 仍可手工编辑。");
   });
 
   it("sends markdown references to the app orphan scanner", async () => {
@@ -245,6 +245,6 @@ describe("scan commands", () => {
       type: "scanOrphans",
       markdownReferences: [makeReference(5), makeReference(6)]
     }]);
-    expect(obsidianMock.notices).toContain("SVLT: orphan scan sent to the Mac app.");
+    expect(obsidianMock.notices).toContain("SVLT：孤立引用扫描请求已发送到 SVLT App。");
   });
 });

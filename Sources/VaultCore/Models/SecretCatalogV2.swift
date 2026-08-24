@@ -84,7 +84,7 @@ public struct CatalogEndpoint: Codable, Equatable, Sendable {
     }
 }
 
-/// A field in a v2 entry.  Ordinary metadata lives in `value`; a secret is
+/// A field in a v3 entry. Ordinary metadata lives in `value`; a secret is
 /// represented only by an opaque `secret://` reference.  A secret field with
 /// neither value nor reference is a valid placeholder for a later App entry.
 public struct SecretCatalogFieldValue: Codable, Equatable, Sendable {
@@ -149,7 +149,8 @@ public struct SecretCatalogFieldValue: Codable, Equatable, Sendable {
 }
 
 public struct SecretCatalogIndex: Codable, Equatable, Sendable {
-    public static let schemaName = "svlt.catalog.index/v2"
+    public static let schemaName = "svlt.catalog.index/v3"
+    public static let legacySchemaName = "svlt.catalog.index/v2"
 
     public let schema: String
     public let id: String
@@ -209,7 +210,8 @@ public struct SecretCatalogIndex: Codable, Equatable, Sendable {
 }
 
 public struct SecretCatalogEntry: Codable, Equatable, Sendable {
-    public static let schemaName = "svlt.catalog.entry/v2"
+    public static let schemaName = "svlt.catalog.entry/v3"
+    public static let legacySchemaName = "svlt.catalog.entry/v2"
 
     public let schema: String
     public let id: String
@@ -314,7 +316,8 @@ public struct SecretCatalogEntry: Codable, Equatable, Sendable {
 }
 
 public struct SecretCatalogDocument: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
+    public static let legacyV2SchemaVersion = 2
 
     public let schemaVersion: Int
     public let indexes: [SecretCatalogIndex]
@@ -381,7 +384,7 @@ public struct SecretCatalogDocument: Codable, Equatable, Sendable {
             try entry.aliases.forEach(CatalogValidation.validateVisibleText)
             try entry.tags.forEach(CatalogValidation.validateVisibleText)
             if let notes = entry.notes {
-                try CatalogValidation.validateVisibleText(notes)
+                try CatalogValidation.validateMarkdownText(notes)
             }
 
             var fieldKeys = Set<String>()
@@ -414,6 +417,7 @@ public enum SecretCatalogValidationError: Error, Equatable, Sendable {
     case valueAndSecretReference
     case secretFieldContainsValue
     case nonSecretFieldContainsSecretReference
+    case secretReferenceInMetadata
     case invalidSecretReference
     case secretFieldKeyMustBeSecret
     case invalidEndpoint
@@ -423,6 +427,9 @@ public enum SecretCatalogValidationError: Error, Equatable, Sendable {
     case headingDoesNotMatchBlock
     case unmanagedContent
     case referenceSetChanged
+    case pendingExternalChange
+    case invalidPolicyBlock
+    case ambiguousLegacyPolicy
 }
 
 public enum SecretCatalogOpaqueID {
@@ -454,6 +461,18 @@ private enum CatalogValidation {
         else {
             throw SecretCatalogValidationError.invalidVisibleText
         }
+        try validateNoSecretReference(in: value)
+    }
+
+    static func validateMarkdownText(_ value: String) throws {
+        guard !value.isEmpty,
+              value.count <= 20_000,
+              !value.contains("\0"),
+              !value.contains("\r")
+        else {
+            throw SecretCatalogValidationError.invalidVisibleText
+        }
+        try validateNoSecretReference(in: value)
     }
 
     static func validateField(_ field: SecretCatalogFieldValue) throws {
@@ -486,9 +505,14 @@ private enum CatalogValidation {
         }
 
         guard let value = field.value else { return }
+        try validateNoSecretReference(in: value)
         switch field.type {
         case .text, .multiline, .url, .host, .date:
-            guard case .string = value else {
+            guard case .string(let string) = value,
+                  string.count <= 20_000,
+                  !string.contains("\0"),
+                  !string.contains("\r")
+            else {
                 throw SecretCatalogValidationError.invalidFieldValue
             }
         case .port:
@@ -513,6 +537,23 @@ private enum CatalogValidation {
             }
         case .secret:
             break
+        }
+    }
+
+    static func validateNoSecretReference(in value: SecretCatalogValue) throws {
+        switch value {
+        case .string(let string):
+            try validateNoSecretReference(in: string)
+        case .list(let values):
+            try values.forEach(validateNoSecretReference)
+        case .number, .boolean:
+            break
+        }
+    }
+
+    private static func validateNoSecretReference(in value: String) throws {
+        guard MarkdownReferenceScanner.references(in: value).isEmpty else {
+            throw SecretCatalogValidationError.secretReferenceInMetadata
         }
     }
 

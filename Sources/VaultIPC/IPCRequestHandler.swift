@@ -43,6 +43,10 @@ public protocol WorkbenchServicing: Sendable {
         secretRef: String,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
+    func applyCatalogBatch(
+        _ mutation: CatalogBatchMutation,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult
     func validateCatalog() async throws -> CatalogValidationResult
     func pendingRevealSessionIDs() async throws -> [String]
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
@@ -134,6 +138,13 @@ public extension WorkbenchServicing {
         entryID _: String,
         key _: String,
         secretRef _: String,
+        expectedRevision _: UInt64
+    ) async throws -> CatalogWriteResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func applyCatalogBatch(
+        _: CatalogBatchMutation,
         expectedRevision _: UInt64
     ) async throws -> CatalogWriteResult {
         throw IPCRequestHandlerError.unsupportedRequest
@@ -234,6 +245,11 @@ public struct IPCRequestHandler: Sendable {
                 entryID: entryID,
                 key: key,
                 secretRef: secretRef,
+                expectedRevision: expectedRevision
+            ))
+        case let .catalogApplyBatch(mutation, expectedRevision):
+            return .catalogWriteResult(try await service.applyCatalogBatch(
+                mutation,
                 expectedRevision: expectedRevision
             ))
         case .catalogValidate:

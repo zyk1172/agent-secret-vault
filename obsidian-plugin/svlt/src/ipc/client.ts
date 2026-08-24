@@ -105,13 +105,14 @@ function parseIpcResponse(json: string): IpcResponse {
       "LEGACY_CATALOG_UNSUPPORTED",
       "INTEGRITY_MISSING",
       "EXTERNAL_CATALOG_MODIFICATION",
+      "PENDING_EXTERNAL_CHANGE",
       "CATALOG_INVALID"
     ].includes(parsed.catalogStatus) &&
     (parsed.revision === undefined || parsed.revision === null || isNonNegativeInteger(parsed.revision))
   ) {
     return {
       type: "catalogValidation",
-      catalogStatus: parsed.catalogStatus as "FOUND" | "NOT_FOUND" | "INVALID_QUERY" | "CATALOG_UNAVAILABLE" | "LEGACY_CATALOG_UNSUPPORTED" | "INTEGRITY_MISSING" | "EXTERNAL_CATALOG_MODIFICATION" | "CATALOG_INVALID",
+      catalogStatus: parsed.catalogStatus as "FOUND" | "NOT_FOUND" | "INVALID_QUERY" | "CATALOG_UNAVAILABLE" | "LEGACY_CATALOG_UNSUPPORTED" | "INTEGRITY_MISSING" | "EXTERNAL_CATALOG_MODIFICATION" | "PENDING_EXTERNAL_CHANGE" | "CATALOG_INVALID",
       ...(parsed.revision === undefined ? {} : { revision: parsed.revision as number | null })
     };
   }

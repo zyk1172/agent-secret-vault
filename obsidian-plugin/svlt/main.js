@@ -304,6 +304,7 @@ function parseIpcResponse(json) {
     "LEGACY_CATALOG_UNSUPPORTED",
     "INTEGRITY_MISSING",
     "EXTERNAL_CATALOG_MODIFICATION",
+    "PENDING_EXTERNAL_CHANGE",
     "CATALOG_INVALID"
   ].includes(parsed.catalogStatus) && (parsed.revision === void 0 || parsed.revision === null || isNonNegativeInteger(parsed.revision))) {
     return {
@@ -458,26 +459,32 @@ function delay(milliseconds) {
 }
 
 // src/catalog/managedCatalog.ts
-var MANAGED_CATALOG_MARKERS = [
-  '<!-- SVLT-MANAGED-CATALOG schema="2" -->',
-  "<!-- agent-secret-vault-sensitive-information: 1 -->"
-];
+var MANAGED_CATALOG_V3_MARKER = '<!-- SVLT-CATALOG schema="3" -->';
+var MANAGED_CATALOG_V2_MARKER = '<!-- SVLT-MANAGED-CATALOG schema="2" -->';
+var LEGACY_CATALOG_MARKER = "agent-secret-vault-sensitive-information: 1";
+function classifyCatalogText(text) {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  if (normalized.startsWith(MANAGED_CATALOG_V3_MARKER)) return "managedV3";
+  if (normalized.startsWith(MANAGED_CATALOG_V2_MARKER)) return "managedV2";
+  if (normalized.includes(LEGACY_CATALOG_MARKER)) return "legacy";
+  return "unmanaged";
+}
 function isManagedCatalogText(text) {
-  return MANAGED_CATALOG_MARKERS.some((marker) => text.includes(marker));
+  return classifyCatalogText(text) !== "unmanaged";
 }
 
 // src/pairing/pairing.ts
 function interpretWorkbenchStatus(input) {
   if (!input.reachable) {
-    return { canOperate: false, message: "SVLT is unavailable." };
+    return { canOperate: false, message: "SVLT \u670D\u52A1\u4E0D\u53EF\u7528\u3002" };
   }
   if (input.status.status.locked) {
-    return { canOperate: false, message: "Unlock SVLT to continue." };
+    return { canOperate: false, message: "\u8BF7\u5148\u89E3\u9501 SVLT\u3002" };
   }
   if (!input.status.status.ipcAvailable) {
-    return { canOperate: false, message: "SVLT IPC is unavailable." };
+    return { canOperate: false, message: "SVLT \u672C\u673A\u901A\u9053\u4E0D\u53EF\u7528\u3002" };
   }
-  return { canOperate: true, message: "SVLT is ready." };
+  return { canOperate: true, message: "SVLT \u5DF2\u5C31\u7EEA\u3002" };
 }
 
 // src/reveal/paragraphReveal.ts
@@ -690,6 +697,10 @@ var DEFAULT_SOCKET_PATH = `${process.env.HOME ?? ""}/Library/Application Support
 function clonePosition(position) {
   return { line: position.line, ch: position.ch };
 }
+function isLegacyManagedCatalogText(text) {
+  const format = classifyCatalogText(text);
+  return format === "legacy" || format === "managedV2";
+}
 var commandDefinitions = [
   { id: "encrypt-selection", name: "\u52A0\u5BC6\u9009\u4E2D\u6587\u672C" },
   { id: "reveal-selection", name: "\u5728 SVLT \u4E2D\u4E34\u65F6\u89E3\u5BC6\u9009\u4E2D\u6587\u672C" },
@@ -699,6 +710,7 @@ var commandDefinitions = [
   { id: "validate-catalog", name: "\u9A8C\u8BC1 SVLT \u654F\u611F\u4FE1\u606F\u76EE\u5F55" }
 ];
 var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
+  catalogValidationTimer;
   createVaultClient() {
     return new LocalVaultClient(DEFAULT_SOCKET_PATH);
   }
@@ -712,7 +724,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         id: definition.id,
         name: definition.name,
         callback: () => {
-          new import_obsidian2.Notice(`SVLT: ${definition.id} is not connected yet.`);
+          new import_obsidian2.Notice(`SVLT\uFF1A${definition.name} \u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u5148\u8FDE\u63A5\u672C\u673A\u670D\u52A1\u3002`);
         }
       };
       if (definition.id === "encrypt-selection") {
@@ -763,6 +775,31 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     }
     this.registerEditorMenu();
     this.registerJumpProtocol();
+    this.registerCatalogWatcher();
+  }
+  registerCatalogWatcher() {
+    const vault = this.app?.vault;
+    if (typeof vault?.on !== "function" || typeof vault.cachedRead !== "function") return;
+    const eventRef = vault.on("modify", (file) => {
+      void (async () => {
+        const text = await vault.cachedRead?.(file);
+        if (text === void 0 || classifyCatalogText(text) !== "managedV3") return;
+        this.scheduleCatalogValidation();
+      })();
+    });
+    this.registerEvent(eventRef);
+    const registerCleanup = this.register;
+    registerCleanup?.call(this, () => {
+      if (this.catalogValidationTimer) clearTimeout(this.catalogValidationTimer);
+      this.catalogValidationTimer = void 0;
+    });
+  }
+  scheduleCatalogValidation() {
+    if (this.catalogValidationTimer) clearTimeout(this.catalogValidationTimer);
+    this.catalogValidationTimer = setTimeout(() => {
+      this.catalogValidationTimer = void 0;
+      void this.validateManagedCatalog(true);
+    }, 300);
   }
   registerJumpProtocol() {
     const registerProtocolHandler = this.registerObsidianProtocolHandler;
@@ -773,13 +810,13 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       const fullPath = typeof params.file === "string" ? params.file : "";
       const requestedLine = Number.parseInt(typeof params.line === "string" ? params.line : "1", 10);
       if (fullPath.length === 0 || !Number.isFinite(requestedLine) || requestedLine < 1) {
-        new import_obsidian2.Notice("SVLT: invalid local jump request.");
+        new import_obsidian2.Notice("SVLT\uFF1A\u672C\u5730\u8DF3\u8F6C\u8BF7\u6C42\u65E0\u6548\u3002");
         return;
       }
       const adapter = this.app.vault.adapter;
       const file = this.app.vault.getMarkdownFiles().find((candidate) => adapter.getFullPath?.(candidate.path) === fullPath);
       if (!file) {
-        new import_obsidian2.Notice("SVLT: the requested file is not in this vault.");
+        new import_obsidian2.Notice("SVLT\uFF1A\u8BF7\u6C42\u7684\u6587\u4EF6\u4E0D\u5728\u5F53\u524D\u5E93\u4E2D\u3002");
         return;
       }
       const leaf = this.app.workspace.getLeaf(false);
@@ -855,38 +892,58 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       updateStatusBar(status, { connected: false, locked: true });
     }
   }
-  async validateManagedCatalog() {
+  async validateManagedCatalog(silentWhenAccepted = false) {
     try {
       const response = await this.createVaultClient().request({ type: "catalogValidate" });
       if (response.type === "catalogValidation") {
         if (response.catalogStatus === "FOUND") {
-          new import_obsidian2.Notice("SVLT: managed sensitive-information catalog validated.");
+          if (!silentWhenAccepted) new import_obsidian2.Notice("SVLT\uFF1A\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u9A8C\u8BC1\u901A\u8FC7\u3002");
+        } else if (response.catalogStatus === "PENDING_EXTERNAL_CHANGE") {
+          new import_obsidian2.Notice("SVLT\uFF1A\u76EE\u5F55\u6709\u5F85\u5BA1\u6279\u7684\u9AD8\u98CE\u9669\u5916\u90E8\u4FEE\u6539\uFF0C\u8BF7\u5728 SVLT App \u4E2D\u6279\u51C6\u3002");
         } else {
-          new import_obsidian2.Notice(`SVLT: managed catalog validation failed (${response.catalogStatus}).`);
+          new import_obsidian2.Notice(`SVLT\uFF1A\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u9A8C\u8BC1\u5931\u8D25\uFF08${response.catalogStatus}\uFF09\u3002`);
         }
         return;
       }
-      new import_obsidian2.Notice(`SVLT: managed catalog validation failed (${response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE"}).`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u9A8C\u8BC1\u5931\u8D25\uFF08${response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE"}\uFF09\u3002`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian2.Notice(`SVLT: managed catalog validation failed (${message}).`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u9A8C\u8BC1\u5931\u8D25\uFF08${message}\uFF09\u3002`);
     }
   }
   async refuseManagedCatalogMutation(documentText) {
-    if (!isManagedCatalogText(documentText)) {
+    const format = classifyCatalogText(documentText);
+    if (format === "unmanaged" || format === "managedV3") {
+      if (format === "managedV3") await this.validateManagedCatalog(true);
       return false;
     }
     await this.validateManagedCatalog();
-    new import_obsidian2.Notice("SVLT: managed \u654F\u611F\u4FE1\u606F.md \u53EA\u80FD\u901A\u8FC7 SVLT App/MCP Catalog \u5DE5\u5177\u4FEE\u6539\uFF1BObsidian \u4E0D\u4F1A\u76F4\u63A5\u5199\u5165 Markdown/JSON\u3002");
+    new import_obsidian2.Notice("SVLT\uFF1Av2 \u6216\u65E7\u7248\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u8BF7\u5148\u5728 SVLT App \u4E2D\u5347\u7EA7\uFF1BObsidian \u4E0D\u4F1A\u76F4\u63A5\u6539\u5199\u65E7\u7ED3\u6784\u3002");
     return true;
   }
+  async refuseManagedCatalogEncryption(documentText) {
+    if (classifyCatalogText(documentText) === "managedV3") {
+      await this.validateManagedCatalog(true);
+      new import_obsidian2.Notice("SVLT\uFF1Av3 \u654F\u611F\u4FE1\u606F\u76EE\u5F55\u4E2D\u7684\u666E\u901A\u5B57\u6BB5\u4E0D\u80FD\u76F4\u63A5\u52A0\u5BC6\uFF1B\u8BF7\u5148\u5728 SVLT App \u4E2D\u628A\u5B57\u6BB5\u8BBE\u4E3A\u5BC6\u7801\u5B57\u6BB5\u3002\u624B\u5DE5 Markdown \u7F16\u8F91\u4ECD\u7136\u53EF\u7528\u3002");
+      return true;
+    }
+    return this.refuseManagedCatalogMutation(documentText);
+  }
+  async refuseManagedCatalogRestore(documentText) {
+    if (classifyCatalogText(documentText) === "managedV3") {
+      await this.validateManagedCatalog(true);
+      new import_obsidian2.Notice("SVLT\uFF1Av3 \u654F\u611F\u4FE1\u606F\u76EE\u5F55\u7981\u6B62\u5728 Obsidian \u4E2D\u8FD8\u539F secret://\uFF1B\u660E\u6587\u53EA\u53EF\u5728 SVLT App \u5B89\u5168\u7A97\u53E3\u4E2D\u4E34\u65F6\u67E5\u770B\u3002");
+      return true;
+    }
+    return this.refuseManagedCatalogMutation(documentText);
+  }
   async encryptSelection(editor) {
-    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogEncryption(editor.getValue())) {
       return;
     }
     const text = editor.getSelection();
     if (text.length === 0) {
-      new import_obsidian2.Notice("SVLT: select text to encrypt.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u8BF7\u5148\u9009\u62E9\u8981\u52A0\u5BC6\u7684\u6587\u672C\u3002");
       return;
     }
     const from = editor.getCursor("from");
@@ -899,17 +956,17 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   }
   async encryptCurrentParagraph(editor) {
     const documentText = editor.getValue();
-    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogEncryption(documentText)) {
       return;
     }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     if (range.text.trim().length === 0) {
-      new import_obsidian2.Notice("SVLT: current paragraph is empty.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5F53\u524D\u6BB5\u843D\u4E3A\u7A7A\u3002");
       return;
     }
     const findings = scanMarkdownFile(this.app.workspace?.getActiveFile()?.path ?? "current-paragraph.md", range.text);
     if (findings.length === 0) {
-      new import_obsidian2.Notice("SVLT: current paragraph has no detected sensitive text; select exact text to encrypt manually.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5F53\u524D\u6BB5\u843D\u672A\u68C0\u6D4B\u5230\u654F\u611F\u6587\u672C\uFF1B\u8BF7\u624B\u52A8\u9009\u62E9\u51C6\u786E\u5185\u5BB9\u540E\u52A0\u5BC6\u3002");
       return;
     }
     try {
@@ -917,20 +974,20 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       const fromPos = editor.offsetToPos(range.start);
       const toPos = editor.offsetToPos(range.end);
       if (editor.getRange(fromPos, toPos) !== range.text) {
-        new import_obsidian2.Notice("SVLT: note changed before encryption completed; leaving text unchanged.");
+        new import_obsidian2.Notice("SVLT\uFF1A\u52A0\u5BC6\u5B8C\u6210\u524D\u7B14\u8BB0\u5DF2\u53D8\u5316\uFF0C\u672A\u5199\u5165\u4FEE\u6539\u3002");
         return;
       }
       editor.replaceRange(updatedText, fromPos, toPos, "svlt");
-      new import_obsidian2.Notice(`SVLT: encrypted ${findings.length} sensitive finding${findings.length === 1 ? "" : "s"} in current paragraph.`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u5F53\u524D\u6BB5\u843D\u5DF2\u52A0\u5BC6 ${findings.length} \u5904\u654F\u611F\u5185\u5BB9\u3002`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian2.Notice(`SVLT: paragraph encryption failed (${message}).`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u6BB5\u843D\u52A0\u5BC6\u5931\u8D25\uFF08${message}\uFF09\u3002`);
     }
   }
   async encryptRange(editor, range, fromPos, toPos) {
     try {
       const documentText = editor.getValue();
-      if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+      if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogEncryption(documentText)) {
         return;
       }
       const result = await encryptTextRange({
@@ -942,14 +999,14 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         client: this.createVaultClient()
       });
       if (editor.getRange(fromPos, toPos) !== range.text) {
-        new import_obsidian2.Notice("SVLT: note changed before encryption completed; leaving text unchanged.");
+        new import_obsidian2.Notice("SVLT\uFF1A\u52A0\u5BC6\u5B8C\u6210\u524D\u7B14\u8BB0\u5DF2\u53D8\u5316\uFF0C\u672A\u5199\u5165\u4FEE\u6539\u3002");
         return;
       }
       editor.replaceRange(result.replacementText, fromPos, toPos, "svlt");
-      new import_obsidian2.Notice("SVLT: encrypted text into a secret reference.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u6587\u672C\u5DF2\u8F6C\u6362\u4E3A\u52A0\u5BC6\u5F15\u7528\u3002");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian2.Notice(`SVLT: encryption failed (${message}).`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u52A0\u5BC6\u5931\u8D25\uFF08${message}\uFF09\u3002`);
     }
   }
   async revealCurrentParagraph(editor) {
@@ -960,7 +1017,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   async revealSelection(editor) {
     const text = editor.getSelection();
     if (text.trim().length === 0) {
-      new import_obsidian2.Notice("SVLT: select text containing a secret reference to reveal.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u8BF7\u9009\u62E9\u5305\u542B\u52A0\u5BC6\u5F15\u7528\u7684\u6587\u672C\u540E\u67E5\u770B\u3002");
       return;
     }
     await this.revealText(text, "SVLT: selected text has no secret reference.");
@@ -978,27 +1035,27 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       if (response.type !== "revealSessionOpened") {
         throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
       }
-      new import_obsidian2.Notice("SVLT: reveal session opened in the Mac app.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u5728 SVLT App \u4E2D\u6253\u5F00\u4E34\u65F6\u67E5\u770B\u4F1A\u8BDD\u3002");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian2.Notice(`SVLT: reveal failed (${message}).`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u4E34\u65F6\u67E5\u770B\u5931\u8D25\uFF08${message}\uFF09\u3002`);
     }
   }
   async restoreCurrentParagraph(editor) {
     const documentText = editor.getValue();
-    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogRestore(documentText)) {
       return;
     }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     await this.restoreRange(editor, range, editor.offsetToPos(range.start), editor.offsetToPos(range.end), "SVLT: current paragraph has no secret reference.");
   }
   async restoreSelection(editor) {
-    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogRestore(editor.getValue())) {
       return;
     }
     const text = editor.getSelection();
     if (text.trim().length === 0) {
-      new import_obsidian2.Notice("SVLT: select text containing a secret reference to restore.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u8BF7\u9009\u62E9\u5305\u542B\u52A0\u5BC6\u5F15\u7528\u7684\u6587\u672C\u540E\u8FD8\u539F\u3002");
       return;
     }
     const from = editor.getCursor("from");
@@ -1023,19 +1080,19 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
       }
       if (editor.getRange(fromPos, toPos) !== range.text) {
-        new import_obsidian2.Notice("SVLT: note changed before restore completed; leaving text unchanged.");
+        new import_obsidian2.Notice("SVLT\uFF1A\u8FD8\u539F\u5B8C\u6210\u524D\u7B14\u8BB0\u5DF2\u53D8\u5316\uFF0C\u672A\u5199\u5165\u4FEE\u6539\u3002");
         return;
       }
       editor.replaceRange(response.text, fromPos, toPos, "svlt-restore");
-      new import_obsidian2.Notice("SVLT: restored secret references into plaintext.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u5C06\u52A0\u5BC6\u5F15\u7528\u8FD8\u539F\u4E3A\u660E\u6587\u3002");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian2.Notice(`SVLT: restore failed (${message}).`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u8FD8\u539F\u5931\u8D25\uFF08${message}\uFF09\u3002`);
     }
   }
   async scanCurrentNote(editor) {
     const originalText = editor.getValue();
-    if (isManagedCatalogText(originalText) && await this.refuseManagedCatalogMutation(originalText)) {
+    if (isManagedCatalogText(originalText) && await this.refuseManagedCatalogEncryption(originalText)) {
       return;
     }
     const activeFilePath = this.app.workspace?.getActiveFile()?.path ?? "current-note.md";
@@ -1043,15 +1100,15 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     new ReviewModal(this.app, findings, async (selectedFindings) => {
       try {
         if (editor.getValue() !== originalText) {
-          new import_obsidian2.Notice("SVLT: note changed after scan; leaving text unchanged.");
+          new import_obsidian2.Notice("SVLT\uFF1A\u626B\u63CF\u540E\u7B14\u8BB0\u5DF2\u53D8\u5316\uFF0C\u672A\u5199\u5165\u4FEE\u6539\u3002");
           return;
         }
         const updatedText = await this.encryptFindingsInText(originalText, selectedFindings);
         editor.setValue(updatedText);
-        new import_obsidian2.Notice(`SVLT: encrypted ${selectedFindings.length} finding${selectedFindings.length === 1 ? "" : "s"}.`);
+        new import_obsidian2.Notice(`SVLT\uFF1A\u5DF2\u52A0\u5BC6 ${selectedFindings.length} \u5904\u654F\u611F\u5185\u5BB9\u3002`);
       } catch (error) {
         const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-        new import_obsidian2.Notice(`SVLT: scan replacement failed (${message}).`);
+        new import_obsidian2.Notice(`SVLT\uFF1A\u626B\u63CF\u7ED3\u679C\u5199\u56DE\u5931\u8D25\uFF08${message}\uFF09\u3002`);
       }
     }).open();
   }
@@ -1072,7 +1129,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     }
     if (skippedManagedCatalog) {
       await this.validateManagedCatalog();
-      new import_obsidian2.Notice("SVLT: skipped managed \u654F\u611F\u4FE1\u606F.md; use the App/MCP Catalog tools for directory operations.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u8DF3\u8FC7\u53D7\u7BA1\u654F\u611F\u4FE1\u606F.md\uFF1B\u5BC6\u7801\u5B57\u6BB5\u8BF7\u5728 SVLT App \u4E2D\u7BA1\u7406\uFF0C\u666E\u901A Markdown \u4ECD\u53EF\u624B\u5DE5\u7F16\u8F91\u3002");
     }
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
       try {
@@ -1080,7 +1137,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         new import_obsidian2.Notice(this.replacementSummary(result.appliedCount, result.skippedCount));
       } catch (error) {
         const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-        new import_obsidian2.Notice(`SVLT: scan replacement failed (${message}).`);
+        new import_obsidian2.Notice(`SVLT\uFF1A\u626B\u63CF\u7ED3\u679C\u5199\u56DE\u5931\u8D25\uFF08${message}\uFF09\u3002`);
       }
     }).open();
   }
@@ -1089,7 +1146,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     let skippedManagedCatalog = false;
     for (const file of this.app.vault.getMarkdownFiles()) {
       const text = await this.app.vault.cachedRead(file);
-      if (isManagedCatalogText(text)) {
+      if (isLegacyManagedCatalogText(text)) {
         skippedManagedCatalog = true;
         continue;
       }
@@ -1099,7 +1156,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     }
     if (skippedManagedCatalog) {
       await this.validateManagedCatalog();
-      new import_obsidian2.Notice("SVLT: managed \u654F\u611F\u4FE1\u606F.md is validated by SVLT Catalog, not by Obsidian note scanning.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u8DF3\u8FC7\u65E7\u7248\u654F\u611F\u4FE1\u606F.md\uFF1B\u5347\u7EA7\u4E3A v3 \u540E\u53EF\u7531 Obsidian \u6B63\u5E38\u7F16\u8F91\u3002");
     }
     try {
       const response = await this.createVaultClient().request({
@@ -1109,10 +1166,10 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       if (response.type !== "orphanScan") {
         throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
       }
-      new import_obsidian2.Notice("SVLT: orphan scan sent to the Mac app.");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5B64\u7ACB\u5F15\u7528\u626B\u63CF\u8BF7\u6C42\u5DF2\u53D1\u9001\u5230 SVLT App\u3002");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new import_obsidian2.Notice(`SVLT: orphan scan failed (${message}).`);
+      new import_obsidian2.Notice(`SVLT\uFF1A\u5B64\u7ACB\u5F15\u7528\u626B\u63CF\u5931\u8D25\uFF08${message}\uFF09\u3002`);
     }
   }
   async applyVaultFindings(selectedFindings, filesByPath, snapshots) {
@@ -1133,13 +1190,13 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
       }
       if (isManagedCatalogText(originalText)) {
         await this.validateManagedCatalog();
-        new import_obsidian2.Notice("SVLT: managed \u654F\u611F\u4FE1\u606F.md was selected; no direct file write was performed.");
+        new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u8DF3\u8FC7\u53D7\u7BA1\u654F\u611F\u4FE1\u606F.md\uFF0C\u672A\u901A\u8FC7\u666E\u901A\u52A0\u5BC6\u547D\u4EE4\u5199\u5165\u76EE\u5F55\uFF1B\u8BF7\u5728 SVLT App \u4E2D\u7BA1\u7406\u5BC6\u7801\u5B57\u6BB5\u3002");
         skippedCount += findings.length;
         continue;
       }
       const currentText = await this.app.vault.cachedRead(file);
       if (currentText !== originalText) {
-        new import_obsidian2.Notice(`SVLT: ${filePath} changed after scan; leaving it unchanged.`);
+        new import_obsidian2.Notice(`SVLT\uFF1A\u626B\u63CF\u540E\u6587\u4EF6 ${filePath} \u5DF2\u53D8\u5316\uFF0C\u672A\u5199\u5165\u4FEE\u6539\u3002`);
         skippedCount += findings.length;
         continue;
       }
@@ -1150,11 +1207,11 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     return { appliedCount, skippedCount };
   }
   replacementSummary(appliedCount, skippedCount) {
-    const applied = `encrypted ${appliedCount} finding${appliedCount === 1 ? "" : "s"}`;
+    const applied = `\u5DF2\u52A0\u5BC6 ${appliedCount} \u5904\u654F\u611F\u5185\u5BB9`;
     if (skippedCount === 0) {
-      return `SVLT: ${applied}.`;
+      return `SVLT\uFF1A${applied}\u3002`;
     }
-    return `SVLT: ${applied}; skipped ${skippedCount} changed finding${skippedCount === 1 ? "" : "s"}.`;
+    return `SVLT\uFF1A${applied}\uFF1B\u6709 ${skippedCount} \u5904\u6587\u4EF6\u5DF2\u53D8\u5316\uFF0C\u5DF2\u8DF3\u8FC7\u3002`;
   }
   async encryptFindingsInText(text, findings) {
     const client = this.createVaultClient();
