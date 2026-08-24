@@ -42,5 +42,5 @@ Field
 - v2 文件不会被 Obsidian 或 MCP 偷偷转换；App 迁移前会备份、严格解析并比较 ID 与完整 secretRef 集合。
 - v2 的旧版整文件 canonical 写入逻辑不适用于 v3；v3 使用 semantic accepted state、CAS 和 source-range minimal patch。
 - 旧版 `敏感信息.md` 不支持自动升级，运行状态为 `LEGACY_CATALOG_UNSUPPORTED`；Agent 不得自行转换或修改旧文件。
-- 人工准备的合法 v2 文件在没有完整性 sidecar 时，只能由 App 的“验证并接管 v2 文件”流程严格校验、备份并建立 `catalog-integrity.json`；MCP 不得调用接管流程。
+- 人工准备的合法 v2 文件在没有完整性 sidecar 时，只能由 App 的“验证并接管 v2 文件”流程严格校验、备份并建立对应的完整性 sidecar；当前 v3 sidecar 按目录文件路径隔离，旧版 `catalog-integrity.json` 仅作为受管 v2 迁移输入兼容读取；MCP 不得调用接管流程。
 - 新建 Index/Entry、普通元数据、空 Secret placeholder 和 validate 属于安全目录编辑，默认静默完成，由 App-control 安全编辑开关控制；秘密绑定/替换/删除、类型转换、allowlist、目标和策略变化仍需本机审批。

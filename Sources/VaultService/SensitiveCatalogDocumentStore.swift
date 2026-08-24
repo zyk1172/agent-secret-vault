@@ -97,6 +97,7 @@ private struct CatalogMigrationJournal: Codable, Equatable {
     let phase: Phase
     let documentPath: String
     let integrityPath: String
+    let previousIntegrityPath: String?
     let documentBackupPath: String
     let integrityBackupPath: String?
     let expectedDocumentSHA256: String
@@ -106,6 +107,7 @@ private struct CatalogMigrationJournal: Codable, Equatable {
         phase: Phase,
         documentPath: String,
         integrityPath: String,
+        previousIntegrityPath: String?,
         documentBackupPath: String,
         integrityBackupPath: String?,
         expectedDocumentSHA256: String,
@@ -115,6 +117,7 @@ private struct CatalogMigrationJournal: Codable, Equatable {
         self.phase = phase
         self.documentPath = documentPath
         self.integrityPath = integrityPath
+        self.previousIntegrityPath = previousIntegrityPath
         self.documentBackupPath = documentBackupPath
         self.integrityBackupPath = integrityBackupPath
         self.expectedDocumentSHA256 = expectedDocumentSHA256
@@ -126,6 +129,7 @@ private struct CatalogMigrationJournal: Codable, Equatable {
             phase: phase,
             documentPath: documentPath,
             integrityPath: integrityPath,
+            previousIntegrityPath: previousIntegrityPath,
             documentBackupPath: documentBackupPath,
             integrityBackupPath: integrityBackupPath,
             expectedDocumentSHA256: expectedDocumentSHA256,
@@ -181,6 +185,7 @@ public actor SensitiveCatalogDocumentStore {
     private let fileManager: FileManager
     private let keyStore: any CatalogIntegrityKeyStoring
     private let suppliedIntegrityURL: URL?
+    private let suppliedIntegrityDirectoryURL: URL?
     private let atomicWriteFaultInjector: (any CatalogAtomicWriteFaultInjecting)?
     private var documentURL: URL?
 
@@ -192,6 +197,7 @@ public actor SensitiveCatalogDocumentStore {
     ) {
         self.documentURL = documentURL?.standardizedFileURL
         self.suppliedIntegrityURL = integrityURL?.standardizedFileURL
+        self.suppliedIntegrityDirectoryURL = nil
         self.keyStore = keyStore
         self.fileManager = fileManager
         self.atomicWriteFaultInjector = nil
@@ -202,10 +208,12 @@ public actor SensitiveCatalogDocumentStore {
         integrityURL: URL? = nil,
         keyStore: any CatalogIntegrityKeyStoring = KeychainCatalogIntegrityKeyStore(),
         fileManager: FileManager = .default,
-        atomicWriteFaultInjector: (any CatalogAtomicWriteFaultInjecting)?
+        atomicWriteFaultInjector: (any CatalogAtomicWriteFaultInjecting)?,
+        integrityDirectoryURL: URL? = nil
     ) {
         self.documentURL = documentURL?.standardizedFileURL
         self.suppliedIntegrityURL = integrityURL?.standardizedFileURL
+        self.suppliedIntegrityDirectoryURL = integrityDirectoryURL?.standardizedFileURL
         self.keyStore = keyStore
         self.fileManager = fileManager
         self.atomicWriteFaultInjector = atomicWriteFaultInjector
@@ -430,10 +438,10 @@ public actor SensitiveCatalogDocumentStore {
             let reparsed = try SensitiveCatalogDocumentCodec.decode(rendered)
             guard reparsed == document, referenceSet(document) == referenceSet(reparsed) else { throw SensitiveCatalogDocumentStoreError.referenceSetChanged }
             let stateURL = try integrityURL()
-            let hasLegacySidecar = fileManager.fileExists(atPath: stateURL.path)
-            if hasLegacySidecar {
-                try assertSafeFile(stateURL)
-                let legacy = try readLegacyIntegrityRecordV2(at: stateURL)
+            let sourceIntegrityURL = try v2IntegritySourceURL(activeURL: stateURL)
+            if let sourceIntegrityURL {
+                try assertSafeFile(sourceIntegrityURL)
+                let legacy = try readLegacyIntegrityRecordV2(at: sourceIntegrityURL)
                 try verifyLegacyIntegrityV2(legacy, data: raw)
             }
             let record = try makeRecord(document: reparsed, revision: 1, raw: rendered)
@@ -441,14 +449,23 @@ public actor SensitiveCatalogDocumentStore {
             guard let documentBackup = try backupCurrentDocumentUnlocked() else {
                 throw SensitiveCatalogDocumentStoreError.writeFailed
             }
-            let integrityBackup = hasLegacySidecar ? try backupFileUnlocked(stateURL) : nil
+            let integrityBackup: URL?
+            if let sourceIntegrityURL {
+                guard let backup = try backupFileUnlocked(sourceIntegrityURL) else {
+                    throw SensitiveCatalogDocumentStoreError.writeFailed
+                }
+                integrityBackup = backup
+            } else {
+                integrityBackup = nil
+            }
             let journalURL = try migrationJournalURL()
             let prepared = CatalogMigrationJournal(
                 phase: .prepared,
                 documentPath: url.standardizedFileURL.path,
                 integrityPath: stateURL.standardizedFileURL.path,
+                previousIntegrityPath: sourceIntegrityURL?.standardizedFileURL.path,
                 documentBackupPath: documentBackup.standardizedFileURL.path,
-                integrityBackupPath: integrityBackup?.standardizedFileURL.path,
+                integrityBackupPath: sourceIntegrityURL == nil ? nil : integrityBackup?.standardizedFileURL.path,
                 expectedDocumentSHA256: sha256Hex(rendered),
                 expectedIntegritySHA256: sha256Hex(integrityData)
             )
@@ -465,6 +482,9 @@ public actor SensitiveCatalogDocumentStore {
                 // committed pair by these expected hashes.
                 guard migrationCommitMatches(committing) else {
                     throw SensitiveCatalogDocumentStoreError.writeFailed
+                }
+                if let sourceIntegrityURL, sourceIntegrityURL.standardizedFileURL != stateURL.standardizedFileURL {
+                    try? removeFileIfPresentUnlocked(sourceIntegrityURL)
                 }
                 try writeMigrationJournal(committing.changingPhase(to: .completed), at: journalURL)
                 try removeMigrationJournal(at: journalURL)
@@ -586,6 +606,11 @@ public actor SensitiveCatalogDocumentStore {
         }
         let candidate = try decodeV3(raw)
         let stateURL = try integrityURL()
+        try migrateLegacyV3IntegrityIfMatching(
+            candidate: candidate,
+            raw: raw,
+            activeURL: stateURL
+        )
         guard fileManager.fileExists(atPath: stateURL.path) else {
             // A hand-created v3 document containing only ordinary metadata is
             // safe to initialize without rewriting the user's Markdown. A
@@ -951,11 +976,66 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     private func readIntegrityRecord() throws -> CatalogIntegrityRecord {
-        let url = try integrityURL()
+        try readIntegrityRecord(at: try integrityURL())
+    }
+
+    private func readIntegrityRecord(at url: URL) throws -> CatalogIntegrityRecord {
         guard fileManager.fileExists(atPath: url.path) else { throw SensitiveCatalogDocumentStoreError.integrityMissing }
         try assertSafeFile(url)
         do { return try JSONDecoder().decode(CatalogIntegrityRecord.self, from: Data(contentsOf: url)) }
         catch { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
+    }
+
+    private func v2IntegritySourceURL(activeURL: URL) throws -> URL? {
+        if fileManager.fileExists(atPath: activeURL.path) {
+            return activeURL
+        }
+        guard suppliedIntegrityURL == nil,
+              let legacyURL = try legacyIntegrityURL(),
+              legacyURL.standardizedFileURL != activeURL.standardizedFileURL,
+              fileManager.fileExists(atPath: legacyURL.path)
+        else {
+            return nil
+        }
+
+        // Only a sidecar with the PR #13 flat schema can be a v2 migration
+        // source. A v3 sidecar belonging to another selected document must
+        // not block adoption of this document.
+        guard (try? readLegacyIntegrityRecordV2(at: legacyURL)) != nil else {
+            return nil
+        }
+        return legacyURL
+    }
+
+    private func migrateLegacyV3IntegrityIfMatching(
+        candidate: SecretCatalogDocument,
+        raw _: Data,
+        activeURL: URL
+    ) throws {
+        guard !fileManager.fileExists(atPath: activeURL.path),
+              suppliedIntegrityURL == nil,
+              let legacyURL = try legacyIntegrityURL(),
+              legacyURL.standardizedFileURL != activeURL.standardizedFileURL,
+              fileManager.fileExists(atPath: legacyURL.path)
+        else {
+            return
+        }
+
+        do {
+            let legacy = try readIntegrityRecord(at: legacyURL)
+            try verify(legacy)
+            guard legacy.acceptedDocument == candidate else { return }
+            try atomicWrite(Data(contentsOf: legacyURL), to: activeURL)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            // A global pre-v3 sidecar is not bound to a document path. If it
+            // cannot be proven to describe this exact semantic document,
+            // leave it untouched and let the normal explicit adoption path
+            // establish a new per-document accepted state.
+            guard error == .writeFailed else { return }
+            throw error
+        } catch {
+            return
+        }
     }
 
     private func readLegacyIntegrityRecordV2(at url: URL) throws -> LegacyCatalogIntegrityRecordV2 {
@@ -1017,9 +1097,11 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     private func migrationJournalURL() throws -> URL {
-        try integrityURL()
-            .deletingLastPathComponent()
-            .appendingPathComponent("catalog-migration-state.json")
+        let integrity = try integrityURL()
+        let name = suppliedIntegrityURL == nil
+            ? "\(integrity.lastPathComponent).migration.json"
+            : "catalog-migration-state.json"
+        return integrity.deletingLastPathComponent().appendingPathComponent(name)
     }
 
     private func writeMigrationJournal(_ journal: CatalogMigrationJournal, at url: URL) throws {
@@ -1079,6 +1161,18 @@ public actor SensitiveCatalogDocumentStore {
             throw SensitiveCatalogDocumentStoreError.invalidIntegrity
         }
 
+        let activeIntegrity = try integrityURL()
+        let previousIntegrity: URL?
+        if let previousIntegrityPath = journal.previousIntegrityPath {
+            let candidate = URL(fileURLWithPath: previousIntegrityPath).standardizedFileURL
+            guard isAllowedPreviousIntegrityPath(candidate, activeURL: activeIntegrity) else {
+                throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+            }
+            previousIntegrity = candidate
+        } else {
+            previousIntegrity = nil
+        }
+
         let documentBackup = URL(fileURLWithPath: journal.documentBackupPath).standardizedFileURL
         guard isMigrationBackup(documentBackup, for: documentURL),
               fileManager.fileExists(atPath: documentBackup.path)
@@ -1088,13 +1182,28 @@ public actor SensitiveCatalogDocumentStore {
 
         if let integrityBackupPath = journal.integrityBackupPath {
             let integrityBackup = URL(fileURLWithPath: integrityBackupPath).standardizedFileURL
-            let integrity = try integrityURL()
-            guard isMigrationBackup(integrityBackup, for: integrity),
+            let backupTarget = previousIntegrity ?? activeIntegrity
+            guard isMigrationBackup(integrityBackup, for: backupTarget),
                   fileManager.fileExists(atPath: integrityBackup.path)
             else {
                 throw SensitiveCatalogDocumentStoreError.invalidIntegrity
             }
+        } else if previousIntegrity != nil {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
         }
+    }
+
+    private func isAllowedPreviousIntegrityPath(_ candidate: URL, activeURL: URL) -> Bool {
+        if candidate.standardizedFileURL == activeURL.standardizedFileURL {
+            return true
+        }
+        guard suppliedIntegrityURL == nil else {
+            return false
+        }
+        guard let legacy = try? legacyIntegrityURL() else {
+            return false
+        }
+        return candidate.standardizedFileURL == legacy.standardizedFileURL
     }
 
     private func isMigrationBackup(_ backup: URL, for target: URL) -> Bool {
@@ -1148,17 +1257,21 @@ public actor SensitiveCatalogDocumentStore {
     ) throws {
         try validateMigrationJournal(journal, journalURL: journalURL)
         guard let documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
-        let integrity = try integrityURL()
+        let activeIntegrity = try integrityURL()
+        let previousIntegrity = journal.previousIntegrityPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
         var failed = false
 
         do {
             if let integrityBackupPath = journal.integrityBackupPath {
                 try restoreFileUnlocked(
                     from: URL(fileURLWithPath: integrityBackupPath),
-                    to: integrity
+                    to: previousIntegrity ?? activeIntegrity
                 )
             } else {
-                try removeFileIfPresentUnlocked(integrity)
+                try removeFileIfPresentUnlocked(activeIntegrity)
+            }
+            if let previousIntegrity, previousIntegrity != activeIntegrity {
+                try removeFileIfPresentUnlocked(activeIntegrity)
             }
         } catch {
             failed = true
@@ -1216,9 +1329,42 @@ public actor SensitiveCatalogDocumentStore {
 
     private func integrityURL() throws -> URL {
         if let suppliedIntegrityURL { return suppliedIntegrityURL }
+        let directory = try catalogIntegrityDirectoryURL()
+        guard let documentURL else {
+            return directory.appendingPathComponent("catalog-integrity.json")
+        }
+        let documentKey = sha256Hex(Data(documentURL.standardizedFileURL.path.utf8))
+        return directory.appendingPathComponent("catalog-integrity-\(documentKey).json")
+    }
+
+    private func catalogIntegrityDirectoryURL() throws -> URL {
+        if let suppliedIntegrityDirectoryURL {
+            try fileManager.createDirectory(
+                at: suppliedIntegrityDirectoryURL,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try assertSafeDirectory(suppliedIntegrityDirectoryURL)
+            return suppliedIntegrityDirectoryURL
+        }
+        let appSupport = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let directory = appSupport
+            .appendingPathComponent("AgentSecretVault", isDirectory: true)
+            .appendingPathComponent("CatalogIntegrity", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try assertSafeDirectory(directory)
+        return directory
+    }
+
+    private func legacyIntegrityURL() throws -> URL? {
+        guard suppliedIntegrityURL == nil else { return nil }
+        if let suppliedIntegrityDirectoryURL {
+            return suppliedIntegrityDirectoryURL.appendingPathComponent("catalog-integrity.json")
+        }
         let appSupport = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let directory = appSupport.appendingPathComponent("AgentSecretVault", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try assertSafeDirectory(directory)
         return directory.appendingPathComponent("catalog-integrity.json")
     }
 
@@ -1264,6 +1410,12 @@ public actor SensitiveCatalogDocumentStore {
         let parent = url.deletingLastPathComponent()
         guard fileManager.fileExists(atPath: parent.path) else { return }
         let values = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true else { throw SensitiveCatalogDocumentStoreError.malformedDocument }
+        guard values.isSymbolicLink != true else { throw SensitiveCatalogDocumentStoreError.symlinkRejected }
+    }
+
+    private func assertSafeDirectory(_ url: URL) throws {
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true else { throw SensitiveCatalogDocumentStoreError.malformedDocument }
         guard values.isSymbolicLink != true else { throw SensitiveCatalogDocumentStoreError.symlinkRejected }
     }

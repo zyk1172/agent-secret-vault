@@ -117,6 +117,66 @@ private func writeManagedV2WithLegacySidecar(
     #expect(!markdown.contains("password-plaintext-canary"))
 }
 
+@Test func catalogStoreScopesDefaultIntegrityPerDocumentAndIgnoresAStaleLegacySidecar() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let integrityDirectory = fixture.root.appendingPathComponent("CatalogIntegrity", isDirectory: true)
+    let legacyIntegrity = integrityDirectory.appendingPathComponent("catalog-integrity.json")
+    let firstDocument = fixture.root.appendingPathComponent("first.md")
+    let secondDocument = fixture.root.appendingPathComponent("second.md")
+
+    // Simulate a PR #14-era installation whose single sidecar belongs to the
+    // first selected document.
+    let legacyStore = SensitiveCatalogDocumentStore(
+        documentURL: firstDocument,
+        integrityURL: legacyIntegrity,
+        keyStore: fixture.keyStore
+    )
+    let first = try await legacyStore.createIndex(title: "第一个目录")
+
+    // The same document can migrate its valid legacy state into the new
+    // document-scoped location.
+    let scopedFirstStore = SensitiveCatalogDocumentStore(
+        documentURL: firstDocument,
+        keyStore: fixture.keyStore,
+        atomicWriteFaultInjector: nil,
+        integrityDirectoryURL: integrityDirectory
+    )
+    #expect(try await scopedFirstStore.snapshot() == first)
+
+    let secondDocumentModel = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: storeIndexID, title: "第二个目录")],
+        entries: [SecretCatalogEntry(
+            id: storeEntryID,
+            indexId: storeIndexID,
+            title: "带引用的条目",
+            fields: [SecretCatalogFieldValue(
+                key: "password",
+                label: "密码",
+                type: .secret,
+                secretRef: storeSecretReference
+            )]
+        )]
+    )
+    try SensitiveCatalogDocumentCodec.encode(secondDocumentModel).write(
+        to: secondDocument,
+        atomically: true,
+        encoding: .utf8
+    )
+
+    let scopedSecondStore = SensitiveCatalogDocumentStore(
+        documentURL: secondDocument,
+        keyStore: fixture.keyStore,
+        atomicWriteFaultInjector: nil,
+        integrityDirectoryURL: integrityDirectory
+    )
+    let candidate = try await scopedSecondStore.externalV3AdoptionCandidate()
+    #expect(candidate.semanticDiff.referencedSecretRefs == [storeSecretReference])
+    await #expect(throws: SensitiveCatalogDocumentStoreError.integrityMissing) {
+        _ = try await scopedSecondStore.snapshot()
+    }
+}
+
 @Test func catalogStoreReconcilesSafeExternalMarkdownWithoutTreatingRawHashAsSemanticState() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
