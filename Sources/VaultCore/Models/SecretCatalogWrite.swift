@@ -2,93 +2,64 @@ import Foundation
 
 public enum SecretCatalogAgentError: Error, Equatable, Sendable {
     case unavailable
-    case migrationRequired
+    case legacyCatalogUnsupported
+    case integrityMissing
     case externalModification
     case invalidCatalog
-    case missingLease
-    case invalidLease
-    case leaseExpired
-    case insufficientLeaseScope
+    case agentWriteNotAllowed
     case revisionConflict
     case invalidOperation
     case approvalRequired
 }
 
-/// The smallest unit of authority an Agent can carry when changing the
-/// managed catalog.  Structure authority is intentionally a superset of
-/// metadata authority; the inverse is never true.
-public enum CatalogWriteScope: String, Codable, CaseIterable, Sendable {
+/// The user-facing App-control setting for Agent catalog writes.  The
+/// authorization state stays in the App/Agent control plane; MCP callers never
+/// supply or manufacture a token, nonce, or lease.
+public enum CatalogAgentWriteMode: String, Codable, CaseIterable, Sendable {
+    case disabled
     case metadata
     case structure
 
-    public func permits(_ required: CatalogWriteScope) -> Bool {
-        self == .structure || self == required
+    public var displayName: String {
+        switch self {
+        case .disabled: return "禁止 Agent 修改"
+        case .metadata: return "仅允许普通元数据"
+        case .structure: return "允许结构修改"
+        }
+    }
+
+    public func permits(_ required: CatalogAgentWriteScope) -> Bool {
+        switch self {
+        case .disabled: return false
+        case .metadata: return required == .metadata
+        case .structure: return true
+        }
     }
 }
 
-public enum CatalogWriteLeaseError: Error, Equatable, Sendable {
-    case invalidNonce
-    case expired
-    case tooLong
-    case insufficientScope
-}
+public struct CatalogAgentWriteAuthorizationStatus: Codable, Equatable, Sendable {
+    public let mode: CatalogAgentWriteMode
+    public let expiresAt: Date?
 
-/// A lease is issued by the App control plane.  The shared MCP socket can
-/// present one but has no operation that creates, extends, or signs one.
-public struct CatalogWriteLease: Codable, Equatable, Sendable {
-    public static let maximumLifetime: TimeInterval = 600
-
-    public let scope: CatalogWriteScope
-    public let issuedAt: Date
-    public let expiresAt: Date
-    public let nonce: String
-
-    public init(
-        scope: CatalogWriteScope,
-        issuedAt: Date,
-        expiresAt: Date,
-        nonce: String
-    ) {
-        self.scope = scope
-        self.issuedAt = issuedAt
+    public init(mode: CatalogAgentWriteMode, expiresAt: Date? = nil) {
+        self.mode = mode
         self.expiresAt = expiresAt
-        self.nonce = nonce
     }
 
-    public static func generated(
-        scope: CatalogWriteScope,
-        issuedAt: Date = Date(),
-        duration: TimeInterval = maximumLifetime
-    ) throws -> Self {
-        guard duration > 0, duration <= maximumLifetime else {
-            throw CatalogWriteLeaseError.tooLong
-        }
-        return Self(
-            scope: scope,
-            issuedAt: issuedAt,
-            expiresAt: issuedAt.addingTimeInterval(duration),
-            nonce: try SecretCatalogOpaqueID.generate()
-        )
+    public func isActive(at date: Date = Date()) -> Bool {
+        mode != .disabled && (expiresAt.map { $0 > date } ?? false)
     }
+}
 
-    public func validate(
-        requiredScope: CatalogWriteScope,
-        now: Date = Date()
-    ) throws {
-        guard (try? SecretCatalogOpaqueID.validate(nonce)) != nil else {
-            throw CatalogWriteLeaseError.invalidNonce
-        }
-        guard expiresAt > now else {
-            throw CatalogWriteLeaseError.expired
-        }
-        guard issuedAt <= expiresAt,
-              expiresAt.timeIntervalSince(issuedAt) <= Self.maximumLifetime
-        else {
-            throw CatalogWriteLeaseError.tooLong
-        }
-        guard scope.permits(requiredScope) else {
-            throw CatalogWriteLeaseError.insufficientScope
-        }
+/// The smallest unit of authority checked by the Agent catalog service.
+/// Structure authority is intentionally a superset of metadata authority;
+/// callers never carry a token or nonce for this scope.
+public enum CatalogAgentWriteScope: String, Codable, CaseIterable, Sendable {
+    case metadata
+    case structure
+
+    public func permits(_ required: CatalogAgentWriteScope) -> Bool {
+        self == .structure || self == required
     }
 }
 
@@ -126,6 +97,8 @@ public struct CatalogDraftRequest: Codable, Equatable, Sendable {
     public let type: String
     public let aliases: [String]
     public let tags: [String]
+    public let endpoints: [CatalogEndpoint]
+    public let notes: String?
     public let fields: [SecretCatalogFieldValue]
 
     public init(
@@ -134,6 +107,8 @@ public struct CatalogDraftRequest: Codable, Equatable, Sendable {
         type: String = "credential",
         aliases: [String] = [],
         tags: [String] = [],
+        endpoints: [CatalogEndpoint] = [],
+        notes: String? = nil,
         fields: [SecretCatalogFieldValue] = []
     ) {
         self.indexID = indexID
@@ -141,6 +116,8 @@ public struct CatalogDraftRequest: Codable, Equatable, Sendable {
         self.type = type
         self.aliases = aliases
         self.tags = tags
+        self.endpoints = endpoints
+        self.notes = notes
         self.fields = fields
     }
 }

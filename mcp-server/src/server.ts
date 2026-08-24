@@ -12,7 +12,6 @@ import {
   CatalogDraft,
   CatalogDraftRequest,
   CatalogMetadataPatch,
-  CatalogWriteLease,
   CatalogWriteResult,
   CatalogValidationResult,
   IpcRequest,
@@ -44,7 +43,9 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 7. 如果需要的字段或结构当前 MCP 不支持，应停止并告诉用户，不得通过直接修改“敏感信息.md”绕过 SVLT。
 8. 如果用户要求新增记录，应优先通过 Catalog Draft 创建结构；Secret 字段使用 placeholder 或已有 secret:// 引用，需要新秘密时让用户在 SVLT 本机安全表单中填写。
 9. 修改后必须调用 secret_catalog_validate；验证失败时不得继续使用或尝试自行修复文件结构。
-10. 即使用户要求修改目录，也不代表允许绕过 SVLT；用户授权的是目标操作，不是直接文件写权限。`;
+10. 即使用户要求修改目录，也不代表允许绕过 SVLT；用户授权的是目标操作，不是直接文件写权限。
+11. 遇到 LEGACY_CATALOG_UNSUPPORTED 时必须停止；SVLT 不提供旧版目录自动升级，Agent 不得自行转换或修改旧文件。合法的 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用接管操作。
+12. Catalog 写入必须使用 App 当前有效的 Agent 编辑授权；授权最长 10 分钟并自动过期。MCP 不携带、生成、延长或伪造 lease/nonce；无授权或授权过期时只能读取和报告状态。`;
 
 export interface VaultIpcClient {
   request(request: IpcRequest): Promise<IpcResponse>;
@@ -127,7 +128,8 @@ const SecretSearchOutput = z
           "NOT_FOUND",
           "INVALID_QUERY",
           "CATALOG_UNAVAILABLE",
-          "MIGRATION_REQUIRED",
+          "LEGACY_CATALOG_UNSUPPORTED",
+          "INTEGRITY_MISSING",
           "EXTERNAL_CATALOG_MODIFICATION",
           "CATALOG_INVALID"
         ]),
@@ -141,23 +143,21 @@ const SecretSearchOutput = z
 const CatalogGetInput = z.object({ entryID: z.string().length(26) }).strict();
 
 const CatalogCreateDraftInput = z
-  .object({ request: CatalogDraftRequest, lease: CatalogWriteLease })
+  .object({ request: CatalogDraftRequest })
   .strict();
 
 const CatalogPatchMetadataInput = z
   .object({
     entryID: z.string().length(26),
     patch: CatalogMetadataPatch,
-    expectedRevision: z.number().int().nonnegative(),
-    lease: CatalogWriteLease
+    expectedRevision: z.number().int().nonnegative()
   })
   .strict();
 
 const CatalogCommitInput = z
   .object({
     draft: CatalogDraft,
-    expectedRevision: z.number().int().nonnegative(),
-    lease: CatalogWriteLease
+    expectedRevision: z.number().int().nonnegative()
   })
   .strict();
 
@@ -168,8 +168,7 @@ const CatalogPlaceholderInput = z
     label: z.string().min(1),
     agentVisible: z.boolean().default(true),
     searchable: z.boolean().default(true),
-    expectedRevision: z.number().int().nonnegative(),
-    lease: CatalogWriteLease
+    expectedRevision: z.number().int().nonnegative()
   })
   .strict();
 
@@ -178,8 +177,7 @@ const CatalogBindInput = z
     entryID: z.string().length(26),
     key: z.string().min(1),
     secretRef: SecretReference,
-    expectedRevision: z.number().int().nonnegative(),
-    lease: CatalogWriteLease
+    expectedRevision: z.number().int().nonnegative()
   })
   .strict();
 
@@ -774,15 +772,14 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_create_draft",
       title: "Create Catalog Draft",
       description:
-        "Creates an Index Entry draft using a real App-issued structure lease. Secret fields may only be placeholders; binding an existing secret:// reference is a separate App-approved operation, and plaintext is never accepted.",
+        "Creates an Index Entry draft under the current App-controlled Agent write authorization. Secret fields may only be placeholders; binding an existing secret:// reference is a separate App-approved operation, and plaintext is never accepted.",
       inputSchema: CatalogCreateDraftInput,
       outputSchema: CatalogDraftOutput,
       async handler(input) {
         const parsed = CatalogCreateDraftInput.parse(input);
         const response = await client.request({
           type: "catalogCreateDraft",
-          request: parsed.request,
-          lease: parsed.lease
+          request: parsed.request
         });
         if (response.type === "catalogDraft") {
           return structuredResult(response.draft);
@@ -794,7 +791,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_patch_metadata",
       title: "Patch Catalog Metadata",
       description:
-        "Patches ordinary Entry metadata under an App-issued metadata lease and expected revision. Secret transitions and secret replacement remain App-approved operations.",
+        "Patches ordinary Entry metadata under the current App-controlled Agent write authorization and expected revision. Secret transitions and secret replacement remain App-approved operations.",
       inputSchema: CatalogPatchMetadataInput,
       outputSchema: CatalogWriteOutput,
       async handler(input) {
@@ -803,8 +800,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           type: "catalogPatchMetadata",
           entryID: parsed.entryID,
           patch: parsed.patch,
-          expectedRevision: parsed.expectedRevision,
-          lease: parsed.lease
+          expectedRevision: parsed.expectedRevision
         });
         if (response.type === "catalogWriteResult") {
           return structuredResult(response.result);
@@ -816,7 +812,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_commit",
       title: "Commit Catalog Draft",
       description:
-        "Commits a previously issued catalog draft under an App-issued structure lease and optimistic revision. The Agent cannot self-issue or extend the lease.",
+        "Commits a previously created catalog draft under the current App-controlled structure authorization and optimistic revision. The Agent cannot self-issue or extend authorization.",
       inputSchema: CatalogCommitInput,
       outputSchema: CatalogWriteOutput,
       async handler(input) {
@@ -824,8 +820,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
         const response = await client.request({
           type: "catalogCommit",
           draft: parsed.draft,
-          expectedRevision: parsed.expectedRevision,
-          lease: parsed.lease
+          expectedRevision: parsed.expectedRevision
         });
         if (response.type === "catalogWriteResult") {
           return structuredResult(response.result);
@@ -837,7 +832,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_add_secret_placeholder",
       title: "Add Secret Placeholder",
       description:
-        "Adds a secret field placeholder under an App-issued structure lease. The user must fill the secret in SVLT App secure input; plaintext is never accepted here.",
+        "Adds a secret field placeholder under the current App-controlled structure authorization. The user must fill the secret in SVLT App secure input; plaintext is never accepted here.",
       inputSchema: CatalogPlaceholderInput,
       outputSchema: CatalogWriteOutput,
       async handler(input) {
@@ -849,8 +844,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           label: parsed.label,
           agentVisible: parsed.agentVisible,
           searchable: parsed.searchable,
-          expectedRevision: parsed.expectedRevision,
-          lease: parsed.lease
+          expectedRevision: parsed.expectedRevision
         });
         if (response.type === "catalogWriteResult") {
           return structuredResult(response.result);
@@ -872,8 +866,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           entryID: parsed.entryID,
           key: parsed.key,
           secretRef: parsed.secretRef,
-          expectedRevision: parsed.expectedRevision,
-          lease: parsed.lease
+          expectedRevision: parsed.expectedRevision
         });
         if (response.type === "catalogWriteResult") {
           return structuredResult(response.result);
@@ -1487,7 +1480,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "When a task names a service, device, host, account, or purpose but no secret:// reference is known, call secret_search before asking the user for anything.",
       "Use the Index, Entry, endpoint, visible metadata, and opaque secretRef returned by secret_search or secret_catalog_search to choose compatible references; do not ask the user to copy reference IDs.",
       "Use secret_catalog_get for one Entry, and use secret_catalog_validate after every catalog write.",
-      "Catalog writes require an App-issued lease; never invent, extend, or self-approve a lease.",
+      "Catalog writes require the current App-controlled Agent authorization; never invent, extend, or self-approve authorization.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",

@@ -137,8 +137,9 @@ public struct VaultWorkbenchView: View {
     let sensitiveIndexEntries: [SensitiveInformationDocumentReference]
     let sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
     let sensitiveCatalogError: String?
-    let sensitiveMigrationPreview: SecretCatalogMigrationPreview?
-    let sensitiveMigrationError: String?
+    let sensitiveCatalogCanAdoptV2: Bool
+    let catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus
+    let catalogAgentWriteError: String?
     let sensitiveScanRootURL: URL?
     let sensitiveScanCandidates: [LocalSensitiveInformationCandidate]
     let sensitiveScanRules: [SensitiveScanRuleDefinition]
@@ -149,11 +150,13 @@ public struct VaultWorkbenchView: View {
     let refreshSensitiveIndex: (() async -> Void)?
     let refreshSensitiveCatalog: (() async -> Void)?
     let validateSensitiveCatalog: (() async -> Void)?
+    let adoptExternalV2Catalog: (() async -> Void)?
     let createCatalogIndex: ((String) async -> Void)?
     let createCatalogEntry: ((String, String, String) async -> Void)?
-    let fillCatalogSecret: ((String, String, String, String) async -> Void)?
-    let prepareSensitiveMigration: (() async -> Void)?
-    let confirmSensitiveMigration: (() async -> Void)?
+    let updateCatalogEntry: ((SecretCatalogEntry) async -> Void)?
+    let fillCatalogSecret: ((String, String, String, String) async -> String?)?
+    let enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
+    let revokeCatalogAgentWrite: (() async -> Void)?
     let chooseSensitiveScanRoot: (() -> Void)?
     let scanSensitiveInformation: (() async -> Void)?
     let encryptSensitiveCandidates: ((Set<String>) async -> Void)?
@@ -174,8 +177,9 @@ public struct VaultWorkbenchView: View {
         sensitiveIndexEntries: [SensitiveInformationDocumentReference] = [],
         sensitiveCatalogSnapshot: SensitiveCatalogSnapshot? = nil,
         sensitiveCatalogError: String? = nil,
-        sensitiveMigrationPreview: SecretCatalogMigrationPreview? = nil,
-        sensitiveMigrationError: String? = nil,
+        sensitiveCatalogCanAdoptV2: Bool = false,
+        catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled),
+        catalogAgentWriteError: String? = nil,
         sensitiveScanRootURL: URL? = nil,
         sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = [],
         sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults,
@@ -186,11 +190,13 @@ public struct VaultWorkbenchView: View {
         refreshSensitiveIndex: (() async -> Void)? = nil,
         refreshSensitiveCatalog: (() async -> Void)? = nil,
         validateSensitiveCatalog: (() async -> Void)? = nil,
+        adoptExternalV2Catalog: (() async -> Void)? = nil,
         createCatalogIndex: ((String) async -> Void)? = nil,
         createCatalogEntry: ((String, String, String) async -> Void)? = nil,
-        fillCatalogSecret: ((String, String, String, String) async -> Void)? = nil,
-        prepareSensitiveMigration: (() async -> Void)? = nil,
-        confirmSensitiveMigration: (() async -> Void)? = nil,
+        updateCatalogEntry: ((SecretCatalogEntry) async -> Void)? = nil,
+        fillCatalogSecret: ((String, String, String, String) async -> String?)? = nil,
+        enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)? = nil,
+        revokeCatalogAgentWrite: (() async -> Void)? = nil,
         chooseSensitiveScanRoot: (() -> Void)? = nil,
         scanSensitiveInformation: (() async -> Void)? = nil,
         encryptSensitiveCandidates: ((Set<String>) async -> Void)? = nil,
@@ -209,8 +215,9 @@ public struct VaultWorkbenchView: View {
         self.sensitiveIndexEntries = sensitiveIndexEntries
         self.sensitiveCatalogSnapshot = sensitiveCatalogSnapshot
         self.sensitiveCatalogError = sensitiveCatalogError
-        self.sensitiveMigrationPreview = sensitiveMigrationPreview
-        self.sensitiveMigrationError = sensitiveMigrationError
+        self.sensitiveCatalogCanAdoptV2 = sensitiveCatalogCanAdoptV2
+        self.catalogAgentWriteStatus = catalogAgentWriteStatus
+        self.catalogAgentWriteError = catalogAgentWriteError
         self.sensitiveScanRootURL = sensitiveScanRootURL
         self.sensitiveScanCandidates = sensitiveScanCandidates
         self.sensitiveScanRules = sensitiveScanRules
@@ -221,11 +228,13 @@ public struct VaultWorkbenchView: View {
         self.refreshSensitiveIndex = refreshSensitiveIndex
         self.refreshSensitiveCatalog = refreshSensitiveCatalog
         self.validateSensitiveCatalog = validateSensitiveCatalog
+        self.adoptExternalV2Catalog = adoptExternalV2Catalog
         self.createCatalogIndex = createCatalogIndex
         self.createCatalogEntry = createCatalogEntry
+        self.updateCatalogEntry = updateCatalogEntry
         self.fillCatalogSecret = fillCatalogSecret
-        self.prepareSensitiveMigration = prepareSensitiveMigration
-        self.confirmSensitiveMigration = confirmSensitiveMigration
+        self.enableCatalogAgentWrite = enableCatalogAgentWrite
+        self.revokeCatalogAgentWrite = revokeCatalogAgentWrite
         self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
         self.scanSensitiveInformation = scanSensitiveInformation
         self.encryptSensitiveCandidates = encryptSensitiveCandidates
@@ -334,14 +343,15 @@ public struct VaultWorkbenchView: View {
                     SensitiveCatalogEditorCard(
                         snapshot: sensitiveCatalogSnapshot,
                         errorMessage: sensitiveCatalogError,
-                        migrationPreview: sensitiveMigrationPreview,
-                        migrationError: sensitiveMigrationError,
+                        canAdoptExternalV2: sensitiveCatalogCanAdoptV2,
+                        adoptExternalV2: adoptExternalV2Catalog,
                         refresh: refreshSensitiveCatalog,
                         createIndex: createCatalogIndex,
                         createEntry: createCatalogEntry,
+                        updateEntry: updateCatalogEntry,
                         fillSecret: fillCatalogSecret,
-                        prepareMigration: prepareSensitiveMigration,
-                        confirmMigration: confirmSensitiveMigration
+                        enableAgentWrite: enableCatalogAgentWrite,
+                        revokeAgentWrite: revokeCatalogAgentWrite
                     )
                     SensitiveIndexLibraryCard(
                         indexURL: sensitiveIndexURL,
@@ -371,7 +381,13 @@ public struct VaultWorkbenchView: View {
         case .automation:
             WorkbenchPage(title: "智能体自动化", subtitle: "只显示脱敏审计。密码、token、Authorization header 不会进入这里。", systemImage: selectedSection.systemImage) {
                 VStack(spacing: 14) {
-                    SensitiveCatalogPolicyCard(validate: validateSensitiveCatalog)
+                    SensitiveCatalogPolicyCard(
+                        validate: validateSensitiveCatalog,
+                        writeStatus: catalogAgentWriteStatus,
+                        writeError: catalogAgentWriteError,
+                        enableAgentWrite: enableCatalogAgentWrite,
+                        revokeAgentWrite: revokeCatalogAgentWrite
+                    )
                     AgentAutomationAuditCard(entries: auditEntries)
                 }
             }
@@ -775,7 +791,7 @@ private struct SensitiveIndexLibraryCard: View {
                     ContentUnavailableView(
                         "由结构化目录管理",
                         systemImage: "doc.text",
-                        description: Text("v2 Index/Entry 内容由上方结构化编辑器显示；旧格式只通过迁移预览读取。")
+                        description: Text("v2 Index/Entry 内容由上方结构化编辑器显示；旧版目录不支持自动升级，请手动转换后再由 SVLT 接管。")
                     )
                     .frame(maxWidth: .infinity, minHeight: 170)
                 } else {
@@ -817,14 +833,15 @@ private struct SensitiveIndexLibraryCard: View {
 private struct SensitiveCatalogEditorCard: View {
     let snapshot: SensitiveCatalogSnapshot?
     let errorMessage: String?
-    let migrationPreview: SecretCatalogMigrationPreview?
-    let migrationError: String?
+    let canAdoptExternalV2: Bool
+    let adoptExternalV2: (() async -> Void)?
     let refresh: (() async -> Void)?
     let createIndex: ((String) async -> Void)?
     let createEntry: ((String, String, String) async -> Void)?
-    let fillSecret: ((String, String, String, String) async -> Void)?
-    let prepareMigration: (() async -> Void)?
-    let confirmMigration: (() async -> Void)?
+    let updateEntry: ((SecretCatalogEntry) async -> Void)?
+    let fillSecret: ((String, String, String, String) async -> String?)?
+    let enableAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
+    let revokeAgentWrite: (() async -> Void)?
 
     @State private var newIndexTitle = ""
     @State private var addingEntryToIndexID: String?
@@ -860,74 +877,34 @@ private struct SensitiveCatalogEditorCard: View {
                     .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
 
-            if snapshot == nil, let prepareMigration {
+            if snapshot == nil, canAdoptExternalV2, let adoptExternalV2 {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .foregroundStyle(.orange)
-                        Text("旧格式迁移")
+                        Image(systemName: "checkmark.shield")
+                            .foregroundStyle(.blue)
+                        Text("接管外部 v2 文件")
                             .font(.headline)
                         Spacer()
-                        Button("生成迁移预览") {
+                        Button("验证并接管 v2 文件") {
                             Task {
                                 isWorking = true
-                                await prepareMigration()
+                                await adoptExternalV2()
                                 isWorking = false
                             }
                         }
                         .buttonStyle(.bordered)
                         .disabled(isWorking)
                     }
-                    Text("SVLT 不会猜测未标注的用户名/密码，也不会直接覆盖旧文件。确认后会先生成时间戳备份，并校验 secret:// 引用集合。")
+                    Text("SVLT 将严格解析当前 v2 文件，先备份，再 canonicalize 并建立完整性记录。旧版文件不支持自动升级，接管失败时原文件保持不变。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let migrationError {
-                        Text(migrationError)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                    if let migrationPreview {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("预览：Index \(migrationPreview.document.indexes.count) · Entry \(migrationPreview.document.entries.count) · 引用 \(migrationPreview.referencesBefore.count)")
-                                .font(.caption.weight(.semibold))
-                            if migrationPreview.ambiguousReferences.isEmpty && migrationPreview.plaintextSensitiveFields.isEmpty {
-                                Label("没有待确认字段，可以迁移", systemImage: "checkmark.circle")
-                                    .font(.caption)
-                                    .foregroundStyle(.green)
-                            } else {
-                                Label("存在待确认项，已禁止自动迁移", systemImage: "exclamationmark.triangle")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                                ForEach(migrationPreview.ambiguousReferences, id: \.reference) { ambiguity in
-                                    Text("未识别：\(ambiguity.reference) · 可选 \(ambiguity.suggestedKeys.joined(separator: " / "))")
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                                if !migrationPreview.plaintextSensitiveFields.isEmpty {
-                                    Text("发现旧文档中的敏感字段明文；请在 SVLT 安全表单重新填写。")
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                            HStack {
-                                Spacer()
-                                Button("确认迁移并备份") {
-                                    Task {
-                                        isWorking = true
-                                        await confirmMigration?()
-                                        isWorking = false
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(isWorking || migrationPreview.requiresUserResolution || confirmMigration == nil)
-                            }
-                        }
-                        .padding(10)
-                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
                 }
                 .padding(10)
-                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            } else if snapshot == nil, errorMessage?.contains("旧版格式") == true {
+                Label("旧版目录不支持自动升级。请先备份文件，再手动转换为 Catalog v2。", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let snapshot {
@@ -1026,7 +1003,7 @@ private struct SensitiveCatalogEditorCard: View {
                                         .padding(.leading, 28)
                                 } else {
                                     ForEach(entries, id: \.id) { entry in
-                                        SensitiveCatalogEntryRow(entry: entry, fillSecret: fillSecret)
+                                        SensitiveCatalogEntryRow(entry: entry, updateEntry: updateEntry, fillSecret: fillSecret)
                                     }
                                 }
                             }
@@ -1049,21 +1026,42 @@ private struct SensitiveCatalogEditorCard: View {
 
 private struct SensitiveCatalogEntryRow: View {
     let entry: SecretCatalogEntry
-    let fillSecret: ((String, String, String, String) async -> Void)?
-    @State private var secretInput = ""
-    @State private var isSavingSecret = false
+    let updateEntry: ((SecretCatalogEntry) async -> Void)?
+    let fillSecret: ((String, String, String, String) async -> String?)?
+
+    @State private var editing = false
+    @State private var draftTitle: String
+    @State private var draftAliases: String
+    @State private var draftTags: String
+    @State private var draftEndpoints: String
+    @State private var draftNotes: String
+    @State private var draftFields: [SecretCatalogFieldValue]
+    @State private var isSaving = false
+    @State private var editorError: String?
+
+    init(
+        entry: SecretCatalogEntry,
+        updateEntry: ((SecretCatalogEntry) async -> Void)?,
+        fillSecret: ((String, String, String, String) async -> String?)?
+    ) {
+        self.entry = entry
+        self.updateEntry = updateEntry
+        self.fillSecret = fillSecret
+        _draftTitle = State(initialValue: entry.title)
+        _draftAliases = State(initialValue: entry.aliases.joined(separator: ", "))
+        _draftTags = State(initialValue: entry.tags.joined(separator: ", "))
+        _draftEndpoints = State(initialValue: entry.endpoints.map(Self.endpointLine).joined(separator: "\n"))
+        _draftNotes = State(initialValue: entry.notes ?? "")
+        _draftFields = State(initialValue: entry.fields)
+    }
 
     var body: some View {
         DisclosureGroup {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(entry.fields, id: \.key) { field in
-                    fieldRow(field)
-                }
-                if let notes = entry.notes, !notes.isEmpty {
-                    Text(notes)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 10) {
+                if editing {
+                    editorBody
+                } else {
+                    displayBody
                 }
             }
             .padding(.top, 6)
@@ -1082,6 +1080,15 @@ private struct SensitiveCatalogEntryRow: View {
                 Text(entry.id)
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.tertiary)
+                Button(editing ? "取消" : "编辑") {
+                    if editing {
+                        load(entry)
+                    }
+                    editing.toggle()
+                    editorError = nil
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
         .padding(.horizontal, 8)
@@ -1089,79 +1096,446 @@ private struct SensitiveCatalogEntryRow: View {
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    private func fieldDisplayValue(_ field: SecretCatalogFieldValue) -> String {
-        if field.type.isSecret {
-            return field.secretRef ?? "未填写（请在 SVLT 安全表单中输入）"
-        }
-        guard field.agentVisible else { return "已隐藏" }
-        guard let value = field.value else { return "未填写" }
-        switch value {
-        case .string(let string):
-            return string
-        case .number(let number):
-            return String(number)
-        case .boolean(let boolean):
-            return boolean ? "是" : "否"
-        case .list(let list):
-            return list.joined(separator: ", ")
-        }
-    }
-
-    @ViewBuilder
-    private func fieldRow(_ field: SecretCatalogFieldValue) -> some View {
-        if field.type.isSecret, field.secretRef == nil {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.fill")
+    private var displayBody: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(entry.fields, id: \.key) { field in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: field.type.isSecret ? "lock.fill" : "circle.fill")
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(field.type.isSecret ? .orange : .secondary)
                         .frame(width: 14)
                     Text(field.label)
                         .font(.caption.weight(.semibold))
-                    Text("待填写")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-                HStack(spacing: 8) {
-                    SecureField("在 SVLT 安全表单中输入", text: $secretInput)
-                        .textFieldStyle(.roundedBorder)
-                    Button(isSavingSecret ? "保存中…" : "保存") {
-                        let plaintext = secretInput
-                        Task {
-                            isSavingSecret = true
-                            await fillSecret?(entry.id, field.key, field.label, plaintext)
-                            secretInput = ""
-                            isSavingSecret = false
-                        }
+                    Text(displayValue(field))
+                        .font(.system(.caption, design: field.type.isSecret ? .monospaced : .default))
+                        .foregroundStyle(field.type.isSecret ? .orange : .secondary)
+                        .textSelection(.enabled)
+                    Spacer()
+                    if !field.agentVisible {
+                        Text("Agent 隐藏")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    } else if field.searchable {
+                        Text("可搜索")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(secretInput.isEmpty || isSavingSecret || fillSecret == nil)
                 }
             }
-        } else {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: field.type.isSecret ? "lock.fill" : "circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(field.type.isSecret ? .orange : .secondary)
-                    .frame(width: 14)
-                Text(field.label)
-                    .font(.caption.weight(.semibold))
-                Text(fieldDisplayValue(field))
-                    .font(.system(.caption, design: field.type.isSecret ? .monospaced : .default))
-                    .foregroundStyle(field.type.isSecret ? .orange : .secondary)
-                    .textSelection(.enabled)
+            if let notes = entry.notes, !notes.isEmpty {
+                Text(notes)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var editorBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Entry 标题", text: $draftTitle)
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 8) {
+                TextField("别名（逗号分隔）", text: $draftAliases)
+                    .textFieldStyle(.roundedBorder)
+                TextField("标签（逗号分隔）", text: $draftTags)
+                    .textFieldStyle(.roundedBorder)
+            }
+            TextField("Endpoints：type|host|port，每行一个", text: $draftEndpoints, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...4)
+            TextEditor(text: $draftNotes)
+                .font(.body)
+                .frame(minHeight: 56, maxHeight: 100)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+
+            HStack {
+                Text("Fields")
+                    .font(.headline)
                 Spacer()
-                if !field.agentVisible {
-                    Text("Agent 隐藏")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                } else if field.searchable {
-                    Text("可搜索")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                Button("新增自定义字段") {
+                    let key = "field\(draftFields.count + 1)"
+                    draftFields.append(SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
                 }
+                .buttonStyle(.bordered)
             }
+
+            ForEach(draftFields, id: \.key) { field in
+                SensitiveCatalogFieldEditorRow(
+                    field: field,
+                    entryID: entry.id,
+                    fillSecret: fillSecret,
+                    onUpdate: { updatedField in
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
+                        draftFields[currentIndex] = updatedField
+                    },
+                    onDelete: {
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
+                        draftFields.remove(at: currentIndex)
+                    },
+                    onMoveUp: {
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }), currentIndex > 0 else { return }
+                        draftFields.swapAt(currentIndex, currentIndex - 1)
+                    },
+                    onMoveDown: {
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }), currentIndex + 1 < draftFields.count else { return }
+                        draftFields.swapAt(currentIndex, currentIndex + 1)
+                    }
+                )
+            }
+
+            if let editorError {
+                Text(editorError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Spacer()
+                Button(isSaving ? "保存中…" : "保存 Entry") {
+                    saveEntry()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSaving || updateEntry == nil)
+            }
+        }
+    }
+
+    private func saveEntry() {
+        let title = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            editorError = "Entry 标题不能为空"
+            return
+        }
+        guard let endpoints = Self.parseEndpoints(draftEndpoints) else {
+            editorError = "Endpoint 格式应为 type|host|port"
+            return
+        }
+        let updated = SecretCatalogEntry(
+            id: entry.id,
+            indexId: entry.indexId,
+            title: title,
+            type: entry.type,
+            aliases: Self.csv(draftAliases),
+            endpoints: endpoints,
+            fields: draftFields,
+            notes: draftNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftNotes,
+            tags: Self.csv(draftTags),
+            schema: entry.schema
+        )
+        Task {
+            isSaving = true
+            await updateEntry?(updated)
+            isSaving = false
+            editing = false
+            editorError = nil
+        }
+    }
+
+    private func load(_ value: SecretCatalogEntry) {
+        draftTitle = value.title
+        draftAliases = value.aliases.joined(separator: ", ")
+        draftTags = value.tags.joined(separator: ", ")
+        draftEndpoints = value.endpoints.map(Self.endpointLine).joined(separator: "\n")
+        draftNotes = value.notes ?? ""
+        draftFields = value.fields
+    }
+
+    private func displayValue(_ field: SecretCatalogFieldValue) -> String {
+        if field.type.isSecret { return field.secretRef ?? "待填写（仅在 SVLT 安全表单输入）" }
+        guard field.agentVisible else { return "已隐藏" }
+        guard let value = field.value else { return "未填写" }
+        switch value {
+        case .string(let value): return value
+        case .number(let value): return String(value)
+        case .boolean(let value): return value ? "是" : "否"
+        case .list(let value): return value.joined(separator: ", ")
+        }
+    }
+
+    private static func csv(_ value: String) -> [String] {
+        value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    private static func endpointLine(_ endpoint: CatalogEndpoint) -> String {
+        let port = endpoint.port.map(String.init) ?? ""
+        return "\(endpoint.type)|\(endpoint.host)|\(port)"
+    }
+
+    private static func parseEndpoints(_ value: String) -> [CatalogEndpoint]? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var endpoints: [CatalogEndpoint] = []
+        for line in trimmed.split(whereSeparator: \.isNewline).map(String.init) {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 2 else { return nil }
+            let type = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            let host = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !type.isEmpty, !host.isEmpty else { return nil }
+            let portText = parts.dropFirst(2).joined(separator: "|").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard portText.isEmpty || (Int(portText).map { (0...65_535).contains($0) } ?? false) else { return nil }
+            endpoints.append(CatalogEndpoint(type: type, host: host, port: portText.isEmpty ? nil : Int(portText)))
+        }
+        return endpoints
+    }
+}
+
+private struct SensitiveCatalogFieldEditorRow: View {
+    let field: SecretCatalogFieldValue
+    let entryID: String
+    let fillSecret: ((String, String, String, String) async -> String?)?
+    let onUpdate: (SecretCatalogFieldValue) -> Void
+    let onDelete: () -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+
+    @State private var draftKey: String
+    @State private var draftLabel: String
+    @State private var draftType: SecretCatalogFieldType
+    @State private var draftText: String
+    @State private var draftList: String
+    @State private var draftBoolean: Bool
+    @State private var draftAgentVisible: Bool
+    @State private var draftSearchable: Bool
+    @State private var secretInput = ""
+    @State private var isSavingSecret = false
+    @State private var errorMessage: String?
+
+    init(
+        field: SecretCatalogFieldValue,
+        entryID: String,
+        fillSecret: ((String, String, String, String) async -> String?)?,
+        onUpdate: @escaping (SecretCatalogFieldValue) -> Void,
+        onDelete: @escaping () -> Void,
+        onMoveUp: @escaping () -> Void,
+        onMoveDown: @escaping () -> Void
+    ) {
+        self.field = field
+        self.entryID = entryID
+        self.fillSecret = fillSecret
+        self.onUpdate = onUpdate
+        self.onDelete = onDelete
+        self.onMoveUp = onMoveUp
+        self.onMoveDown = onMoveDown
+        _draftKey = State(initialValue: field.key)
+        _draftLabel = State(initialValue: field.label)
+        _draftType = State(initialValue: field.type)
+        _draftText = State(initialValue: Self.stringValue(field.value))
+        _draftList = State(initialValue: Self.listValue(field.value))
+        _draftBoolean = State(initialValue: Self.boolValue(field.value))
+        _draftAgentVisible = State(initialValue: field.agentVisible)
+        _draftSearchable = State(initialValue: field.searchable)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                TextField("key", text: $draftKey)
+                    .textFieldStyle(.roundedBorder)
+                TextField("字段标签", text: $draftLabel)
+                    .textFieldStyle(.roundedBorder)
+                Picker("类型", selection: $draftType) {
+                    ForEach(SecretCatalogFieldType.allCases, id: \.self) { type in
+                        Text(Self.typeName(type)).tag(type)
+                    }
+                }
+                .frame(width: 135)
+                Button(action: onMoveUp) { Image(systemName: "chevron.up") }
+                    .buttonStyle(.borderless)
+                Button(action: onMoveDown) { Image(systemName: "chevron.down") }
+                    .buttonStyle(.borderless)
+                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+            }
+
+            if draftType.isSecret {
+                HStack(spacing: 8) {
+                    if let secretRef = field.secretRef {
+                        Text(secretRef)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                        Text("已绑定；替换需要本机批准")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        SecureField("在 SVLT 安全表单中输入", text: $secretInput)
+                            .textFieldStyle(.roundedBorder)
+                        Button(isSavingSecret ? "保存中…" : "填写秘密") {
+                            let plaintext = secretInput
+                            Task {
+                                isSavingSecret = true
+                                if let fillSecret,
+                                   let secretRef = await fillSecret(entryID, draftKey, draftLabel, plaintext) {
+                                    // Keep the newly generated opaque reference in this
+                                    // field's draft state. Saving another Entry metadata
+                                    // change afterwards must not drop the secret just filled.
+                                    onUpdate(SecretCatalogFieldValue(
+                                        key: draftKey,
+                                        label: draftLabel,
+                                        type: .secret,
+                                        agentVisible: draftAgentVisible,
+                                        searchable: draftSearchable,
+                                        secretRef: secretRef
+                                    ))
+                                }
+                                secretInput = ""
+                                isSavingSecret = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(secretInput.isEmpty || isSavingSecret || fillSecret == nil || draftKey.isEmpty)
+                    }
+                }
+            } else {
+                valueEditor
+            }
+
+            HStack(spacing: 12) {
+                Toggle("Agent 可查看", isOn: $draftAgentVisible)
+                Toggle("可搜索", isOn: $draftSearchable)
+                Spacer()
+                Button("应用字段") {
+                    applyField()
+                }
+                .buttonStyle(.bordered)
+            }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(9)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var valueEditor: some View {
+        switch draftType {
+        case .multiline:
+            TextEditor(text: $draftText)
+                .frame(minHeight: 50, maxHeight: 90)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+        case .boolean:
+            Toggle("值", isOn: $draftBoolean)
+        case .list:
+            TextField("列表值（逗号分隔）", text: $draftList)
+                .textFieldStyle(.roundedBorder)
+        default:
+            TextField(Self.typeName(draftType), text: $draftText)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private func applyField() {
+        let key = draftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = draftLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !label.isEmpty else {
+            errorMessage = "key 和字段标签不能为空"
+            return
+        }
+        let value: SecretCatalogValue?
+        switch draftType {
+        case .boolean:
+            value = .boolean(draftBoolean)
+        case .list:
+            value = .list(draftList.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        case .port:
+            if draftText.isEmpty {
+                value = nil
+            } else {
+                guard let port = Int(draftText), (0...65_535).contains(port) else {
+                    errorMessage = "端口必须是 0 到 65535 的数字"
+                    return
+                }
+                value = .number(Double(port))
+            }
+        case .number:
+            guard draftText.isEmpty || Double(draftText) != nil else {
+                errorMessage = "数字字段格式不正确"
+                return
+            }
+            value = draftText.isEmpty ? nil : .number(Double(draftText) ?? 0)
+        case .url:
+            guard draftText.isEmpty || Self.isValidURL(draftText) else {
+                errorMessage = "URL 格式不正确"
+                return
+            }
+            value = draftText.isEmpty ? nil : .string(draftText)
+        case .date:
+            guard draftText.isEmpty || Self.isValidDate(draftText) else {
+                errorMessage = "日期应为 YYYY-MM-DD 或 ISO 8601 格式"
+                return
+            }
+            value = draftText.isEmpty ? nil : .string(draftText)
+        case .secret:
+            value = nil
+        default:
+            value = draftText.isEmpty ? nil : .string(draftText)
+        }
+        onUpdate(SecretCatalogFieldValue(
+            key: key,
+            label: label,
+            type: draftType,
+            agentVisible: draftAgentVisible,
+            searchable: draftSearchable,
+            value: draftType.isSecret ? nil : value,
+            secretRef: draftType.isSecret ? field.secretRef : nil
+        ))
+        errorMessage = nil
+    }
+
+    private static func stringValue(_ value: SecretCatalogValue?) -> String {
+        guard let value else { return "" }
+        if case .string(let value) = value { return value }
+        if case .number(let value) = value { return String(value) }
+        return ""
+    }
+
+    private static func listValue(_ value: SecretCatalogValue?) -> String {
+        if case .list(let value) = value { return value.joined(separator: ", ") }
+        return ""
+    }
+
+    private static func boolValue(_ value: SecretCatalogValue?) -> Bool {
+        if case .boolean(let value) = value { return value }
+        return false
+    }
+
+    private static func isValidURL(_ value: String) -> Bool {
+        guard let url = URL(string: value),
+              let scheme = url.scheme,
+              !scheme.isEmpty,
+              let host = url.host,
+              !host.isEmpty
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func isValidDate(_ value: String) -> Bool {
+        if ISO8601DateFormatter().date(from: value) != nil {
+            return true
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: value) != nil
+    }
+
+    private static func typeName(_ type: SecretCatalogFieldType) -> String {
+        switch type {
+        case .text: return "文本"
+        case .multiline: return "多行文本"
+        case .url: return "URL"
+        case .host: return "Host"
+        case .port: return "端口"
+        case .number: return "数字"
+        case .boolean: return "布尔"
+        case .date: return "日期"
+        case .list: return "列表"
+        case .secret: return "秘密"
         }
     }
 }
@@ -1779,8 +2153,13 @@ private struct AgentAutomationAuditCard: View {
 
 private struct SensitiveCatalogPolicyCard: View {
     let validate: (() async -> Void)?
+    let writeStatus: CatalogAgentWriteAuthorizationStatus
+    let writeError: String?
+    let enableAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
+    let revokeAgentWrite: (() async -> Void)?
     @State private var schemaExpanded = false
     @State private var copied = false
+    @State private var selectedWriteMode: CatalogAgentWriteMode = .metadata
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1805,6 +2184,44 @@ private struct SensitiveCatalogPolicyCard: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Agent 目录编辑权限")
+                    .font(.headline)
+                HStack(spacing: 8) {
+                    Picker("权限", selection: $selectedWriteMode) {
+                        Text(CatalogAgentWriteMode.disabled.displayName).tag(CatalogAgentWriteMode.disabled)
+                        Text(CatalogAgentWriteMode.metadata.displayName).tag(CatalogAgentWriteMode.metadata)
+                        Text(CatalogAgentWriteMode.structure.displayName).tag(CatalogAgentWriteMode.structure)
+                    }
+                    .frame(width: 190)
+                    Button("允许 Agent 编辑 10 分钟") {
+                        Task { await enableAgentWrite?(selectedWriteMode) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(enableAgentWrite == nil)
+                    Button("立即撤销") {
+                        Task { await revokeAgentWrite?() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(revokeAgentWrite == nil || writeStatus.mode == .disabled)
+                }
+                if writeStatus.mode == .disabled {
+                    Text("当前：禁止 Agent 修改")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    let expiry = writeStatus.expiresAt.map(Self.expiryText) ?? "未知"
+                    Text("当前：\(writeStatus.mode.displayName) · 到期 \(expiry)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if let writeError {
+                    Text(writeError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
             DisclosureGroup("查看 Schema", isExpanded: $schemaExpanded) {
                 ScrollView {
                     Text(VaultWorkbenchCopy.catalogSchema)
@@ -1820,5 +2237,12 @@ private struct SensitiveCatalogPolicyCard: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private static func expiryText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }

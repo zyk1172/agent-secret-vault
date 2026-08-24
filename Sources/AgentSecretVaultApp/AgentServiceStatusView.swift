@@ -27,7 +27,14 @@ public struct AgentServiceStatusView: View {
                     perform { try AgentServiceRegistration.shared.unregister() }
                 }
                 Button("重启") {
-                    perform { try AgentServiceRegistration.shared.restart() }
+                    Task { @MainActor in
+                        do {
+                            try await AgentServiceRegistration.shared.restart()
+                            actionFailed = false
+                        } catch {
+                            actionFailed = true
+                        }
+                    }
                 }
             }
             .buttonStyle(.borderless)

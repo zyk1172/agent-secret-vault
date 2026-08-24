@@ -102,7 +102,8 @@ function parseIpcResponse(json: string): IpcResponse {
       "NOT_FOUND",
       "INVALID_QUERY",
       "CATALOG_UNAVAILABLE",
-      "MIGRATION_REQUIRED",
+      "LEGACY_CATALOG_UNSUPPORTED",
+      "INTEGRITY_MISSING",
       "EXTERNAL_CATALOG_MODIFICATION",
       "CATALOG_INVALID"
     ].includes(parsed.catalogStatus) &&
@@ -110,7 +111,7 @@ function parseIpcResponse(json: string): IpcResponse {
   ) {
     return {
       type: "catalogValidation",
-      catalogStatus: parsed.catalogStatus as "FOUND" | "NOT_FOUND" | "INVALID_QUERY" | "CATALOG_UNAVAILABLE" | "MIGRATION_REQUIRED" | "EXTERNAL_CATALOG_MODIFICATION" | "CATALOG_INVALID",
+      catalogStatus: parsed.catalogStatus as "FOUND" | "NOT_FOUND" | "INVALID_QUERY" | "CATALOG_UNAVAILABLE" | "LEGACY_CATALOG_UNSUPPORTED" | "INTEGRITY_MISSING" | "EXTERNAL_CATALOG_MODIFICATION" | "CATALOG_INVALID",
       ...(parsed.revision === undefined ? {} : { revision: parsed.revision as number | null })
     };
   }

@@ -43,9 +43,9 @@ public enum SensitiveInformationDocumentStoreError: Error, Equatable, Sendable {
     case verificationFailed
 }
 
-/// Legacy compatibility reader used by migration/old reference views only.
-/// Managed Catalog v2 writes belong to SensitiveCatalogDocumentStore; this
-/// type must not be used to parse or write the v2 Markdown/JSON representation.
+/// Reader/writer for ordinary, non-managed notes that happen to contain
+/// `secret://` references.  Managed Catalog v2 is never parsed or written by
+/// this type; it is handled exclusively by SensitiveCatalogDocumentStore.
 public actor SensitiveInformationDocumentStore {
     private static let marker = "<!-- agent-secret-vault-sensitive-information: 1 -->"
     private static let managedCatalogMarker = "<!-- SVLT-MANAGED-CATALOG schema=\"2\" -->"
@@ -84,6 +84,9 @@ public actor SensitiveInformationDocumentStore {
         if FileManager.default.fileExists(atPath: url.path) {
             try assertSafeFile(url)
             let original = try String(contentsOf: url, encoding: .utf8)
+            guard !original.contains(Self.managedCatalogMarker) else {
+                throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
+            }
             let normalized = Self.normalizedDocument(original)
             guard normalized != original else {
                 return false
@@ -106,25 +109,7 @@ public actor SensitiveInformationDocumentStore {
         guard !text.contains(Self.managedCatalogMarker) else {
             throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
         }
-        let catalogEntries = Dictionary(
-            uniqueKeysWithValues: SecretCatalogMarkdownParser.parse(text).map { ($0.reference, $0) }
-        )
-        return Self.references(in: text, filePath: url.path, catalogEntries: catalogEntries)
-    }
-
-    /// Returns only structured, non-sensitive catalog context.  The selected
-    /// file path and line numbers stay in the App-only `references()` model.
-    public func catalogEntries() throws -> [LegacySecretCatalogEntry] {
-        let url = try requiredURL()
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return []
-        }
-        try assertSafeFile(url)
-        let text = try String(contentsOf: url, encoding: .utf8)
-        guard !text.contains(Self.managedCatalogMarker) else {
-            throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
-        }
-        return SecretCatalogMarkdownParser.parse(text)
+        return Self.references(in: text, filePath: url.path)
     }
 
     /// Legacy-only helper retained for old non-managed documents.  The App's
@@ -132,8 +117,18 @@ public actor SensitiveInformationDocumentStore {
     public func appendParagraph(_ paragraph: String, title: String, reference: String) throws {
         _ = try SecretReference(reference)
         let url = try requiredURL()
+        if FileManager.default.fileExists(atPath: url.path) {
+            try assertSafeFile(url)
+            let existing = try String(contentsOf: url, encoding: .utf8)
+            guard !existing.contains(Self.managedCatalogMarker) else {
+                throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
+            }
+        }
         _ = try prepareSelectedDocument()
         let text = try String(contentsOf: url, encoding: .utf8)
+        guard !text.contains(Self.managedCatalogMarker) else {
+            throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
+        }
         if text.contains(reference) {
             return
         }
@@ -201,8 +196,7 @@ public actor SensitiveInformationDocumentStore {
 
     private static func references(
         in text: String,
-        filePath: String,
-        catalogEntries: [String: LegacySecretCatalogEntry]
+        filePath: String
     ) -> [SensitiveInformationDocumentReference] {
         guard let regex = try? NSRegularExpression(pattern: referencePattern) else {
             return []
@@ -212,17 +206,12 @@ public actor SensitiveInformationDocumentStore {
         return matches.map { match in
             let reference = nsText.substring(with: match.range)
             let line = lineNumber(in: text, offset: match.range.location)
-            let entry = catalogEntries[reference]
-            let title = entry?.label ?? title(in: text, match: match.range, fallback: "敏感信息")
+            let title = title(in: text, match: match.range, fallback: "敏感信息")
             return SensitiveInformationDocumentReference(
                 reference: reference,
                 title: title,
                 source: SensitiveSourceLocation(filePath: filePath, line: line),
-                service: entry?.service,
-                field: entry?.field ?? .other,
-                destinations: entry?.destinations ?? [],
-                purpose: entry?.purpose,
-                groupID: entry?.groupID
+                field: .other
             )
         }
     }

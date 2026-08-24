@@ -13,20 +13,15 @@ public protocol WorkbenchServicing: Sendable {
         limit: Int
     ) async throws -> SecretCatalogSearchResult
     func getCatalogEntry(entryID: String) async throws -> SecretCatalogSearchResult
-    func createCatalogDraft(
-        _ request: CatalogDraftRequest,
-        lease: CatalogWriteLease
-    ) async throws -> CatalogDraft
+    func createCatalogDraft(_ request: CatalogDraftRequest) async throws -> CatalogDraft
     func patchCatalogMetadata(
         entryID: String,
         patch: CatalogMetadataPatch,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func commitCatalogDraft(
         _ draft: CatalogDraft,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func addCatalogSecretPlaceholder(
         entryID: String,
@@ -34,15 +29,13 @@ public protocol WorkbenchServicing: Sendable {
         label: String,
         agentVisible: Bool,
         searchable: Bool,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func bindCatalogExistingSecret(
         entryID: String,
         key: String,
         secretRef: String,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func validateCatalog() async throws -> CatalogValidationResult
     func pendingRevealSessionIDs() async throws -> [String]
@@ -89,26 +82,21 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
-    func createCatalogDraft(
-        _: CatalogDraftRequest,
-        lease _: CatalogWriteLease
-    ) async throws -> CatalogDraft {
+    func createCatalogDraft(_: CatalogDraftRequest) async throws -> CatalogDraft {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
     func patchCatalogMetadata(
         entryID _: String,
         patch _: CatalogMetadataPatch,
-        expectedRevision _: UInt64,
-        lease _: CatalogWriteLease
+        expectedRevision _: UInt64
     ) async throws -> CatalogWriteResult {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
     func commitCatalogDraft(
         _: CatalogDraft,
-        expectedRevision _: UInt64,
-        lease _: CatalogWriteLease
+        expectedRevision _: UInt64
     ) async throws -> CatalogWriteResult {
         throw IPCRequestHandlerError.unsupportedRequest
     }
@@ -119,8 +107,7 @@ public extension WorkbenchServicing {
         label _: String,
         agentVisible _: Bool,
         searchable _: Bool,
-        expectedRevision _: UInt64,
-        lease _: CatalogWriteLease
+        expectedRevision _: UInt64
     ) async throws -> CatalogWriteResult {
         throw IPCRequestHandlerError.unsupportedRequest
     }
@@ -129,8 +116,7 @@ public extension WorkbenchServicing {
         entryID _: String,
         key _: String,
         secretRef _: String,
-        expectedRevision _: UInt64,
-        lease _: CatalogWriteLease
+        expectedRevision _: UInt64
     ) async throws -> CatalogWriteResult {
         throw IPCRequestHandlerError.unsupportedRequest
     }
@@ -195,38 +181,34 @@ public struct IPCRequestHandler: Sendable {
             return try await handleCatalogSearch(query: query, field: field, limit: limit)
         case let .catalogGet(entryID):
             return .catalogSearchResult(try await service.getCatalogEntry(entryID: entryID))
-        case let .catalogCreateDraft(request, lease):
-            return .catalogDraft(try await service.createCatalogDraft(request, lease: lease))
-        case let .catalogPatchMetadata(entryID, patch, expectedRevision, lease):
+        case let .catalogCreateDraft(request):
+            return .catalogDraft(try await service.createCatalogDraft(request))
+        case let .catalogPatchMetadata(entryID, patch, expectedRevision):
             return .catalogWriteResult(try await service.patchCatalogMetadata(
                 entryID: entryID,
                 patch: patch,
-                expectedRevision: expectedRevision,
-                lease: lease
+                expectedRevision: expectedRevision
             ))
-        case let .catalogCommit(draft, expectedRevision, lease):
+        case let .catalogCommit(draft, expectedRevision):
             return .catalogWriteResult(try await service.commitCatalogDraft(
                 draft,
-                expectedRevision: expectedRevision,
-                lease: lease
+                expectedRevision: expectedRevision
             ))
-        case let .catalogAddSecretPlaceholder(entryID, key, label, agentVisible, searchable, expectedRevision, lease):
+        case let .catalogAddSecretPlaceholder(entryID, key, label, agentVisible, searchable, expectedRevision):
             return .catalogWriteResult(try await service.addCatalogSecretPlaceholder(
                 entryID: entryID,
                 key: key,
                 label: label,
                 agentVisible: agentVisible,
                 searchable: searchable,
-                expectedRevision: expectedRevision,
-                lease: lease
+                expectedRevision: expectedRevision
             ))
-        case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision, lease):
+        case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision):
             return .catalogWriteResult(try await service.bindCatalogExistingSecret(
                 entryID: entryID,
                 key: key,
                 secretRef: secretRef,
-                expectedRevision: expectedRevision,
-                lease: lease
+                expectedRevision: expectedRevision
             ))
         case .catalogValidate:
             let result = try await service.validateCatalog()

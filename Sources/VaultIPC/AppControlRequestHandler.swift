@@ -16,13 +16,17 @@ public struct AppControlRequestHandler: Sendable {
     public func handle(_ request: AppControlRequest) async -> AppControlResponse {
         do {
             switch request {
-            case let .issueCatalogLease(scope, duration):
-                return .lease(try await service.issueCatalogLease(scope: scope, duration: duration))
-            case let .revokeCatalogLease(nonce):
-                await service.revokeCatalogLease(nonce: nonce)
-                return .operationCompleted
             case .catalogStatus:
                 return .catalogStatus(try await service.catalogStatus())
+            case .catalogAdoptExternalV2:
+                return .catalogStatus(try await service.adoptCatalogExternalV2())
+            case let .setCatalogAgentWriteMode(mode, duration):
+                return .catalogAgentWriteStatus(try await service.setCatalogAgentWriteMode(mode: mode, duration: duration))
+            case .revokeCatalogAgentWrite:
+                await service.revokeCatalogAgentWrite()
+                return .operationCompleted
+            case .catalogAgentWriteStatus:
+                return .catalogAgentWriteStatus(await service.catalogAgentWriteStatus())
             case let .catalogCreateIndex(title, aliases, tags, expectedRevision):
                 return .catalogWriteResult(try await service.catalogCreateIndex(
                     title: title,
@@ -30,6 +34,10 @@ public struct AppControlRequestHandler: Sendable {
                     tags: tags,
                     expectedRevision: expectedRevision
                 ))
+            case let .catalogCreateEntry(request, expectedRevision):
+                return .catalogWriteResult(try await service.catalogCreateEntry(request, expectedRevision: expectedRevision))
+            case let .catalogUpdateEntry(entry, expectedRevision):
+                return .catalogWriteResult(try await service.catalogUpdateEntry(entry, expectedRevision: expectedRevision))
             case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision):
                 return .catalogWriteResult(try await service.catalogBindExistingSecret(
                     entryID: entryID,
@@ -47,8 +55,6 @@ public struct AppControlRequestHandler: Sendable {
                 )
                 return .secretBound(reference: result.reference, revision: result.revision)
             }
-        } catch let error as CatalogWriteLeaseError {
-            return .failure(code: Self.leaseCode(error))
         } catch let error as SecretCatalogAgentError {
             return .failure(code: Self.catalogCode(error))
         } catch let error as SecretOperationError {
@@ -58,25 +64,14 @@ public struct AppControlRequestHandler: Sendable {
         }
     }
 
-    private static func leaseCode(_ error: CatalogWriteLeaseError) -> String {
-        switch error {
-        case .invalidNonce: return "CATALOG_LEASE_INVALID"
-        case .expired: return "CATALOG_LEASE_EXPIRED"
-        case .tooLong: return "CATALOG_LEASE_TOO_LONG"
-        case .insufficientScope: return "CATALOG_LEASE_SCOPE_INSUFFICIENT"
-        }
-    }
-
     private static func catalogCode(_ error: SecretCatalogAgentError) -> String {
         switch error {
         case .unavailable: return "CATALOG_UNAVAILABLE"
-        case .migrationRequired: return "MIGRATION_REQUIRED"
+        case .legacyCatalogUnsupported: return "LEGACY_CATALOG_UNSUPPORTED"
+        case .integrityMissing: return "INTEGRITY_MISSING"
         case .externalModification: return "EXTERNAL_CATALOG_MODIFICATION"
         case .invalidCatalog: return "CATALOG_INVALID"
-        case .missingLease: return "CATALOG_LEASE_REQUIRED"
-        case .invalidLease: return "CATALOG_LEASE_INVALID"
-        case .leaseExpired: return "CATALOG_LEASE_EXPIRED"
-        case .insufficientLeaseScope: return "CATALOG_LEASE_SCOPE_INSUFFICIENT"
+        case .agentWriteNotAllowed: return "CATALOG_AGENT_WRITE_NOT_ALLOWED"
         case .revisionConflict: return "CATALOG_REVISION_CONFLICT"
         case .invalidOperation: return "CATALOG_INVALID_OPERATION"
         case .approvalRequired: return "CATALOG_APPROVAL_REQUIRED"

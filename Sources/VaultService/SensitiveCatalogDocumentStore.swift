@@ -7,7 +7,7 @@ import VaultCore
 public enum SensitiveCatalogDocumentStoreError: Error, Equatable, Sendable {
     case noSelectedDocument
     case malformedDocument
-    case migrationRequired
+    case legacyCatalogUnsupported
     case symlinkRejected
     case integrityMissing
     case externalModification
@@ -21,7 +21,7 @@ public enum SensitiveCatalogDocumentStoreError: Error, Equatable, Sendable {
 public enum SensitiveCatalogIntegrityStatus: String, Codable, Equatable, Sendable {
     case uninitialized
     case verified
-    case migrationRequired = "MIGRATION_REQUIRED"
+    case legacyCatalogUnsupported = "LEGACY_CATALOG_UNSUPPORTED"
     case integrityMissing = "INTEGRITY_MISSING"
     case externalModification = "EXTERNAL_CATALOG_MODIFICATION"
     case invalid = "CATALOG_INVALID"
@@ -123,8 +123,8 @@ public actor SensitiveCatalogDocumentStore {
     public func integrityStatus() -> SensitiveCatalogIntegrityStatus {
         do {
             return try snapshot().integrity
-        } catch SensitiveCatalogDocumentStoreError.migrationRequired {
-            return .migrationRequired
+        } catch SensitiveCatalogDocumentStoreError.legacyCatalogUnsupported {
+            return .legacyCatalogUnsupported
         } catch SensitiveCatalogDocumentStoreError.integrityMissing {
             return .integrityMissing
         } catch SensitiveCatalogDocumentStoreError.externalModification {
@@ -142,31 +142,6 @@ public actor SensitiveCatalogDocumentStore {
         try document.validate()
         let current = try mutationBase(expectedRevision: expectedRevision)
         return try write(document, previousRevision: current.revision)
-    }
-
-    /// Commits an App-confirmed legacy migration.  It deliberately bypasses
-    /// the normal verified snapshot because the old file has no v2 sidecar,
-    /// but it re-scans the current file immediately before writing so a stale
-    /// preview cannot replace a changed document or drop a reference.
-    @discardableResult
-    public func commitMigration(
-        _ preview: SecretCatalogMigrationPreview
-    ) throws -> SensitiveCatalogSnapshot {
-        guard let url = documentURL else {
-            throw SensitiveCatalogDocumentStoreError.noSelectedDocument
-        }
-        try assertSafeFile(url)
-        let currentReferences = MarkdownReferenceScanner.references(
-            in: try String(contentsOf: url, encoding: .utf8)
-        ).sorted()
-        guard currentReferences == preview.referencesBefore,
-              preview.referenceSetPreserved,
-              !preview.requiresUserResolution
-        else {
-            throw SensitiveCatalogDocumentStoreError.referenceSetChanged
-        }
-        _ = try backupCurrentDocument()
-        return try write(preview.document, previousRevision: 0)
     }
 
     @discardableResult
@@ -398,7 +373,8 @@ public actor SensitiveCatalogDocumentStore {
         }
     }
 
-    /// Creates the timestamped backup used by the App migration wizard.
+    /// Creates the timestamped backup used before an explicit external-v2
+    /// adoption or restore.
     public func backupCurrentDocument() throws -> URL? {
         guard let url = documentURL else {
             throw SensitiveCatalogDocumentStoreError.noSelectedDocument
@@ -421,18 +397,23 @@ public actor SensitiveCatalogDocumentStore {
         }
     }
 
-    /// Replaces an externally edited file only after strict v2 parsing.  The
-    /// caller must make the user-visible import decision; this is never called
-    /// by search automatically.
+    /// Takes ownership of a manually prepared v2 document.  Strict parsing is
+    /// completed before the backup is created, so a legacy or malformed file
+    /// is never rewritten.  A document without an integrity sidecar starts at
+    /// revision 1; an already managed document is not silently re-imported.
     @discardableResult
-    public func verifyAndImportExternal() throws -> SensitiveCatalogSnapshot {
+    public func adoptExternalV2() throws -> SensitiveCatalogSnapshot {
         guard let url = documentURL else {
             throw SensitiveCatalogDocumentStoreError.noSelectedDocument
         }
         try assertSafeFile(url)
         let document = try decodeDocument(at: url)
-        let oldRevision = (try? readIntegrityRecord()).map(\.revision) ?? 0
-        return try write(document, previousRevision: oldRevision)
+        let integrityURL = try self.integrityURL()
+        guard !fileManager.fileExists(atPath: integrityURL.path) else {
+            throw SensitiveCatalogDocumentStoreError.invalidOperation
+        }
+        _ = try backupCurrentDocument()
+        return try write(document, previousRevision: 0)
     }
 
     @discardableResult
@@ -479,12 +460,15 @@ public actor SensitiveCatalogDocumentStore {
         } catch SensitiveCatalogDocumentStoreError.integrityMissing {
             do {
                 _ = try SensitiveCatalogDocumentCodec.decode(data)
-            } catch SecretCatalogValidationError.legacyDocument,
-                    SecretCatalogValidationError.invalidMarker {
-                throw SensitiveCatalogDocumentStoreError.migrationRequired
+            } catch SecretCatalogValidationError.legacyDocument {
+                throw SensitiveCatalogDocumentStoreError.legacyCatalogUnsupported
+            } catch SecretCatalogValidationError.invalidMarker {
+                if SensitiveCatalogDocumentCodec.isManagedV2(data) {
+                    throw SensitiveCatalogDocumentStoreError.malformedDocument
+                }
+                throw SensitiveCatalogDocumentStoreError.legacyCatalogUnsupported
             } catch {
-                // A v2 file without a sidecar remains unavailable; the
-                // caller must explicitly validate/import it.
+                throw SensitiveCatalogDocumentStoreError.malformedDocument
             }
             throw SensitiveCatalogDocumentStoreError.integrityMissing
         }
@@ -502,7 +486,7 @@ public actor SensitiveCatalogDocumentStore {
             return try SensitiveCatalogDocumentCodec.decode(data)
         } catch SecretCatalogValidationError.legacyDocument,
                 SecretCatalogValidationError.invalidMarker {
-            throw SensitiveCatalogDocumentStoreError.migrationRequired
+            throw SensitiveCatalogDocumentStoreError.legacyCatalogUnsupported
         } catch {
             throw SensitiveCatalogDocumentStoreError.malformedDocument
         }

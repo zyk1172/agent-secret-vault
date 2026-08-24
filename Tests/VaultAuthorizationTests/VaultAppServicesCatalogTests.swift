@@ -7,10 +7,18 @@ import VaultService
 private let serviceIndexID = "0123456789ABCDEFGHJKMNPQRS"
 private let serviceEntryID = "0123456789ABCDEFGHJKMNPQRT"
 private let servicePasswordRef = "secret://0123456789ABCDEFGHJKMNPQRS"
+private let servicePrivateKeyRef = "secret://0123456789ABCDEFGHJKMNPQRV"
 
 private struct CatalogTextEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         try SecretReference(servicePasswordRef)
+    }
+}
+
+private struct CatalogMultiSecretEncryptor: TextEncrypting {
+    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
+        let reference = plaintext == "password-canary" ? servicePasswordRef : servicePrivateKeyRef
+        return try SecretReference(reference)
     }
 }
 
@@ -35,7 +43,7 @@ private struct CatalogFixture {
     let documentURL: URL
     let selectionURL: URL
     let store: SensitiveCatalogDocumentStore
-    let leaseManager: CatalogWriteLeaseManager
+    let agentAuthorization: CatalogAgentWriteAuthorization
 
     init() async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("svlt-service-\(UUID().uuidString)")
@@ -50,7 +58,7 @@ private struct CatalogFixture {
         try await store.selectDocument(at: documentURL)
         _ = try await store.canonicalWrite(serviceDocument())
         try SecretCatalogSelectionStore(manifestURL: selectionURL).save(documentURL: documentURL)
-        leaseManager = CatalogWriteLeaseManager()
+        agentAuthorization = CatalogAgentWriteAuthorization()
     }
 
     func cleanup() {
@@ -66,7 +74,7 @@ private struct CatalogFixture {
         activeRoot: nil,
         catalogDocumentStore: fixture.store,
         catalogSelectionManifestURL: fixture.selectionURL,
-        catalogLeaseManager: fixture.leaseManager
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
 
     let result = try await service.searchSecrets(query: "QNAP", field: nil, limit: 10)
@@ -75,7 +83,7 @@ private struct CatalogFixture {
     #expect(result.matches.first?.entry.fields.contains { $0.key == "password" && $0.secretRef == nil } == true)
 }
 
-@Test func appServiceRejectsUnissuedLeaseAndCommitsIssuedStructureLease() async throws {
+@Test func appServiceRequiresAppControlledAuthorizationAndUsesActiveStructureMode() async throws {
     let fixture = try await CatalogFixture()
     defer { fixture.cleanup() }
     let service = VaultAppServices(
@@ -83,19 +91,18 @@ private struct CatalogFixture {
         activeRoot: nil,
         catalogDocumentStore: fixture.store,
         catalogSelectionManifestURL: fixture.selectionURL,
-        catalogLeaseManager: fixture.leaseManager
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
-    let forged = try CatalogWriteLease.generated(scope: .structure)
     let request = CatalogDraftRequest(indexID: serviceIndexID, title: "Komga")
 
-    let leaseError = await serviceCatalogError {
-        _ = try await service.createCatalogDraft(request, lease: forged)
+    let disabledError = await serviceCatalogError {
+        _ = try await service.createCatalogDraft(request)
     }
-    #expect(leaseError == .invalidLease)
+    #expect(disabledError == .agentWriteNotAllowed)
 
-    let lease = try await fixture.leaseManager.issue(scope: .structure, duration: 60)
-    let draft = try await service.createCatalogDraft(request, lease: lease)
-    let result = try await service.commitCatalogDraft(draft, expectedRevision: draft.baseRevision, lease: lease)
+    _ = try await fixture.agentAuthorization.enable(mode: .structure, duration: 60)
+    let draft = try await service.createCatalogDraft(request)
+    let result = try await service.commitCatalogDraft(draft, expectedRevision: draft.baseRevision)
     #expect(result.entry?.title == "Komga")
 }
 
@@ -107,9 +114,9 @@ private struct CatalogFixture {
         activeRoot: nil,
         catalogDocumentStore: fixture.store,
         catalogSelectionManifestURL: fixture.selectionURL,
-        catalogLeaseManager: fixture.leaseManager
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
-    let lease = try await fixture.leaseManager.issue(scope: .structure, duration: 60)
+    _ = try await fixture.agentAuthorization.enable(mode: .structure, duration: 60)
     let request = CatalogDraftRequest(
         indexID: serviceIndexID,
         title: "Komga",
@@ -122,7 +129,7 @@ private struct CatalogFixture {
     )
 
     let error = await serviceCatalogError {
-        _ = try await service.createCatalogDraft(request, lease: lease)
+        _ = try await service.createCatalogDraft(request)
     }
     #expect(error == .approvalRequired)
 }
@@ -135,20 +142,76 @@ private struct CatalogFixture {
         activeRoot: nil,
         catalogDocumentStore: fixture.store,
         catalogSelectionManifestURL: fixture.selectionURL,
-        catalogLeaseManager: fixture.leaseManager
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
-    let lease = try await fixture.leaseManager.issue(scope: .structure, duration: 60)
+    _ = try await fixture.agentAuthorization.enable(mode: .structure, duration: 60)
 
     let approvalError = await serviceCatalogError {
         _ = try await service.bindCatalogExistingSecret(
             entryID: serviceEntryID,
             key: "password",
             secretRef: servicePasswordRef,
-            expectedRevision: 1,
-            lease: lease
+            expectedRevision: 1
         )
     }
     #expect(approvalError == .approvalRequired)
+}
+
+@Test func appServiceKeepsMultipleSecureFieldsIndependentAndNeverStoresPlaintext() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogMultiSecretEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let initial = try await fixture.store.snapshot()
+    let oldEntry = try #require(initial.document.entries.first)
+    let sshEntry = SecretCatalogEntry(
+        id: oldEntry.id,
+        indexId: oldEntry.indexId,
+        title: "SSH 登录",
+        type: oldEntry.type,
+        aliases: oldEntry.aliases,
+        endpoints: [CatalogEndpoint(type: "ssh", host: "192.168.2.240", port: 22)],
+        fields: [
+            SecretCatalogFieldValue(key: "password", label: "密码", type: .secret),
+            SecretCatalogFieldValue(key: "privateKey", label: "私钥", type: .secret)
+        ],
+        notes: oldEntry.notes,
+        tags: ["SSH"],
+        schema: oldEntry.schema
+    )
+    _ = try await fixture.store.updateEntry(sshEntry, expectedRevision: initial.revision)
+
+    let password = try await service.catalogSecureInput(
+        entryID: oldEntry.id,
+        key: "password",
+        label: "密码",
+        plaintext: "password-canary",
+        policy: .credential
+    )
+    let privateKey = try await service.catalogSecureInput(
+        entryID: oldEntry.id,
+        key: "privateKey",
+        label: "私钥",
+        plaintext: "private-key-canary",
+        policy: .credential
+    )
+    #expect(password.reference == servicePasswordRef)
+    #expect(privateKey.reference == servicePrivateKeyRef)
+    #expect(password.reference != privateKey.reference)
+
+    let final = try await fixture.store.snapshot()
+    let fields = try #require(final.document.entries.first?.fields)
+    #expect(fields.first(where: { $0.key == "password" })?.secretRef == servicePasswordRef)
+    #expect(fields.first(where: { $0.key == "privateKey" })?.secretRef == servicePrivateKeyRef)
+    let markdown = try String(contentsOf: fixture.documentURL, encoding: .utf8)
+    #expect(!markdown.contains("password-canary"))
+    #expect(!markdown.contains("private-key-canary"))
 }
 
 private func serviceCatalogError(

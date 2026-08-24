@@ -18,23 +18,35 @@ public actor AppControlIPCClient {
         AppControlIPCClient(configuration: try .appControlConfiguration())
     }
 
-    public func issueCatalogLease(
-        scope: CatalogWriteScope,
-        duration: TimeInterval? = nil
-    ) async throws -> CatalogWriteLease {
-        let response = try await send(.issueCatalogLease(scope: scope, duration: duration))
-        guard case let .lease(lease) = response else { throw unexpected(response) }
-        return lease
-    }
-
-    public func revokeCatalogLease(nonce: String) async throws {
-        let response = try await send(.revokeCatalogLease(nonce: nonce))
-        guard case .operationCompleted = response else { throw unexpected(response) }
-    }
-
     public func catalogStatus() async throws -> CatalogValidationResult {
         let response = try await send(.catalogStatus)
         guard case let .catalogStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
+    public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
+        let response = try await send(.catalogAdoptExternalV2)
+        guard case let .catalogStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
+    public func setCatalogAgentWriteMode(
+        mode: CatalogAgentWriteMode,
+        duration: TimeInterval? = 600
+    ) async throws -> CatalogAgentWriteAuthorizationStatus {
+        let response = try await send(.setCatalogAgentWriteMode(mode: mode, duration: duration))
+        guard case let .catalogAgentWriteStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
+    public func revokeCatalogAgentWrite() async throws {
+        let response = try await send(.revokeCatalogAgentWrite)
+        guard case .operationCompleted = response else { throw unexpected(response) }
+    }
+
+    public func catalogAgentWriteStatus() async throws -> CatalogAgentWriteAuthorizationStatus {
+        let response = try await send(.catalogAgentWriteStatus)
+        guard case let .catalogAgentWriteStatus(status) = response else { throw unexpected(response) }
         return status
     }
 
@@ -50,6 +62,24 @@ public actor AppControlIPCClient {
             tags: tags,
             expectedRevision: expectedRevision
         ))
+        guard case let .catalogWriteResult(result) = response else { throw unexpected(response) }
+        return result
+    }
+
+    public func catalogCreateEntry(
+        _ request: CatalogDraftRequest,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogCreateEntry(request: request, expectedRevision: expectedRevision))
+        guard case let .catalogWriteResult(result) = response else { throw unexpected(response) }
+        return result
+    }
+
+    public func catalogUpdateEntry(
+        _ entry: SecretCatalogEntry,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogUpdateEntry(entry: entry, expectedRevision: expectedRevision))
         guard case let .catalogWriteResult(result) = response else { throw unexpected(response) }
         return result
     }

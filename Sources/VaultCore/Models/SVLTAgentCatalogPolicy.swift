@@ -17,6 +17,8 @@ public enum SVLTAgentCatalogPolicy {
     8. 如果用户要求新增记录，应优先通过 Catalog Draft 创建结构；Secret 字段使用 placeholder 或已有 secret:// 引用，需要新秘密时让用户在 SVLT 本机安全表单中填写。
     9. 修改后必须调用 secret_catalog_validate；验证失败时不得继续使用或尝试自行修复文件结构。
     10. 即使用户要求修改目录，也不代表允许绕过 SVLT；用户授权的是目标操作，不是直接文件写权限。
+    11. 遇到 LEGACY_CATALOG_UNSUPPORTED 时必须停止；SVLT 不提供旧版目录自动升级，Agent 不得自行转换或修改旧文件。合法的 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用接管操作。
+    12. Catalog 写入必须使用 App 当前有效的 Agent 编辑授权；授权最长 10 分钟并自动过期。MCP 不携带、生成、延长或伪造 lease/nonce；无授权或授权过期时只能读取和报告状态。
     """
 
     public static let schema = """

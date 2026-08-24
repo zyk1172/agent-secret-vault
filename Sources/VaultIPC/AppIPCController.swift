@@ -214,20 +214,16 @@ public final class AppIPCController: @unchecked Sendable {
             switch error {
             case .unavailable:
                 code = "CATALOG_UNAVAILABLE"
-            case .migrationRequired:
-                code = "MIGRATION_REQUIRED"
+            case .legacyCatalogUnsupported:
+                code = "LEGACY_CATALOG_UNSUPPORTED"
+            case .integrityMissing:
+                code = "INTEGRITY_MISSING"
             case .externalModification:
                 code = "EXTERNAL_CATALOG_MODIFICATION"
             case .invalidCatalog:
                 code = "CATALOG_INVALID"
-            case .missingLease:
-                code = "CATALOG_LEASE_REQUIRED"
-            case .invalidLease:
-                code = "CATALOG_LEASE_INVALID"
-            case .leaseExpired:
-                code = "CATALOG_LEASE_EXPIRED"
-            case .insufficientLeaseScope:
-                code = "CATALOG_LEASE_SCOPE_INSUFFICIENT"
+            case .agentWriteNotAllowed:
+                code = "CATALOG_AGENT_WRITE_NOT_ALLOWED"
             case .revisionConflict:
                 code = "CATALOG_REVISION_CONFLICT"
             case .invalidOperation:
