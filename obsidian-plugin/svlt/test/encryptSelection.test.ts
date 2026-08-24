@@ -392,7 +392,7 @@ describe("encrypt selection", () => {
     expect(editor.text).toBe(text);
   });
 
-  it("allows ordinary v3 catalog editing while keeping the editor patch local", async () => {
+  it("refuses plugin encryption in a v3 catalog ordinary field", async () => {
     obsidianMock.notices = [];
     const text = '<!-- SVLT-CATALOG schema="3" -->\npassword = ASV_CANARY_PLUGIN';
     const start = text.indexOf("ASV_CANARY_PLUGIN");
@@ -415,8 +415,9 @@ describe("encrypt selection", () => {
     await plugin.encryptSelection(editor);
 
     expect(requests[0]).toEqual({ type: "catalogValidate" });
-    expect(requests.at(-1)).toMatchObject({ type: "encryptText" });
-    expect(editor.text).toContain("secret://0123456789ABCDEFGHJKMNPQRS");
-    expect(editor.replaceCalls[0]?.origin).toBe("svlt");
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(editor.text).toContain("ASV_CANARY_PLUGIN");
+    expect(editor.replaceCalls).toEqual([]);
+    expect(obsidianMock.notices).toContain("SVLT：v3 敏感信息目录中的普通字段不能直接加密；请先在 SVLT App 中把字段设为密码字段。手工 Markdown 编辑仍然可用。");
   });
 });

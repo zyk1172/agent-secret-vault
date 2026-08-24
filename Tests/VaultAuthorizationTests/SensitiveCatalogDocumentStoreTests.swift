@@ -39,6 +39,43 @@ private struct CatalogStoreFixture {
     }
 }
 
+private final class FailOnceCatalogIntegrityWrite: @unchecked Sendable, CatalogAtomicWriteFaultInjecting {
+    private let lock = NSLock()
+    private var shouldFail = true
+
+    func beforeAtomicReplace(to url: URL) throws {
+        guard url.lastPathComponent == "catalog-integrity.json" else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard shouldFail else { return }
+        shouldFail = false
+        throw NSError(domain: "SVLTTest", code: 1)
+    }
+}
+
+private func writeManagedV2WithLegacySidecar(
+    document: SecretCatalogDocument,
+    fixture: CatalogStoreFixture,
+    revision: UInt64 = 9
+) throws -> (document: Data, sidecar: Data) {
+    let v2 = Data(try SensitiveCatalogDocumentCodec.encodeV2(document).utf8)
+    let hash = SHA256.hash(data: v2).map { String(format: "%02x", $0) }.joined()
+    var payload = Data("SVLT-CATALOG-INTEGRITY-V2\n\(revision)\n\(hash)\n".utf8)
+    payload.append(v2)
+    let mac = HMAC<SHA256>.authenticationCode(for: payload, using: SymmetricKey(data: fixture.keyStore.key))
+    let sidecar = LegacyCatalogIntegritySidecarV2(
+        schemaVersion: 2,
+        revision: revision,
+        canonicalSHA256: hash,
+        hmac: Data(mac).base64EncodedString(),
+        updatedAt: "2026-08-25T00:00:00Z"
+    )
+    let sidecarData = try JSONEncoder().encode(sidecar)
+    try v2.write(to: fixture.document, options: [.atomic])
+    try sidecarData.write(to: fixture.integrity, options: [.atomic])
+    return (v2, sidecarData)
+}
+
 @Test func catalogStoreWritesCanonicalDocumentAndIntegritySidecar() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -196,6 +233,35 @@ private struct CatalogStoreFixture {
     #expect(adopted.revision == 1)
     #expect(adopted.document == document)
     #expect(try Data(contentsOf: fixture.document) == original)
+}
+
+@Test func catalogStoreRejectsAnOpaqueReferenceInjectedIntoOrdinaryMetadata() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let first = try await store.createIndex(title: "QNAP")
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: try #require(first.document.indexes.first?.id),
+        title: "QNAP 登录",
+        fields: [SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("admin"))],
+        notes: "普通备注"
+    )
+    _ = try await store.createEntry(entry, expectedRevision: first.revision)
+
+    let original = try String(contentsOf: fixture.document, encoding: .utf8)
+    try original.replacingOccurrences(of: "admin", with: storeSecretReference)
+        .write(to: fixture.document, atomically: true, encoding: .utf8)
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
+        _ = try await store.snapshot()
+    }
+    #expect(await store.integrityStatus() == .invalid)
 }
 
 @Test func catalogStorePausesHighRiskExternalSecretChangesUntilExplicitAcceptance() async throws {
@@ -515,6 +581,114 @@ private struct CatalogStoreFixture {
     let current = try JSONDecoder().decode(CatalogIntegrityRecord.self, from: Data(contentsOf: fixture.integrity))
     #expect(current.revision == 1)
     #expect(current.acceptedDocument == document)
+}
+
+@Test func catalogStoreRollsBackV2MigrationWhenNewSidecarCreationFails() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")],
+        entries: [SecretCatalogEntry(id: storeEntryID, indexId: storeIndexID, title: "QNAP 登录")]
+    )
+    let original = Data(try SensitiveCatalogDocumentCodec.encodeV2(document).utf8)
+    try original.write(to: fixture.document, options: [.atomic])
+
+    let failingStore = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore,
+        atomicWriteFaultInjector: FailOnceCatalogIntegrityWrite()
+    )
+    await #expect(throws: SensitiveCatalogDocumentStoreError.writeFailed) {
+        _ = try await failingStore.adoptExternalV2()
+    }
+
+    #expect(try Data(contentsOf: fixture.document) == original)
+    #expect(!FileManager.default.fileExists(atPath: fixture.integrity.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("catalog-migration-state.json").path))
+
+    let retryStore = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let adopted = try await retryStore.adoptExternalV2()
+    #expect(adopted.revision == 1)
+    #expect(adopted.document == document)
+}
+
+@Test func catalogStoreRollsBackV2MigrationAndPreservesThePR13SidecarWhenCommitFails() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")],
+        entries: [SecretCatalogEntry(
+            id: storeEntryID,
+            indexId: storeIndexID,
+            title: "QNAP 登录",
+            fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)]
+        )]
+    )
+    let original = try writeManagedV2WithLegacySidecar(document: document, fixture: fixture)
+
+    let failingStore = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore,
+        atomicWriteFaultInjector: FailOnceCatalogIntegrityWrite()
+    )
+    await #expect(throws: SensitiveCatalogDocumentStoreError.writeFailed) {
+        _ = try await failingStore.adoptExternalV2()
+    }
+
+    #expect(try Data(contentsOf: fixture.document) == original.document)
+    #expect(try Data(contentsOf: fixture.integrity) == original.sidecar)
+
+    // The restored legacy sidecar is still valid and can be used for a retry.
+    let retryStore = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let adopted = try await retryStore.adoptExternalV2()
+    #expect(adopted.revision == 1)
+    #expect(adopted.document == document)
+}
+
+@Test func catalogStoreRecoversAnInterruptedV2MigrationBeforeServingTheDocument() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let document = SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")])
+    let original = Data(try SensitiveCatalogDocumentCodec.encodeV2(document).utf8)
+    let rendered = Data(try SensitiveCatalogDocumentCodec.encode(document).utf8)
+    let backup = fixture.root.appendingPathComponent("敏感信息.md.bak-crash-test")
+    try original.write(to: fixture.document, options: [.atomic])
+    try original.write(to: backup, options: [.atomic])
+    try rendered.write(to: fixture.document, options: [.atomic])
+
+    let journal: [String: Any] = [
+        "documentBackupPath": backup.path,
+        "documentPath": fixture.document.path,
+        "expectedDocumentSHA256": "expected-document",
+        "expectedIntegritySHA256": "expected-integrity",
+        "integrityBackupPath": NSNull(),
+        "integrityPath": fixture.integrity.path,
+        "phase": "committing",
+        "schemaVersion": 1
+    ]
+    let journalData = try JSONSerialization.data(withJSONObject: journal, options: [.prettyPrinted, .sortedKeys])
+    try journalData.write(to: fixture.root.appendingPathComponent("catalog-migration-state.json"), options: [.atomic])
+
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    await #expect(throws: SensitiveCatalogDocumentStoreError.integrityMissing) {
+        _ = try await store.snapshot()
+    }
+    #expect(try Data(contentsOf: fixture.document) == original)
+    #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("catalog-migration-state.json").path))
 }
 
 @Test func catalogStoreDoesNotAdoptMalformedExternalV2OrChangeTheFile() async throws {

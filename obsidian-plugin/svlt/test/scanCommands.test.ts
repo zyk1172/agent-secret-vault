@@ -209,7 +209,7 @@ describe("scan commands", () => {
     expect(reviewMock.findings).toEqual([]);
     expect(modifyCalls).toBe(0);
     expect(requests).toEqual([{ type: "catalogValidate" }]);
-    expect(obsidianMock.notices).toContain("SVLT：已跳过旧版敏感信息.md；请先在 SVLT App 中升级为 v3。");
+    expect(obsidianMock.notices).toContain("SVLT：已跳过受管敏感信息.md；密码字段请在 SVLT App 中管理，普通 Markdown 仍可手工编辑。");
   });
 
   it("sends markdown references to the app orphan scanner", async () => {

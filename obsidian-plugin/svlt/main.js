@@ -921,6 +921,14 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     new import_obsidian2.Notice("SVLT\uFF1Av2 \u6216\u65E7\u7248\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u8BF7\u5148\u5728 SVLT App \u4E2D\u5347\u7EA7\uFF1BObsidian \u4E0D\u4F1A\u76F4\u63A5\u6539\u5199\u65E7\u7ED3\u6784\u3002");
     return true;
   }
+  async refuseManagedCatalogEncryption(documentText) {
+    if (classifyCatalogText(documentText) === "managedV3") {
+      await this.validateManagedCatalog(true);
+      new import_obsidian2.Notice("SVLT\uFF1Av3 \u654F\u611F\u4FE1\u606F\u76EE\u5F55\u4E2D\u7684\u666E\u901A\u5B57\u6BB5\u4E0D\u80FD\u76F4\u63A5\u52A0\u5BC6\uFF1B\u8BF7\u5148\u5728 SVLT App \u4E2D\u628A\u5B57\u6BB5\u8BBE\u4E3A\u5BC6\u7801\u5B57\u6BB5\u3002\u624B\u5DE5 Markdown \u7F16\u8F91\u4ECD\u7136\u53EF\u7528\u3002");
+      return true;
+    }
+    return this.refuseManagedCatalogMutation(documentText);
+  }
   async refuseManagedCatalogRestore(documentText) {
     if (classifyCatalogText(documentText) === "managedV3") {
       await this.validateManagedCatalog(true);
@@ -930,7 +938,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     return this.refuseManagedCatalogMutation(documentText);
   }
   async encryptSelection(editor) {
-    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogEncryption(editor.getValue())) {
       return;
     }
     const text = editor.getSelection();
@@ -948,7 +956,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   }
   async encryptCurrentParagraph(editor) {
     const documentText = editor.getValue();
-    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogEncryption(documentText)) {
       return;
     }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
@@ -979,7 +987,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   async encryptRange(editor, range, fromPos, toPos) {
     try {
       const documentText = editor.getValue();
-      if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+      if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogEncryption(documentText)) {
         return;
       }
       const result = await encryptTextRange({
@@ -1084,7 +1092,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
   }
   async scanCurrentNote(editor) {
     const originalText = editor.getValue();
-    if (isManagedCatalogText(originalText) && await this.refuseManagedCatalogMutation(originalText)) {
+    if (isManagedCatalogText(originalText) && await this.refuseManagedCatalogEncryption(originalText)) {
       return;
     }
     const activeFilePath = this.app.workspace?.getActiveFile()?.path ?? "current-note.md";
@@ -1113,7 +1121,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     for (const file of files) {
       const text = await this.app.vault.cachedRead(file);
       snapshots.set(file.path, text);
-      if (isLegacyManagedCatalogText(text)) {
+      if (isManagedCatalogText(text)) {
         skippedManagedCatalog = true;
         continue;
       }
@@ -1121,7 +1129,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
     }
     if (skippedManagedCatalog) {
       await this.validateManagedCatalog();
-      new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u8DF3\u8FC7\u65E7\u7248\u654F\u611F\u4FE1\u606F.md\uFF1B\u8BF7\u5148\u5728 SVLT App \u4E2D\u5347\u7EA7\u4E3A v3\u3002");
+      new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u8DF3\u8FC7\u53D7\u7BA1\u654F\u611F\u4FE1\u606F.md\uFF1B\u5BC6\u7801\u5B57\u6BB5\u8BF7\u5728 SVLT App \u4E2D\u7BA1\u7406\uFF0C\u666E\u901A Markdown \u4ECD\u53EF\u624B\u5DE5\u7F16\u8F91\u3002");
     }
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
       try {
@@ -1180,9 +1188,9 @@ var AgentSecretVaultPlugin = class extends import_obsidian2.Plugin {
         skippedCount += findings.length;
         continue;
       }
-      if (isLegacyManagedCatalogText(originalText)) {
+      if (isManagedCatalogText(originalText)) {
         await this.validateManagedCatalog();
-        new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u9009\u4E2D\u53D7\u7BA1\u654F\u611F\u4FE1\u606F.md\uFF0C\u672A\u6267\u884C\u666E\u901A\u7B14\u8BB0\u5199\u5165\u3002");
+        new import_obsidian2.Notice("SVLT\uFF1A\u5DF2\u8DF3\u8FC7\u53D7\u7BA1\u654F\u611F\u4FE1\u606F.md\uFF0C\u672A\u901A\u8FC7\u666E\u901A\u52A0\u5BC6\u547D\u4EE4\u5199\u5165\u76EE\u5F55\uFF1B\u8BF7\u5728 SVLT App \u4E2D\u7BA1\u7406\u5BC6\u7801\u5B57\u6BB5\u3002");
         skippedCount += findings.length;
         continue;
       }

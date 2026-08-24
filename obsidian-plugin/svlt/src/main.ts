@@ -288,6 +288,15 @@ export default class AgentSecretVaultPlugin extends Plugin {
     return true;
   }
 
+  private async refuseManagedCatalogEncryption(documentText: string): Promise<boolean> {
+    if (classifyCatalogText(documentText) === "managedV3") {
+      await this.validateManagedCatalog(true);
+      new Notice("SVLT：v3 敏感信息目录中的普通字段不能直接加密；请先在 SVLT App 中把字段设为密码字段。手工 Markdown 编辑仍然可用。");
+      return true;
+    }
+    return this.refuseManagedCatalogMutation(documentText);
+  }
+
   private async refuseManagedCatalogRestore(documentText: string): Promise<boolean> {
     if (classifyCatalogText(documentText) === "managedV3") {
       await this.validateManagedCatalog(true);
@@ -298,7 +307,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 
   private async encryptSelection(editor: Editor): Promise<void> {
-    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogMutation(editor.getValue())) {
+    if (isManagedCatalogText(editor.getValue()) && await this.refuseManagedCatalogEncryption(editor.getValue())) {
       return;
     }
     const text = editor.getSelection();
@@ -318,7 +327,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async encryptCurrentParagraph(editor: Editor): Promise<void> {
     const documentText = editor.getValue();
-    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+    if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogEncryption(documentText)) {
       return;
     }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
@@ -357,7 +366,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
   ): Promise<void> {
     try {
       const documentText = editor.getValue();
-      if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogMutation(documentText)) {
+      if (isManagedCatalogText(documentText) && await this.refuseManagedCatalogEncryption(documentText)) {
         return;
       }
       const result = await encryptTextRange({
@@ -482,7 +491,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private async scanCurrentNote(editor: Editor): Promise<void> {
     const originalText = editor.getValue();
-    if (isManagedCatalogText(originalText) && await this.refuseManagedCatalogMutation(originalText)) {
+    if (isManagedCatalogText(originalText) && await this.refuseManagedCatalogEncryption(originalText)) {
       return;
     }
     const activeFilePath = this.app.workspace?.getActiveFile()?.path ?? "current-note.md";
@@ -514,7 +523,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     for (const file of files) {
       const text = await this.app.vault.cachedRead(file);
       snapshots.set(file.path, text);
-      if (isLegacyManagedCatalogText(text)) {
+      if (isManagedCatalogText(text)) {
         skippedManagedCatalog = true;
         continue;
       }
@@ -523,7 +532,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     if (skippedManagedCatalog) {
       await this.validateManagedCatalog();
-      new Notice("SVLT：已跳过旧版敏感信息.md；请先在 SVLT App 中升级为 v3。");
+      new Notice("SVLT：已跳过受管敏感信息.md；密码字段请在 SVLT App 中管理，普通 Markdown 仍可手工编辑。");
     }
 
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
@@ -593,9 +602,9 @@ export default class AgentSecretVaultPlugin extends Plugin {
         continue;
       }
 
-      if (isLegacyManagedCatalogText(originalText)) {
+      if (isManagedCatalogText(originalText)) {
         await this.validateManagedCatalog();
-        new Notice("SVLT：已选中受管敏感信息.md，未执行普通笔记写入。");
+        new Notice("SVLT：已跳过受管敏感信息.md，未通过普通加密命令写入目录；请在 SVLT App 中管理密码字段。");
         skippedCount += findings.length;
         continue;
       }

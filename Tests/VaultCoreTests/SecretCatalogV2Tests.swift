@@ -250,3 +250,92 @@ private func qnapDocument() -> SecretCatalogDocument {
         try JSONDecoder().decode(SecretCatalogIndex.self, from: unknownIndexJSON)
     }
 }
+
+@Test func catalogV3RejectsSecretReferencesOutsideSecretFieldReferenceSlot() throws {
+    let reference = v2PasswordReference
+    let indexID = v2IndexID
+    let entryID = v2EntryID
+
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: indexID, title: reference)]
+        ).validate()
+    }
+
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: indexID, title: "分组", aliases: [reference])]
+        ).validate()
+    }
+
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: indexID, title: "分组")],
+            entries: [SecretCatalogEntry(id: entryID, indexId: indexID, title: "条目", tags: [reference])]
+        ).validate()
+    }
+
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: indexID, title: "分组")],
+            entries: [SecretCatalogEntry(id: entryID, indexId: indexID, title: "条目", notes: "备注：\(reference)")]
+        ).validate()
+    }
+
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: indexID, title: "分组")],
+            entries: [SecretCatalogEntry(
+                id: entryID,
+                indexId: indexID,
+                title: "条目",
+                endpoints: [CatalogEndpoint(type: "https", host: reference)]
+            )]
+        ).validate()
+    }
+
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: indexID, title: "分组")],
+            entries: [SecretCatalogEntry(
+                id: entryID,
+                indexId: indexID,
+                title: "条目",
+                fields: [SecretCatalogFieldValue(
+                    key: "备注",
+                    label: "备注",
+                    type: .text,
+                    value: .string("普通字段：\(reference)")
+                )]
+            )]
+        ).validate()
+    }
+
+    #expect(throws: SecretCatalogValidationError.secretReferenceInMetadata) {
+        try SecretCatalogDocument(
+            indexes: [SecretCatalogIndex(id: indexID, title: "分组")],
+            entries: [SecretCatalogEntry(
+                id: entryID,
+                indexId: indexID,
+                title: "条目",
+                fields: [SecretCatalogFieldValue(
+                    key: "标签",
+                    label: "标签",
+                    type: .list,
+                    value: .list(["普通项", reference])
+                )]
+            )]
+        ).validate()
+    }
+
+    let valid = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: indexID, title: "分组")],
+        entries: [SecretCatalogEntry(
+            id: entryID,
+            indexId: indexID,
+            title: "条目",
+            fields: [SecretCatalogFieldValue(key: "密码", label: "密码", type: .secret, secretRef: reference)]
+        )]
+    )
+    try valid.validate()
+}

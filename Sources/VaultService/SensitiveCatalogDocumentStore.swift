@@ -86,6 +86,61 @@ private struct LegacyCatalogIntegrityRecordV2: Codable, Equatable {
     let updatedAt: String
 }
 
+private struct CatalogMigrationJournal: Codable, Equatable {
+    enum Phase: String, Codable {
+        case prepared
+        case committing
+        case completed
+    }
+
+    let schemaVersion: Int
+    let phase: Phase
+    let documentPath: String
+    let integrityPath: String
+    let documentBackupPath: String
+    let integrityBackupPath: String?
+    let expectedDocumentSHA256: String
+    let expectedIntegritySHA256: String
+
+    init(
+        phase: Phase,
+        documentPath: String,
+        integrityPath: String,
+        documentBackupPath: String,
+        integrityBackupPath: String?,
+        expectedDocumentSHA256: String,
+        expectedIntegritySHA256: String
+    ) {
+        self.schemaVersion = 1
+        self.phase = phase
+        self.documentPath = documentPath
+        self.integrityPath = integrityPath
+        self.documentBackupPath = documentBackupPath
+        self.integrityBackupPath = integrityBackupPath
+        self.expectedDocumentSHA256 = expectedDocumentSHA256
+        self.expectedIntegritySHA256 = expectedIntegritySHA256
+    }
+
+    func changingPhase(to phase: Phase) -> Self {
+        Self(
+            phase: phase,
+            documentPath: documentPath,
+            integrityPath: integrityPath,
+            documentBackupPath: documentBackupPath,
+            integrityBackupPath: integrityBackupPath,
+            expectedDocumentSHA256: expectedDocumentSHA256,
+            expectedIntegritySHA256: expectedIntegritySHA256
+        )
+    }
+}
+
+/// Test-only fault injection is intentionally limited to the atomic commit
+/// boundary. It lets the migration tests prove rollback without weakening the
+/// production file-system implementation.
+internal protocol CatalogAtomicWriteFaultInjecting: Sendable {
+    func beforeAtomicReplace(to url: URL) throws
+}
+
 public struct CatalogExternalChange: Codable, Equatable, Sendable {
     public let rawSHA256: String
     public let semanticSHA256: String
@@ -126,6 +181,7 @@ public actor SensitiveCatalogDocumentStore {
     private let fileManager: FileManager
     private let keyStore: any CatalogIntegrityKeyStoring
     private let suppliedIntegrityURL: URL?
+    private let atomicWriteFaultInjector: (any CatalogAtomicWriteFaultInjecting)?
     private var documentURL: URL?
 
     public init(
@@ -138,6 +194,21 @@ public actor SensitiveCatalogDocumentStore {
         self.suppliedIntegrityURL = integrityURL?.standardizedFileURL
         self.keyStore = keyStore
         self.fileManager = fileManager
+        self.atomicWriteFaultInjector = nil
+    }
+
+    internal init(
+        documentURL: URL? = nil,
+        integrityURL: URL? = nil,
+        keyStore: any CatalogIntegrityKeyStoring = KeychainCatalogIntegrityKeyStore(),
+        fileManager: FileManager = .default,
+        atomicWriteFaultInjector: (any CatalogAtomicWriteFaultInjecting)?
+    ) {
+        self.documentURL = documentURL?.standardizedFileURL
+        self.suppliedIntegrityURL = integrityURL?.standardizedFileURL
+        self.keyStore = keyStore
+        self.fileManager = fileManager
+        self.atomicWriteFaultInjector = atomicWriteFaultInjector
     }
 
     public func selectDocument(at url: URL?) throws {
@@ -350,6 +421,7 @@ public actor SensitiveCatalogDocumentStore {
     public func adoptExternalV2() throws -> SensitiveCatalogSnapshot {
         try withCatalogLock(exclusive: true) {
             guard let url = documentURL, fileManager.fileExists(atPath: url.path) else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
+            try recoverInterruptedV2MigrationUnlocked()
             try assertSafeFile(url)
             let raw = try Data(contentsOf: url)
             guard SensitiveCatalogDocumentCodec.format(raw) == .managedV2 else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
@@ -364,14 +436,57 @@ public actor SensitiveCatalogDocumentStore {
                 let legacy = try readLegacyIntegrityRecordV2(at: stateURL)
                 try verifyLegacyIntegrityV2(legacy, data: raw)
             }
-            _ = try backupCurrentDocumentUnlocked()
-            if hasLegacySidecar {
-                _ = try backupFileUnlocked(stateURL)
-            }
-            try atomicWrite(rendered, to: url)
             let record = try makeRecord(document: reparsed, revision: 1, raw: rendered)
-            try atomicWriteIntegrity(record)
-            return SensitiveCatalogSnapshot(document: reparsed, revision: 1, integrity: .verified)
+            let integrityData = try encodedIntegrityData(record)
+            guard let documentBackup = try backupCurrentDocumentUnlocked() else {
+                throw SensitiveCatalogDocumentStoreError.writeFailed
+            }
+            let integrityBackup = hasLegacySidecar ? try backupFileUnlocked(stateURL) : nil
+            let journalURL = try migrationJournalURL()
+            let prepared = CatalogMigrationJournal(
+                phase: .prepared,
+                documentPath: url.standardizedFileURL.path,
+                integrityPath: stateURL.standardizedFileURL.path,
+                documentBackupPath: documentBackup.standardizedFileURL.path,
+                integrityBackupPath: integrityBackup?.standardizedFileURL.path,
+                expectedDocumentSHA256: sha256Hex(rendered),
+                expectedIntegritySHA256: sha256Hex(integrityData)
+            )
+            let committing = prepared.changingPhase(to: .committing)
+
+            do {
+                try writeMigrationJournal(prepared, at: journalURL)
+                try writeMigrationJournal(committing, at: journalURL)
+                try atomicWrite(rendered, to: url)
+                try atomicWrite(integrityData, to: stateURL)
+
+                // If the process dies before the completed marker is written,
+                // the next locked operation can still recognize a fully
+                // committed pair by these expected hashes.
+                guard migrationCommitMatches(committing) else {
+                    throw SensitiveCatalogDocumentStoreError.writeFailed
+                }
+                try writeMigrationJournal(committing.changingPhase(to: .completed), at: journalURL)
+                try removeMigrationJournal(at: journalURL)
+                return SensitiveCatalogSnapshot(document: reparsed, revision: 1, integrity: .verified)
+            } catch {
+                // A failure while writing the completed marker or deleting the
+                // journal must not roll back a pair that is already complete.
+                if migrationCommitMatches(committing) {
+                    try? removeMigrationJournal(at: journalURL)
+                    return SensitiveCatalogSnapshot(document: reparsed, revision: 1, integrity: .verified)
+                }
+
+                do {
+                    try rollbackV2MigrationUnlocked(committing, journalURL: journalURL)
+                } catch {
+                    throw SensitiveCatalogDocumentStoreError.writeFailed
+                }
+                if let error = error as? SensitiveCatalogDocumentStoreError {
+                    throw error
+                }
+                throw SensitiveCatalogDocumentStoreError.writeFailed
+            }
         }
     }
 
@@ -451,6 +566,7 @@ public actor SensitiveCatalogDocumentStore {
 
     private func snapshotUnlocked() throws -> SensitiveCatalogSnapshot {
         guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
+        try recoverInterruptedV2MigrationUnlocked()
         guard fileManager.fileExists(atPath: url.path) else {
             return SensitiveCatalogSnapshot(document: SecretCatalogDocument(), revision: 0, integrity: .uninitialized)
         }
@@ -887,11 +1003,195 @@ public actor SensitiveCatalogDocumentStore {
         return payload
     }
 
+    private func encodedIntegrityData(_ record: CatalogIntegrityRecord) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        do { return try encoder.encode(record) }
+        catch { throw SensitiveCatalogDocumentStoreError.writeFailed }
+    }
+
     private func atomicWriteIntegrity(_ record: CatalogIntegrityRecord) throws {
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        do { try atomicWrite(encoder.encode(record), to: try integrityURL()) }
+        do { try atomicWrite(try encodedIntegrityData(record), to: try integrityURL()) }
         catch let error as SensitiveCatalogDocumentStoreError { throw error }
         catch { throw SensitiveCatalogDocumentStoreError.writeFailed }
+    }
+
+    private func migrationJournalURL() throws -> URL {
+        try integrityURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("catalog-migration-state.json")
+    }
+
+    private func writeMigrationJournal(_ journal: CatalogMigrationJournal, at url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        do {
+            try atomicWrite(try encoder.encode(journal), to: url)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw error
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+    }
+
+    private func removeMigrationJournal(at url: URL) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try assertSafeFile(url)
+        do {
+            try fileManager.removeItem(at: url)
+            try fsyncDirectory(at: url.deletingLastPathComponent())
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+    }
+
+    private func readMigrationJournal(at url: URL) throws -> CatalogMigrationJournal {
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+        try assertSafeFile(url)
+        do {
+            let journal = try JSONDecoder().decode(
+                CatalogMigrationJournal.self,
+                from: Data(contentsOf: url)
+            )
+            try validateMigrationJournal(journal, journalURL: url)
+            return journal
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw error
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+    }
+
+    private func validateMigrationJournal(
+        _ journal: CatalogMigrationJournal,
+        journalURL: URL
+    ) throws {
+        guard journal.schemaVersion == 1,
+              let documentURL,
+              journalURL.standardizedFileURL.path == (try migrationJournalURL()).standardizedFileURL.path,
+              journal.documentPath == documentURL.standardizedFileURL.path,
+              journal.integrityPath == (try integrityURL()).standardizedFileURL.path,
+              !journal.expectedDocumentSHA256.isEmpty,
+              !journal.expectedIntegritySHA256.isEmpty
+        else {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+
+        let documentBackup = URL(fileURLWithPath: journal.documentBackupPath).standardizedFileURL
+        guard isMigrationBackup(documentBackup, for: documentURL),
+              fileManager.fileExists(atPath: documentBackup.path)
+        else {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
+
+        if let integrityBackupPath = journal.integrityBackupPath {
+            let integrityBackup = URL(fileURLWithPath: integrityBackupPath).standardizedFileURL
+            let integrity = try integrityURL()
+            guard isMigrationBackup(integrityBackup, for: integrity),
+                  fileManager.fileExists(atPath: integrityBackup.path)
+            else {
+                throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+            }
+        }
+    }
+
+    private func isMigrationBackup(_ backup: URL, for target: URL) -> Bool {
+        backup.deletingLastPathComponent().standardizedFileURL.path == target.deletingLastPathComponent().standardizedFileURL.path
+            && backup.lastPathComponent.hasPrefix("\(target.lastPathComponent).bak-")
+    }
+
+    private func recoverInterruptedV2MigrationUnlocked() throws {
+        let journalURL = try migrationJournalURL()
+        guard fileManager.fileExists(atPath: journalURL.path) else { return }
+        let journal = try readMigrationJournal(at: journalURL)
+
+        switch journal.phase {
+        case .completed:
+            try removeMigrationJournal(at: journalURL)
+        case .prepared, .committing:
+            if migrationCommitMatches(journal) {
+                // Both target files reached the prepared commit. The only
+                // missing step was journal cleanup, so keep the migration.
+                try removeMigrationJournal(at: journalURL)
+            } else {
+                try rollbackV2MigrationUnlocked(journal, journalURL: journalURL)
+            }
+        }
+    }
+
+    private func migrationCommitMatches(_ journal: CatalogMigrationJournal) -> Bool {
+        guard let documentURL,
+              fileManager.fileExists(atPath: documentURL.path),
+              (try? assertSafeFile(documentURL)) != nil,
+              let raw = try? Data(contentsOf: documentURL),
+              sha256Hex(raw) == journal.expectedDocumentSHA256,
+              let integrityURL = try? integrityURL(),
+              fileManager.fileExists(atPath: integrityURL.path),
+              (try? assertSafeFile(integrityURL)) != nil,
+              let integrityData = try? Data(contentsOf: integrityURL),
+              sha256Hex(integrityData) == journal.expectedIntegritySHA256,
+              let document = try? decodeV3(raw),
+              let record = try? JSONDecoder().decode(CatalogIntegrityRecord.self, from: integrityData)
+        else {
+            return false
+        }
+        return record.revision == 1
+            && record.rawSHA256 == journal.expectedDocumentSHA256
+            && record.acceptedDocument == document
+    }
+
+    private func rollbackV2MigrationUnlocked(
+        _ journal: CatalogMigrationJournal,
+        journalURL: URL
+    ) throws {
+        try validateMigrationJournal(journal, journalURL: journalURL)
+        guard let documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
+        let integrity = try integrityURL()
+        var failed = false
+
+        do {
+            if let integrityBackupPath = journal.integrityBackupPath {
+                try restoreFileUnlocked(
+                    from: URL(fileURLWithPath: integrityBackupPath),
+                    to: integrity
+                )
+            } else {
+                try removeFileIfPresentUnlocked(integrity)
+            }
+        } catch {
+            failed = true
+        }
+
+        do {
+            try restoreFileUnlocked(
+                from: URL(fileURLWithPath: journal.documentBackupPath),
+                to: documentURL
+            )
+        } catch {
+            failed = true
+        }
+
+        guard !failed else { throw SensitiveCatalogDocumentStoreError.writeFailed }
+        try removeMigrationJournal(at: journalURL)
+    }
+
+    private func restoreFileUnlocked(from backupURL: URL, to targetURL: URL) throws {
+        try assertSafeFile(backupURL)
+        let data = try Data(contentsOf: backupURL)
+        try atomicWrite(data, to: targetURL)
+    }
+
+    private func removeFileIfPresentUnlocked(_ url: URL) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try assertSafeFile(url)
+        do {
+            try fileManager.removeItem(at: url)
+            try fsyncDirectory(at: url.deletingLastPathComponent())
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
     }
 
     private func backupCurrentDocumentUnlocked() throws -> URL? {
@@ -944,6 +1244,7 @@ public actor SensitiveCatalogDocumentStore {
             try data.write(to: temporary, options: [.withoutOverwriting])
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
             try fsyncFile(at: temporary)
+            try atomicWriteFaultInjector?.beforeAtomicReplace(to: url)
             if fileManager.fileExists(atPath: url.path) {
                 try assertSafeFile(url)
                 _ = try fileManager.replaceItemAt(url, withItemAt: temporary)

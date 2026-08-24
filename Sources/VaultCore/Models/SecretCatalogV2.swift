@@ -417,6 +417,7 @@ public enum SecretCatalogValidationError: Error, Equatable, Sendable {
     case valueAndSecretReference
     case secretFieldContainsValue
     case nonSecretFieldContainsSecretReference
+    case secretReferenceInMetadata
     case invalidSecretReference
     case secretFieldKeyMustBeSecret
     case invalidEndpoint
@@ -459,6 +460,7 @@ private enum CatalogValidation {
         else {
             throw SecretCatalogValidationError.invalidVisibleText
         }
+        try validateNoSecretReference(in: value)
     }
 
     static func validateMarkdownText(_ value: String) throws {
@@ -469,6 +471,7 @@ private enum CatalogValidation {
         else {
             throw SecretCatalogValidationError.invalidVisibleText
         }
+        try validateNoSecretReference(in: value)
     }
 
     static func validateField(_ field: SecretCatalogFieldValue) throws {
@@ -501,6 +504,7 @@ private enum CatalogValidation {
         }
 
         guard let value = field.value else { return }
+        try validateNoSecretReference(in: value)
         switch field.type {
         case .text, .multiline, .url, .host, .date:
             guard case .string(let string) = value,
@@ -532,6 +536,23 @@ private enum CatalogValidation {
             }
         case .secret:
             break
+        }
+    }
+
+    static func validateNoSecretReference(in value: SecretCatalogValue) throws {
+        switch value {
+        case .string(let string):
+            try validateNoSecretReference(in: string)
+        case .list(let values):
+            try values.forEach(validateNoSecretReference)
+        case .number, .boolean:
+            break
+        }
+    }
+
+    private static func validateNoSecretReference(in value: String) throws {
+        guard MarkdownReferenceScanner.references(in: value).isEmpty else {
+            throw SecretCatalogValidationError.secretReferenceInMetadata
         }
     }
 
