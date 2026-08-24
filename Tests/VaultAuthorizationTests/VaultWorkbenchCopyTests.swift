@@ -33,6 +33,16 @@ import Foundation
     #expect(!VaultWorkbenchCopy.agentPrompt.localizedLowercase.contains("qnap"))
 }
 
+@Test func workbenchCopyExposesTheManagedCatalogPolicyAndSchema() {
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("Index 和一个 Entry/SubIndex"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("secret_catalog_validate"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("不得使用 shell"))
+    #expect(VaultWorkbenchCopy.catalogSchema.contains("secretRef"))
+    #expect(VaultWorkbenchCopy.catalogSchema.contains("both value and secretRef"))
+    #expect(!VaultWorkbenchCopy.catalogPolicy.contains("ASV_CANARY"))
+    #expect(!VaultWorkbenchCopy.catalogSchema.contains("secret://012345"))
+}
+
 @Test func primaryWorkbenchCopyAvoidsBilingualSeparators() {
     let visibleCopy = [
         VaultWorkbenchCopy.disconnected.status,

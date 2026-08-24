@@ -94,6 +94,27 @@ function parseIpcResponse(json: string): IpcResponse {
     }
   }
 
+  if (
+    parsed.type === "catalogValidation" &&
+    typeof parsed.catalogStatus === "string" &&
+    [
+      "FOUND",
+      "NOT_FOUND",
+      "INVALID_QUERY",
+      "CATALOG_UNAVAILABLE",
+      "MIGRATION_REQUIRED",
+      "EXTERNAL_CATALOG_MODIFICATION",
+      "CATALOG_INVALID"
+    ].includes(parsed.catalogStatus) &&
+    (parsed.revision === undefined || parsed.revision === null || isNonNegativeInteger(parsed.revision))
+  ) {
+    return {
+      type: "catalogValidation",
+      catalogStatus: parsed.catalogStatus as "FOUND" | "NOT_FOUND" | "INVALID_QUERY" | "CATALOG_UNAVAILABLE" | "MIGRATION_REQUIRED" | "EXTERNAL_CATALOG_MODIFICATION" | "CATALOG_INVALID",
+      ...(parsed.revision === undefined ? {} : { revision: parsed.revision as number | null })
+    };
+  }
+
   if (parsed.type === "orphanScan" && isRecord(parsed.result)) {
     const result = parsed.result;
     if (isSecretReferenceArray(result.missingRecords) && isSecretReferenceArray(result.unreferencedRecords)) {
@@ -120,6 +141,10 @@ function isSecretReference(value: unknown): value is string {
 
 function isSecretReferenceArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isSecretReference);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 export class LocalVaultClient {

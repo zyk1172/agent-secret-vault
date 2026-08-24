@@ -179,6 +179,39 @@ describe("scan commands", () => {
     expect(obsidianMock.notices).toContain("SVLT: encrypted 0 findings; skipped 1 changed finding.");
   });
 
+  it("does not scan or write an SVLT managed catalog through Obsidian", async () => {
+    const files = [{ path: "敏感信息.md" }];
+    const managedCatalog = '<!-- SVLT-MANAGED-CATALOG schema="2" -->\n\n# 敏感信息\n\nQNAP password = must stay in Catalog Store';
+    const contents = new Map([["敏感信息.md", managedCatalog]]);
+    const requests: unknown[] = [];
+    let modifyCalls = 0;
+    const plugin = new AgentSecretVaultPlugin({
+      vault: {
+        getMarkdownFiles: () => files,
+        cachedRead: async (file: { path: string }) => contents.get(file.path) ?? "",
+        modify: async () => {
+          modifyCalls += 1;
+        }
+      }
+    } as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      scanVault: () => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "catalogValidation", catalogStatus: "FOUND", revision: 3 };
+      }
+    });
+
+    await plugin.scanVault();
+
+    expect(reviewMock.findings).toEqual([]);
+    expect(modifyCalls).toBe(0);
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(obsidianMock.notices).toContain("SVLT: skipped managed 敏感信息.md; use the App/MCP Catalog tools for directory operations.");
+  });
+
   it("sends markdown references to the app orphan scanner", async () => {
     const files = [{ path: "a.md" }, { path: "b.md" }];
     const contents = new Map([

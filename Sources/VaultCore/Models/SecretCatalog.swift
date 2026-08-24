@@ -60,7 +60,7 @@ public enum SecretCatalogField: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// A parsed entry from the human-maintained sensitive-information catalog.
+/// A legacy flat entry parsed only as migration input from the pre-v2 catalog.
 /// `contextTerms` is kept local for deterministic matching and is never part
 /// of the MCP result.
 /// Legacy flat entry produced by the pre-v2 heuristic parser.  It remains

@@ -133,7 +133,8 @@ describe("plugin commands", () => {
       "reveal-selection",
       "reveal-current-paragraph",
       "restore-selection",
-      "restore-current-paragraph"
+      "restore-current-paragraph",
+      "validate-catalog"
     ]);
   });
 
@@ -143,7 +144,8 @@ describe("plugin commands", () => {
       "在 SVLT 中临时解密选中文本",
       "在 SVLT 中临时解密当前段落",
       "还原选中文本中的密文引用",
-      "还原当前段落中的密文引用"
+      "还原当前段落中的密文引用",
+      "验证 SVLT 敏感信息目录"
     ]);
   });
 

@@ -35,6 +35,7 @@ public final class AgentServiceRegistration {
     private let defaults: UserDefaults
     private let disabledKey = "agentServiceExplicitlyDisabled"
     private let registeredVersionKey = "agentServiceRegisteredBundleVersion"
+    private let registeredAgentFingerprintKey = "agentServiceRegisteredAgentFingerprint"
 
     public init(
         service: SMAppService? = nil,
@@ -63,6 +64,7 @@ public final class AgentServiceRegistration {
         try service.register()
         defaults.set(false, forKey: disabledKey)
         defaults.set(Self.currentBundleVersion, forKey: registeredVersionKey)
+        defaults.set(Self.currentAgentFingerprint, forKey: registeredAgentFingerprintKey)
     }
 
     public func unregister() throws {
@@ -87,12 +89,15 @@ public final class AgentServiceRegistration {
         case .notRegistered:
             try register()
         case .enabled:
-            guard defaults.string(forKey: registeredVersionKey) != Self.currentBundleVersion else {
+            let versionChanged = defaults.string(forKey: registeredVersionKey) != Self.currentBundleVersion
+            let agentChanged = defaults.string(forKey: registeredAgentFingerprintKey) != Self.currentAgentFingerprint
+            guard versionChanged || agentChanged else {
                 return
             }
             // SMAppService keeps the old submitted executable alive across an
-            // App copy/update. Re-register once per App bundle version so the
-            // launchd Agent actually runs the new embedded binary.
+            // App copy/update. Re-register when either the release identity or
+            // the embedded executable changes so same-version test installs
+            // also run the binary that is currently inside this App bundle.
             try service.unregister()
             try register()
         case .requiresApproval, .notFound:
@@ -110,5 +115,19 @@ public final class AgentServiceRegistration {
             forInfoDictionaryKey: "CFBundleVersion"
         ) as? String ?? "unknown"
         return "\(shortVersion) (\(buildVersion))"
+    }
+
+    private static var currentAgentFingerprint: String {
+        let agentURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("MacOS", isDirectory: true)
+            .appendingPathComponent("SVLTAgent", isDirectory: false)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: agentURL.path),
+              let fileSize = attributes[.size] as? NSNumber,
+              let modificationDate = attributes[.modificationDate] as? Date
+        else {
+            return "unavailable"
+        }
+        return "\(fileSize.uint64Value):\(modificationDate.timeIntervalSince1970)"
     }
 }

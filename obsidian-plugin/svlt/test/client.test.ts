@@ -97,6 +97,26 @@ describe("LocalVaultClient", () => {
     });
   });
 
+  it("parses the catalog validation status without accepting catalog content", async () => {
+    const socketPath = await createSocketServer((socket) => {
+      socket.on("data", () => {
+        socket.write(encodeFrame({
+          type: "catalogValidation",
+          catalogStatus: "FOUND",
+          revision: 4
+        }));
+      });
+    });
+
+    const client = new LocalVaultClient(socketPath, { netModule: net, fsModule });
+
+    await expect(client.request({ type: "catalogValidate" })).resolves.toEqual({
+      type: "catalogValidation",
+      catalogStatus: "FOUND",
+      revision: 4
+    });
+  });
+
   it("sends an exact framed IPC request body", async () => {
     let receivedRequest: unknown;
     const socketPath = await createSocketServer((socket) => {

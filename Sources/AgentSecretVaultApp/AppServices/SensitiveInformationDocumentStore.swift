@@ -37,14 +37,18 @@ public struct SensitiveInformationDocumentReference: Identifiable, Equatable, Se
 public enum SensitiveInformationDocumentStoreError: Error, Equatable, Sendable {
     case noSelectedDocument
     case malformedDocument
+    case managedCatalogRequiresCatalogStore
     case symlinkRejected
     case invalidReference
     case verificationFailed
 }
 
-/// The Markdown document is the human-maintained catalog. Encrypted envelopes stay in the local vault.
+/// Legacy compatibility reader used by migration/old reference views only.
+/// Managed Catalog v2 writes belong to SensitiveCatalogDocumentStore; this
+/// type must not be used to parse or write the v2 Markdown/JSON representation.
 public actor SensitiveInformationDocumentStore {
     private static let marker = "<!-- agent-secret-vault-sensitive-information: 1 -->"
+    private static let managedCatalogMarker = "<!-- SVLT-MANAGED-CATALOG schema=\"2\" -->"
     private static let referencePattern = "secret://[0-9A-HJKMNP-TV-Z]{26}"
     private var documentURL: URL?
 
@@ -99,6 +103,9 @@ public actor SensitiveInformationDocumentStore {
         }
         try assertSafeFile(url)
         let text = try String(contentsOf: url, encoding: .utf8)
+        guard !text.contains(Self.managedCatalogMarker) else {
+            throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
+        }
         let catalogEntries = Dictionary(
             uniqueKeysWithValues: SecretCatalogMarkdownParser.parse(text).map { ($0.reference, $0) }
         )
@@ -113,9 +120,15 @@ public actor SensitiveInformationDocumentStore {
             return []
         }
         try assertSafeFile(url)
-        return SecretCatalogMarkdownParser.parse(try String(contentsOf: url, encoding: .utf8))
+        let text = try String(contentsOf: url, encoding: .utf8)
+        guard !text.contains(Self.managedCatalogMarker) else {
+            throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
+        }
+        return SecretCatalogMarkdownParser.parse(text)
     }
 
+    /// Legacy-only helper retained for old non-managed documents.  The App's
+    /// managed catalog path never calls it.
     public func appendParagraph(_ paragraph: String, title: String, reference: String) throws {
         _ = try SecretReference(reference)
         let url = try requiredURL()

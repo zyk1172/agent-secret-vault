@@ -227,6 +227,31 @@ describe("encrypt selection", () => {
     expect(obsidianMock.notices).toContain("SVLT: note changed before encryption completed; leaving text unchanged.");
   });
 
+  it("refuses direct encryption inside a managed catalog", async () => {
+    obsidianMock.notices = [];
+    const text = '<!-- SVLT-MANAGED-CATALOG schema="2" -->\npassword = ASV_CANARY_PLUGIN';
+    const selectionStart = text.indexOf("ASV_CANARY_PLUGIN");
+    const editor = new TestEditor(text, selectionStart, selectionStart + "ASV_CANARY_PLUGIN".length);
+    const requests: unknown[] = [];
+    const plugin = new AgentSecretVaultPlugin({} as never, {} as never) as unknown as {
+      createVaultClient: () => unknown;
+      encryptSelection: (editor: TestEditor) => Promise<void>;
+    };
+    plugin.createVaultClient = () => ({
+      request: async (request: unknown) => {
+        requests.push(request);
+        return { type: "catalogValidation", catalogStatus: "FOUND", revision: 1 };
+      }
+    });
+
+    await plugin.encryptSelection(editor);
+
+    expect(editor.text).toContain("ASV_CANARY_PLUGIN");
+    expect(editor.replaceCalls).toEqual([]);
+    expect(requests).toEqual([{ type: "catalogValidate" }]);
+    expect(obsidianMock.notices).toContain("SVLT: managed 敏感信息.md 只能通过 SVLT App/MCP Catalog 工具修改；Obsidian 不会直接写入 Markdown/JSON。");
+  });
+
   it("encrypts only detected sensitive snippets in the current paragraph", async () => {
     obsidianMock.notices = [];
     const editor = new TestEditor("context before\n\nlogin password = hunter2 for server\n\ncontext after", 24, 24);
