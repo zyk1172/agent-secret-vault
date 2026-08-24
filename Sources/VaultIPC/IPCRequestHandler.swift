@@ -12,6 +12,39 @@ public protocol WorkbenchServicing: Sendable {
         field: SecretCatalogField?,
         limit: Int
     ) async throws -> SecretCatalogSearchResult
+    func getCatalogEntry(entryID: String) async throws -> SecretCatalogSearchResult
+    func createCatalogDraft(
+        _ request: CatalogDraftRequest,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogDraft
+    func patchCatalogMetadata(
+        entryID: String,
+        patch: CatalogMetadataPatch,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult
+    func commitCatalogDraft(
+        _ draft: CatalogDraft,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult
+    func addCatalogSecretPlaceholder(
+        entryID: String,
+        key: String,
+        label: String,
+        agentVisible: Bool,
+        searchable: Bool,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult
+    func bindCatalogExistingSecret(
+        entryID: String,
+        key: String,
+        secretRef: String,
+        expectedRevision: UInt64,
+        lease: CatalogWriteLease
+    ) async throws -> CatalogWriteResult
+    func validateCatalog() async throws -> CatalogValidationResult
     func pendingRevealSessionIDs() async throws -> [String]
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
     func encryptText(
@@ -50,6 +83,60 @@ public extension WorkbenchServicing {
 
     func pendingRevealSessionIDs() async throws -> [String] {
         []
+    }
+
+    func getCatalogEntry(entryID _: String) async throws -> SecretCatalogSearchResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func createCatalogDraft(
+        _: CatalogDraftRequest,
+        lease _: CatalogWriteLease
+    ) async throws -> CatalogDraft {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func patchCatalogMetadata(
+        entryID _: String,
+        patch _: CatalogMetadataPatch,
+        expectedRevision _: UInt64,
+        lease _: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func commitCatalogDraft(
+        _: CatalogDraft,
+        expectedRevision _: UInt64,
+        lease _: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func addCatalogSecretPlaceholder(
+        entryID _: String,
+        key _: String,
+        label _: String,
+        agentVisible _: Bool,
+        searchable _: Bool,
+        expectedRevision _: UInt64,
+        lease _: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func bindCatalogExistingSecret(
+        entryID _: String,
+        key _: String,
+        secretRef _: String,
+        expectedRevision _: UInt64,
+        lease _: CatalogWriteLease
+    ) async throws -> CatalogWriteResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func validateCatalog() async throws -> CatalogValidationResult {
+        throw IPCRequestHandlerError.unsupportedRequest
     }
 
     func encryptText(
@@ -103,7 +190,47 @@ public struct IPCRequestHandler: Sendable {
         case .savedReferences:
             return .savedReferences(try await service.savedSecretReferences())
         case let .searchCatalog(query, field, limit):
-            return .catalogSearchResult(try await service.searchSecrets(query: query, field: field, limit: limit))
+            return try await handleCatalogSearch(query: query, field: field, limit: limit)
+        case let .catalogSearch(query, field, limit):
+            return try await handleCatalogSearch(query: query, field: field, limit: limit)
+        case let .catalogGet(entryID):
+            return .catalogSearchResult(try await service.getCatalogEntry(entryID: entryID))
+        case let .catalogCreateDraft(request, lease):
+            return .catalogDraft(try await service.createCatalogDraft(request, lease: lease))
+        case let .catalogPatchMetadata(entryID, patch, expectedRevision, lease):
+            return .catalogWriteResult(try await service.patchCatalogMetadata(
+                entryID: entryID,
+                patch: patch,
+                expectedRevision: expectedRevision,
+                lease: lease
+            ))
+        case let .catalogCommit(draft, expectedRevision, lease):
+            return .catalogWriteResult(try await service.commitCatalogDraft(
+                draft,
+                expectedRevision: expectedRevision,
+                lease: lease
+            ))
+        case let .catalogAddSecretPlaceholder(entryID, key, label, agentVisible, searchable, expectedRevision, lease):
+            return .catalogWriteResult(try await service.addCatalogSecretPlaceholder(
+                entryID: entryID,
+                key: key,
+                label: label,
+                agentVisible: agentVisible,
+                searchable: searchable,
+                expectedRevision: expectedRevision,
+                lease: lease
+            ))
+        case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision, lease):
+            return .catalogWriteResult(try await service.bindCatalogExistingSecret(
+                entryID: entryID,
+                key: key,
+                secretRef: secretRef,
+                expectedRevision: expectedRevision,
+                lease: lease
+            ))
+        case .catalogValidate:
+            let result = try await service.validateCatalog()
+            return .catalogValidation(status: result.status, revision: result.revision)
         case .pendingRevealSessions:
             return .revealSessionIDs(try await service.pendingRevealSessionIDs())
         case let .inspectReference(reference):
@@ -166,5 +293,13 @@ public struct IPCRequestHandler: Sendable {
                 return .failure(code: "ACTION_EXECUTION_FAILED")
             }
         }
+    }
+
+    private func handleCatalogSearch(
+        query: String,
+        field: SecretCatalogField?,
+        limit: Int
+    ) async throws -> IPCResponse {
+        .catalogSearchResult(try await service.searchSecrets(query: query, field: field, limit: limit))
     }
 }

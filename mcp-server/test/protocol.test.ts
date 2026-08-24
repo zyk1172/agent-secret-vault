@@ -17,6 +17,8 @@ import {
 } from "../src/client.js";
 
 const validReference = "secret://0123456789ABCDEFGHJKMNPQRS";
+const validIndexID = "0123456789ABCDEFGHJKMNPQRT";
+const validEntryID = "0123456789ABCDEFGHJKMNPQRV";
 const validToken = Buffer.alloc(32, 0x4d).toString("base64");
 
 const temporaryDirectories: string[] = [];
@@ -51,18 +53,49 @@ describe("IPC response schema", () => {
           status: "FOUND",
           matches: [
             {
-              reference: validReference,
-              service: "QNAP",
-              field: "password",
-              label: "QNAP 密码",
-              policy: "credential",
-              destinations: ["192.168.2.240"],
-              purpose: "媒体管理",
-              groupID: "group-qnap"
+              index: {
+                id: validIndexID,
+                title: "QNAP",
+                aliases: ["NAS"],
+                tags: ["设备"]
+              },
+              entry: {
+                id: validEntryID,
+                indexId: validIndexID,
+                title: "QNAP 管理后台登录",
+                type: "credential",
+                aliases: ["QNAP 登录"],
+                endpoints: [{ type: "https", host: "192.168.2.240", port: 443 }],
+                fields: [
+                  { key: "username", label: "用户名", type: "text", value: "admin" },
+                  { key: "password", label: "密码", type: "secret", secretRef: validReference }
+                ],
+                notes: "媒体管理",
+                tags: ["QNAP"]
+              }
             }
           ]
         }
       },
+      {
+        type: "catalogDraft",
+        draft: {
+          draftID: validEntryID,
+          baseRevision: 1,
+          entry: {
+            id: validEntryID,
+            indexId: validIndexID,
+            title: "Komga",
+            type: "credential",
+            aliases: [],
+            endpoints: [],
+            fields: [{ key: "password", label: "密码", type: "secret" }],
+            tags: []
+          }
+        }
+      },
+      { type: "catalogWriteResult", result: { revision: 2, entry: null } },
+      { type: "catalogValidation", catalogStatus: "FOUND", revision: 2 },
       {
         type: "referenceMetadata",
         metadata: {
@@ -126,14 +159,18 @@ describe("IPC response schema", () => {
       result: {
         status: "FOUND",
         matches: [{
-          reference: validReference,
-          service: "QNAP",
-          field: "password",
-          label: "QNAP 密码",
-          policy: "credential",
-          destinations: ["192.168.2.240"],
-          purpose: "媒体管理",
-          groupID: "group-qnap"
+          index: { id: validIndexID, title: "QNAP", aliases: [], tags: [] },
+          entry: {
+            id: validEntryID,
+            indexId: validIndexID,
+            title: "QNAP 管理后台登录",
+            type: "credential",
+            aliases: [],
+            endpoints: [{ type: "https", host: "192.168.2.240", port: 443 }],
+            fields: [{ key: "password", label: "密码", type: "secret", secretRef: validReference }],
+            notes: "媒体管理",
+            tags: []
+          }
         }]
       }
     });
@@ -144,30 +181,41 @@ describe("IPC response schema", () => {
       result: {
         status: "FOUND",
         matches: [{
-          reference: validReference,
-          service: "QNAP",
-          field: "password",
-          label: "QNAP 密码",
-          policy: "credential",
-          destinations: [],
-          purpose: null,
-          groupID: null,
-          plaintext: "leak"
+          index: { id: validIndexID, title: "QNAP", aliases: [], tags: [] },
+          entry: {
+            id: validEntryID,
+            indexId: validIndexID,
+            title: "QNAP 管理后台登录",
+            type: "credential",
+            aliases: [],
+            endpoints: [],
+            fields: [{ key: "password", label: "密码", type: "secret", secretRef: validReference }],
+            notes: null,
+            tags: [],
+            plaintext: "leak"
+          }
         }]
       }
     })).toThrow();
   });
 
-  it("accepts Swift's omitted optional catalog metadata", () => {
+  it("accepts Swift's omitted optional field metadata", () => {
     const response = IpcResponse.parse({
       type: "catalogSearchResult",
       result: {
         status: "FOUND",
         matches: [{
-          reference: validReference,
-          field: "password",
-          policy: "credential",
-          destinations: []
+          index: { id: validIndexID, title: "QNAP", aliases: [], tags: [] },
+          entry: {
+            id: validEntryID,
+            indexId: validIndexID,
+            title: "QNAP",
+            type: "credential",
+            aliases: [],
+            endpoints: [],
+            fields: [{ key: "password", label: "密码", type: "secret", secretRef: validReference }],
+            tags: []
+          }
         }]
       }
     });
@@ -202,10 +250,75 @@ describe("IPC request schema", () => {
   });
 
   it("accepts every public non-plaintext IPCRequest case", () => {
+    const lease = {
+      scope: "structure",
+      issuedAt: 1,
+      expiresAt: 2,
+      nonce: validEntryID
+    } as const;
     const fixtures = [
       { type: "status" },
       { type: "workbenchStatus" },
       { type: "searchCatalog", query: "QNAP", field: "password", limit: 10 },
+      { type: "catalogSearch", query: "QNAP", limit: 10 },
+      { type: "catalogGet", entryID: validEntryID },
+      {
+        type: "catalogCreateDraft",
+        request: {
+          indexID: validIndexID,
+          title: "Komga",
+          type: "credential",
+          aliases: [],
+          tags: [],
+          fields: [{ key: "password", label: "密码", type: "secret", agentVisible: true, searchable: true }]
+        },
+        lease
+      },
+      {
+        type: "catalogPatchMetadata",
+        entryID: validEntryID,
+        patch: { title: "Komga" },
+        expectedRevision: 1,
+        lease: { ...lease, scope: "metadata" }
+      },
+      {
+        type: "catalogCommit",
+        draft: {
+          draftID: validEntryID,
+          baseRevision: 1,
+          entry: {
+            id: validEntryID,
+            indexId: validIndexID,
+            title: "Komga",
+            type: "credential",
+            aliases: [],
+            endpoints: [],
+            fields: [{ key: "password", label: "密码", type: "secret" }],
+            tags: []
+          }
+        },
+        expectedRevision: 1,
+        lease
+      },
+      {
+        type: "catalogAddSecretPlaceholder",
+        entryID: validEntryID,
+        key: "token",
+        label: "Token",
+        agentVisible: true,
+        searchable: true,
+        expectedRevision: 1,
+        lease
+      },
+      {
+        type: "catalogBindExistingSecret",
+        entryID: validEntryID,
+        key: "password",
+        secretRef: validReference,
+        expectedRevision: 1,
+        lease
+      },
+      { type: "catalogValidate" },
       { type: "inspectReference", reference: validReference },
       { type: "reveal", reference: validReference, reason: "show to user" },
       { type: "encrypt", label: "api token", policy: "externalSend" },
@@ -269,6 +382,31 @@ describe("IPC request schema", () => {
       query: "QNAP",
       limit: 10
     });
+  });
+
+  it("rejects plaintext or conflicting catalog field shapes", () => {
+    const base = {
+      indexID: validIndexID,
+      title: "QNAP",
+      fields: []
+    };
+    expect(() => IpcRequest.parse({
+      type: "catalogCreateDraft",
+      request: {
+        ...base,
+        fields: [{ key: "password", label: "密码", type: "secret", value: "plaintext" }]
+      },
+      lease: { scope: "structure", issuedAt: 1, expiresAt: 2, nonce: validEntryID }
+    })).toThrow();
+    expect(() => IpcRequest.parse({
+      type: "catalogPatchMetadata",
+      entryID: validEntryID,
+      patch: {
+        fields: [{ key: "username", label: "用户名", type: "text", value: "admin", secretRef: validReference }]
+      },
+      expectedRevision: 1,
+      lease: { scope: "metadata", issuedAt: 1, expiresAt: 2, nonce: validEntryID }
+    })).toThrow();
   });
 });
 

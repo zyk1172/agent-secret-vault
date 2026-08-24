@@ -41,6 +41,14 @@ describe("MCP tool contracts", () => {
     expect(names).toEqual(expect.arrayContaining([
       "vault_status",
       "secret_search",
+      "secret_catalog_search",
+      "secret_catalog_get",
+      "secret_catalog_create_draft",
+      "secret_catalog_patch_metadata",
+      "secret_catalog_commit",
+      "secret_catalog_add_secret_placeholder",
+      "secret_catalog_bind_existing_secret",
+      "secret_catalog_validate",
       "secret_inspect_reference",
       "ssh_command_with_secret",
       "local_http_request_with_secret",
@@ -107,14 +115,26 @@ describe("MCP tool contracts", () => {
       result: {
         status: "FOUND",
         matches: [{
-          reference,
-          service: "QNAP",
-          field: "password",
-          label: "QNAP 密码",
-          policy: "credential",
-          destinations: ["192.168.2.240"],
-          purpose: "媒体管理",
-          groupID: "group-qnap"
+          index: {
+            id: "0123456789ABCDEFGHJKMNPQRT",
+            title: "QNAP",
+            aliases: ["NAS"],
+            tags: ["设备"]
+          },
+          entry: {
+            id: "0123456789ABCDEFGHJKMNPQRV",
+            indexId: "0123456789ABCDEFGHJKMNPQRT",
+            title: "QNAP 管理后台登录",
+            type: "credential",
+            aliases: ["QNAP 登录"],
+            endpoints: [{ type: "https", host: "192.168.2.240", port: 443 }],
+            fields: [
+              { key: "username", label: "用户名", type: "text", value: "admin" },
+              { key: "password", label: "密码", type: "secret", secretRef: reference }
+            ],
+            notes: "媒体管理",
+            tags: ["QNAP"]
+          }
         }]
       }
     }]);
@@ -128,18 +148,30 @@ describe("MCP tool contracts", () => {
     expect(result.structuredContent).toEqual({
       status: "FOUND",
       matches: [{
-        reference,
-        service: "QNAP",
-        field: "password",
-        label: "QNAP 密码",
-        policy: "credential",
-        destinations: ["192.168.2.240"],
-        purpose: "媒体管理",
-        groupID: "group-qnap"
+        index: {
+          id: "0123456789ABCDEFGHJKMNPQRT",
+          title: "QNAP",
+          aliases: ["NAS"],
+          tags: ["设备"]
+        },
+        entry: {
+          id: "0123456789ABCDEFGHJKMNPQRV",
+          indexId: "0123456789ABCDEFGHJKMNPQRT",
+          title: "QNAP 管理后台登录",
+          type: "credential",
+          aliases: ["QNAP 登录"],
+          endpoints: [{ type: "https", host: "192.168.2.240", port: 443 }],
+          fields: [
+            { key: "username", label: "用户名", type: "text", value: "admin" },
+            { key: "password", label: "密码", type: "secret", secretRef: reference }
+          ],
+          notes: "媒体管理",
+          tags: ["QNAP"]
+        }
       }]
     });
     expect(client.requests).toEqual([{
-      type: "searchCatalog",
+      type: "catalogSearch",
       query: "qnap",
       field: "password",
       limit: 10
@@ -153,6 +185,55 @@ describe("MCP tool contracts", () => {
   it("rejects empty catalog queries before touching IPC", async () => {
     const client = new FakeClient([]);
     await expect(tool(client, "secret_search").handler({ query: "   " })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("uses leases for metadata writes and never accepts catalog plaintext", async () => {
+    const lease = {
+      scope: "metadata" as const,
+      issuedAt: 1,
+      expiresAt: 2,
+      nonce: "0123456789ABCDEFGHJKMNPQRV"
+    };
+    const client = new FakeClient([
+      { type: "catalogWriteResult", result: { revision: 2, entry: null } },
+      { type: "catalogValidation", catalogStatus: "FOUND", revision: 2 }
+    ]);
+
+    const write = await tool(client, "secret_catalog_patch_metadata").handler({
+      entryID: "0123456789ABCDEFGHJKMNPQRV",
+      patch: { title: "QNAP 管理后台登录" },
+      expectedRevision: 1,
+      lease
+    });
+    expect(write.structuredContent).toEqual({ revision: 2, entry: null });
+    expect(client.requests[0]).toMatchObject({
+      type: "catalogPatchMetadata",
+      expectedRevision: 1,
+      lease
+    });
+    expect(JSON.stringify(client.requests)).not.toContain("plaintext");
+
+    const validation = await tool(client, "secret_catalog_validate").handler({});
+    expect(validation.structuredContent).toEqual({ status: "FOUND", revision: 2 });
+    expect(client.requests[1]).toEqual({ type: "catalogValidate" });
+  });
+
+  it("does not send a draft containing a secret plaintext value", async () => {
+    const client = new FakeClient([]);
+    await expect(tool(client, "secret_catalog_create_draft").handler({
+      request: {
+        indexID: "0123456789ABCDEFGHJKMNPQRT",
+        title: "QNAP",
+        fields: [{ key: "password", label: "密码", type: "secret", value: "plaintext" }]
+      },
+      lease: {
+        scope: "structure",
+        issuedAt: 1,
+        expiresAt: 2,
+        nonce: "0123456789ABCDEFGHJKMNPQRV"
+      }
+    })).rejects.toThrow();
     expect(client.requests).toHaveLength(0);
   });
 
@@ -294,7 +375,8 @@ describe("MCP tool contracts", () => {
     expect(policy.safeWorkflow.join(" ")).not.toMatch(/unlock/i);
     expect(policy.safeWorkflow.join(" ")).toMatch(/locked/i);
     expect(policy.safeWorkflow.join(" ")).toMatch(/secret_search/);
-    expect(policy.safeWorkflow.join(" ")).toMatch(/groupID/);
+    expect(policy.safeWorkflow.join(" ")).toMatch(/Index.*Entry|entry-centric/i);
+    expect(policy.safeWorkflow.join(" ")).toMatch(/secret_catalog_validate/);
     expect(policy.forbidden.join(" ")).toMatch(/plaintext|shell|environment/i);
   });
 });

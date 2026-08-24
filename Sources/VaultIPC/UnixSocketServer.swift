@@ -68,9 +68,46 @@ public struct UnixSocketServerConfiguration: Equatable, Sendable {
     public let tokenURL: URL
 
     public init(directoryURL: URL) {
+        self.init(
+            directoryURL: directoryURL,
+            socketFileName: "agent-secret-vault.sock",
+            tokenFileName: "capability.token"
+        )
+    }
+
+    public init(
+        directoryURL: URL,
+        socketFileName: String,
+        tokenFileName: String
+    ) {
         self.directoryURL = directoryURL
-        self.socketURL = directoryURL.appending(path: "agent-secret-vault.sock")
-        self.tokenURL = directoryURL.appending(path: "capability.token")
+        self.socketURL = directoryURL.appending(path: socketFileName)
+        self.tokenURL = directoryURL.appending(path: tokenFileName)
+    }
+
+    public static func appControlConfiguration(
+        directoryURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws -> UnixSocketServerConfiguration {
+        let directory: URL
+        if let directoryURL {
+            directory = directoryURL
+        } else {
+            let appSupport = try fileManager.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            directory = appSupport
+                .appending(path: "AgentSecretVault")
+                .appending(path: "IPC")
+        }
+        return UnixSocketServerConfiguration(
+            directoryURL: directory,
+            socketFileName: "app-control.sock",
+            tokenFileName: "app-control.token"
+        )
     }
 
     public static func defaultConfiguration(
