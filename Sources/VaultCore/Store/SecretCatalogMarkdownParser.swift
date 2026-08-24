@@ -19,14 +19,14 @@ public enum SecretCatalogMarkdownParser {
         "账号"
     ]
 
-    public static func parse(_ text: String) -> [SecretCatalogEntry] {
+    public static func parse(_ text: String) -> [LegacySecretCatalogEntry] {
         guard let referenceRegex = try? NSRegularExpression(pattern: referencePattern) else {
             return []
         }
 
         var headingPath: [String] = []
         var context = ParseContext(headings: headingPath)
-        var parsed: [SecretCatalogEntry] = []
+        var parsed: [LegacySecretCatalogEntry] = []
 
         for line in normalizedLines(text) {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -142,9 +142,9 @@ public enum SecretCatalogMarkdownParser {
             .map { String($0) }
     }
 
-    private static func mergeDuplicateReferences(_ entries: [SecretCatalogEntry]) -> [SecretCatalogEntry] {
+    private static func mergeDuplicateReferences(_ entries: [LegacySecretCatalogEntry]) -> [LegacySecretCatalogEntry] {
         var indexByReference: [String: Int] = [:]
-        var merged: [SecretCatalogEntry] = []
+        var merged: [LegacySecretCatalogEntry] = []
         merged.reserveCapacity(entries.count)
 
         for entry in entries {
@@ -161,7 +161,7 @@ public enum SecretCatalogMarkdownParser {
             let purpose = existing.purpose ?? entry.purpose
             let destinations = Array(Set(existing.destinations + entry.destinations)).sorted()
             let contextTerms = Array(Set(existing.contextTerms + entry.contextTerms)).sorted()
-            merged[existingIndex] = SecretCatalogEntry(
+            merged[existingIndex] = LegacySecretCatalogEntry(
                 reference: existing.reference,
                 service: service,
                 field: field,
@@ -239,7 +239,7 @@ public enum SecretCatalogMarkdownParser {
             }
         }
 
-        func entry(reference: String, lineField: SecretCatalogField?) -> SecretCatalogEntry {
+        func entry(reference: String, lineField: SecretCatalogField?) -> LegacySecretCatalogEntry {
             let service = service ?? inferredService() ?? device
             let field = lineField ?? self.field ?? .other
             let destinations = Array(Set(destinations)).sorted()
@@ -248,14 +248,14 @@ public enum SecretCatalogMarkdownParser {
                 .filter { !$0.isEmpty }
                 .sorted()
 
-            return SecretCatalogEntry(
+            return LegacySecretCatalogEntry(
                 reference: reference,
                 service: service,
                 field: field,
                 label: label,
                 destinations: destinations,
                 purpose: purpose,
-                groupID: SecretCatalogEntry.stableGroupID(
+                groupID: LegacySecretCatalogEntry.stableGroupID(
                     service: service,
                     destinations: destinations,
                     headingPath: headings
@@ -266,7 +266,7 @@ public enum SecretCatalogMarkdownParser {
 
         private func inferredService() -> String? {
             headings.reversed().first { heading in
-                let normalized = SecretCatalogEntry.normalizeForSearch(heading)
+                let normalized = LegacySecretCatalogEntry.normalizeForSearch(heading)
                 return !normalized.isEmpty
                     && !SecretCatalogMarkdownParser.genericHeadings.contains(normalized)
                     && SecretCatalogField.fromKey(heading) == nil

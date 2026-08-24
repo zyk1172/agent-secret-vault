@@ -96,7 +96,7 @@ public actor SensitiveInformationDocumentStore {
 
     /// Returns only structured, non-sensitive catalog context.  The selected
     /// file path and line numbers stay in the App-only `references()` model.
-    public func catalogEntries() throws -> [SecretCatalogEntry] {
+    public func catalogEntries() throws -> [LegacySecretCatalogEntry] {
         let url = try requiredURL()
         guard FileManager.default.fileExists(atPath: url.path) else {
             return []
@@ -178,7 +178,7 @@ public actor SensitiveInformationDocumentStore {
     private static func references(
         in text: String,
         filePath: String,
-        catalogEntries: [String: SecretCatalogEntry]
+        catalogEntries: [String: LegacySecretCatalogEntry]
     ) -> [SensitiveInformationDocumentReference] {
         guard let regex = try? NSRegularExpression(pattern: referencePattern) else {
             return []

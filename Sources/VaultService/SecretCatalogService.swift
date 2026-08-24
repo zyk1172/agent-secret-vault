@@ -19,7 +19,7 @@ public struct SecretCatalogService: Sendable {
         self.selectionStore = SecretCatalogSelectionStore(manifestURL: selectionManifestURL)
     }
 
-    public func selectedEntries() throws -> [SecretCatalogEntry] {
+    public func selectedEntries() throws -> [LegacySecretCatalogEntry] {
         guard let documentURL = try selectionStore.selectedDocumentURL() else {
             return []
         }
@@ -45,7 +45,7 @@ public struct SecretCatalogService: Sendable {
         query: String,
         field: SecretCatalogField?,
         limit: Int,
-        entries: [SecretCatalogEntry],
+        entries: [LegacySecretCatalogEntry],
         metadata: [SecretCatalogRecordMetadata]
     ) -> SecretCatalogSearchResult {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -55,7 +55,7 @@ public struct SecretCatalogService: Sendable {
 
         let boundedLimit = min(max(limit, 1), Self.maximumLimit)
         let candidates = mergedCandidates(entries: entries, metadata: metadata)
-        let normalizedQuery = SecretCatalogEntry.normalizeForSearch(trimmedQuery)
+        let normalizedQuery = LegacySecretCatalogEntry.normalizeForSearch(trimmedQuery)
         let ranked = candidates.compactMap { candidate -> RankedCandidate? in
             guard field == nil || candidate.field == field else {
                 return nil
@@ -76,7 +76,7 @@ public struct SecretCatalogService: Sendable {
     }
 
     private func mergedCandidates(
-        entries: [SecretCatalogEntry],
+        entries: [LegacySecretCatalogEntry],
         metadata: [SecretCatalogRecordMetadata]
     ) -> [Candidate] {
         var metadataByReference: [String: SecretCatalogRecordMetadata] = [:]
@@ -92,14 +92,14 @@ public struct SecretCatalogService: Sendable {
             )
         }
 
-        var entriesByReference: [String: SecretCatalogEntry] = [:]
+        var entriesByReference: [String: LegacySecretCatalogEntry] = [:]
         for entry in entries {
             guard let reference = canonicalReference(entry.reference) else {
                 continue
             }
             entriesByReference[reference] = mergeEntries(
                 entriesByReference[reference],
-                with: SecretCatalogEntry(
+                with: LegacySecretCatalogEntry(
                     reference: reference,
                     service: safeMetadata(entry.service),
                     field: entry.field,
@@ -140,7 +140,7 @@ public struct SecretCatalogService: Sendable {
             .filter { !$0.isEmpty }
             .sorted()
             let groupID = entry?.groupID
-                ?? SecretCatalogEntry.stableGroupID(service: service, destinations: destinations, headingPath: [])
+                ?? LegacySecretCatalogEntry.stableGroupID(service: service, destinations: destinations, headingPath: [])
 
             return Candidate(
                 reference: reference,
@@ -157,14 +157,14 @@ public struct SecretCatalogService: Sendable {
     }
 
     private func mergeEntries(
-        _ existing: SecretCatalogEntry?,
-        with incoming: SecretCatalogEntry
-    ) -> SecretCatalogEntry {
+        _ existing: LegacySecretCatalogEntry?,
+        with incoming: LegacySecretCatalogEntry
+    ) -> LegacySecretCatalogEntry {
         guard let existing else {
             return incoming
         }
         let field = existing.field == .other ? incoming.field : existing.field
-        return SecretCatalogEntry(
+        return LegacySecretCatalogEntry(
             reference: existing.reference,
             service: existing.service ?? incoming.service,
             field: field,
@@ -213,7 +213,7 @@ public struct SecretCatalogService: Sendable {
         guard let label else {
             return nil
         }
-        let normalized = SecretCatalogEntry.normalizeForSearch(label)
+        let normalized = LegacySecretCatalogEntry.normalizeForSearch(label)
         if normalized.contains("password") || normalized.contains("密码") {
             return .password
         }
@@ -250,7 +250,7 @@ public struct SecretCatalogService: Sendable {
         guard let value else {
             return ""
         }
-        return SecretCatalogEntry.normalizeForSearch(value)
+        return LegacySecretCatalogEntry.normalizeForSearch(value)
     }
 
     private func safeMetadata(_ value: String?) -> String? {
@@ -309,13 +309,13 @@ public struct SecretCatalogService: Sendable {
         if lhs.score != rhs.score {
             return lhs.score < rhs.score
         }
-        let lhsService = SecretCatalogEntry.normalizeForSearch(lhs.candidate.service ?? "")
-        let rhsService = SecretCatalogEntry.normalizeForSearch(rhs.candidate.service ?? "")
+        let lhsService = LegacySecretCatalogEntry.normalizeForSearch(lhs.candidate.service ?? "")
+        let rhsService = LegacySecretCatalogEntry.normalizeForSearch(rhs.candidate.service ?? "")
         if lhsService != rhsService {
             return lhsService < rhsService
         }
-        let lhsLabel = SecretCatalogEntry.normalizeForSearch(lhs.candidate.label ?? "")
-        let rhsLabel = SecretCatalogEntry.normalizeForSearch(rhs.candidate.label ?? "")
+        let lhsLabel = LegacySecretCatalogEntry.normalizeForSearch(lhs.candidate.label ?? "")
+        let rhsLabel = LegacySecretCatalogEntry.normalizeForSearch(rhs.candidate.label ?? "")
         if lhsLabel != rhsLabel {
             return lhsLabel < rhsLabel
         }

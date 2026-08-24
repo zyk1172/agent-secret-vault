@@ -12,7 +12,7 @@ private let qnapGroupID = "group-qnap"
 @Test func catalogSearchFindsQNAPByServiceDestinationAndChinesePurpose() throws {
     let service = SecretCatalogService(selectionManifestURL: URL(filePath: "/tmp/svlt-test-selection.json"))
     let entries = [
-        SecretCatalogEntry(
+        LegacySecretCatalogEntry(
             reference: qnapUsernameReference,
             service: "QNAP",
             field: .username,
@@ -22,7 +22,7 @@ private let qnapGroupID = "group-qnap"
             groupID: qnapGroupID,
             contextTerms: ["NAS", "QNAP"]
         ),
-        SecretCatalogEntry(
+        LegacySecretCatalogEntry(
             reference: qnapPasswordReference,
             service: "QNAP",
             field: .password,
@@ -32,7 +32,7 @@ private let qnapGroupID = "group-qnap"
             groupID: qnapGroupID,
             contextTerms: ["NAS", "QNAP"]
         ),
-        SecretCatalogEntry(
+        LegacySecretCatalogEntry(
             reference: qnapTokenReference,
             service: "Cloud API",
             field: .token,
@@ -87,7 +87,7 @@ private let qnapGroupID = "group-qnap"
 @Test func catalogSearchDeduplicatesCatalogAndRecordMetadataAndDoesNotExposePlaintextOrPaths() throws {
     let service = SecretCatalogService(selectionManifestURL: URL(filePath: "/Users/example/敏感信息.md"))
     let canary = "ASV_CANARY_CATALOG_PLAINTEXT_DO_NOT_PERSIST"
-    let entry = SecretCatalogEntry(
+    let entry = LegacySecretCatalogEntry(
         reference: qnapPasswordReference,
         service: "QNAP",
         field: .password,
@@ -97,7 +97,7 @@ private let qnapGroupID = "group-qnap"
         groupID: qnapGroupID,
         contextTerms: ["NAS"]
     )
-    let duplicateEntry = SecretCatalogEntry(
+    let duplicateEntry = LegacySecretCatalogEntry(
         reference: qnapPasswordReference,
         service: "QNAP",
         field: .password,
@@ -149,7 +149,7 @@ private let qnapGroupID = "group-qnap"
         "secret://\(prefix)\(allowedCharacters[index])\(allowedCharacters[(index + 1) % allowedCharacters.count])"
     }
     let entries = references.enumerated().map { index, reference in
-        SecretCatalogEntry(
+        LegacySecretCatalogEntry(
             reference: reference,
             service: "Service-\(index)",
             field: .other,
@@ -165,14 +165,14 @@ private let qnapGroupID = "group-qnap"
 
 @Test func catalogSearchUsesExactServiceRankingBeforeContextMatches() throws {
     let service = SecretCatalogService(selectionManifestURL: URL(filePath: "/tmp/svlt-test-selection.json"))
-    let exact = SecretCatalogEntry(
+    let exact = LegacySecretCatalogEntry(
         reference: qnapPasswordReference,
         service: "QNAP",
         field: .password,
         label: "NAS password",
         contextTerms: ["device"]
     )
-    let contextOnly = SecretCatalogEntry(
+    let contextOnly = LegacySecretCatalogEntry(
         reference: qnapUsernameReference,
         service: "Other service",
         field: .username,
