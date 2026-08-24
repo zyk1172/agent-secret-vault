@@ -30,6 +30,10 @@ struct AgentSecretVaultApplication: App {
                 savedReferences: runtime.savedReferences,
                 sensitiveIndexURL: runtime.sensitiveIndexURL,
                 sensitiveIndexEntries: runtime.sensitiveIndexEntries,
+                sensitiveCatalogSnapshot: runtime.sensitiveCatalogSnapshot,
+                sensitiveCatalogError: runtime.sensitiveIndexError,
+                sensitiveMigrationPreview: runtime.sensitiveMigrationPreview,
+                sensitiveMigrationError: runtime.sensitiveMigrationError,
                 sensitiveScanRootURL: runtime.sensitiveScanRootURL,
                 sensitiveScanCandidates: runtime.sensitiveScanCandidates,
                 sensitiveScanRules: runtime.sensitiveScanRules,
@@ -47,6 +51,21 @@ struct AgentSecretVaultApplication: App {
                 },
                 refreshSensitiveIndex: {
                     await runtime.refreshSensitiveIndex()
+                },
+                refreshSensitiveCatalog: {
+                    await runtime.refreshSensitiveCatalog()
+                },
+                createCatalogIndex: { title in
+                    await runtime.createCatalogIndex(title: title)
+                },
+                createCatalogEntry: { indexID, title, presetID in
+                    await runtime.createCatalogEntry(indexID: indexID, title: title, presetID: presetID)
+                },
+                prepareSensitiveMigration: {
+                    await runtime.prepareSensitiveMigration()
+                },
+                confirmSensitiveMigration: {
+                    await runtime.confirmSensitiveMigration()
                 },
                 chooseSensitiveScanRoot: {
                     runtime.chooseSensitiveScanRoot()
@@ -196,6 +215,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var savedReferences: [SecretReferenceMetadata] = []
     @Published var sensitiveIndexURL: URL?
     @Published var sensitiveIndexEntries: [SensitiveInformationDocumentReference] = []
+    @Published var sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
+    @Published var sensitiveMigrationPreview: SecretCatalogMigrationPreview?
+    @Published var sensitiveMigrationError: String?
     @Published var sensitiveIndexError: String?
     @Published var sensitiveScanRootURL: URL?
     @Published var sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = []
@@ -207,6 +229,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private var uiRequestObserver: NSObjectProtocol?
     private var presentedAgentSessionIDs: Set<String> = []
     private var sensitiveIndexStore: SensitiveInformationDocumentStore?
+    private var sensitiveCatalogStore: SensitiveCatalogDocumentStore?
     private var started = false
     private var isStarting = false
     private var readinessTask: Task<Void, Never>?
@@ -226,14 +249,20 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             agentClient = client
             startUIRequestObserver()
             sensitiveIndexStore = try makeSensitiveIndexStore()
+            sensitiveCatalogStore = try makeSensitiveCatalogStore()
             guard let sensitiveIndexStore else {
                 throw AgentSecretVaultRuntimeError.notStarted
             }
             sensitiveIndexURL = await sensitiveIndexStore.selectedDocumentURL()
             sensitiveScanRootURL = SensitiveIndexSelectionStore.selectedScanRootURL()
             do {
-                _ = try await sensitiveIndexStore.prepareSelectedDocument()
                 if let documentURL = await sensitiveIndexStore.selectedDocumentURL() {
+                    if !FileManager.default.fileExists(atPath: documentURL.path) {
+                        _ = try await sensitiveCatalogStore?.canonicalWrite(
+                            SecretCatalogDocument(),
+                            expectedRevision: 0
+                        )
+                    }
                     SensitiveIndexSelectionStore.save(documentURL)
                     persistCatalogSelection(at: documentURL)
                     sensitiveIndexURL = documentURL
@@ -243,6 +272,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             }
 
             await refreshSensitiveIndex()
+            await refreshSensitiveCatalog()
             started = true
 
             if !(await connectToAgent(client)) {
@@ -472,6 +502,109 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
+    func refreshSensitiveCatalog() async {
+        guard let sensitiveCatalogStore else {
+            sensitiveCatalogSnapshot = nil
+            return
+        }
+
+        do {
+            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.snapshot()
+            if sensitiveCatalogSnapshot?.integrity == .verified {
+                sensitiveIndexError = nil
+            }
+        } catch SensitiveCatalogDocumentStoreError.migrationRequired {
+            sensitiveCatalogSnapshot = nil
+            sensitiveIndexError = "当前敏感信息.md 是旧格式，请先在迁移预览中确认"
+        } catch SensitiveCatalogDocumentStoreError.externalModification {
+            sensitiveCatalogSnapshot = nil
+            sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
+        } catch SensitiveCatalogDocumentStoreError.integrityMissing {
+            sensitiveCatalogSnapshot = nil
+            sensitiveIndexError = "目录完整性记录缺失，请验证并导入"
+        } catch {
+            sensitiveCatalogSnapshot = nil
+            sensitiveIndexError = "敏感信息目录校验失败"
+        }
+    }
+
+    func prepareSensitiveMigration() async {
+        guard let documentURL = sensitiveIndexURL else {
+            sensitiveMigrationError = "请先选择敏感信息.md"
+            return
+        }
+        do {
+            let data = try Data(contentsOf: documentURL)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw AgentSecretVaultRuntimeError.notStarted
+            }
+            sensitiveMigrationPreview = try LegacySensitiveCatalogMigrator.preview(text)
+            sensitiveMigrationError = nil
+        } catch {
+            sensitiveMigrationPreview = nil
+            sensitiveMigrationError = "无法生成迁移预览；旧文件保持不变"
+        }
+    }
+
+    func confirmSensitiveMigration() async {
+        guard let sensitiveCatalogStore, let preview = sensitiveMigrationPreview else {
+            return
+        }
+        do {
+            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.commitMigration(preview)
+            sensitiveMigrationPreview = nil
+            sensitiveMigrationError = nil
+            await refreshSensitiveIndex()
+        } catch SensitiveCatalogDocumentStoreError.referenceSetChanged {
+            sensitiveMigrationError = "迁移前后引用集合不一致，已停止写入"
+        } catch {
+            sensitiveMigrationError = "迁移未完成；旧文件和备份保持不变"
+        }
+    }
+
+    func createCatalogIndex(title: String) async {
+        guard let sensitiveCatalogStore,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+        do {
+            let revision = sensitiveCatalogSnapshot?.revision
+            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.createIndex(
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                expectedRevision: revision
+            )
+            sensitiveIndexError = nil
+        } catch SensitiveCatalogDocumentStoreError.revisionConflict {
+            await refreshSensitiveCatalog()
+            sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
+        } catch {
+            sensitiveIndexError = "无法新增一级索引"
+        }
+    }
+
+    func createCatalogEntry(indexID: String, title: String, presetID: String) async {
+        guard let sensitiveCatalogStore,
+              let preset = SensitiveCatalogEntryPreset.all.first(where: { $0.id == presetID }),
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+        do {
+            let entry = try SecretCatalogEntry.generated(
+                indexId: indexID,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                fields: preset.makeFields()
+            )
+            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.createEntry(
+                entry,
+                expectedRevision: sensitiveCatalogSnapshot?.revision
+            )
+            sensitiveIndexError = nil
+        } catch SensitiveCatalogDocumentStoreError.revisionConflict {
+            await refreshSensitiveCatalog()
+            sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
+        } catch {
+            sensitiveIndexError = "无法新增子索引"
+        }
+    }
+
     func chooseSensitiveIndex() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -508,15 +641,23 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
         do {
             try await sensitiveIndexStore.selectDocument(at: url)
-            _ = try await sensitiveIndexStore.prepareSelectedDocument()
+            try await sensitiveCatalogStore?.selectDocument(at: url)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                _ = try await sensitiveCatalogStore?.canonicalWrite(
+                    SecretCatalogDocument(),
+                    expectedRevision: 0
+                )
+            }
             SensitiveIndexSelectionStore.save(url)
             persistCatalogSelection(at: url)
             sensitiveIndexURL = url
             sensitiveIndexError = nil
             await refreshSensitiveIndex()
+            await refreshSensitiveCatalog()
             await refreshSavedReferences()
         } catch {
             try? await sensitiveIndexStore.selectDocument(at: priorURL)
+            try? await sensitiveCatalogStore?.selectDocument(at: priorURL)
             sensitiveIndexError = "所选文件不是有效的敏感信息.md"
         }
     }
@@ -561,6 +702,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     func encryptSensitiveCandidates(_ ids: Set<String>) async {
         guard !ids.isEmpty, let agentClient, let sensitiveIndexStore else {
+            return
+        }
+
+        if let sensitiveCatalogStore,
+           await sensitiveCatalogStore.integrityStatus() == .verified {
+            sensitiveScanError = "结构化目录必须通过 Catalog 编辑器写入，不能追加 Markdown 段落"
             return
         }
 
@@ -678,6 +825,13 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let selectedDocument = SensitiveIndexSelectionStore.selectedURL()
             ?? SensitiveInformationDocumentStore.defaultDocumentURL(scanTargetURL: selectedScanTarget)
         return SensitiveInformationDocumentStore(documentURL: selectedDocument)
+    }
+
+    private func makeSensitiveCatalogStore() throws -> SensitiveCatalogDocumentStore {
+        let selectedScanTarget = SensitiveIndexSelectionStore.selectedScanRootURL()
+        let selectedDocument = SensitiveIndexSelectionStore.selectedURL()
+            ?? SensitiveInformationDocumentStore.defaultDocumentURL(scanTargetURL: selectedScanTarget)
+        return SensitiveCatalogDocumentStore(documentURL: selectedDocument)
     }
 
     private func persistCatalogSelection(at url: URL) {
