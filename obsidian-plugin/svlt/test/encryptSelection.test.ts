@@ -224,7 +224,7 @@ describe("encrypt selection", () => {
     expect(editor.text).toBe("token = USER_EDITED_VALUE");
     expect(editor.setValueCalls).toBe(0);
     expect(editor.replaceCalls).toEqual([]);
-    expect(obsidianMock.notices).toContain("SVLT: note changed before encryption completed; leaving text unchanged.");
+    expect(obsidianMock.notices).toContain("SVLT：加密完成前笔记已变化，未写入修改。");
   });
 
   it("refuses direct encryption inside a managed catalog", async () => {
@@ -249,7 +249,7 @@ describe("encrypt selection", () => {
     expect(editor.text).toContain("ASV_CANARY_PLUGIN");
     expect(editor.replaceCalls).toEqual([]);
     expect(requests).toEqual([{ type: "catalogValidate" }]);
-    expect(obsidianMock.notices).toContain("SVLT: managed 敏感信息.md 只能通过 SVLT App/MCP Catalog 工具修改；Obsidian 不会直接写入 Markdown/JSON。");
+    expect(obsidianMock.notices).toContain("SVLT：v2 或旧版敏感信息目录请先在 SVLT App 中升级；Obsidian 不会直接改写旧结构。");
   });
 
   it("encrypts only detected sensitive snippets in the current paragraph", async () => {

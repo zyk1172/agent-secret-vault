@@ -9,13 +9,13 @@ export type Reachability =
 
 export function interpretWorkbenchStatus(input: Reachability): { canOperate: boolean; message: string } {
   if (!input.reachable) {
-    return { canOperate: false, message: "SVLT is unavailable." };
+    return { canOperate: false, message: "SVLT 服务不可用。" };
   }
   if (input.status.status.locked) {
-    return { canOperate: false, message: "Unlock SVLT to continue." };
+    return { canOperate: false, message: "请先解锁 SVLT。" };
   }
   if (!input.status.status.ipcAvailable) {
-    return { canOperate: false, message: "SVLT IPC is unavailable." };
+    return { canOperate: false, message: "SVLT 本机通道不可用。" };
   }
-  return { canOperate: true, message: "SVLT is ready." };
+  return { canOperate: true, message: "SVLT 已就绪。" };
 }

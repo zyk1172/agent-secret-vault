@@ -44,11 +44,14 @@ public enum SensitiveInformationDocumentStoreError: Error, Equatable, Sendable {
 }
 
 /// Reader/writer for ordinary, non-managed notes that happen to contain
-/// `secret://` references.  Managed Catalog v2 is never parsed or written by
+/// `secret://` references. Managed Catalog v2/v3 is never parsed or written by
 /// this type; it is handled exclusively by SensitiveCatalogDocumentStore.
 public actor SensitiveInformationDocumentStore {
     private static let marker = "<!-- agent-secret-vault-sensitive-information: 1 -->"
-    private static let managedCatalogMarker = "<!-- SVLT-MANAGED-CATALOG schema=\"2\" -->"
+    private static let managedCatalogMarkers = [
+        "<!-- SVLT-MANAGED-CATALOG schema=\"2\" -->",
+        "<!-- SVLT-CATALOG schema=\"3\" -->"
+    ]
     private static let referencePattern = "secret://[0-9A-HJKMNP-TV-Z]{26}"
     private var documentURL: URL?
 
@@ -84,7 +87,7 @@ public actor SensitiveInformationDocumentStore {
         if FileManager.default.fileExists(atPath: url.path) {
             try assertSafeFile(url)
             let original = try String(contentsOf: url, encoding: .utf8)
-            guard !original.contains(Self.managedCatalogMarker) else {
+            guard !Self.isManagedCatalog(original) else {
                 throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
             }
             let normalized = Self.normalizedDocument(original)
@@ -106,7 +109,7 @@ public actor SensitiveInformationDocumentStore {
         }
         try assertSafeFile(url)
         let text = try String(contentsOf: url, encoding: .utf8)
-        guard !text.contains(Self.managedCatalogMarker) else {
+        guard !Self.isManagedCatalog(text) else {
             throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
         }
         return Self.references(in: text, filePath: url.path)
@@ -120,13 +123,13 @@ public actor SensitiveInformationDocumentStore {
         if FileManager.default.fileExists(atPath: url.path) {
             try assertSafeFile(url)
             let existing = try String(contentsOf: url, encoding: .utf8)
-            guard !existing.contains(Self.managedCatalogMarker) else {
+            guard !Self.isManagedCatalog(existing) else {
                 throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
             }
         }
         _ = try prepareSelectedDocument()
         let text = try String(contentsOf: url, encoding: .utf8)
-        guard !text.contains(Self.managedCatalogMarker) else {
+        guard !Self.isManagedCatalog(text) else {
             throw SensitiveInformationDocumentStoreError.managedCatalogRequiresCatalogStore
         }
         if text.contains(reference) {
@@ -170,6 +173,10 @@ public actor SensitiveInformationDocumentStore {
             withHeader = existing.isEmpty ? template : template + "\n\n" + existing + "\n"
         }
         return normalizedReferencePresentation(withHeader)
+    }
+
+    private static func isManagedCatalog(_ text: String) -> Bool {
+        managedCatalogMarkers.contains { text.contains($0) }
     }
 
     public static func normalizedReferencePresentation(_ text: String) -> String {

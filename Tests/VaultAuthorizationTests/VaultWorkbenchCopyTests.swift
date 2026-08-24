@@ -35,14 +35,16 @@ import Foundation
 }
 
 @Test func workbenchCopyExposesTheManagedCatalogPolicyAndSchema() {
-    #expect(VaultWorkbenchCopy.catalogPolicy.contains("Index 和一个 Entry/SubIndex"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("## 表示分组，### 表示条目"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("secret_catalog_validate"))
-    #expect(VaultWorkbenchCopy.catalogPolicy.contains("不得使用 shell"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("SVLT v3"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("可以使用 App、MCP、Obsidian"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("policy block"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("SVLT 是 opt-in"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("USER_EXPLICIT_PLAINTEXT"))
-    #expect(VaultWorkbenchCopy.catalogPolicy.contains("不比较用户明文"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("不得把 SVLT 解密得到的明文"))
     #expect(VaultWorkbenchCopy.catalogSchema.contains("secretRef"))
-    #expect(VaultWorkbenchCopy.catalogSchema.contains("both value and secretRef"))
+    #expect(VaultWorkbenchCopy.catalogSchema.contains("empty placeholder or opaque secretRef"))
     #expect(!VaultWorkbenchCopy.catalogPolicy.contains("ASV_CANARY"))
     #expect(!VaultWorkbenchCopy.catalogSchema.contains("secret://012345"))
 }
@@ -73,7 +75,7 @@ import Foundation
         "安全边界"
     ])
     #expect(VaultWorkbenchSection.paragraph.subtitle.contains("一次解密"))
-    #expect(VaultWorkbenchSection.secrets.subtitle.contains("集中索引"))
+    #expect(VaultWorkbenchSection.secrets.subtitle.contains("分组目录"))
     #expect(VaultWorkbenchSection.allCases.allSatisfy { !$0.systemImage.isEmpty })
 }
 
@@ -90,6 +92,11 @@ import Foundation
     #expect(source.contains("独立加密载荷"))
     #expect(source.contains("复制引用"))
     #expect(source.contains("此文件是加密记录唯一来源"))
+    #expect(source.contains("LazyVGrid"))
+    #expect(source.contains("SensitiveCatalogGroupSheet"))
+    #expect(source.contains("接纳外部 v3 文件"))
+    #expect(source.contains("验证并接纳"))
+    #expect(!source.contains("SensitiveCatalogPolicyCard"))
 }
 
 @Test func overviewKeepsStatusProminentAndCompact() throws {

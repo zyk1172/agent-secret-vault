@@ -11,6 +11,7 @@ import { credentialSourcePriority } from "./credential-scope.js";
 import {
   AgentRiskAssessment,
   CatalogCreateEntryRequest,
+  CatalogBatchMutation,
   CatalogDraft,
   CatalogDraftRequest,
   CatalogMetadataPatch,
@@ -36,35 +37,36 @@ const optionalAgentRiskAssessment = AgentRiskAssessment.optional();
 // cross-language MCP policy contract and is covered by policy tests.
 const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 
-SVLT 是 opt-in 的秘密保护工具，只保护用户选择纳入 SVLT 管理的秘密，不接管 Agent 可访问的所有凭据。用户始终可以明确选择在某次操作中直接使用明文。
-
-1. “敏感信息.md”是由 SVLT 管理的结构化目录，不得使用 shell、编辑器、Python、sed、echo、文件 API 或其他方式直接修改。
-2. 只有用户选择使用 SVLT、提供 secret://，或没有指定来源且需要发现 SVLT 记录时，才查询敏感信息：secret_catalog_search / secret_catalog_get。
-3. 新增、修改、移动或删除目录数据必须使用 SVLT 提供的 catalog MCP 工具，不得自行拼接或覆盖 Markdown/JSON。
-4. 每条数据必须属于一个一级 Index 和一个 Entry/SubIndex。Secret 只能以合法 secret:// 引用存在，禁止在 JSON 中写入密码、Token、API Key、Cookie、私钥或其他秘密明文。
-5. 普通元数据只有在字段明确允许 agentVisible 时才可读取或写入；searchable=true 且 agentVisible=false 的字段允许内部命中，但不得返回字段值或命中原因。
-6. 不得修改 schema、id、indexId、revision、完整性标记或 SVLT 管理标记。
-7. 如果需要的字段或结构当前 MCP 不支持，应停止并告诉用户，不得通过直接修改“敏感信息.md”绕过 SVLT。该规则不阻止用户在本次操作中选择其他明确允许的凭据工具或直接提供明文。
-8. 如果用户要求新增记录，应优先通过 secret_catalog_create_entry 或 Catalog Draft 创建结构；普通元数据和空 Secret placeholder 可以安全写入，需要新秘密时让用户在 SVLT 本机安全表单中填写。绑定已有 secret:// 是独立的高风险操作。
-9. 修改后必须调用 secret_catalog_validate；验证失败时不得继续使用或尝试自行修复文件结构。
-10. 即使用户要求修改目录，也不代表允许绕过 SVLT；用户授权的是目标操作，不是直接文件写权限。另一方面，用户明确选择本次直接使用明文时，不需要导入、转换、检索、SVLT 授权或 Touch ID。
-11. 遇到 LEGACY_CATALOG_UNSUPPORTED 时必须停止；SVLT 不提供旧版目录自动升级，Agent 不得自行转换或修改旧文件。合法的 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用接管操作。
-12. 新建 Index/Entry、普通元数据、空 Secret placeholder 和 validate 属于安全目录编辑，默认静默完成，由 App-control 的安全编辑开关控制（默认开启）。绑定、替换或删除已有 secretRef，改变秘密类型、目标或策略，删除含 Secret 的记录，以及批量导入导出必须经过本机审批。MCP 不携带、生成、延长或伪造 lease/nonce；关闭安全目录编辑时，安全写入只能报告 CATALOG_AGENT_WRITE_NOT_ALLOWED。
-
-范围与来源优先级：
-- SVLT_MANAGED_OPERATION：用户明确要求使用 SVLT、Entry 或 secret://；秘密仍只能在 SVLT 批准的专用操作内解析。
-- USER_EXPLICIT_PLAINTEXT：用户在当前请求中亲自提供明文并明确要求本次使用，或明确选择“不使用 SVLT”。即使 SVLT 可能存在相同凭据，本次也不得搜索、比较、替换、阻断或要求审批。
-- EXTERNAL_PROVIDER_OPERATION：用户明确选择设备 MCP、GitHub connector、已登录 CLI、环境变量或其他凭据提供方；SVLT 不得抢占。
-- UNMANAGED_CREDENTIAL：用户没有选择 SVLT，且没有可用的明确外部来源；不得把它自动升级为 SVLT 管理。
-- 来源优先级为：用户当前明确凭据/来源 → 用户明确选择的外部 provider → 用户明确选择的 SVLT → 无明确选择时才自动发现。
-- 以上判断只对当前 operation 有效；不得从上一轮对话、旧 provider 选择或 Agent 状态继承来源。每个 operation 只能产生一个最终 credential source decision。
-- 不比较用户明文与 SVLT secret 的值，也不因值可能相同而改变 provenance。
-
-用户明文覆盖规则：用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。不要自动创建 Secret、替换为 secret://、要求用户删除明文、打开 SVLT、触发 Touch ID，或仅因 Catalog 中可能已有对应 Secret 而拒绝本次操作。其他工作区、仓库、工具的日志、持久化和外发规则仍然有效。
-
-SVLT 派生明文边界：不得把 secret:// 经 SVLT 解密得到的明文转交普通 shell、curl、URL、header、环境变量、日志或聊天。禁止的是 Agent 自己洗出 SVLT 明文绕过专用操作，不是用户独立重新提供明文。
-
-SVLT 范围之外：设备 MCP 自持凭据、GitHub connector 自有授权、已登录 CLI、环境变量、第三方密码管理器和用户明确提供的当前明文由其各自工具/项目安全规则负责，SVLT 不得自动劫持。`;
+1. 本文件是 SVLT 敏感信息目录；SVLT 是 opt-in。
+2. ## 表示分组，### 表示条目。
+3. 条目和字段必须符合 SVLT v3 marker 与 schema。
+4. 已存在的 id 必须保持稳定，禁止随意重新生成。
+5. 同一条目不得出现重复 field key。
+6. 新建条目默认只建立一个实际需要的字段，不得为了“完整”自动生成一堆空字段。
+7. 字段不够时再增加。
+8. 可以使用 App、MCP、Obsidian、编辑器、脚本或其他工具修改，不限制写入渠道。
+9. 无论使用什么方式，都必须产生符合 SVLT v3 的结构。
+10. 修改时采用最小修改原则，禁止为了新增一条记录重排整个文件。
+11. 必须保留用户原有 Markdown、双链、备注、空行以及非目标区域内容。
+12. [[双链]] 属于合法 Markdown 内容，禁止删除或展开成普通文本。
+13. 密码字段不得保存明文。
+14. 密码字段只能为空 placeholder 或合法 secret://。
+15. Token 应写作“令牌”。
+16. API Key 应写作“API 密钥”。
+17. password/secret 类型用户界面统一使用“密码”，不要显示“秘密”。
+18. 私钥使用“私钥”，Cookie 使用“Cookie”，不要把所有敏感数据粗暴翻译成“秘密”。
+19. 禁止伪造 secret://。
+20. 新绑定、替换、删除已有 secretRef 属于高风险语义操作，需要用户批准。
+21. 删除包含密码引用的条目或分组需要用户批准。
+22. 普通标题、别名、备注、标签、非密码字段等修改可以静默完成。
+23. 普通新增分组、条目、字段、空密码 placeholder 可以静默完成。
+24. 合法的普通批量操作不因“批量”本身升级为高风险。
+25. 修改完成后必须通过 Catalog validation（secret_catalog_validate）。
+26. 校验失败时不得继续自行猜测修复结构。
+27. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
+28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
+29. 不得把 SVLT 解密得到的明文写回敏感信息.md。
+30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。`;
 
 export interface VaultIpcClient {
   request(request: IpcRequest): Promise<IpcResponse>;
@@ -150,6 +152,7 @@ const SecretSearchOutput = z
           "LEGACY_CATALOG_UNSUPPORTED",
           "INTEGRITY_MISSING",
           "EXTERNAL_CATALOG_MODIFICATION",
+          "PENDING_EXTERNAL_CHANGE",
           "CATALOG_INVALID"
         ]),
         matches: z.array(SecretCatalogMatch)
@@ -209,6 +212,8 @@ const CatalogBindInput = z
     expectedRevision: z.number().int().nonnegative()
   })
   .strict();
+
+const CatalogBatchInput = CatalogBatchMutation;
 
 const CatalogWriteOutput = z
   .union([
@@ -969,6 +974,26 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           entryID: parsed.entryID,
           key: parsed.key,
           secretRef: parsed.secretRef,
+          expectedRevision: parsed.expectedRevision
+        });
+        if (response.type === "catalogWriteResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_batch",
+      title: "Apply Catalog Batch",
+      description:
+        "Applies one Catalog batch transaction. Ordinary group/entry deletions are evaluated as safe metadata changes; a batch containing any existing secret reference transition is aggregated into one local approval. Plaintext is never accepted.",
+      inputSchema: CatalogBatchInput,
+      outputSchema: CatalogWriteOutput,
+      async handler(input) {
+        const parsed = CatalogBatchInput.parse(input);
+        const response = await client.request({
+          type: "catalogApplyBatch",
+          mutation: { operations: parsed.operations },
           expectedRevision: parsed.expectedRevision
         });
         if (response.type === "catalogWriteResult") {

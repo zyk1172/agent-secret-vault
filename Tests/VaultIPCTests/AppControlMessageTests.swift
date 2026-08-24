@@ -12,6 +12,14 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 1)
     }
 
+    func adoptCatalogExternalV3() async throws -> CatalogValidationResult {
+        CatalogValidationResult(status: .found, revision: 1)
+    }
+
+    func approveCatalogExternalChange() async throws -> CatalogValidationResult {
+        CatalogValidationResult(status: .found, revision: 2)
+    }
+
     func setCatalogAgentWriteMode(
         mode: CatalogAgentWriteMode,
         duration: TimeInterval?
@@ -65,6 +73,14 @@ private struct ControlService: AppControlServicing {
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64) {
         ("secret://0123456789ABCDEFGHJKMNPQRS", 4)
+    }
+
+    func catalogApplyBatch(
+        _ mutation: CatalogBatchMutation,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        _ = mutation
+        return CatalogWriteResult(revision: expectedRevision + 1)
     }
 }
 

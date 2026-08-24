@@ -181,6 +181,7 @@ export const SecretCatalogSearchResult = z.object({
     "LEGACY_CATALOG_UNSUPPORTED",
     "INTEGRITY_MISSING",
     "EXTERNAL_CATALOG_MODIFICATION",
+    "PENDING_EXTERNAL_CHANGE",
     "CATALOG_INVALID"
   ]),
   matches: z.array(SecretCatalogMatch)
@@ -275,11 +276,81 @@ export const CatalogValidationResult = z.object({
     "LEGACY_CATALOG_UNSUPPORTED",
     "INTEGRITY_MISSING",
     "EXTERNAL_CATALOG_MODIFICATION",
+    "PENDING_EXTERNAL_CHANGE",
     "CATALOG_INVALID"
   ]),
   revision: z.number().int().nonnegative().nullable().optional()
 }).strict();
 export type CatalogValidationResult = z.infer<typeof CatalogValidationResult>;
+
+const CatalogBatchIndex = z
+  .object({
+    schema: z.literal("svlt.catalog.index/v3"),
+    id: z.string().length(26),
+    title: z.string().min(1).max(2000),
+    aliases: z.array(z.string()).max(64),
+    tags: z.array(z.string()).max(64)
+  })
+  .strict();
+
+const CatalogBatchEntry = z
+  .object({
+    schema: z.literal("svlt.catalog.entry/v3"),
+    id: z.string().length(26),
+    indexId: z.string().length(26),
+    title: z.string().min(1).max(2000),
+    type: z.string().min(1).max(2000),
+    aliases: z.array(z.string()).max(64),
+    endpoints: z.array(CatalogEndpoint).max(64),
+    fields: z.array(CatalogFieldValue).max(128),
+    notes: z.string().max(2000).nullable().optional(),
+    tags: z.array(z.string()).max(64)
+  })
+  .strict();
+
+export const CatalogBatchOperation = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("createIndex"), index: CatalogBatchIndex }).strict(),
+  z.object({ type: z.literal("updateIndex"), index: CatalogBatchIndex }).strict(),
+  z.object({ type: z.literal("deleteIndex"), id: z.string().length(26) }).strict(),
+  z.object({ type: z.literal("createEntry"), entry: CatalogBatchEntry }).strict(),
+  z.object({ type: z.literal("updateEntry"), entry: CatalogBatchEntry }).strict(),
+  z
+    .object({
+      type: z.literal("moveEntry"),
+      id: z.string().length(26),
+      toIndexID: z.string().length(26)
+    })
+    .strict(),
+  z.object({ type: z.literal("deleteEntry"), id: z.string().length(26) }).strict(),
+  z
+    .object({
+      type: z.literal("addField"),
+      entryID: z.string().length(26),
+      field: CatalogFieldValue
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("updateField"),
+      entryID: z.string().length(26),
+      field: CatalogFieldValue
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("removeField"),
+      entryID: z.string().length(26),
+      key: z.string().min(1)
+    })
+    .strict()
+]);
+export type CatalogBatchOperation = z.infer<typeof CatalogBatchOperation>;
+
+export const CatalogBatchMutation = z.object({
+  operations: z.array(CatalogBatchOperation).min(1).max(128),
+  expectedRevision: z.number().int().nonnegative()
+}).strict();
+export type CatalogBatchMutation = z.infer<typeof CatalogBatchMutation>;
 
 export const SecretOperationAction = z.enum([
   "vaultStatus",
@@ -435,6 +506,13 @@ export const IpcRequest = z.discriminatedUnion("type", [
       expectedRevision: z.number().int().nonnegative()
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("catalogApplyBatch"),
+      mutation: z.object({ operations: z.array(CatalogBatchOperation).min(1).max(128) }).strict(),
+      expectedRevision: z.number().int().nonnegative()
+    })
+    .strict(),
   z.object({ type: z.literal("catalogValidate") }).strict(),
   z
     .object({
@@ -552,7 +630,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("catalogValidation"),
-      catalogStatus: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE", "LEGACY_CATALOG_UNSUPPORTED", "INTEGRITY_MISSING", "EXTERNAL_CATALOG_MODIFICATION", "CATALOG_INVALID"]),
+      catalogStatus: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE", "LEGACY_CATALOG_UNSUPPORTED", "INTEGRITY_MISSING", "EXTERNAL_CATALOG_MODIFICATION", "PENDING_EXTERNAL_CHANGE", "CATALOG_INVALID"]),
       revision: z.number().int().nonnegative().nullable().optional()
     })
     .strict(),

@@ -1,10 +1,10 @@
-import { MarkdownView, Menu, Notice, Plugin, type Editor, type EditorPosition, type TFile } from "obsidian";
+import { MarkdownView, Menu, Notice, Plugin, type Editor, type EditorPosition, type EventRef, type TFile } from "obsidian";
 import { buildParagraphContextTemplate } from "./encrypt/paragraphContextTemplate";
 import { encryptTextRange, inferReferenceTitle } from "./encrypt/encryptSelection";
 import { extractCurrentParagraph, type TextRange } from "./editor/selection";
 import { LocalVaultClient } from "./ipc/client";
 import type { IpcRequest } from "./ipc/protocol";
-import { isManagedCatalogText } from "./catalog/managedCatalog";
+import { classifyCatalogText, isManagedCatalogText } from "./catalog/managedCatalog";
 import { interpretWorkbenchStatus } from "./pairing/pairing";
 import { applyReplacements, type PlannedReplacement } from "./replace/transactionalReplace";
 import { buildParagraphRestoreRequest, buildParagraphRevealRequest } from "./reveal/paragraphReveal";
@@ -19,6 +19,11 @@ function clonePosition(position: EditorPosition): EditorPosition {
   return { line: position.line, ch: position.ch };
 }
 
+function isLegacyManagedCatalogText(text: string): boolean {
+  const format = classifyCatalogText(text);
+  return format === "legacy" || format === "managedV2";
+}
+
 export const commandDefinitions = [
   { id: "encrypt-selection", name: "加密选中文本" },
   { id: "reveal-selection", name: "在 SVLT 中临时解密选中文本" },
@@ -29,6 +34,8 @@ export const commandDefinitions = [
 ] as const;
 
 export default class AgentSecretVaultPlugin extends Plugin {
+  private catalogValidationTimer: ReturnType<typeof setTimeout> | undefined;
+
   private createVaultClient(): LocalVaultClient {
     return new LocalVaultClient(DEFAULT_SOCKET_PATH);
   }
@@ -44,7 +51,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         id: definition.id,
         name: definition.name,
         callback: () => {
-          new Notice(`SVLT: ${definition.id} is not connected yet.`);
+          new Notice(`SVLT：${definition.name} 暂不可用，请先连接本机服务。`);
         }
       };
 
@@ -97,6 +104,37 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     this.registerEditorMenu();
     this.registerJumpProtocol();
+    this.registerCatalogWatcher();
+  }
+
+  private registerCatalogWatcher(): void {
+    const vault = this.app?.vault as unknown as {
+      on?: (event: string, callback: (file: { path?: string; name?: string }) => void) => unknown;
+      cachedRead?: (file: unknown) => Promise<string>;
+    } | undefined;
+    if (typeof vault?.on !== "function" || typeof vault.cachedRead !== "function") return;
+
+    const eventRef = vault.on("modify", (file) => {
+      void (async () => {
+        const text = await vault.cachedRead?.(file);
+        if (text === undefined || classifyCatalogText(text) !== "managedV3") return;
+        this.scheduleCatalogValidation();
+      })();
+    }) as EventRef;
+    this.registerEvent(eventRef);
+    const registerCleanup = (this as unknown as { register?: (callback: () => void) => void }).register;
+    registerCleanup?.call(this, () => {
+      if (this.catalogValidationTimer) clearTimeout(this.catalogValidationTimer);
+      this.catalogValidationTimer = undefined;
+    });
+  }
+
+  private scheduleCatalogValidation(): void {
+    if (this.catalogValidationTimer) clearTimeout(this.catalogValidationTimer);
+    this.catalogValidationTimer = setTimeout(() => {
+      this.catalogValidationTimer = undefined;
+      void this.validateManagedCatalog(true);
+    }, 300);
   }
 
   private registerJumpProtocol(): void {
@@ -111,14 +149,14 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const fullPath = typeof params.file === "string" ? params.file : "";
       const requestedLine = Number.parseInt(typeof params.line === "string" ? params.line : "1", 10);
       if (fullPath.length === 0 || !Number.isFinite(requestedLine) || requestedLine < 1) {
-        new Notice("SVLT: invalid local jump request.");
+        new Notice("SVLT：本地跳转请求无效。");
         return;
       }
 
       const adapter = this.app.vault.adapter as unknown as { getFullPath?: (path: string) => string };
       const file = this.app.vault.getMarkdownFiles().find((candidate) => adapter.getFullPath?.(candidate.path) === fullPath);
       if (!file) {
-        new Notice("SVLT: the requested file is not in this vault.");
+        new Notice("SVLT：请求的文件不在当前库中。");
         return;
       }
 
@@ -217,32 +255,36 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
   }
 
-  private async validateManagedCatalog(): Promise<void> {
+  private async validateManagedCatalog(silentWhenAccepted = false): Promise<void> {
     try {
       const response = await this.createVaultClient().request({ type: "catalogValidate" });
       if (response.type === "catalogValidation") {
         if (response.catalogStatus === "FOUND") {
-          new Notice("SVLT: managed sensitive-information catalog validated.");
+          if (!silentWhenAccepted) new Notice("SVLT：敏感信息目录验证通过。");
+        } else if (response.catalogStatus === "PENDING_EXTERNAL_CHANGE") {
+          new Notice("SVLT：目录有待审批的高风险外部修改，请在 SVLT App 中批准。");
         } else {
-          new Notice(`SVLT: managed catalog validation failed (${response.catalogStatus}).`);
+          new Notice(`SVLT：敏感信息目录验证失败（${response.catalogStatus}）。`);
         }
         return;
       }
 
-      new Notice(`SVLT: managed catalog validation failed (${response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE"}).`);
+      new Notice(`SVLT：敏感信息目录验证失败（${response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE"}）。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new Notice(`SVLT: managed catalog validation failed (${message}).`);
+      new Notice(`SVLT：敏感信息目录验证失败（${message}）。`);
     }
   }
 
   private async refuseManagedCatalogMutation(documentText: string): Promise<boolean> {
-    if (!isManagedCatalogText(documentText)) {
+    const format = classifyCatalogText(documentText);
+    if (format === "unmanaged" || format === "managedV3") {
+      if (format === "managedV3") await this.validateManagedCatalog(true);
       return false;
     }
 
     await this.validateManagedCatalog();
-    new Notice("SVLT: managed 敏感信息.md 只能通过 SVLT App/MCP Catalog 工具修改；Obsidian 不会直接写入 Markdown/JSON。");
+    new Notice("SVLT：v2 或旧版敏感信息目录请先在 SVLT App 中升级；Obsidian 不会直接改写旧结构。");
     return true;
   }
 
@@ -252,7 +294,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
     const text = editor.getSelection();
     if (text.length === 0) {
-      new Notice("SVLT: select text to encrypt.");
+      new Notice("SVLT：请先选择要加密的文本。");
       return;
     }
 
@@ -272,13 +314,13 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
     const range = extractCurrentParagraph(documentText, editor.posToOffset(editor.getCursor()));
     if (range.text.trim().length === 0) {
-      new Notice("SVLT: current paragraph is empty.");
+      new Notice("SVLT：当前段落为空。");
       return;
     }
 
     const findings = scanMarkdownFile(this.app.workspace?.getActiveFile()?.path ?? "current-paragraph.md", range.text);
     if (findings.length === 0) {
-      new Notice("SVLT: current paragraph has no detected sensitive text; select exact text to encrypt manually.");
+      new Notice("SVLT：当前段落未检测到敏感文本；请手动选择准确内容后加密。");
       return;
     }
 
@@ -287,14 +329,14 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const fromPos = editor.offsetToPos(range.start);
       const toPos = editor.offsetToPos(range.end);
       if (editor.getRange(fromPos, toPos) !== range.text) {
-        new Notice("SVLT: note changed before encryption completed; leaving text unchanged.");
+        new Notice("SVLT：加密完成前笔记已变化，未写入修改。");
         return;
       }
       editor.replaceRange(updatedText, fromPos, toPos, "svlt");
-      new Notice(`SVLT: encrypted ${findings.length} sensitive finding${findings.length === 1 ? "" : "s"} in current paragraph.`);
+      new Notice(`SVLT：当前段落已加密 ${findings.length} 处敏感内容。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new Notice(`SVLT: paragraph encryption failed (${message}).`);
+      new Notice(`SVLT：段落加密失败（${message}）。`);
     }
   }
 
@@ -319,15 +361,15 @@ export default class AgentSecretVaultPlugin extends Plugin {
       });
 
       if (editor.getRange(fromPos, toPos) !== range.text) {
-        new Notice("SVLT: note changed before encryption completed; leaving text unchanged.");
+        new Notice("SVLT：加密完成前笔记已变化，未写入修改。");
         return;
       }
 
       editor.replaceRange(result.replacementText, fromPos, toPos, "svlt");
-      new Notice("SVLT: encrypted text into a secret reference.");
+      new Notice("SVLT：文本已转换为加密引用。");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new Notice(`SVLT: encryption failed (${message}).`);
+      new Notice(`SVLT：加密失败（${message}）。`);
     }
   }
 
@@ -340,7 +382,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
   private async revealSelection(editor: Editor): Promise<void> {
     const text = editor.getSelection();
     if (text.trim().length === 0) {
-      new Notice("SVLT: select text containing a secret reference to reveal.");
+      new Notice("SVLT：请选择包含加密引用的文本后查看。");
       return;
     }
 
@@ -363,10 +405,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
         throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
       }
 
-      new Notice("SVLT: reveal session opened in the Mac app.");
+      new Notice("SVLT：已在 SVLT App 中打开临时查看会话。");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new Notice(`SVLT: reveal failed (${message}).`);
+      new Notice(`SVLT：临时查看失败（${message}）。`);
     }
   }
 
@@ -385,7 +427,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
     const text = editor.getSelection();
     if (text.trim().length === 0) {
-      new Notice("SVLT: select text containing a secret reference to restore.");
+      new Notice("SVLT：请选择包含加密引用的文本后还原。");
       return;
     }
     const from = editor.getCursor("from");
@@ -418,14 +460,14 @@ export default class AgentSecretVaultPlugin extends Plugin {
         throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
       }
       if (editor.getRange(fromPos, toPos) !== range.text) {
-        new Notice("SVLT: note changed before restore completed; leaving text unchanged.");
+        new Notice("SVLT：还原完成前笔记已变化，未写入修改。");
         return;
       }
       editor.replaceRange(response.text, fromPos, toPos, "svlt-restore");
-      new Notice("SVLT: restored secret references into plaintext.");
+      new Notice("SVLT：已将加密引用还原为明文。");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new Notice(`SVLT: restore failed (${message}).`);
+      new Notice(`SVLT：还原失败（${message}）。`);
     }
   }
 
@@ -439,16 +481,16 @@ export default class AgentSecretVaultPlugin extends Plugin {
     new ReviewModal(this.app, findings, async (selectedFindings) => {
       try {
         if (editor.getValue() !== originalText) {
-          new Notice("SVLT: note changed after scan; leaving text unchanged.");
+          new Notice("SVLT：扫描后笔记已变化，未写入修改。");
           return;
         }
 
         const updatedText = await this.encryptFindingsInText(originalText, selectedFindings);
         editor.setValue(updatedText);
-        new Notice(`SVLT: encrypted ${selectedFindings.length} finding${selectedFindings.length === 1 ? "" : "s"}.`);
+        new Notice(`SVLT：已加密 ${selectedFindings.length} 处敏感内容。`);
       } catch (error) {
         const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-        new Notice(`SVLT: scan replacement failed (${message}).`);
+        new Notice(`SVLT：扫描结果写回失败（${message}）。`);
       }
     }).open();
   }
@@ -463,7 +505,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     for (const file of files) {
       const text = await this.app.vault.cachedRead(file);
       snapshots.set(file.path, text);
-      if (isManagedCatalogText(text)) {
+      if (isLegacyManagedCatalogText(text)) {
         skippedManagedCatalog = true;
         continue;
       }
@@ -472,7 +514,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     if (skippedManagedCatalog) {
       await this.validateManagedCatalog();
-      new Notice("SVLT: skipped managed 敏感信息.md; use the App/MCP Catalog tools for directory operations.");
+      new Notice("SVLT：已跳过旧版敏感信息.md；请先在 SVLT App 中升级为 v3。");
     }
 
     new ReviewModal(this.app, allFindings, async (selectedFindings) => {
@@ -481,7 +523,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         new Notice(this.replacementSummary(result.appliedCount, result.skippedCount));
       } catch (error) {
         const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-        new Notice(`SVLT: scan replacement failed (${message}).`);
+        new Notice(`SVLT：扫描结果写回失败（${message}）。`);
       }
     }).open();
   }
@@ -491,7 +533,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     let skippedManagedCatalog = false;
     for (const file of this.app.vault.getMarkdownFiles()) {
       const text = await this.app.vault.cachedRead(file);
-      if (isManagedCatalogText(text)) {
+      if (isLegacyManagedCatalogText(text)) {
         skippedManagedCatalog = true;
         continue;
       }
@@ -502,7 +544,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     if (skippedManagedCatalog) {
       await this.validateManagedCatalog();
-      new Notice("SVLT: managed 敏感信息.md is validated by SVLT Catalog, not by Obsidian note scanning.");
+      new Notice("SVLT：已跳过旧版敏感信息.md；升级为 v3 后可由 Obsidian 正常编辑。");
     }
 
     try {
@@ -513,10 +555,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
       if (response.type !== "orphanScan") {
         throw new Error(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
       }
-      new Notice("SVLT: orphan scan sent to the Mac app.");
+      new Notice("SVLT：孤立引用扫描请求已发送到 SVLT App。");
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      new Notice(`SVLT: orphan scan failed (${message}).`);
+      new Notice(`SVLT：孤立引用扫描失败（${message}）。`);
     }
   }
 
@@ -542,16 +584,16 @@ export default class AgentSecretVaultPlugin extends Plugin {
         continue;
       }
 
-      if (isManagedCatalogText(originalText)) {
+      if (isLegacyManagedCatalogText(originalText)) {
         await this.validateManagedCatalog();
-        new Notice("SVLT: managed 敏感信息.md was selected; no direct file write was performed.");
+        new Notice("SVLT：已选中受管敏感信息.md，未执行普通笔记写入。");
         skippedCount += findings.length;
         continue;
       }
 
       const currentText = await this.app.vault.cachedRead(file);
       if (currentText !== originalText) {
-        new Notice(`SVLT: ${filePath} changed after scan; leaving it unchanged.`);
+        new Notice(`SVLT：扫描后文件 ${filePath} 已变化，未写入修改。`);
         skippedCount += findings.length;
         continue;
       }
@@ -565,11 +607,11 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 
   private replacementSummary(appliedCount: number, skippedCount: number): string {
-    const applied = `encrypted ${appliedCount} finding${appliedCount === 1 ? "" : "s"}`;
+    const applied = `已加密 ${appliedCount} 处敏感内容`;
     if (skippedCount === 0) {
-      return `SVLT: ${applied}.`;
+      return `SVLT：${applied}。`;
     }
-    return `SVLT: ${applied}; skipped ${skippedCount} changed finding${skippedCount === 1 ? "" : "s"}.`;
+    return `SVLT：${applied}；有 ${skippedCount} 处文件已变化，已跳过。`;
   }
 
   private async encryptFindingsInText(

@@ -4,6 +4,8 @@ import VaultCore
 public enum AppControlRequest: Codable, Equatable, Sendable {
     case catalogStatus
     case catalogAdoptExternalV2
+    case catalogAdoptExternalV3
+    case catalogApproveExternalChange
     case setCatalogAgentWriteMode(mode: CatalogAgentWriteMode, duration: TimeInterval?)
     case revokeCatalogAgentWrite
     case catalogAgentWriteStatus
@@ -15,6 +17,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
     )
     case catalogCreateEntry(request: CatalogDraftRequest, expectedRevision: UInt64)
     case catalogUpdateEntry(entry: SecretCatalogEntry, expectedRevision: UInt64)
+    case catalogApplyBatch(mutation: CatalogBatchMutation, expectedRevision: UInt64)
     case catalogBindExistingSecret(
         entryID: String,
         key: String,
@@ -45,17 +48,21 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case mode
         case request
         case entry
+        case mutation
     }
 
     private enum RequestType: String, Codable {
         case catalogStatus
         case catalogAdoptExternalV2
+        case catalogAdoptExternalV3
+        case catalogApproveExternalChange
         case setCatalogAgentWriteMode
         case revokeCatalogAgentWrite
         case catalogAgentWriteStatus
         case catalogCreateIndex
         case catalogCreateEntry
         case catalogUpdateEntry
+        case catalogApplyBatch
         case catalogBindExistingSecret
         case catalogSecureInput
     }
@@ -67,6 +74,10 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             self = .catalogStatus
         case .catalogAdoptExternalV2:
             self = .catalogAdoptExternalV2
+        case .catalogAdoptExternalV3:
+            self = .catalogAdoptExternalV3
+        case .catalogApproveExternalChange:
+            self = .catalogApproveExternalChange
         case .setCatalogAgentWriteMode:
             self = .setCatalogAgentWriteMode(
                 mode: try container.decode(CatalogAgentWriteMode.self, forKey: .mode),
@@ -91,6 +102,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case .catalogUpdateEntry:
             self = .catalogUpdateEntry(
                 entry: try container.decode(SecretCatalogEntry.self, forKey: .entry),
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
+            )
+        case .catalogApplyBatch:
+            self = .catalogApplyBatch(
+                mutation: try container.decode(CatalogBatchMutation.self, forKey: .mutation),
                 expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogBindExistingSecret:
@@ -118,6 +134,10 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.catalogStatus, forKey: .type)
         case .catalogAdoptExternalV2:
             try container.encode(RequestType.catalogAdoptExternalV2, forKey: .type)
+        case .catalogAdoptExternalV3:
+            try container.encode(RequestType.catalogAdoptExternalV3, forKey: .type)
+        case .catalogApproveExternalChange:
+            try container.encode(RequestType.catalogApproveExternalChange, forKey: .type)
         case let .setCatalogAgentWriteMode(mode, duration):
             try container.encode(RequestType.setCatalogAgentWriteMode, forKey: .type)
             try container.encode(mode, forKey: .mode)
@@ -139,6 +159,10 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case let .catalogUpdateEntry(entry, expectedRevision):
             try container.encode(RequestType.catalogUpdateEntry, forKey: .type)
             try container.encode(entry, forKey: .entry)
+            try container.encode(expectedRevision, forKey: .expectedRevision)
+        case let .catalogApplyBatch(mutation, expectedRevision):
+            try container.encode(RequestType.catalogApplyBatch, forKey: .type)
+            try container.encode(mutation, forKey: .mutation)
             try container.encode(expectedRevision, forKey: .expectedRevision)
         case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision):
             try container.encode(RequestType.catalogBindExistingSecret, forKey: .type)
@@ -242,6 +266,8 @@ public struct AuthenticatedAppControlRequest: Codable, Equatable, Sendable {
 public protocol AppControlServicing: Sendable {
     func catalogStatus() async throws -> CatalogValidationResult
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult
+    func adoptCatalogExternalV3() async throws -> CatalogValidationResult
+    func approveCatalogExternalChange() async throws -> CatalogValidationResult
     func setCatalogAgentWriteMode(
         mode: CatalogAgentWriteMode,
         duration: TimeInterval?
@@ -260,6 +286,10 @@ public protocol AppControlServicing: Sendable {
     ) async throws -> CatalogWriteResult
     func catalogUpdateEntry(
         _ entry: SecretCatalogEntry,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult
+    func catalogApplyBatch(
+        _ mutation: CatalogBatchMutation,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func catalogBindExistingSecret(

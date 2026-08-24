@@ -19,17 +19,41 @@
 7. 以上选择只对当前 operation 有效；不得从上一轮对话、旧 provider 选择或 Agent 状态继承来源。每个 operation 只能产生一个最终 source decision。
 
 SVLT 敏感信息目录写入规范：
-1. “敏感信息.md”是由 SVLT 管理的结构化目录，不得使用 shell、编辑器、Python、sed、echo、文件 API 或其他方式直接修改。
-2. 只有用户选择使用 SVLT、提供 secret://，或没有指定来源且需要发现 SVLT 记录时，才查询 secret_catalog_search / secret_catalog_get。
-3. 新增、修改、移动或删除目录数据必须使用 SVLT 提供的 catalog MCP 工具，不得自行拼接或覆盖 Markdown/JSON。
-4. 每条数据必须属于一个一级 Index 和一个 Entry/SubIndex。Secret 只能以合法 secret:// 引用存在，禁止在 JSON 中写入密码、Token、API Key、Cookie、私钥或其他秘密明文。
-5. 普通元数据只有在字段明确允许 agentVisible 时才可读取或写入；searchable=true 且 agentVisible=false 的字段允许内部命中，但不得返回字段值或命中原因。
-6. 不得修改 schema、id、indexId、revision、完整性标记或 SVLT 管理标记。
-7. 如果需要的字段或结构当前 MCP 不支持，应停止并告诉用户，不得通过直接修改“敏感信息.md”绕过 SVLT。该规则不阻止用户选择其他明确允许的凭据工具或直接提供明文。
-8. 如果用户要求新增记录，应优先通过 secret_catalog_create_entry 或 Catalog Draft 创建结构；普通元数据和空 Secret placeholder 可以安全写入，需要新秘密时让用户在 SVLT 本机安全表单中填写。绑定已有 secret:// 是独立的高风险操作，不得默认导入用户明文。
-9. 修改后必须调用 secret_catalog_validate；验证失败时不得继续使用或尝试自行修复文件结构。
-10. 新建 Index/Entry、普通元数据、空 Secret placeholder 和 validate 属于安全目录编辑，默认静默完成，由 App-control 的安全编辑开关控制（默认开启）。绑定、替换或删除已有 secretRef，改变秘密类型、目标或策略，删除含 Secret 的记录，以及批量导入导出必须经过本机审批。MCP 不携带、生成、延长或伪造 lease/nonce；关闭安全编辑时安全写入返回 CATALOG_AGENT_WRITE_NOT_ALLOWED。
-11. 遇到 LEGACY_CATALOG_UNSUPPORTED 时必须停止；SVLT 不提供旧版目录自动升级，Agent 不得自行转换或修改旧文件。合法 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用接管操作。
+1. 本文件是 SVLT 敏感信息目录；SVLT 是 opt-in。
+2. `##` 表示分组，`###` 表示条目。
+3. 条目和字段必须符合 SVLT v3 marker 与 schema。
+4. 已存在的 id 必须保持稳定，禁止随意重新生成。
+5. 同一条目不得出现重复 field key。
+6. 新建条目默认只建立一个实际需要的字段，不得为了“完整”自动生成一堆空字段。
+7. 字段不够时再增加。
+8. 可以使用 App、MCP、Obsidian、编辑器、脚本或其他工具修改，不限制写入渠道。
+9. 无论使用什么方式，都必须产生符合 SVLT v3 的结构。
+10. 修改时采用最小修改原则，禁止为了新增一条记录重排整个文件。
+11. 必须保留用户原有 Markdown、双链、备注、空行以及非目标区域内容。
+12. `[[双链]]` 属于合法 Markdown 内容，禁止删除或展开成普通文本。
+13. 密码字段不得保存明文。
+14. 密码字段只能为空 placeholder 或合法 `secret://`。
+15. Token 应写作“令牌”。
+16. API Key 应写作“API 密钥”。
+17. password/secret 类型用户界面统一使用“密码”，不要显示“秘密”。
+18. 私钥使用“私钥”，Cookie 使用“Cookie”，不要把所有敏感数据粗暴翻译成“秘密”。
+19. 禁止伪造 `secret://`。
+20. 新绑定、替换、删除已有 secretRef 属于高风险语义操作，需要用户批准。
+21. 删除包含密码引用的条目或分组需要用户批准。
+22. 普通标题、别名、备注、标签、非密码字段等修改可以静默完成。
+23. 普通新增分组、条目、字段、空密码 placeholder 可以静默完成。
+24. 合法的普通批量操作不因“批量”本身升级为高风险。
+25. 修改完成后必须通过 Catalog validation（`secret_catalog_validate`）。
+26. 校验失败时不得继续自行猜测修复结构。
+27. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
+28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
+29. 不得把 SVLT 解密得到的明文写回 `敏感信息.md`。
+30. 凭据来源标签包括 `SVLT_MANAGED_OPERATION`、`USER_EXPLICIT_PLAINTEXT`、`EXTERNAL_PROVIDER_OPERATION`、`UNMANAGED_CREDENTIAL`；不得因为用户使用其他凭据 provider 而强制接管。
+
+目录状态规则：
+- v3 的外部合法编辑由 SVLT coordinator 重新解析；格式/普通语义变化可以接纳，高风险语义变化进入本机审批，不按编辑器或传输渠道一律拒绝。
+- `SVLT-POLICY` 是 document-level 折叠 callout，不属于分组、条目、字段、搜索结果或计数。
+- v2 仅作为迁移输入。遇到 `LEGACY_CATALOG_UNSUPPORTED` 必须停止；合法 v2 文件只能由 App 的“备份、验证并升级”流程接管，MCP 不得调用接管操作。
 
 用户明文覆盖规则：
 1. 用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。即使上一轮使用 SVLT 或 Catalog 中可能已有对应 Secret，本次仍按用户明确选择执行。
@@ -48,9 +72,9 @@ safeWorkflow：
 禁止事项：
 - Do not expose plaintext obtained by decrypting an SVLT-managed secret outside the approved SVLT operation.
 - 不得把 SVLT 派生明文放入普通 shell、curl、URL、header、环境变量、日志、审计或聊天。
-- 不得直接读取、修改或覆盖 managed catalog；不得让用户授权被解释为文件写权限。
+- 不得写入不符合 v3 marker/schema 的 Markdown；不得把用户批准高风险语义变化解释为输出 SVLT 解密明文的权限。
 - 不得因用户明确选择明文而强制导入 SVLT；也不得因其他 MCP/provider 有凭据而自动抢占。
 - 其他仓库、工具和工作区的安全规则仍然有效：用户允许本次使用，不等于允许写入 Git、日志、issue、公开网络或不安全持久化位置。
 ```
 
-Schema 详见 [`svlt-catalog-schema-v2.md`](svlt-catalog-schema-v2.md)。App 的“智能体自动化 → 敏感信息目录规范”提供同一规范的复制、Schema 查看和目录验证入口。合法 v2 文件只能通过 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用该流程。
+Schema 详见 [`svlt-catalog-schema-v3.md`](svlt-catalog-schema-v3.md)；v2 仅见于 [`svlt-catalog-schema-v2.md`](svlt-catalog-schema-v2.md) 的迁移说明。App 不展示 policy 正文；`SVLTAgentCatalogPolicy` 同时生成文档 policy block 和 MCP `agent_secret_usage_policy` 响应。

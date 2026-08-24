@@ -183,6 +183,7 @@
 		BDA0C8CB3215A295FE6B9F6C /* VaultExecution.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3344061D1CB333FC44C63D40 /* VaultExecution.framework */; };
 		BF4ECCD5DD42D59FD701056E /* SensitiveInformationScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAD73FFDABD6B405BB48E189 /* SensitiveInformationScannerTests.swift */; };
 		C1235ABFAA023F59CB59A04D /* VaultIPC.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 892621C9C26F5216B8775FB1 /* VaultIPC.framework */; };
+		C28A1274D281BA15E7BF137C /* SecretCatalogMutation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7727CE9668BF5CB515AC8D33 /* SecretCatalogMutation.swift */; };
 		C6BCEC7AF43A86DD61FD749A /* AppControlMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4788474AB5C8BDC376311F3E /* AppControlMessageTests.swift */; };
 		C7003B619A9A033193072F17 /* VaultExecution.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3344061D1CB333FC44C63D40 /* VaultExecution.framework */; };
 		C86474E46600F3533C847062 /* OutputSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B16271D5D5E20F9F18EBC90 /* OutputSanitizerTests.swift */; };
@@ -665,6 +666,7 @@
 		736DED4C825BC0FC40E62261 /* FileRecordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRecordStore.swift; sourceTree = "<group>"; };
 		75703E0755FD23FC27F695C0 /* AgentServiceStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentServiceStatusView.swift; sourceTree = "<group>"; };
 		768013F2F7664CD707423121 /* EncryptedRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedRecord.swift; sourceTree = "<group>"; };
+		7727CE9668BF5CB515AC8D33 /* SecretCatalogMutation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretCatalogMutation.swift; sourceTree = "<group>"; };
 		789685CA898EE7C3A92A1E10 /* SensitiveCatalogEditorPresetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogEditorPresetTests.swift; sourceTree = "<group>"; };
 		78BBA1FE6BD05465B9F51546 /* ExecutionBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionBroker.swift; sourceTree = "<group>"; };
 		78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogDocumentStore.swift; sourceTree = "<group>"; };
@@ -872,6 +874,7 @@
 				768013F2F7664CD707423121 /* EncryptedRecord.swift */,
 				22BC08561F88871846708BAB /* IndexedEncryptedRecord.swift */,
 				63E01AD1E1D1374C09F00CB4 /* SecretCatalog.swift */,
+				7727CE9668BF5CB515AC8D33 /* SecretCatalogMutation.swift */,
 				42E53774B009301A04C7C910 /* SecretCatalogV2.swift */,
 				4DA7EB90347AEC007F155AF9 /* SecretCatalogWrite.swift */,
 				87CB0F3CFBCEDD42E2F33F5E /* SecretOperation.swift */,
@@ -1745,6 +1748,7 @@
 				D1F7A4C5AC84BB8A08A96088 /* RecordStore.swift in Sources */,
 				30371264025700FF2353F001 /* SVLTAgentCatalogPolicy.swift in Sources */,
 				49D708F4FD0463DF3D1A0338 /* SecretCatalog.swift in Sources */,
+				C28A1274D281BA15E7BF137C /* SecretCatalogMutation.swift in Sources */,
 				8C7F6D53955EAB9AD1C72CB9 /* SecretCatalogSelectionStore.swift in Sources */,
 				A2332007B489442CDA000837 /* SecretCatalogV2.swift in Sources */,
 				E1FF7A77611A786DB9618BED /* SecretCatalogWrite.swift in Sources */,

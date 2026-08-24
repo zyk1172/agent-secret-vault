@@ -220,6 +220,8 @@ public final class AppIPCController: @unchecked Sendable {
                 code = "INTEGRITY_MISSING"
             case .externalModification:
                 code = "EXTERNAL_CATALOG_MODIFICATION"
+            case .pendingExternalChange:
+                code = "PENDING_EXTERNAL_CHANGE"
             case .invalidCatalog:
                 code = "CATALOG_INVALID"
             case .agentWriteNotAllowed:

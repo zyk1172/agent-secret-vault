@@ -101,9 +101,10 @@ For Codex, Claude, Hermes, or another MCP-capable agent, follow
 
 Short version:
 
-1. Open SVLT and select the `敏感信息.md` that will be the active
-   SVLT-managed Catalog v2 document. It contains Index/Entry metadata and
-   opaque `secret://` references; encrypted records remain in the local vault.
+1. Open SVLT and select or create the `敏感信息.md` that will be the active
+   SVLT Catalog v3 document. It is ordinary Obsidian Markdown with real `##`
+   group headings, `###` entry headings, stable SVLT markers, and opaque
+   `secret://` references; encrypted records remain in the local vault.
    Only credentials the user chooses to manage with SVLT belong in this path.
 2. Use the generated MCP config:
 
@@ -113,8 +114,10 @@ Short version:
 
 3. Paste the required [Agent sensitive-information policy](docs/svlt-agent-policy-zh-CN.md)
    into the agent's system prompt, project rule, or workspace instruction.
-   This makes the App-selected index authoritative for SVLT-managed data;
-   agents must not read the index directly or modify it outside Catalog MCP.
+   The policy explains the accepted semantic model and approval boundary;
+   agents may use Catalog MCP, while users, Obsidian, scripts, and other
+   writers may also edit valid v3 Markdown. The coordinator validates and
+   reconciles those edits instead of treating the writer transport as risk.
    It does not override a user-selected QNAP MCP, external provider, logged-in
    CLI, environment variable, third-party password manager, or explicitly
    supplied plaintext for the current operation.
@@ -132,22 +135,27 @@ source: current plaintext and explicitly selected external providers take
 precedence over SVLT search. The tool returns Entry-centric results containing
 the Index, Entry, endpoint, allowed visible metadata, and opaque `secretRef`
 values; it never returns plaintext, catalog paths, or the full `敏感信息.md`.
-Managed catalog writes must use the Catalog MCP tools and the App-controlled
-Catalog mutation policy. Creating Index/Entry records, ordinary metadata, empty
-secret placeholders, and validation are safe mutations and are silent by default;
-binding/replacing/deleting existing secrets or changing their targets requires local
-approval. Obsidian and agents must not directly edit the Markdown/JSON representation.
+Catalog writes are evaluated by semantic diff. Creating groups/entries, ordinary
+metadata, empty password placeholders, and validation are safe by default;
+binding/replacing/deleting existing secrets or changing their targets requires
+local approval. v3 writers must preserve unrelated Markdown, whitespace, notes,
+and WikiLinks; the coordinator applies source-range patches and never
+canonicalizes the whole document for a single edit. Use `secret_catalog_batch`
+for one-lock, one-revision multi-operation changes.
 
 ## Obsidian workflow
 
 1. Open SVLT.
 2. Install the Obsidian plugin from `obsidian-plugin/svlt`.
 3. Pair the plugin with the local SVLT app.
-4. Select sensitive text in Obsidian and encrypt it into an opaque `secret://`
+4. Open the v3 `敏感信息.md` in Obsidian and edit headings, notes, and
+   `[[WikiLinks]]` normally. The plugin validates changes after a short debounce
+   and reports invalid or approval-required semantic changes in Chinese.
+5. Select sensitive text in Obsidian and encrypt it into an opaque `secret://`
    reference.
-5. Use the App's local scan to review replacement candidates before converting
+6. Use the App's local scan to review replacement candidates before converting
    them to references.
-6. Use reveal for the current paragraph only when local display is needed. The
+7. Use reveal for the current paragraph only when local display is needed. The
    app opens an app-owned temporary reveal window; the plugin receives status
    only, not decrypted values.
 

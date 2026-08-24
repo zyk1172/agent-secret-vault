@@ -119,17 +119,16 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 
 策略要求 Agent：
 
-1. 将 App 选定的 v2 `敏感信息.md` 视为 SVLT managed catalog 的权威目录；每条数据属于 Index → Entry → Field，每个引用对应本地保险箱中的独立加密记录。
-2. 仅通过 Catalog MCP/IPC 使用 `secret://...` 引用或允许返回的非敏感元数据，绝不直接读取、解析或修改 managed 文件。
-3. 遵守 `svlt-catalog-schema-v2.md`：普通字段使用 `value`，秘密字段只使用 `secretRef`，禁止秘密明文。
-4. 不得把笔记、历史、日志、缓存或模型记忆冒充为 SVLT Secret；环境变量、外部 provider 和用户当前明文属于其各自安全规则，不由 SVLT 接管。
-5. 先判断用户是否选择 SVLT；选择后再检查 SVLT 状态并按具体动作使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具；`locked` 不是全局门禁。
-6. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` 按非敏感上下文自动发现引用；用户已明确选择 plaintext 或外部 provider 时不得搜索并替换来源。
-7. 用 Index、Entry、alias、tag、endpoint 和允许返回的字段区分候选；同一目标下的不同 Entry 不得合并。`secret_search` 不返回源文件路径、行号或完整目录内容。
-8. 新建 Index/Entry、普通元数据、空 Secret placeholder 和 `secret_catalog_validate` 属于安全目录编辑，默认静默完成，由 App-control 安全编辑开关控制；绑定、替换或删除已有 Secret、改变秘密目标/策略或批量操作必须本机审批。MCP 不携带或伪造 lease/nonce。Obsidian 不得直接写 managed catalog。
-9. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；SVLT 派生明文不得离开专用操作。用户明确选择 plaintext 或外部 provider 时，SVLT 的工具不可用、策略拒绝或 Catalog 命中不应单独阻断本次操作。
-
-10. `USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization。只有用户明确要求“存入 SVLT”或“使用 SVLT 中的那个”时，才进入 `SVLT_MANAGED_OPERATION`；当前选择覆盖上一轮的 SVLT 或 external provider 选择。
+1. 将 App 选定或已识别的 v3 `敏感信息.md` 视为 SVLT managed catalog；`##` 是分组，`###` 是条目，marker/schema 携带稳定 ID。
+2. 普通字段保留为 Markdown；密码字段只能是空 placeholder 或合法 `secret://`，绝不写入秘密明文。
+3. 可以使用 App、MCP、Obsidian、编辑器或脚本修改；无论渠道如何，都必须输出符合 v3 的结构。
+4. 修改时只改变目标 source range，保留用户原有 Markdown、双链、备注、空行和非目标区域；不要整文件 canonicalize。
+5. 不得把 policy block 当作分组、条目、字段、搜索结果或计数，也不得创建同名“SVLT 管理规范”记录。
+6. 先判断用户是否选择 SVLT；当前明确提供的明文或明确选择的外部 provider 不需要 SVLT lookup、比较或替换。`locked` 不是全局门禁。
+7. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` / `secret_catalog_search` 按非敏感上下文发现 opaque 引用；不同 Entry 不得合并。
+8. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以静默；绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。
+9. 合法普通批量操作不因“批量”本身升级；修改后必须调用 `secret_catalog_validate`，失败时停止，不要猜测修复结构。
+10. 低风险操作不代表获得明文导出权限；SVLT 派生明文只能留在获批的专用本地操作中，不能写回 Catalog、shell、日志、聊天或外发。
 
 ## 7. Agent 启动自检
 

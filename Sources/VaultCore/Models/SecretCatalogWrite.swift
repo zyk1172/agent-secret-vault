@@ -5,6 +5,7 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
     case legacyCatalogUnsupported
     case integrityMissing
     case externalModification
+    case pendingExternalChange
     case invalidCatalog
     case agentWriteNotAllowed
     case revisionConflict

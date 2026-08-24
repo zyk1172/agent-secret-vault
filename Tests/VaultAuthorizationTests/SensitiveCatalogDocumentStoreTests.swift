@@ -5,8 +5,13 @@ import Testing
 @testable import VaultService
 
 private let storeIndexID = "0123456789ABCDEFGHJKMNPQRS"
+private let storeSecondIndexID = "0123456789ABCDEFGHJKMNPQRX"
+private let storeThirdIndexID = "0123456789ABCDEFGHJKMNPQRY"
 private let storeEntryID = "0123456789ABCDEFGHJKMNPQRT"
+private let storeSecondEntryID = "0123456789ABCDEFGHJKMNPQRV"
+private let storeTemporaryEntryID = "0123456789ABCDEFGHJKMNPQRW"
 private let storeSecretReference = "secret://0123456789ABCDEFGHJKMNPQRV"
+private let storeAlternateSecretReference = "secret://0123456789ABCDEFGHJKMNPQRW"
 
 private struct CatalogStoreFixture {
     let root: URL
@@ -65,7 +70,7 @@ private struct CatalogStoreFixture {
     #expect(!markdown.contains("password-plaintext-canary"))
 }
 
-@Test func catalogStoreRejectsExternalModificationAndRevisionConflicts() async throws {
+@Test func catalogStoreReconcilesSafeExternalMarkdownWithoutTreatingRawHashAsSemanticState() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = SensitiveCatalogDocumentStore(
@@ -81,16 +86,231 @@ private struct CatalogStoreFixture {
         #expect(error as? SensitiveCatalogDocumentStoreError == .revisionConflict)
     }
 
-    try "\(try String(contentsOf: fixture.document, encoding: .utf8))\n<!-- external -->\n"
+    try "\(try String(contentsOf: fixture.document, encoding: .utf8))\n<!-- 用户保留的 Markdown 注释 -->\n"
         .write(to: fixture.document, atomically: true, encoding: .utf8)
-    #expect(await store.integrityStatus() == .externalModification)
-    do {
+    let formattingOnly = try await store.snapshot()
+    #expect(formattingOnly.revision == first.revision)
+    #expect(formattingOnly.integrity == .verified)
+
+    var sidecar = try JSONDecoder().decode(
+        CatalogIntegrityRecord.self,
+        from: Data(contentsOf: fixture.integrity)
+    )
+    #expect(sidecar.revision == first.revision)
+    let semanticDigest = sidecar.semanticSHA256
+
+    let markdown = try String(contentsOf: fixture.document, encoding: .utf8)
+    try markdown.replacingOccurrences(of: "## QNAP", with: "## NAS 管理").write(
+        to: fixture.document,
+        atomically: true,
+        encoding: .utf8
+    )
+    let semanticChange = try await store.snapshot()
+    #expect(semanticChange.revision == first.revision + 1)
+    #expect(semanticChange.document.indexes.first?.title == "NAS 管理")
+    #expect(try String(contentsOf: fixture.document, encoding: .utf8).contains("## NAS 管理"))
+    sidecar = try JSONDecoder().decode(CatalogIntegrityRecord.self, from: Data(contentsOf: fixture.integrity))
+    #expect(sidecar.revision == semanticChange.revision)
+    #expect(sidecar.semanticSHA256 != semanticDigest)
+}
+
+@Test func catalogStoreAcceptsHandCreatedV3WithoutReferencesAndKeepsMarkdownBytes() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: storeIndexID, title: "手工分组")],
+        entries: [
+            SecretCatalogEntry(
+                id: storeEntryID,
+                indexId: storeIndexID,
+                title: "手工条目",
+                notes: "保留 [[部署说明]]"
+            )
+        ]
+    )
+    let original = Data(try SensitiveCatalogDocumentCodec.encode(document).utf8)
+    try original.write(to: fixture.document, options: [.atomic])
+
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let accepted = try await store.snapshot()
+
+    #expect(accepted.revision == 1)
+    #expect(accepted.integrity == .verified)
+    #expect(accepted.document == document)
+    #expect(try Data(contentsOf: fixture.document) == original)
+    #expect(FileManager.default.fileExists(atPath: fixture.integrity.path))
+}
+
+@Test func catalogStoreRequiresExplicitAdoptionForHandCreatedV3WithSecretReferences() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: storeIndexID, title: "手工分组")],
+        entries: [
+            SecretCatalogEntry(
+                id: storeEntryID,
+                indexId: storeIndexID,
+                title: "手工条目",
+                fields: [
+                    SecretCatalogFieldValue(
+                        key: "password",
+                        label: "密码",
+                        type: .secret,
+                        secretRef: storeSecretReference
+                    )
+                ]
+            )
+        ]
+    )
+    let original = Data(try SensitiveCatalogDocumentCodec.encode(document).utf8)
+    try original.write(to: fixture.document, options: [.atomic])
+
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    await #expect(throws: SensitiveCatalogDocumentStoreError.integrityMissing) {
         _ = try await store.snapshot()
-        Issue.record("expected external modification detection")
-    } catch {
-        #expect(error as? SensitiveCatalogDocumentStoreError == .externalModification)
     }
-    _ = first
+    let adopted = try await store.adoptExternalV3()
+
+    #expect(adopted.revision == 1)
+    #expect(adopted.document == document)
+    #expect(try Data(contentsOf: fixture.document) == original)
+}
+
+@Test func catalogStorePausesHighRiskExternalSecretChangesUntilExplicitAcceptance() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let first = try await store.createIndex(title: "QNAP")
+    let indexID = try #require(first.document.indexes.first?.id)
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: indexID,
+        title: "QNAP 登录",
+        fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)]
+    )
+    let withEntry = try await store.createEntry(entry, expectedRevision: first.revision)
+    let bound = try await store.bindSecret(
+        storeSecretReference,
+        toFieldKey: "password",
+        entryID: entry.id,
+        expectedRevision: withEntry.revision
+    )
+    let before = try Data(contentsOf: fixture.document)
+    let originalMarkdown = String(decoding: before, as: UTF8.self)
+    try originalMarkdown.replacingOccurrences(
+        of: storeSecretReference,
+        with: storeAlternateSecretReference
+    ).write(to: fixture.document, atomically: true, encoding: .utf8)
+
+    #expect(await store.integrityStatus() == .pendingExternalChange)
+    let pending = try await store.pendingExternalChange()
+    #expect(pending.acceptedRevision == bound.revision)
+    #expect(pending.semanticDiff.requiresApproval)
+    #expect(pending.semanticDiff.referencedSecretRefs == [storeAlternateSecretReference, storeSecretReference].sorted())
+    await #expect(throws: SensitiveCatalogDocumentStoreError.pendingExternalChange) {
+        _ = try await store.snapshot()
+    }
+
+    let accepted = try await store.acceptPendingExternalChange()
+    #expect(accepted.revision == bound.revision + 1)
+    #expect(accepted.document.entries.first?.fields.first?.secretRef == storeAlternateSecretReference)
+    #expect(try Data(contentsOf: fixture.document) != before)
+
+    let acceptedMarkdown = try String(contentsOf: fixture.document, encoding: .utf8)
+    try acceptedMarkdown.replacingOccurrences(
+        of: storeAlternateSecretReference,
+        with: "password-plaintext-canary"
+    ).write(to: fixture.document, atomically: true, encoding: .utf8)
+    #expect(await store.integrityStatus() == .invalid)
+    await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
+        _ = try await store.snapshot()
+    }
+}
+
+@Test func catalogStoreAppliesMixedBatchAsOneRevisionAndOneMarkdownWrite() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let first = try await store.createIndex(title: "原分组")
+    let originalIndexID = try #require(first.document.indexes.first?.id)
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: originalIndexID,
+        title: "保留条目",
+        fields: [
+            SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("admin"))
+        ]
+    )
+    let withEntry = try await store.createEntry(entry, expectedRevision: first.revision)
+    let secondEntry = SecretCatalogEntry(
+        id: storeSecondEntryID,
+        indexId: originalIndexID,
+        title: "待删除条目"
+    )
+    let withSecondEntry = try await store.createEntry(secondEntry, expectedRevision: withEntry.revision)
+    let secondIndex = SecretCatalogIndex(id: storeSecondIndexID, title: "目标分组")
+    let withSecondIndex = try await store.updateIndex(
+        SecretCatalogIndex(id: originalIndexID, title: "原分组", aliases: ["旧别名"]),
+        expectedRevision: withSecondEntry.revision
+    )
+    let seeded = try await store.createIndex(title: "待删除分组", expectedRevision: withSecondIndex.revision)
+    let beforeRevision = seeded.revision
+
+    let mutation = CatalogBatchMutation(operations: [
+        .createIndex(secondIndex),
+        .createIndex(SecretCatalogIndex(id: storeThirdIndexID, title: "临时分组")),
+        .updateIndex(SecretCatalogIndex(id: storeSecondIndexID, title: "目标分组", aliases: ["新别名"])),
+        .addField(
+            entryID: storeEntryID,
+            field: SecretCatalogFieldValue(key: "temporary", label: "临时", type: .text, value: .string("x"))
+        ),
+        .updateField(
+            entryID: storeEntryID,
+            field: SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("operator"))
+        ),
+        .removeField(entryID: storeEntryID, key: "temporary"),
+        .moveEntry(id: storeEntryID, toIndexID: storeSecondIndexID),
+        .createEntry(SecretCatalogEntry(id: storeTemporaryEntryID, indexId: storeSecondIndexID, title: "临时条目")),
+        .updateEntry(SecretCatalogEntry(id: storeTemporaryEntryID, indexId: storeSecondIndexID, title: "更新后临时条目")),
+        .deleteEntry(id: storeTemporaryEntryID),
+        .deleteEntry(id: storeSecondEntryID),
+        .deleteIndex(id: storeThirdIndexID),
+        .deleteIndex(id: originalIndexID),
+        .deleteIndex(id: seeded.document.indexes.last?.id ?? "")
+    ])
+    let expectedDocument = try mutation.applying(to: seeded.document)
+    let current = try await store.snapshot()
+    #expect(current.document == seeded.document)
+    let expectedCurrentDocument = try mutation.applying(to: current.document)
+    #expect(expectedCurrentDocument == expectedDocument)
+    let result = try await store.applyBatch(mutation, expectedRevision: beforeRevision)
+
+    #expect(result.revision == beforeRevision + 1)
+    #expect(expectedDocument.indexes.map(\.id) == [storeSecondIndexID])
+    #expect(result.document == expectedDocument)
+    #expect(result.document.indexes.map(\.id) == [storeSecondIndexID])
+    #expect(result.document.indexes.first?.aliases == ["新别名"])
+    #expect(result.document.entries.count == 1)
+    #expect(result.document.entries.first?.id == storeEntryID)
+    #expect(result.document.entries.first?.indexId == storeSecondIndexID)
+    #expect(result.document.entries.first?.fields.first?.value == .string("operator"))
 }
 
 @Test func catalogStoreSerializesConcurrentMutationsAcrossStoreInstances() async throws {
@@ -175,7 +395,7 @@ private struct CatalogStoreFixture {
             ]
         )
     ])
-    let original = try SensitiveCatalogDocumentCodec.encode(document)
+    let original = try SensitiveCatalogDocumentCodec.encodeV2(document)
     try original.write(to: fixture.document, atomically: true, encoding: .utf8)
 
     let store = SensitiveCatalogDocumentStore(
@@ -198,7 +418,7 @@ private struct CatalogStoreFixture {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let malformed = """
-    \(SensitiveCatalogDocumentCodec.marker)
+    \(SensitiveCatalogDocumentCodec.v2Marker)
     # 敏感信息
 
     ## QNAP
@@ -222,16 +442,11 @@ private struct CatalogStoreFixture {
     #expect(!FileManager.default.fileExists(atPath: fixture.integrity.path))
 }
 
-@Test func catalogAdoptionPreservesPolicyEntryAndSecretReferenceSet() async throws {
+@Test func catalogAdoptionKeepsPolicyBlockOutsideCatalogModelAndPreservesReferences() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
-    let policyIndexID = "0123456789ABCDEFGHJKMNPQRX"
-    let policyEntryID = "0123456789ABCDEFGHJKMNPQRY"
-    let policyRules = "敏感信息.md 是 SVLT managed Catalog；查询使用 secret_catalog_search / secret_catalog_get；修改使用 Catalog MCP；Secret 只能保存 secret://；普通 metadata 服从 agentVisible / searchable；不得修改 schema、id、indexId、revision 或 integrity marker；不支持的结构必须停止；修改后调用 secret_catalog_validate；写入需要 App 当前有效授权；用户明确选择 plaintext 或 external provider 时 SVLT 不强制接管；不得把 SVLT-derived plaintext 洗白。"
-
     let credentialIndex = SecretCatalogIndex(id: storeIndexID, title: "QNAP")
-    let policyIndex = SecretCatalogIndex(id: policyIndexID, title: "SVLT 管理规范")
     let credentialEntry = SecretCatalogEntry(
         id: storeEntryID,
         indexId: storeIndexID,
@@ -246,28 +461,14 @@ private struct CatalogStoreFixture {
             )
         ]
     )
-    let policyEntry = SecretCatalogEntry(
-        id: policyEntryID,
-        indexId: policyIndexID,
-        title: "Agent 写入规范",
-        type: "policy",
-        fields: [
-            SecretCatalogFieldValue(
-                key: "rules",
-                label: "写入规则",
-                type: .multiline,
-                value: .string(policyRules)
-            )
-        ]
-    )
     let document = SecretCatalogDocument(
-        indexes: [credentialIndex, policyIndex],
-        entries: [credentialEntry, policyEntry]
+        indexes: [credentialIndex],
+        entries: [credentialEntry]
     )
     let originalReferences = Set(document.entries.flatMap { entry in
         entry.fields.compactMap(\.secretRef)
     })
-    let originalMarkdown = try SensitiveCatalogDocumentCodec.encode(document)
+    let originalMarkdown = try SensitiveCatalogDocumentCodec.encodeV2(document)
     try originalMarkdown.write(to: fixture.document, atomically: true, encoding: .utf8)
 
     let store = SensitiveCatalogDocumentStore(
@@ -283,29 +484,14 @@ private struct CatalogStoreFixture {
     #expect(adopted.revision == 1)
     #expect(adopted.integrity == .verified)
     #expect(adoptedReferences == originalReferences)
-    let hasPolicyEntry = adopted.document.entries.contains { entry in
-        let idMatches = entry.id == policyEntryID
-        let typeMatches = entry.type == "policy"
-        let titleMatches = entry.title == "Agent 写入规范"
-        return idMatches && typeMatches && titleMatches
-    }
-    #expect(hasPolicyEntry)
-
-    let search = SecretCatalogEntrySearchService()
-    let entryResult = search.search(query: "Agent 写入规范", document: adopted.document)
-    #expect(entryResult.status == .found)
-    #expect(entryResult.matches.count == 1)
-    #expect(entryResult.matches.first?.index.title == "SVLT 管理规范")
-    #expect(entryResult.matches.first?.entry.type == "policy")
-    #expect(entryResult.matches.first?.entry.fields.allSatisfy { $0.secretRef == nil } == true)
-
-    let indexResult = search.search(query: "SVLT 管理规范", document: adopted.document)
-    #expect(indexResult.status == .found)
-    #expect(indexResult.matches.first?.entry.title == "Agent 写入规范")
+    #expect(adopted.document.indexes.count == 1)
+    #expect(adopted.document.entries.count == 1)
+    #expect(!adopted.document.indexes.contains { $0.title == "SVLT 管理规范" })
+    #expect(!adopted.document.entries.contains { $0.title == "Agent 写入规范" })
 
     let rewritten = try String(contentsOf: fixture.document, encoding: .utf8)
-    #expect(rewritten.contains("Agent 写入规范"))
-    #expect(rewritten.contains("type\" : \"policy\""))
+    #expect(rewritten.contains("SVLT-POLICY-BEGIN"))
+    #expect(rewritten.contains("SVLT 智能体写入规范"))
     #expect(rewritten.contains(storeSecretReference))
     #expect(FileManager.default.fileExists(atPath: fixture.integrity.path))
 }

@@ -5,7 +5,7 @@ describe("pairing", () => {
   it("blocks operations when the app is locked or unreachable", () => {
     expect(interpretWorkbenchStatus({ reachable: false })).toEqual({
       canOperate: false,
-      message: "SVLT is unavailable."
+      message: "SVLT 服务不可用。"
     });
 
     expect(interpretWorkbenchStatus({
@@ -21,7 +21,7 @@ describe("pairing", () => {
       }
     })).toEqual({
       canOperate: false,
-      message: "Unlock SVLT to continue."
+      message: "请先解锁 SVLT。"
     });
   });
 
@@ -39,7 +39,7 @@ describe("pairing", () => {
       }
     })).toEqual({
       canOperate: false,
-      message: "SVLT IPC is unavailable."
+      message: "SVLT 本机通道不可用。"
     });
   });
 
@@ -57,7 +57,7 @@ describe("pairing", () => {
       }
     })).toEqual({
       canOperate: true,
-      message: "SVLT is ready."
+      message: "SVLT 已就绪。"
     });
   });
 });

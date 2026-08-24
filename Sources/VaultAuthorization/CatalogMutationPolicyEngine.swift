@@ -31,15 +31,18 @@ public struct CatalogMutationDescriptor: Codable, Equatable, Sendable {
     public let kind: CatalogMutationKind
     public let touchesExistingSecret: Bool
     public let changesSecretTarget: Bool
+    public let semanticKinds: [CatalogSemanticChangeKind]
 
     public init(
         kind: CatalogMutationKind,
         touchesExistingSecret: Bool = false,
-        changesSecretTarget: Bool = false
+        changesSecretTarget: Bool = false,
+        semanticKinds: [CatalogSemanticChangeKind] = []
     ) {
         self.kind = kind
         self.touchesExistingSecret = touchesExistingSecret
         self.changesSecretTarget = changesSecretTarget
+        self.semanticKinds = semanticKinds
     }
 }
 
@@ -54,14 +57,22 @@ public struct CatalogMutationPolicyEngine: Sendable {
 
     public func evaluate(_ descriptor: CatalogMutationDescriptor) -> CatalogMutationDecision {
         switch descriptor.kind {
-        case .plaintextSecretInCatalog, .directManagedFileWrite,
-             .forgedSecretReference, .agentSelfApproval:
+        case .plaintextSecretInCatalog, .forgedSecretReference, .agentSelfApproval:
             return .denied
+
+        case .directManagedFileWrite:
+            return aggregate(descriptor.semanticKinds.map { evaluateSemantic($0) })
+
+        case .batchMutation:
+            if descriptor.semanticKinds.isEmpty {
+                return descriptor.touchesExistingSecret || descriptor.changesSecretTarget ? .approvalRequired : .silent
+            }
+            return aggregate(descriptor.semanticKinds.map { evaluateSemantic($0) })
 
         case .bindExistingSecret, .replaceSecret, .deleteSecret,
              .deleteSecretBearingEntry, .deleteSecretBearingIndex,
              .changeSecretType, .changeSecretTarget, .changeSecretPolicy,
-             .batchMutation, .importExport:
+             .importExport:
             return .approvalRequired
 
         case .patchMetadata:
@@ -74,6 +85,38 @@ public struct CatalogMutationPolicyEngine: Sendable {
              .createSecretPlaceholder, .validate:
             return .silent
         }
+    }
+
+    public func evaluate(
+        _ diff: CatalogSemanticDiff,
+        transport: CatalogMutationKind = .directManagedFileWrite
+    ) -> CatalogMutationDecision {
+        evaluate(CatalogMutationDescriptor(
+            kind: transport,
+            touchesExistingSecret: diff.touchesExistingSecret,
+            changesSecretTarget: diff.changesSecretTarget,
+            semanticKinds: diff.changes.map(\.kind)
+        ))
+    }
+
+    private func evaluateSemantic(_ kind: CatalogSemanticChangeKind) -> CatalogMutationDecision {
+        switch kind {
+        case .bindExistingSecret, .replaceSecret, .deleteSecret,
+             .deleteSecretBearingEntry, .deleteSecretBearingIndex,
+             .changeSecretType, .changeSecretTarget:
+            return .approvalRequired
+        case .createIndex, .updateIndexMetadata, .deleteIndex,
+             .createEntry, .updateEntryMetadata, .moveEntry, .deleteEntry,
+             .addMetadataField, .updateMetadataField, .removeMetadataField,
+             .createSecretPlaceholder:
+            return .silent
+        }
+    }
+
+    private func aggregate(_ decisions: [CatalogMutationDecision]) -> CatalogMutationDecision {
+        if decisions.contains(.denied) { return .denied }
+        if decisions.contains(.approvalRequired) { return .approvalRequired }
+        return .silent
     }
 
     public func requireSilent(_ descriptor: CatalogMutationDescriptor) throws {
