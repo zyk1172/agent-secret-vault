@@ -22,7 +22,7 @@ import Foundation
 }
 
 @Test func workbenchCopyProvidesCopyableMcpConfigAndPrompt() {
-    #expect(VaultWorkbenchCopy.mcpConfig.contains("\"svlt\""))
+    #expect(VaultWorkbenchCopy.mcpConfig.contains("\"SVLT\""))
     #expect(VaultWorkbenchCopy.mcpConfig.contains("\"command\": \"/bin/zsh\""))
     #expect(VaultWorkbenchCopy.mcpConfig.contains("\"-lc\""))
     #expect(VaultWorkbenchCopy.mcpConfig.contains("$HOME/Library/Application Support/AgentSecretVault/MCP/dist/server.js"))

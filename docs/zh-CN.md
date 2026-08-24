@@ -67,7 +67,7 @@ Obsidian 插件安装方式：
 ```json
 {
   "mcpServers": {
-    "svlt": {
+    "SVLT": {
       "command": "/bin/zsh",
       "args": [
         "-lc",

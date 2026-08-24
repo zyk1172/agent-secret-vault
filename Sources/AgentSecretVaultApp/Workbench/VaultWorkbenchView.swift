@@ -25,7 +25,7 @@ public enum VaultWorkbenchCopy {
         """
         {
           "mcpServers": {
-            "svlt": {
+            "SVLT": {
               "command": "/bin/zsh",
               "args": [
                 "-lc",
@@ -39,7 +39,7 @@ public enum VaultWorkbenchCopy {
 
     public static var agentPrompt: String {
         """
-        SVLT 是 opt-in。看到 secret:// 或用户明确要求使用 SVLT 时，使用 svlt；用户当前明确提供并要求使用的明文不受 SVLT 强制接管。
+        SVLT 是 opt-in。看到 secret:// 或用户明确要求使用 SVLT 时，使用 SVLT；用户当前明确提供并要求使用的明文不受 SVLT 强制接管。
         不要把 SVLT 解密得到的明文交给普通 shell/curl；也不要把用户明确选择的明文自动转换成 secret://。
 
         \(SVLTAgentCatalogPolicy.text)

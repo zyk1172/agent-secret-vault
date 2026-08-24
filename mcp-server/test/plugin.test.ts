@@ -49,7 +49,7 @@ describe("Codex plugin package", () => {
 
   it("configures the MCP server through PLUGIN_ROOT", async () => {
     const mcp = await readJson(path.join(pluginRoot, ".mcp.json"));
-    const server = mcp.mcpServers.svlt;
+    const server = mcp.mcpServers.SVLT;
 
     expect(server.command).toBe("node");
     expect(server.args.join(" ")).toContain("${PLUGIN_ROOT}");
@@ -95,7 +95,7 @@ describe("Codex plugin package", () => {
       result: { plaintext: true }
     });
     const explicitSVLTIdentity = await runHook(hookScriptPath, {
-      mcpServer: "svlt",
+      mcpServer: "SVLT",
       toolName: "secret_search",
       result: { plaintext: true }
     });

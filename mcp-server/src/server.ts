@@ -1094,7 +1094,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
 
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
-    name: "svlt",
+    name: "SVLT",
     version: "0.1.16"
   });
 

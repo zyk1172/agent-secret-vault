@@ -48,7 +48,7 @@ Agent 不应该把 `secret://...` 当成可读信息。它只是一个不透明�
 ```json
 {
   "mcpServers": {
-    "svlt": {
+    "SVLT": {
       "command": "/bin/zsh",
       "args": [
         "-lc",
