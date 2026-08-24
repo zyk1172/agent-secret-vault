@@ -1103,6 +1103,7 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var draftEndpoints: String
     @State private var draftNotes: String
     @State private var draftFields: [SecretCatalogFieldValue]
+    @State private var pendingSecretInputs: [String: String] = [:]
     @State private var isSaving = false
     @State private var editorError: String?
     @State private var expanded: Bool
@@ -1225,7 +1226,12 @@ private struct SensitiveCatalogEntryRow: View {
                     .font(.headline)
                 Spacer()
                 Button("新增自定义字段") {
-                    let key = "field\(draftFields.count + 1)"
+                    var number = draftFields.count + 1
+                    var key = "field\(number)"
+                    while draftFields.contains(where: { $0.key == key }) {
+                        number += 1
+                        key = "field\(number)"
+                    }
                     draftFields.append(SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
                 }
                 .buttonStyle(.bordered)
@@ -1236,11 +1242,30 @@ private struct SensitiveCatalogEntryRow: View {
                     field: field,
                     entryID: entry.id,
                     fillSecret: fillSecret,
+                    secretInput: Binding(
+                        get: { pendingSecretInputs[field.key] ?? "" },
+                        set: { value in
+                            if value.isEmpty {
+                                pendingSecretInputs.removeValue(forKey: field.key)
+                            } else {
+                                pendingSecretInputs[field.key] = value
+                            }
+                        }
+                    ),
                     onUpdate: { updatedField in
+                        if updatedField.key != field.key,
+                           let pending = pendingSecretInputs.removeValue(forKey: field.key) {
+                            pendingSecretInputs[updatedField.key] = pending
+                        }
+                        guard updatedField.key == field.key || !draftFields.contains(where: { $0.key == updatedField.key }) else {
+                            editorError = "字段 key 已存在，请使用唯一名称"
+                            return
+                        }
                         guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
                         draftFields[currentIndex] = updatedField
                     },
                     onDelete: {
+                        pendingSecretInputs.removeValue(forKey: field.key)
                         guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
                         draftFields.remove(at: currentIndex)
                     },
@@ -1293,6 +1318,19 @@ private struct SensitiveCatalogEntryRow: View {
             tags: Self.csv(draftTags),
             schema: entry.schema
         )
+        guard pendingSecretInputs.values.allSatisfy(\.isEmpty) else {
+            editorError = "请先点击对应字段的“填写秘密”；未提交的输入不会写入目录"
+            return
+        }
+        do {
+            try SecretCatalogDocument(
+                indexes: [SecretCatalogIndex(id: entry.indexId, title: "validation")],
+                entries: [updated]
+            ).validate()
+        } catch {
+            editorError = "字段数据无效，请检查字段 key、类型和值"
+            return
+        }
         Task {
             isSaving = true
             let result = await updateEntry?(updated)
@@ -1301,6 +1339,7 @@ private struct SensitiveCatalogEntryRow: View {
             case .success:
                 editing = false
                 editorError = nil
+                pendingSecretInputs.removeAll()
             case .failure(let error):
                 editorError = error.displayText
             case nil:
@@ -1319,6 +1358,7 @@ private struct SensitiveCatalogEntryRow: View {
         draftEndpoints = value.endpoints.map(Self.endpointLine).joined(separator: "\n")
         draftNotes = value.notes ?? ""
         draftFields = value.fields
+        pendingSecretInputs.removeAll()
     }
 
     private func displayValue(_ field: SecretCatalogFieldValue) -> String {
@@ -1364,6 +1404,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
     let field: SecretCatalogFieldValue
     let entryID: String
     let fillSecret: ((String, String, String, String) async -> String?)?
+    @Binding var secretInput: String
     let onUpdate: (SecretCatalogFieldValue) -> Void
     let onDelete: () -> Void
     let onMoveUp: () -> Void
@@ -1377,7 +1418,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
     @State private var draftBoolean: Bool
     @State private var draftAgentVisible: Bool
     @State private var draftSearchable: Bool
-    @State private var secretInput = ""
     @State private var isSavingSecret = false
     @State private var errorMessage: String?
 
@@ -1385,6 +1425,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
         field: SecretCatalogFieldValue,
         entryID: String,
         fillSecret: ((String, String, String, String) async -> String?)?,
+        secretInput: Binding<String>,
         onUpdate: @escaping (SecretCatalogFieldValue) -> Void,
         onDelete: @escaping () -> Void,
         onMoveUp: @escaping () -> Void,
@@ -1393,6 +1434,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
         self.field = field
         self.entryID = entryID
         self.fillSecret = fillSecret
+        self._secretInput = secretInput
         self.onUpdate = onUpdate
         self.onDelete = onDelete
         self.onMoveUp = onMoveUp
@@ -1465,6 +1507,9 @@ private struct SensitiveCatalogFieldEditorRow: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(secretInput.isEmpty || isSavingSecret || fillSecret == nil || draftKey.isEmpty)
+                        Text("先点“填写秘密”，再保存 Entry")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                 }
             } else {

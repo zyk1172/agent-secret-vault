@@ -763,13 +763,31 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
         let store = try await selectedCatalogStoreForApp()
-        let snapshot = try await store.createIndex(
-            title: title,
-            aliases: aliases,
-            tags: tags,
-            expectedRevision: expectedRevision
-        )
-        return CatalogWriteResult(revision: snapshot.revision)
+        do {
+            let snapshot = try await store.createIndex(
+                title: title,
+                aliases: aliases,
+                tags: tags,
+                expectedRevision: expectedRevision
+            )
+            return CatalogWriteResult(revision: snapshot.revision)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            guard error == .revisionConflict else {
+                throw catalogAgentError(for: error)
+            }
+            do {
+                let current = try await store.snapshot()
+                let snapshot = try await store.createIndex(
+                    title: title,
+                    aliases: aliases,
+                    tags: tags,
+                    expectedRevision: current.revision
+                )
+                return CatalogWriteResult(revision: snapshot.revision)
+            } catch let retryError as SensitiveCatalogDocumentStoreError {
+                throw catalogAgentError(for: retryError)
+            }
+        }
     }
 
     public func catalogCreateEntry(
@@ -803,11 +821,27 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             notes: request.notes,
             tags: request.tags
         )
-        let snapshot = try await store.createEntry(entry, expectedRevision: expectedRevision)
-        return CatalogWriteResult(
-            revision: snapshot.revision,
-            entry: catalogSearchService.get(entryID: entry.id, document: snapshot.document).matches.first?.entry
-        )
+        do {
+            let snapshot = try await store.createEntry(entry, expectedRevision: expectedRevision)
+            return CatalogWriteResult(
+                revision: snapshot.revision,
+                entry: catalogSearchService.get(entryID: entry.id, document: snapshot.document).matches.first?.entry
+            )
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            guard error == .revisionConflict else {
+                throw catalogAgentError(for: error)
+            }
+            do {
+                let current = try await store.snapshot()
+                let snapshot = try await store.createEntry(entry, expectedRevision: current.revision)
+                return CatalogWriteResult(
+                    revision: snapshot.revision,
+                    entry: catalogSearchService.get(entryID: entry.id, document: snapshot.document).matches.first?.entry
+                )
+            } catch let retryError as SensitiveCatalogDocumentStoreError {
+                throw catalogAgentError(for: retryError)
+            }
+        }
     }
 
     public func catalogUpdateEntry(
@@ -867,12 +901,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 revision: updated.revision,
                 entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
             )
-        } catch SensitiveCatalogDocumentStoreError.revisionConflict {
-            throw SecretCatalogAgentError.revisionConflict
-        } catch SensitiveCatalogDocumentStoreError.invalidOperation {
-            throw SecretCatalogAgentError.invalidOperation
-        } catch {
-            throw SecretCatalogAgentError.invalidCatalog
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw catalogAgentError(for: error)
         }
     }
 
@@ -963,13 +993,41 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         let secret = try await textEncryptor.encryptText(plaintext, label: label, policy: policy)
-        let updated = try await catalogDocumentStore!.bindSecret(
-            secret.description,
-            toFieldKey: key,
-            entryID: entryID,
-            expectedRevision: snapshot.revision
-        )
-        return (secret.description, updated.revision)
+        do {
+            let updated = try await catalogDocumentStore!.bindSecret(
+                secret.description,
+                toFieldKey: key,
+                entryID: entryID,
+                expectedRevision: snapshot.revision
+            )
+            return (secret.description, updated.revision)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            guard error == .revisionConflict else {
+                throw catalogAgentError(for: error)
+            }
+
+            // Filling an empty placeholder is safe to retry with the same
+            // already-encrypted reference. Never overwrite a concurrent bind.
+            let current = try await catalogSnapshotForAgent()
+            guard let currentEntry = current.document.entries.first(where: { $0.id == entryID }),
+                  let currentField = currentEntry.fields.first(where: { $0.key == key }),
+                  currentField.type.isSecret,
+                  currentField.secretRef == nil
+            else {
+                throw SecretCatalogAgentError.revisionConflict
+            }
+            do {
+                let updated = try await catalogDocumentStore!.bindSecret(
+                    secret.description,
+                    toFieldKey: key,
+                    entryID: entryID,
+                    expectedRevision: current.revision
+                )
+                return (secret.description, updated.revision)
+            } catch let retryError as SensitiveCatalogDocumentStoreError {
+                throw catalogAgentError(for: retryError)
+            }
+        }
     }
 
     public func openRevealSession(references: [String], context: RevealContext) async throws -> String {
@@ -1688,6 +1746,30 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
         } catch {
             throw SecretCatalogAgentError.unavailable
+        }
+    }
+
+    /// Keep App-control errors stable so the UI can distinguish a stale
+    /// revision from an invalid document and retry only the safe case.
+    private func catalogAgentError(
+        for error: SensitiveCatalogDocumentStoreError
+    ) -> SecretCatalogAgentError {
+        switch error {
+        case .noSelectedDocument:
+            return .unavailable
+        case .legacyCatalogUnsupported:
+            return .legacyCatalogUnsupported
+        case .integrityMissing:
+            return .integrityMissing
+        case .externalModification:
+            return .externalModification
+        case .revisionConflict:
+            return .revisionConflict
+        case .invalidOperation:
+            return .invalidOperation
+        case .malformedDocument, .symlinkRejected, .invalidIntegrity,
+             .referenceSetChanged, .writeFailed:
+            return .invalidCatalog
         }
     }
 
