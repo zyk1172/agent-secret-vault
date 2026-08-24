@@ -75,6 +75,26 @@ public actor VaultIPCClient {
         return result
     }
 
+    public func createCatalogIndex(
+        title: String,
+        aliases: [String] = [],
+        tags: [String] = []
+    ) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogCreateIndex(title: title, aliases: aliases, tags: tags))
+        guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func createCatalogEntry(_ request: CatalogDraftRequest) async throws -> CatalogWriteResult {
+        let response = try await send(.catalogCreateEntry(request: request))
+        guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
     public func createCatalogDraft(
         _ request: CatalogDraftRequest
     ) async throws -> CatalogDraft {

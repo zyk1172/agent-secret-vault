@@ -13,6 +13,12 @@ public protocol WorkbenchServicing: Sendable {
         limit: Int
     ) async throws -> SecretCatalogSearchResult
     func getCatalogEntry(entryID: String) async throws -> SecretCatalogSearchResult
+    func createCatalogIndex(
+        title: String,
+        aliases: [String],
+        tags: [String]
+    ) async throws -> CatalogWriteResult
+    func createCatalogEntry(_ request: CatalogDraftRequest) async throws -> CatalogWriteResult
     func createCatalogDraft(_ request: CatalogDraftRequest) async throws -> CatalogDraft
     func patchCatalogMetadata(
         entryID: String,
@@ -79,6 +85,18 @@ public extension WorkbenchServicing {
     }
 
     func getCatalogEntry(entryID _: String) async throws -> SecretCatalogSearchResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func createCatalogIndex(
+        title _: String,
+        aliases _: [String],
+        tags _: [String]
+    ) async throws -> CatalogWriteResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func createCatalogEntry(_: CatalogDraftRequest) async throws -> CatalogWriteResult {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
@@ -181,6 +199,14 @@ public struct IPCRequestHandler: Sendable {
             return try await handleCatalogSearch(query: query, field: field, limit: limit)
         case let .catalogGet(entryID):
             return .catalogSearchResult(try await service.getCatalogEntry(entryID: entryID))
+        case let .catalogCreateIndex(title, aliases, tags):
+            return .catalogWriteResult(try await service.createCatalogIndex(
+                title: title,
+                aliases: aliases,
+                tags: tags
+            ))
+        case let .catalogCreateEntry(request):
+            return .catalogWriteResult(try await service.createCatalogEntry(request))
         case let .catalogCreateDraft(request):
             return .catalogDraft(try await service.createCatalogDraft(request))
         case let .catalogPatchMetadata(entryID, patch, expectedRevision):

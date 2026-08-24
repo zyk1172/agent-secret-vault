@@ -70,6 +70,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case searchCatalog(query: String, field: SecretCatalogField?, limit: Int)
     case catalogSearch(query: String, field: SecretCatalogField?, limit: Int)
     case catalogGet(entryID: String)
+    case catalogCreateIndex(title: String, aliases: [String], tags: [String])
+    case catalogCreateEntry(request: CatalogDraftRequest)
     case catalogCreateDraft(request: CatalogDraftRequest)
     case catalogPatchMetadata(
         entryID: String,
@@ -130,6 +132,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case limit
         case entryID
         case request
+        case title
+        case aliases
+        case tags
         case patch
         case draft
         case expectedRevision
@@ -154,6 +159,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case searchCatalog
         case catalogSearch
         case catalogGet
+        case catalogCreateIndex
+        case catalogCreateEntry
         case catalogCreateDraft
         case catalogPatchMetadata
         case catalogCommit
@@ -202,6 +209,16 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             )
         case .catalogGet:
             self = .catalogGet(entryID: try container.decode(String.self, forKey: .entryID))
+        case .catalogCreateIndex:
+            self = .catalogCreateIndex(
+                title: try container.decode(String.self, forKey: .title),
+                aliases: try container.decode([String].self, forKey: .aliases),
+                tags: try container.decode([String].self, forKey: .tags)
+            )
+        case .catalogCreateEntry:
+            self = .catalogCreateEntry(
+                request: try container.decode(CatalogDraftRequest.self, forKey: .request)
+            )
         case .catalogCreateDraft:
             self = .catalogCreateDraft(
                 request: try container.decode(CatalogDraftRequest.self, forKey: .request)
@@ -329,6 +346,14 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .catalogGet(entryID):
             try container.encode(RequestType.catalogGet, forKey: .type)
             try container.encode(entryID, forKey: .entryID)
+        case let .catalogCreateIndex(title, aliases, tags):
+            try container.encode(RequestType.catalogCreateIndex, forKey: .type)
+            try container.encode(title, forKey: .title)
+            try container.encode(aliases, forKey: .aliases)
+            try container.encode(tags, forKey: .tags)
+        case let .catalogCreateEntry(request):
+            try container.encode(RequestType.catalogCreateEntry, forKey: .type)
+            try container.encode(request, forKey: .request)
         case let .catalogCreateDraft(request):
             try container.encode(RequestType.catalogCreateDraft, forKey: .type)
             try container.encode(request, forKey: .request)

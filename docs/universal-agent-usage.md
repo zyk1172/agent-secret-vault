@@ -126,7 +126,7 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 5. 先判断用户是否选择 SVLT；选择后再检查 SVLT 状态并按具体动作使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具；`locked` 不是全局门禁。
 6. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` 按非敏感上下文自动发现引用；用户已明确选择 plaintext 或外部 provider 时不得搜索并替换来源。
 7. 用 Index、Entry、alias、tag、endpoint 和允许返回的字段区分候选；同一目标下的不同 Entry 不得合并。`secret_search` 不返回源文件路径、行号或完整目录内容。
-8. Catalog 写入必须使用 App 当前有效的 metadata/structure 编辑授权（最长 10 分钟）；MCP 不携带或伪造 lease/nonce。写入后调用 `secret_catalog_validate`。Obsidian 不得直接写 managed catalog。
+8. 新建 Index/Entry、普通元数据、空 Secret placeholder 和 `secret_catalog_validate` 属于安全目录编辑，默认静默完成，由 App-control 安全编辑开关控制；绑定、替换或删除已有 Secret、改变秘密目标/策略或批量操作必须本机审批。MCP 不携带或伪造 lease/nonce。Obsidian 不得直接写 managed catalog。
 9. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；SVLT 派生明文不得离开专用操作。用户明确选择 plaintext 或外部 provider 时，SVLT 的工具不可用、策略拒绝或 Catalog 命中不应单独阻断本次操作。
 
 10. `USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization。只有用户明确要求“存入 SVLT”或“使用 SVLT 中的那个”时，才进入 `SVLT_MANAGED_OPERATION`；当前选择覆盖上一轮的 SVLT 或 external provider 选择。

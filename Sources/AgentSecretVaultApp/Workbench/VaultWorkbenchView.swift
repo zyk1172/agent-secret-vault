@@ -50,6 +50,22 @@ public enum VaultWorkbenchCopy {
     public static let catalogSchema = SVLTAgentCatalogPolicy.schema
 }
 
+public struct CatalogMutationUIError: Error, Equatable, Sendable {
+    public let code: String
+    public let message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
+    }
+
+    public var displayText: String { "\(message)（\(code)）" }
+}
+
+public typealias CatalogMutationUIResult = Result<CatalogWriteResult, CatalogMutationUIError>
+public typealias CatalogEntryCreationError = CatalogMutationUIError
+public typealias CatalogEntryCreationResult = CatalogMutationUIResult
+
 public enum VaultWorkbenchRenderingPolicy {
     public static let usesStableRendering = true
     public static let usesRepeatingAnimations = false
@@ -152,9 +168,9 @@ public struct VaultWorkbenchView: View {
     let refreshSensitiveCatalog: (() async -> Void)?
     let validateSensitiveCatalog: (() async -> Void)?
     let adoptExternalV2Catalog: (() async -> Void)?
-    let createCatalogIndex: ((String) async -> Void)?
-    let createCatalogEntry: ((String, String, String) async -> Void)?
-    let updateCatalogEntry: ((SecretCatalogEntry) async -> Void)?
+    let createCatalogIndex: ((String) async -> CatalogMutationUIResult)?
+    let createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)?
+    let updateCatalogEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
     let fillCatalogSecret: ((String, String, String, String) async -> String?)?
     let enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
     let revokeCatalogAgentWrite: (() async -> Void)?
@@ -192,9 +208,9 @@ public struct VaultWorkbenchView: View {
         refreshSensitiveCatalog: (() async -> Void)? = nil,
         validateSensitiveCatalog: (() async -> Void)? = nil,
         adoptExternalV2Catalog: (() async -> Void)? = nil,
-        createCatalogIndex: ((String) async -> Void)? = nil,
-        createCatalogEntry: ((String, String, String) async -> Void)? = nil,
-        updateCatalogEntry: ((SecretCatalogEntry) async -> Void)? = nil,
+        createCatalogIndex: ((String) async -> CatalogMutationUIResult)? = nil,
+        createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)? = nil,
+        updateCatalogEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)? = nil,
         fillCatalogSecret: ((String, String, String, String) async -> String?)? = nil,
         enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)? = nil,
         revokeCatalogAgentWrite: (() async -> Void)? = nil,
@@ -837,9 +853,9 @@ private struct SensitiveCatalogEditorCard: View {
     let canAdoptExternalV2: Bool
     let adoptExternalV2: (() async -> Void)?
     let refresh: (() async -> Void)?
-    let createIndex: ((String) async -> Void)?
-    let createEntry: ((String, String, String) async -> Void)?
-    let updateEntry: ((SecretCatalogEntry) async -> Void)?
+    let createIndex: ((String) async -> CatalogMutationUIResult)?
+    let createEntry: ((String, String, String) async -> CatalogMutationUIResult)?
+    let updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
     let fillSecret: ((String, String, String, String) async -> String?)?
     let enableAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
     let revokeAgentWrite: (() async -> Void)?
@@ -849,6 +865,9 @@ private struct SensitiveCatalogEditorCard: View {
     @State private var newEntryTitle = ""
     @State private var selectedPresetID = SensitiveCatalogEntryPreset.all.first?.id ?? "credential"
     @State private var isWorking = false
+    @State private var createIndexError: CatalogMutationUIError?
+    @State private var createEntryError: CatalogEntryCreationError?
+    @State private var newlyCreatedEntryID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -870,7 +889,7 @@ private struct SensitiveCatalogEditorCard: View {
                 }
             }
 
-            if let errorMessage, snapshot == nil {
+            if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .padding(10)
@@ -930,13 +949,30 @@ private struct SensitiveCatalogEditorCard: View {
                         guard !title.isEmpty else { return }
                         Task {
                             isWorking = true
-                            await createIndex?(title)
-                            newIndexTitle = ""
+                            let result = await createIndex?(title)
+                            switch result {
+                            case .success:
+                                newIndexTitle = ""
+                                createIndexError = nil
+                            case .failure(let error):
+                                createIndexError = error
+                            case nil:
+                                createIndexError = CatalogMutationUIError(
+                                    code: "APP_CONTROL_UNAVAILABLE",
+                                    message: "App-control 不可用，无法新增一级索引"
+                                )
+                            }
                             isWorking = false
                         }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isWorking || createIndex == nil)
+                }
+                if let createIndexError {
+                    Label(createIndexError.displayText, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.leading, 4)
                 }
 
                 if snapshot.document.indexes.isEmpty {
@@ -965,6 +1001,8 @@ private struct SensitiveCatalogEditorCard: View {
                                     Button("新增 Entry") {
                                         addingEntryToIndexID = index.id
                                         newEntryTitle = ""
+                                        createEntryError = nil
+                                        newlyCreatedEntryID = nil
                                     }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
@@ -985,15 +1023,37 @@ private struct SensitiveCatalogEditorCard: View {
                                             guard !title.isEmpty else { return }
                                             Task {
                                                 isWorking = true
-                                                await createEntry?(index.id, title, selectedPresetID)
-                                                addingEntryToIndexID = nil
-                                                newEntryTitle = ""
+                                                createEntryError = nil
+                                                let result = await createEntry?(index.id, title, selectedPresetID)
+                                                switch result {
+                                                case .success(let writeResult):
+                                                    newlyCreatedEntryID = writeResult.entry?.id
+                                                    addingEntryToIndexID = nil
+                                                    newEntryTitle = ""
+                                                case .failure(let error):
+                                                    createEntryError = error
+                                                case nil:
+                                                    createEntryError = CatalogEntryCreationError(
+                                                        code: "APP_CONTROL_UNAVAILABLE",
+                                                        message: "App-control 不可用，无法新增 Entry"
+                                                    )
+                                                }
                                                 isWorking = false
                                             }
                                         }
                                         .buttonStyle(.borderedProminent)
-                                        Button("取消") { addingEntryToIndexID = nil }
-                                            .buttonStyle(.bordered)
+                                        .disabled(isWorking || createEntry == nil)
+                                    Button("取消") {
+                                        addingEntryToIndexID = nil
+                                        createEntryError = nil
+                                    }
+                                        .buttonStyle(.bordered)
+                                    }
+                                    if let createEntryError {
+                                        Label(createEntryError.displayText, systemImage: "exclamationmark.triangle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                            .padding(.leading, 4)
                                     }
                                 }
 
@@ -1004,7 +1064,12 @@ private struct SensitiveCatalogEditorCard: View {
                                         .padding(.leading, 28)
                                 } else {
                                     ForEach(entries, id: \.id) { entry in
-                                        SensitiveCatalogEntryRow(entry: entry, updateEntry: updateEntry, fillSecret: fillSecret)
+                                        SensitiveCatalogEntryRow(
+                                            entry: entry,
+                                            autoEdit: newlyCreatedEntryID == entry.id,
+                                            updateEntry: updateEntry,
+                                            fillSecret: fillSecret
+                                        )
                                     }
                                 }
                             }
@@ -1027,7 +1092,8 @@ private struct SensitiveCatalogEditorCard: View {
 
 private struct SensitiveCatalogEntryRow: View {
     let entry: SecretCatalogEntry
-    let updateEntry: ((SecretCatalogEntry) async -> Void)?
+    let autoEdit: Bool
+    let updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?
     let fillSecret: ((String, String, String, String) async -> String?)?
 
     @State private var editing = false
@@ -1039,13 +1105,16 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var draftFields: [SecretCatalogFieldValue]
     @State private var isSaving = false
     @State private var editorError: String?
+    @State private var expanded: Bool
 
     init(
         entry: SecretCatalogEntry,
-        updateEntry: ((SecretCatalogEntry) async -> Void)?,
+        autoEdit: Bool = false,
+        updateEntry: ((SecretCatalogEntry) async -> CatalogMutationUIResult)?,
         fillSecret: ((String, String, String, String) async -> String?)?
     ) {
         self.entry = entry
+        self.autoEdit = autoEdit
         self.updateEntry = updateEntry
         self.fillSecret = fillSecret
         _draftTitle = State(initialValue: entry.title)
@@ -1054,10 +1123,12 @@ private struct SensitiveCatalogEntryRow: View {
         _draftEndpoints = State(initialValue: entry.endpoints.map(Self.endpointLine).joined(separator: "\n"))
         _draftNotes = State(initialValue: entry.notes ?? "")
         _draftFields = State(initialValue: entry.fields)
+        _editing = State(initialValue: autoEdit)
+        _expanded = State(initialValue: autoEdit)
     }
 
     var body: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 10) {
                 if editing {
                     editorBody
@@ -1224,10 +1295,20 @@ private struct SensitiveCatalogEntryRow: View {
         )
         Task {
             isSaving = true
-            await updateEntry?(updated)
+            let result = await updateEntry?(updated)
             isSaving = false
-            editing = false
-            editorError = nil
+            switch result {
+            case .success:
+                editing = false
+                editorError = nil
+            case .failure(let error):
+                editorError = error.displayText
+            case nil:
+                editorError = CatalogMutationUIError(
+                    code: "APP_CONTROL_UNAVAILABLE",
+                    message: "App-control 不可用，无法保存 Entry"
+                ).displayText
+            }
         }
     }
 
@@ -2160,7 +2241,7 @@ private struct SensitiveCatalogPolicyCard: View {
     let revokeAgentWrite: (() async -> Void)?
     @State private var schemaExpanded = false
     @State private var copied = false
-    @State private var selectedWriteMode: CatalogAgentWriteMode = .metadata
+    @State private var selectedWriteMode: CatalogAgentWriteMode = .safe
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2191,11 +2272,10 @@ private struct SensitiveCatalogPolicyCard: View {
                 HStack(spacing: 8) {
                     Picker("权限", selection: $selectedWriteMode) {
                         Text(CatalogAgentWriteMode.disabled.displayName).tag(CatalogAgentWriteMode.disabled)
-                        Text(CatalogAgentWriteMode.metadata.displayName).tag(CatalogAgentWriteMode.metadata)
-                        Text(CatalogAgentWriteMode.structure.displayName).tag(CatalogAgentWriteMode.structure)
+                        Text(CatalogAgentWriteMode.safe.displayName).tag(CatalogAgentWriteMode.safe)
                     }
                     .frame(width: 190)
-                    Button("允许 Agent 编辑 10 分钟") {
+                    Button("允许安全目录编辑") {
                         Task { await enableAgentWrite?(selectedWriteMode) }
                     }
                     .buttonStyle(.borderedProminent)
@@ -2210,6 +2290,10 @@ private struct SensitiveCatalogPolicyCard: View {
                     Text("当前：禁止 Agent 修改")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else if writeStatus.mode == .safe {
+                    Text("当前：允许安全目录编辑；绑定、替换、删除 Secret 或改变秘密目标仍需本机批准")
+                        .font(.caption)
+                        .foregroundStyle(.green)
                 } else {
                     let expiry = writeStatus.expiresAt.map(Self.expiryText) ?? "未知"
                     Text("当前：\(writeStatus.mode.displayName) · 到期 \(expiry)")

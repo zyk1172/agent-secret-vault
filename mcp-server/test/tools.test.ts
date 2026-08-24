@@ -43,6 +43,8 @@ describe("MCP tool contracts", () => {
       "secret_search",
       "secret_catalog_search",
       "secret_catalog_get",
+      "secret_catalog_create_index",
+      "secret_catalog_create_entry",
       "secret_catalog_create_draft",
       "secret_catalog_patch_metadata",
       "secret_catalog_commit",
@@ -209,6 +211,69 @@ describe("MCP tool contracts", () => {
     const validation = await tool(client, "secret_catalog_validate").handler({});
     expect(validation.structuredContent).toEqual({ status: "FOUND", revision: 2 });
     expect(client.requests[1]).toEqual({ type: "catalogValidate" });
+  });
+
+  it("creates a safe Entry in one call without a lease, reference, or plaintext", async () => {
+    const client = new FakeClient([{
+      type: "catalogWriteResult",
+      result: {
+        revision: 4,
+        entry: {
+          id: "0123456789ABCDEFGHJKMNPQRS",
+          indexId: "0123456789ABCDEFGHJKMNPQRT",
+          title: "音乐服务器",
+          type: "credential",
+          aliases: [],
+          endpoints: [{ type: "http", host: "192.168.2.240", port: 4533 }],
+          fields: [
+            { key: "username", label: "用户名", type: "text", agentVisible: true, searchable: true, value: "zyk" },
+            { key: "password", label: "密码", type: "secret", agentVisible: true, searchable: false }
+          ],
+          notes: null,
+          tags: []
+        }
+      }
+    } as IpcResponse]);
+
+    const result = await tool(client, "secret_catalog_create_entry").handler({
+      indexID: "0123456789ABCDEFGHJKMNPQRT",
+      title: "音乐服务器",
+      endpoints: [{ type: "http", host: "192.168.2.240", port: 4533 }],
+      fields: [
+        { key: "username", label: "用户名", type: "text", value: "zyk" },
+        { key: "password", label: "密码", type: "secret", searchable: false }
+      ]
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "CREATED",
+      entryID: "0123456789ABCDEFGHJKMNPQRS",
+      revision: 4
+    });
+    expect(client.requests[0]).toMatchObject({
+      type: "catalogCreateEntry",
+      request: {
+        indexID: "0123456789ABCDEFGHJKMNPQRT",
+        title: "音乐服务器"
+      }
+    });
+    expect(JSON.stringify(client.requests)).not.toContain("secretRef");
+    expect(JSON.stringify(client.requests)).not.toContain("plaintext");
+  });
+
+  it("rejects an existing secretRef on the direct safe create tool before IPC", async () => {
+    const client = new FakeClient([]);
+    await expect(tool(client, "secret_catalog_create_entry").handler({
+      indexID: "0123456789ABCDEFGHJKMNPQRT",
+      title: "危险绑定",
+      fields: [{
+        key: "password",
+        label: "密码",
+        type: "secret",
+        secretRef: reference
+      }]
+    })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
   });
 
   it("does not send a draft containing a secret plaintext value", async () => {

@@ -42,4 +42,4 @@ Field
 - Agent/Obsidian 必须使用 Catalog MCP/IPC；不得直接修改文件。
 - 旧版 `敏感信息.md` 不支持自动升级，运行状态为 `LEGACY_CATALOG_UNSUPPORTED`；Agent 不得自行转换或修改旧文件。
 - 人工准备的合法 v2 文件在没有完整性 sidecar 时，只能由 App 的“验证并接管 v2 文件”流程严格校验、备份并建立 `catalog-integrity.json`；MCP 不得调用接管流程。
-- Catalog 写入服从 App 当前的 Agent 编辑授权，最长 10 分钟；秘密替换、类型转换、删除秘密、allowlist 和策略变化仍需本机审批。
+- 新建 Index/Entry、普通元数据、空 Secret placeholder 和 validate 属于安全目录编辑，默认静默完成，由 App-control 安全编辑开关控制；秘密绑定/替换/删除、类型转换、allowlist、目标和策略变化仍需本机审批。

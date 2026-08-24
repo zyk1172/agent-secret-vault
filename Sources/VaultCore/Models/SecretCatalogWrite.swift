@@ -17,12 +17,18 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
 /// supply or manufacture a token, nonce, or lease.
 public enum CatalogAgentWriteMode: String, Codable, CaseIterable, Sendable {
     case disabled
+    /// Safe catalog editing is the normal Agent mode. It is an App-controlled
+    /// on/off preference, not a ten-minute structure lease.
+    case safe
+    /// Kept for wire compatibility with older clients. New mutations must use
+    /// CatalogMutationPolicyEngine instead of treating these as global gates.
     case metadata
     case structure
 
     public var displayName: String {
         switch self {
         case .disabled: return "禁止 Agent 修改"
+        case .safe: return "允许安全目录编辑"
         case .metadata: return "仅允许普通元数据"
         case .structure: return "允许结构修改"
         }
@@ -31,6 +37,7 @@ public enum CatalogAgentWriteMode: String, Codable, CaseIterable, Sendable {
     public func permits(_ required: CatalogAgentWriteScope) -> Bool {
         switch self {
         case .disabled: return false
+        case .safe: return true
         case .metadata: return required == .metadata
         case .structure: return true
         }
@@ -47,7 +54,10 @@ public struct CatalogAgentWriteAuthorizationStatus: Codable, Equatable, Sendable
     }
 
     public func isActive(at date: Date = Date()) -> Bool {
-        mode != .disabled && (expiresAt.map { $0 > date } ?? false)
+        if mode == .safe {
+            return true
+        }
+        return mode != .disabled && (expiresAt.map { $0 > date } ?? false)
     }
 }
 

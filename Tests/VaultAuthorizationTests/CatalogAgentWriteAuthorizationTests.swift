@@ -7,10 +7,8 @@ import VaultCore
     let clock = TestCatalogAuthorizationClock(Date(timeIntervalSinceReferenceDate: 100))
     let authorization = CatalogAgentWriteAuthorization(now: { clock.now })
 
-    #expect(await authorization.status().mode == .disabled)
-    await #expect(throws: SecretCatalogAgentError.agentWriteNotAllowed) {
-        try await authorization.validate(requiredScope: .metadata)
-    }
+    #expect(await authorization.status().mode == .safe)
+    try await authorization.validateSafeWrite()
 
     let metadataStatus = try await authorization.enable(mode: .metadata, duration: 60)
     #expect(metadataStatus.mode == .metadata)
@@ -22,6 +20,11 @@ import VaultCore
     _ = try await authorization.enable(mode: .structure, duration: 60)
     try await authorization.validate(requiredScope: .metadata)
     try await authorization.validate(requiredScope: .structure)
+
+    await authorization.revoke()
+    await #expect(throws: SecretCatalogAgentError.agentWriteNotAllowed) {
+        try await authorization.validateSafeWrite()
+    }
 }
 
 @Test func catalogAgentWriteAuthorizationExpiresAndCannotBeExtendedPastTenMinutes() async throws {

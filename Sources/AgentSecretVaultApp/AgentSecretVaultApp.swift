@@ -591,47 +591,167 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func createCatalogIndex(title: String) async {
-        guard let appControlClient,
-              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return }
-        do {
-            _ = try await appControlClient.catalogCreateIndex(
-                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
+    func createCatalogIndex(title: String) async -> CatalogMutationUIResult {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let appControlClient else {
+            let error = CatalogMutationUIError(
+                code: "APP_CONTROL_UNAVAILABLE",
+                message: "App-control 服务不可用"
             )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
+        guard !trimmedTitle.isEmpty else {
+            let error = CatalogMutationUIError(
+                code: "CATALOG_INVALID_OPERATION",
+                message: "一级索引标题不能为空"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
+
+        func create(expectedRevision: UInt64) async throws -> CatalogWriteResult {
+            try await appControlClient.catalogCreateIndex(
+                title: trimmedTitle,
+                expectedRevision: expectedRevision
+            )
+        }
+
+        do {
+            let result = try await create(expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0)
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
+            return .success(result)
         } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
             await refreshSensitiveCatalog()
-            sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
+            do {
+                let retry = try await create(expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0)
+                await refreshSensitiveCatalog()
+                sensitiveIndexError = nil
+                return .success(retry)
+            } catch {
+                let uiError = catalogMutationUIError(for: error, operation: "新增一级索引")
+                sensitiveIndexError = uiError.displayText
+                return .failure(uiError)
+            }
         } catch {
-            sensitiveIndexError = "无法新增一级索引"
+            let uiError = catalogMutationUIError(for: error, operation: "新增一级索引")
+            sensitiveIndexError = uiError.displayText
+            return .failure(uiError)
         }
     }
 
-    func createCatalogEntry(indexID: String, title: String, presetID: String) async {
-        guard let appControlClient,
-              let preset = SensitiveCatalogEntryPreset.all.first(where: { $0.id == presetID }),
-              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return }
-        do {
-            _ = try await appControlClient.catalogCreateEntry(
-                CatalogDraftRequest(
-                    indexID: indexID,
-                    title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                    fields: preset.makeFields()
-                ),
-                expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
+    func createCatalogEntry(
+        indexID: String,
+        title: String,
+        presetID: String
+    ) async -> CatalogEntryCreationResult {
+        guard let appControlClient else {
+            let error = CatalogMutationUIError(
+                code: "APP_CONTROL_UNAVAILABLE",
+                message: "App-control 服务不可用"
             )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
+        guard let preset = SensitiveCatalogEntryPreset.all.first(where: { $0.id == presetID }) else {
+            let error = CatalogMutationUIError(
+                code: "CATALOG_INVALID_OPERATION",
+                message: "Entry 预设无效"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let error = CatalogMutationUIError(
+                code: "CATALOG_INVALID_OPERATION",
+                message: "Entry 标题不能为空"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
+
+        let request = CatalogDraftRequest(
+            indexID: indexID,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            fields: preset.makeFields()
+        )
+
+        func create(expectedRevision: UInt64) async throws -> CatalogWriteResult {
+            try await appControlClient.catalogCreateEntry(request, expectedRevision: expectedRevision)
+        }
+
+        do {
+            let result = try await create(expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0)
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
+            return .success(result)
         } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
             await refreshSensitiveCatalog()
-            sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
+            do {
+                let retry = try await create(expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0)
+                await refreshSensitiveCatalog()
+                sensitiveIndexError = nil
+                return .success(retry)
+            } catch {
+                let uiError = catalogMutationUIError(for: error, operation: "新增 Entry")
+                sensitiveIndexError = uiError.displayText
+                return .failure(uiError)
+            }
         } catch {
-            sensitiveIndexError = "无法新增子索引"
+            let uiError = catalogMutationUIError(for: error, operation: "新增 Entry")
+            sensitiveIndexError = uiError.displayText
+            return .failure(uiError)
         }
+    }
+
+    private func catalogMutationUIError(for error: Error, operation: String) -> CatalogMutationUIError {
+        let code: String
+        if let error = error as? VaultIPCClientError {
+            switch error {
+            case .responseFailure(let responseCode):
+                code = responseCode
+            case .endpointUnavailable, .endpointOwnershipInvalid, .endpointPermissionsInvalid:
+                code = "APP_CONTROL_UNAVAILABLE"
+            default:
+                code = "APP_CONTROL_REQUEST_FAILED"
+            }
+        } else {
+            code = "APP_CONTROL_REQUEST_FAILED"
+        }
+
+        let message: String
+        switch code {
+        case "CATALOG_REVISION_CONFLICT":
+            message = "目录刚被其他本机客户端更新，自动重试后仍冲突"
+        case "CATALOG_UNAVAILABLE":
+            message = "敏感信息目录当前不可用"
+        case "CATALOG_INVALID", "CATALOG_INVALID_OPERATION":
+            message = "目录数据或新增内容无效"
+        case "EXTERNAL_CATALOG_MODIFICATION":
+            message = "检测到目录被外部修改，已暂停写入"
+        case "APP_CONTROL_UNAUTHORIZED", "INVALID_APP_CONTROL_TOKEN":
+            message = "App-control 身份校验失败"
+        case "APP_CONTROL_UNAVAILABLE":
+            message = "App-control 服务不可用"
+        case "CATALOG_AGENT_WRITE_NOT_ALLOWED":
+            message = "Agent 的安全目录编辑已关闭"
+        case "CATALOG_APPROVAL_REQUIRED":
+            message = "此目录变更需要本机批准"
+        case "CATALOG_OPERATION_DENIED":
+            message = "此目录变更被本机策略拒绝"
+        case "CATALOG_AUTHORIZATION_CANCELLED":
+            message = "本机批准已取消"
+        case "CATALOG_AUTHORIZATION_DENIED":
+            message = "本机批准被拒绝"
+        case "CATALOG_AUTHORIZATION_TIMEOUT":
+            message = "本机批准已超时"
+        case "CATALOG_AUTHORIZATION_UNAVAILABLE":
+            message = "本机批准服务不可用"
+        default:
+            message = "\(operation)失败"
+        }
+        return CatalogMutationUIError(code: code, message: message)
     }
 
     func fillCatalogSecret(entryID: String, key: String, label: String, plaintext: String) async -> String? {
@@ -655,22 +775,42 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func updateCatalogEntry(_ entry: SecretCatalogEntry) async {
-        guard let appControlClient else { return }
+    func updateCatalogEntry(_ entry: SecretCatalogEntry) async -> CatalogMutationUIResult {
+        guard let appControlClient else {
+            let error = CatalogMutationUIError(
+                code: "APP_CONTROL_UNAVAILABLE",
+                message: "App-control 服务不可用"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
         do {
-            _ = try await appControlClient.catalogUpdateEntry(
+            let result = try await appControlClient.catalogUpdateEntry(
                 entry,
                 expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
             )
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
+            return .success(result)
         } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
             await refreshSensitiveCatalog()
-            sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
+            let error = CatalogMutationUIError(
+                code: "CATALOG_REVISION_CONFLICT",
+                message: "目录已被其他本机客户端更新，请刷新后重试"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
         } catch VaultIPCClientError.responseFailure("CATALOG_APPROVAL_REQUIRED") {
-            sensitiveIndexError = "此字段安全变化需要本机批准"
+            let error = CatalogMutationUIError(
+                code: "CATALOG_APPROVAL_REQUIRED",
+                message: "此字段安全变化需要本机批准"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
         } catch {
-            sensitiveIndexError = "无法保存目录字段，请验证目录状态后重试"
+            let error = catalogMutationUIError(for: error, operation: "保存 Entry")
+            sensitiveIndexError = error.displayText
+            return .failure(error)
         }
     }
 
