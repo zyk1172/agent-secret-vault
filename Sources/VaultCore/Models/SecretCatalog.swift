@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// The field classification is metadata only.  It never contains or derives a
@@ -60,151 +59,15 @@ public enum SecretCatalogField: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// A legacy flat entry parsed only as migration input from the pre-v2 catalog.
-/// `contextTerms` is kept local for deterministic matching and is never part
-/// of the MCP result.
-/// Legacy flat entry produced by the pre-v2 heuristic parser.  It remains
-/// available only as migration input and must not be used as the managed
-/// catalog model.
-public struct LegacySecretCatalogEntry: Codable, Equatable, Sendable {
-    public let reference: String
-    public let service: String?
-    public let field: SecretCatalogField
-    public let label: String?
-    public let destinations: [String]
-    public let purpose: String?
-    public let groupID: String?
-    public let contextTerms: [String]
-
-    public init(
-        reference: String,
-        service: String? = nil,
-        field: SecretCatalogField = .other,
-        label: String? = nil,
-        destinations: [String] = [],
-        purpose: String? = nil,
-        groupID: String? = nil,
-        contextTerms: [String] = []
-    ) {
-        self.reference = reference
-        self.service = service
-        self.field = field
-        self.label = label
-        self.destinations = destinations
-        self.purpose = purpose
-        self.groupID = groupID
-        self.contextTerms = contextTerms
-    }
-
-    public static func stableGroupID(
-        service: String?,
-        destinations: [String],
-        headingPath: [String]
-    ) -> String? {
-        let normalizedService = service.map(normalizeForSearch) ?? ""
-        let normalizedDestinations = destinations
-            .map(normalizeForSearch)
-            .filter { !$0.isEmpty }
-            .sorted()
-        let normalizedHeadings = headingPath
-            .map(normalizeForSearch)
-            .filter { !$0.isEmpty }
-
-        let seedParts: [String]
-        if !normalizedService.isEmpty || !normalizedDestinations.isEmpty {
-            seedParts = [normalizedService] + normalizedDestinations
-        } else {
-            seedParts = normalizedHeadings
-        }
-        guard !seedParts.isEmpty else {
-            return nil
-        }
-
-        let seed = seedParts.joined(separator: "|")
-        let digest = SHA256.hash(data: Data(seed.utf8))
-        let token = digest.prefix(10).map { String(format: "%02x", $0) }.joined()
-        return "group-\(token)"
-    }
-
-    public static func normalizeForSearch(_ value: String) -> String {
-        value
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-            .lowercased()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-/// Metadata read from an encrypted envelope without decrypting it.
-public struct SecretCatalogRecordMetadata: Equatable, Sendable {
-    public let reference: String
-    public let policy: SecretPolicy
-    public let label: String?
-    public let allowedDestinations: [String]
-
-    public init(
-        reference: String,
-        policy: SecretPolicy,
-        label: String?,
-        allowedDestinations: [String] = []
-    ) {
-        self.reference = reference
-        self.policy = policy
-        self.label = label
-        self.allowedDestinations = allowedDestinations
-    }
-}
-
-/// Legacy flat payload retained only for tests and migration compatibility.
-/// Managed v2 IPC uses `SecretCatalogMatch` below.
-public struct LegacySecretCatalogMatch: Codable, Equatable, Sendable {
-    public let reference: String
-    public let service: String?
-    public let field: SecretCatalogField
-    public let label: String?
-    public let policy: SecretPolicy
-    public let destinations: [String]
-    public let purpose: String?
-    public let groupID: String?
-
-    public init(
-        reference: String,
-        service: String?,
-        field: SecretCatalogField,
-        label: String?,
-        policy: SecretPolicy,
-        destinations: [String] = [],
-        purpose: String? = nil,
-        groupID: String? = nil
-    ) {
-        self.reference = reference
-        self.service = service
-        self.field = field
-        self.label = label
-        self.policy = policy
-        self.destinations = destinations
-        self.purpose = purpose
-        self.groupID = groupID
-    }
-}
-
 public enum SecretCatalogSearchStatus: String, Codable, Sendable {
     case found = "FOUND"
     case notFound = "NOT_FOUND"
     case invalidQuery = "INVALID_QUERY"
     case unavailable = "CATALOG_UNAVAILABLE"
-    case migrationRequired = "MIGRATION_REQUIRED"
+    case legacyCatalogUnsupported = "LEGACY_CATALOG_UNSUPPORTED"
+    case integrityMissing = "INTEGRITY_MISSING"
     case externalModification = "EXTERNAL_CATALOG_MODIFICATION"
     case invalidCatalog = "CATALOG_INVALID"
-}
-
-public struct LegacySecretCatalogSearchResult: Codable, Equatable, Sendable {
-    public let status: SecretCatalogSearchStatus
-    public let matches: [LegacySecretCatalogMatch]
-
-    public init(status: SecretCatalogSearchStatus, matches: [LegacySecretCatalogMatch] = []) {
-        self.status = status
-        self.matches = matches
-    }
 }
 
 public struct SecretCatalogIndexMatch: Codable, Equatable, Sendable {

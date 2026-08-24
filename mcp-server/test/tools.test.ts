@@ -188,13 +188,7 @@ describe("MCP tool contracts", () => {
     expect(client.requests).toHaveLength(0);
   });
 
-  it("uses leases for metadata writes and never accepts catalog plaintext", async () => {
-    const lease = {
-      scope: "metadata" as const,
-      issuedAt: 1,
-      expiresAt: 2,
-      nonce: "0123456789ABCDEFGHJKMNPQRV"
-    };
+  it("uses App-controlled authorization for metadata writes and never accepts catalog plaintext", async () => {
     const client = new FakeClient([
       { type: "catalogWriteResult", result: { revision: 2, entry: null } },
       { type: "catalogValidation", catalogStatus: "FOUND", revision: 2 }
@@ -203,14 +197,12 @@ describe("MCP tool contracts", () => {
     const write = await tool(client, "secret_catalog_patch_metadata").handler({
       entryID: "0123456789ABCDEFGHJKMNPQRV",
       patch: { title: "QNAP 管理后台登录" },
-      expectedRevision: 1,
-      lease
+      expectedRevision: 1
     });
     expect(write.structuredContent).toEqual({ revision: 2, entry: null });
     expect(client.requests[0]).toMatchObject({
       type: "catalogPatchMetadata",
       expectedRevision: 1,
-      lease
     });
     expect(JSON.stringify(client.requests)).not.toContain("plaintext");
 
@@ -226,12 +218,6 @@ describe("MCP tool contracts", () => {
         indexID: "0123456789ABCDEFGHJKMNPQRT",
         title: "QNAP",
         fields: [{ key: "password", label: "密码", type: "secret", value: "plaintext" }]
-      },
-      lease: {
-        scope: "structure",
-        issuedAt: 1,
-        expiresAt: 2,
-        nonce: "0123456789ABCDEFGHJKMNPQRV"
       }
     })).rejects.toThrow();
     expect(client.requests).toHaveLength(0);

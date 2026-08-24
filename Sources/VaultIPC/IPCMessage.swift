@@ -70,17 +70,15 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case searchCatalog(query: String, field: SecretCatalogField?, limit: Int)
     case catalogSearch(query: String, field: SecretCatalogField?, limit: Int)
     case catalogGet(entryID: String)
-    case catalogCreateDraft(request: CatalogDraftRequest, lease: CatalogWriteLease)
+    case catalogCreateDraft(request: CatalogDraftRequest)
     case catalogPatchMetadata(
         entryID: String,
         patch: CatalogMetadataPatch,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     )
     case catalogCommit(
         draft: CatalogDraft,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     )
     case catalogAddSecretPlaceholder(
         entryID: String,
@@ -88,15 +86,13 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         label: String,
         agentVisible: Bool,
         searchable: Bool,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     )
     case catalogBindExistingSecret(
         entryID: String,
         key: String,
         secretRef: String,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     )
     case catalogValidate
     case pendingRevealSessions
@@ -137,7 +133,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case patch
         case draft
         case expectedRevision
-        case lease
         case key
         case secretRef
         case agentVisible
@@ -209,21 +204,18 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .catalogGet(entryID: try container.decode(String.self, forKey: .entryID))
         case .catalogCreateDraft:
             self = .catalogCreateDraft(
-                request: try container.decode(CatalogDraftRequest.self, forKey: .request),
-                lease: try container.decode(CatalogWriteLease.self, forKey: .lease)
+                request: try container.decode(CatalogDraftRequest.self, forKey: .request)
             )
         case .catalogPatchMetadata:
             self = .catalogPatchMetadata(
                 entryID: try container.decode(String.self, forKey: .entryID),
                 patch: try container.decode(CatalogMetadataPatch.self, forKey: .patch),
-                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision),
-                lease: try container.decode(CatalogWriteLease.self, forKey: .lease)
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogCommit:
             self = .catalogCommit(
                 draft: try container.decode(CatalogDraft.self, forKey: .draft),
-                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision),
-                lease: try container.decode(CatalogWriteLease.self, forKey: .lease)
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogAddSecretPlaceholder:
             self = .catalogAddSecretPlaceholder(
@@ -232,16 +224,14 @@ public enum IPCRequest: Codable, Equatable, Sendable {
                 label: try container.decode(String.self, forKey: .label),
                 agentVisible: try container.decode(Bool.self, forKey: .agentVisible),
                 searchable: try container.decode(Bool.self, forKey: .searchable),
-                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision),
-                lease: try container.decode(CatalogWriteLease.self, forKey: .lease)
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogBindExistingSecret:
             self = .catalogBindExistingSecret(
                 entryID: try container.decode(String.self, forKey: .entryID),
                 key: try container.decode(String.self, forKey: .key),
                 secretRef: try container.decode(String.self, forKey: .secretRef),
-                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision),
-                lease: try container.decode(CatalogWriteLease.self, forKey: .lease)
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogValidate:
             self = .catalogValidate
@@ -339,22 +329,19 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .catalogGet(entryID):
             try container.encode(RequestType.catalogGet, forKey: .type)
             try container.encode(entryID, forKey: .entryID)
-        case let .catalogCreateDraft(request, lease):
+        case let .catalogCreateDraft(request):
             try container.encode(RequestType.catalogCreateDraft, forKey: .type)
             try container.encode(request, forKey: .request)
-            try container.encode(lease, forKey: .lease)
-        case let .catalogPatchMetadata(entryID, patch, expectedRevision, lease):
+        case let .catalogPatchMetadata(entryID, patch, expectedRevision):
             try container.encode(RequestType.catalogPatchMetadata, forKey: .type)
             try container.encode(entryID, forKey: .entryID)
             try container.encode(patch, forKey: .patch)
             try container.encode(expectedRevision, forKey: .expectedRevision)
-            try container.encode(lease, forKey: .lease)
-        case let .catalogCommit(draft, expectedRevision, lease):
+        case let .catalogCommit(draft, expectedRevision):
             try container.encode(RequestType.catalogCommit, forKey: .type)
             try container.encode(draft, forKey: .draft)
             try container.encode(expectedRevision, forKey: .expectedRevision)
-            try container.encode(lease, forKey: .lease)
-        case let .catalogAddSecretPlaceholder(entryID, key, label, agentVisible, searchable, expectedRevision, lease):
+        case let .catalogAddSecretPlaceholder(entryID, key, label, agentVisible, searchable, expectedRevision):
             try container.encode(RequestType.catalogAddSecretPlaceholder, forKey: .type)
             try container.encode(entryID, forKey: .entryID)
             try container.encode(key, forKey: .key)
@@ -362,14 +349,12 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(agentVisible, forKey: .agentVisible)
             try container.encode(searchable, forKey: .searchable)
             try container.encode(expectedRevision, forKey: .expectedRevision)
-            try container.encode(lease, forKey: .lease)
-        case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision, lease):
+        case let .catalogBindExistingSecret(entryID, key, secretRef, expectedRevision):
             try container.encode(RequestType.catalogBindExistingSecret, forKey: .type)
             try container.encode(entryID, forKey: .entryID)
             try container.encode(key, forKey: .key)
             try container.encode(secretRef, forKey: .secretRef)
             try container.encode(expectedRevision, forKey: .expectedRevision)
-            try container.encode(lease, forKey: .lease)
         case .catalogValidate:
             try container.encode(RequestType.catalogValidate, forKey: .type)
         case .pendingRevealSessions:

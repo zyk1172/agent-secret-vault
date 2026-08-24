@@ -56,19 +56,16 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .catalogCreateDraft(
             request: CatalogDraftRequest(indexID: testIndexID, title: "SSH", fields: [
                 SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("zyk"))
-            ]),
-            lease: try CatalogWriteLease.generated(scope: .structure, issuedAt: Date(timeIntervalSinceReferenceDate: 1))
+            ])
         ),
         .catalogPatchMetadata(
             entryID: testEntryID,
             patch: CatalogMetadataPatch(title: "新标题"),
-            expectedRevision: 1,
-            lease: try CatalogWriteLease.generated(scope: .metadata, issuedAt: Date(timeIntervalSinceReferenceDate: 1))
+            expectedRevision: 1
         ),
         .catalogCommit(
             draft: CatalogDraft(draftID: testEntryID, baseRevision: 1, entry: sampleCatalogMatch().entry),
-            expectedRevision: 1,
-            lease: try CatalogWriteLease.generated(scope: .structure, issuedAt: Date(timeIntervalSinceReferenceDate: 1))
+            expectedRevision: 1
         ),
         .catalogAddSecretPlaceholder(
             entryID: testEntryID,
@@ -76,15 +73,13 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             label: "Token",
             agentVisible: true,
             searchable: false,
-            expectedRevision: 1,
-            lease: try CatalogWriteLease.generated(scope: .structure, issuedAt: Date(timeIntervalSinceReferenceDate: 1))
+            expectedRevision: 1
         ),
         .catalogBindExistingSecret(
             entryID: testEntryID,
             key: "password",
             secretRef: testSecretReference,
-            expectedRevision: 1,
-            lease: try CatalogWriteLease.generated(scope: .structure, issuedAt: Date(timeIntervalSinceReferenceDate: 1))
+            expectedRevision: 1
         ),
         .catalogValidate,
         .pendingRevealSessions,

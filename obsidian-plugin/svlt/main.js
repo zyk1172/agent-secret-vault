@@ -301,7 +301,8 @@ function parseIpcResponse(json) {
     "NOT_FOUND",
     "INVALID_QUERY",
     "CATALOG_UNAVAILABLE",
-    "MIGRATION_REQUIRED",
+    "LEGACY_CATALOG_UNSUPPORTED",
+    "INTEGRITY_MISSING",
     "EXTERNAL_CATALOG_MODIFICATION",
     "CATALOG_INVALID"
   ].includes(parsed.catalogStatus) && (parsed.revision === void 0 || parsed.revision === null || isNonNegativeInteger(parsed.revision))) {

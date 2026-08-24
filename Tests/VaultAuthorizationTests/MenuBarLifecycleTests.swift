@@ -35,7 +35,7 @@ import Testing
 
     #expect(source.contains("private var agentClient: VaultIPCClient?"))
     #expect(source.contains("AgentServiceRegistration.shared"))
-    #expect(source.contains("try registration.registerIfNeeded()"))
+    #expect(source.contains("try await registration.registerIfNeeded()"))
     #expect(source.contains("func clearRevealSessions() async"))
     #expect(source.contains("func shutdown() async"))
     #expect(!source.contains("unlockLowProtection"))

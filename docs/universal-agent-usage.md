@@ -124,7 +124,7 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 5. 先检查 SVLT 状态，再按具体动作提交风险提示并使用 `secret_auto_handle_text`、`secret_action_router` 或更窄的 MCP 工具；`locked` 不是全局门禁。
 6. 任务提到服务、设备、主机、账号或用途但没有引用时，先使用 `secret_search` 按非敏感上下文发现引用；不要要求用户复制 `secret://` ID。
 7. 用 Index、Entry、alias、tag、endpoint 和允许返回的字段区分候选；同一目标下的不同 Entry 不得合并。`secret_search` 不返回源文件路径、行号或完整目录内容。
-8. Catalog 写入必须使用 App 签发的 metadata/structure lease；写入后调用 `secret_catalog_validate`。Obsidian 不得直接写 managed catalog。
+8. Catalog 写入必须使用 App 当前有效的 metadata/structure 编辑授权（最长 10 分钟）；MCP 不携带或伪造 lease/nonce。写入后调用 `secret_catalog_validate`。Obsidian 不得直接写 managed catalog。
 9. 低风险绑定目标可静默执行；危险操作由同一请求等待本机审批。搜索静默不代表明文导出静默；工具不可用、策略拒绝或审批取消时停止，不索要或恢复明文。
 
 ## 7. Agent 启动自检

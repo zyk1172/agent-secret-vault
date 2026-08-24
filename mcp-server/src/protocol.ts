@@ -178,24 +178,14 @@ export const SecretCatalogSearchResult = z.object({
     "NOT_FOUND",
     "INVALID_QUERY",
     "CATALOG_UNAVAILABLE",
-    "MIGRATION_REQUIRED",
+    "LEGACY_CATALOG_UNSUPPORTED",
+    "INTEGRITY_MISSING",
     "EXTERNAL_CATALOG_MODIFICATION",
     "CATALOG_INVALID"
   ]),
   matches: z.array(SecretCatalogMatch)
 }).strict();
 export type SecretCatalogSearchResult = z.infer<typeof SecretCatalogSearchResult>;
-
-export const CatalogWriteScope = z.enum(["metadata", "structure"]);
-export type CatalogWriteScope = z.infer<typeof CatalogWriteScope>;
-
-export const CatalogWriteLease = z.object({
-  scope: CatalogWriteScope,
-  issuedAt: z.union([z.string(), z.number()]),
-  expiresAt: z.union([z.string(), z.number()]),
-  nonce: z.string().length(26)
-}).strict();
-export type CatalogWriteLease = z.infer<typeof CatalogWriteLease>;
 
 const CatalogFieldValue = z
   .object({
@@ -216,6 +206,8 @@ export const CatalogDraftRequest = z.object({
   type: z.string().min(1).max(2000).default("credential"),
   aliases: z.array(z.string()).max(64).default([]),
   tags: z.array(z.string()).max(64).default([]),
+  endpoints: z.array(CatalogEndpoint).max(64).default([]),
+  notes: z.string().max(2000).nullable().optional(),
   fields: z.array(CatalogFieldValue).max(128).default([])
 }).strict();
 export type CatalogDraftRequest = z.infer<typeof CatalogDraftRequest>;
@@ -249,7 +241,8 @@ export const CatalogValidationResult = z.object({
     "NOT_FOUND",
     "INVALID_QUERY",
     "CATALOG_UNAVAILABLE",
-    "MIGRATION_REQUIRED",
+    "LEGACY_CATALOG_UNSUPPORTED",
+    "INTEGRITY_MISSING",
     "EXTERNAL_CATALOG_MODIFICATION",
     "CATALOG_INVALID"
   ]),
@@ -359,8 +352,7 @@ export const IpcRequest = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("catalogCreateDraft"),
-      request: CatalogDraftRequest,
-      lease: CatalogWriteLease
+      request: CatalogDraftRequest
     })
     .strict(),
   z
@@ -368,16 +360,14 @@ export const IpcRequest = z.discriminatedUnion("type", [
       type: z.literal("catalogPatchMetadata"),
       entryID: z.string().length(26),
       patch: CatalogMetadataPatch,
-      expectedRevision: z.number().int().nonnegative(),
-      lease: CatalogWriteLease
+      expectedRevision: z.number().int().nonnegative()
     })
     .strict(),
   z
     .object({
       type: z.literal("catalogCommit"),
       draft: CatalogDraft,
-      expectedRevision: z.number().int().nonnegative(),
-      lease: CatalogWriteLease
+      expectedRevision: z.number().int().nonnegative()
     })
     .strict(),
   z
@@ -388,8 +378,7 @@ export const IpcRequest = z.discriminatedUnion("type", [
       label: z.string().min(1),
       agentVisible: z.boolean().default(true),
       searchable: z.boolean().default(true),
-      expectedRevision: z.number().int().nonnegative(),
-      lease: CatalogWriteLease
+      expectedRevision: z.number().int().nonnegative()
     })
     .strict(),
   z
@@ -398,8 +387,7 @@ export const IpcRequest = z.discriminatedUnion("type", [
       entryID: z.string().length(26),
       key: z.string().min(1),
       secretRef: SecretReference,
-      expectedRevision: z.number().int().nonnegative(),
-      lease: CatalogWriteLease
+      expectedRevision: z.number().int().nonnegative()
     })
     .strict(),
   z.object({ type: z.literal("catalogValidate") }).strict(),
@@ -519,7 +507,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("catalogValidation"),
-      catalogStatus: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE", "MIGRATION_REQUIRED", "EXTERNAL_CATALOG_MODIFICATION", "CATALOG_INVALID"]),
+      catalogStatus: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE", "LEGACY_CATALOG_UNSUPPORTED", "INTEGRITY_MISSING", "EXTERNAL_CATALOG_MODIFICATION", "CATALOG_INVALID"]),
       revision: z.number().int().nonnegative().nullable().optional()
     })
     .strict(),

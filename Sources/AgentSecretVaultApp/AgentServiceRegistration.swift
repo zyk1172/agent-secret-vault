@@ -72,15 +72,15 @@ public final class AgentServiceRegistration {
         defaults.set(true, forKey: disabledKey)
     }
 
-    public func restart() throws {
-        try service.unregister()
+    public func restart() async throws {
+        try await unregisterAndWait()
         try register()
     }
 
     /// First launch is the only implicit registration point. A user who
     /// explicitly unregisters the service is not trapped in an auto-register
     /// loop; settings can call `register()` again.
-    public func registerIfNeeded() throws {
+    public func registerIfNeeded() async throws {
         guard !defaults.bool(forKey: disabledKey) else {
             return
         }
@@ -98,12 +98,34 @@ public final class AgentServiceRegistration {
             // App copy/update. Re-register when either the release identity or
             // the embedded executable changes so same-version test installs
             // also run the binary that is currently inside this App bundle.
-            try service.unregister()
+            try await unregisterAndWait()
             try register()
-        case .requiresApproval, .notFound:
+        case .requiresApproval:
             return
+        case .notFound:
+            // A manual service removal or a stale launchd registration can
+            // leave the embedded plist present while SMAppService reports
+            // notFound. Re-submit the in-bundle service so the App can
+            // recover without requiring the user to reinstall.
+            try register()
         @unknown default:
             return
+        }
+    }
+
+    /// The synchronous SMAppService unregister API returns before launchd has
+    /// reaped a running helper. Re-registering in that window can leave the
+    /// managed job pointing at the old bundle-relative executable. Await the
+    /// completion callback before installing a changed Agent.
+    private func unregisterAndWait() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            service.unregister { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
         }
     }
 

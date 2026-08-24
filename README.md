@@ -122,7 +122,8 @@ does not yet know a `secret://` reference, it should call the query-scoped MCP
 tool `secret_search` first. The tool returns Entry-centric results containing
 the Index, Entry, endpoint, allowed visible metadata, and opaque `secretRef`
 values; it never returns plaintext, catalog paths, or the full `敏感信息.md`.
-Managed catalog writes must use the Catalog MCP tools and an App-issued lease;
+Managed catalog writes must use the Catalog MCP tools and the current App-controlled
+Agent edit authorization (metadata or structure, maximum 10 minutes);
 Obsidian and agents must not directly edit the Markdown/JSON representation.
 
 ## Obsidian workflow

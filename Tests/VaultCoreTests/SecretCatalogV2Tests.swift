@@ -115,69 +115,18 @@ private func qnapDocument() -> SecretCatalogDocument {
     #expect(throws: SecretCatalogValidationError.malformedJSON) {
         try SensitiveCatalogDocumentCodec.decode(malformed)
     }
-}
 
-@Test func legacyMigrationPreservesReferencesAndRetainsSafeUsernameMetadata() throws {
-    let markdown = """
-    # 敏感信息
-
-    ## QNAP
-    ### QNAP 管理后台登录
-    地址: 192.168.2.240
-    用户名: admin
-    密码: \(v2PasswordReference)
-
-    ### Komga 漫画服务器登录
-    URL: http://192.168.2.240:25600
-    username: zyk
-    password: \(v2TokenReference)
-    """
-
-    let preview = try LegacySensitiveCatalogMigrator.preview(markdown)
-    #expect(preview.referenceSetPreserved)
-    #expect(preview.referencesBefore == [v2PasswordReference, v2TokenReference].sorted())
-    #expect(preview.referencesAfter == preview.referencesBefore)
-    #expect(preview.ambiguousReferences.isEmpty)
-
-    let entries = preview.document.entries
-    #expect(entries.count == 2)
-    #expect(entries.first?.fields.contains {
-        $0.key == "username" && $0.value == .string("admin")
-    } == true)
-    #expect(entries.last?.fields.contains {
-        $0.key == "username" && $0.value == .string("zyk")
-    } == true)
-    #expect(!String(decoding: try LegacySensitiveCatalogMigrator.canonicalData(for: preview), as: UTF8.self)
-        .contains("password-plaintext-canary"))
-}
-
-@Test func legacyMigrationMarksUnlabelledReferencesAmbiguousWithoutGuessing() throws {
-    let markdown = """
-    # 敏感信息
-
-    ## QNAP NAS
-    \(v2PasswordReference)
-    \(v2TokenReference)
-    """
-
-    let preview = try LegacySensitiveCatalogMigrator.preview(markdown)
-    #expect(preview.referenceSetPreserved)
-    #expect(preview.ambiguousReferences.map(\.reference).sorted() == [v2PasswordReference, v2TokenReference].sorted())
-    #expect(preview.requiresUserResolution)
-    #expect(preview.document.entries.flatMap(\.fields).allSatisfy { $0.type == .secret })
-}
-
-@Test func legacyMigrationDoesNotCarryPlaintextSecretIntoPreview() throws {
-    let canary = "ASV_CANARY_LEGACY_SECRET_DO_NOT_PERSIST"
-    let markdown = """
-    ## QNAP
-    password: \(canary)
-    username: admin
-    """
-
-    let preview = try LegacySensitiveCatalogMigrator.preview(markdown)
-    #expect(preview.plaintextSensitiveFields.count == 1)
-    let encoded = String(decoding: try LegacySensitiveCatalogMigrator.canonicalData(for: preview), as: UTF8.self)
-    #expect(!encoded.contains(canary))
-    #expect(preview.document.entries.flatMap(\.fields).contains { $0.key == "username" && $0.value == .string("admin") })
+    let unknownIndexJSON = Data("""
+    {
+      "aliases": [],
+      "id": "\(v2IndexID)",
+      "schema": "svlt.catalog.index/v2",
+      "tags": [],
+      "title": "QNAP",
+      "unexpected": true
+    }
+    """.utf8)
+    #expect(throws: SecretCatalogValidationError.unknownSchema) {
+        try JSONDecoder().decode(SecretCatalogIndex.self, from: unknownIndexJSON)
+    }
 }

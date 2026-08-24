@@ -4,20 +4,45 @@ import VaultCore
 import VaultIPC
 
 private struct ControlService: AppControlServicing {
-    func issueCatalogLease(scope: CatalogWriteScope, duration: TimeInterval?) async throws -> CatalogWriteLease {
-        try CatalogWriteLease.generated(scope: scope, duration: duration ?? 60)
-    }
-
-    func revokeCatalogLease(nonce: String) async {}
-
     func catalogStatus() async throws -> CatalogValidationResult {
         CatalogValidationResult(status: .found, revision: 3)
+    }
+
+    func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
+        CatalogValidationResult(status: .found, revision: 1)
+    }
+
+    func setCatalogAgentWriteMode(
+        mode: CatalogAgentWriteMode,
+        duration: TimeInterval?
+    ) async throws -> CatalogAgentWriteAuthorizationStatus {
+        CatalogAgentWriteAuthorizationStatus(mode: mode, expiresAt: Date().addingTimeInterval(duration ?? 600))
+    }
+
+    func revokeCatalogAgentWrite() async {}
+
+    func catalogAgentWriteStatus() async -> CatalogAgentWriteAuthorizationStatus {
+        CatalogAgentWriteAuthorizationStatus(mode: .disabled, expiresAt: nil)
     }
 
     func catalogCreateIndex(
         title: String,
         aliases: [String],
         tags: [String],
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        CatalogWriteResult(revision: expectedRevision + 1)
+    }
+
+    func catalogCreateEntry(
+        _ request: CatalogDraftRequest,
+        expectedRevision: UInt64
+    ) async throws -> CatalogWriteResult {
+        CatalogWriteResult(revision: expectedRevision + 1)
+    }
+
+    func catalogUpdateEntry(
+        _ entry: SecretCatalogEntry,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
         CatalogWriteResult(revision: expectedRevision + 1)

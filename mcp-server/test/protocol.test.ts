@@ -250,12 +250,6 @@ describe("IPC request schema", () => {
   });
 
   it("accepts every public non-plaintext IPCRequest case", () => {
-    const lease = {
-      scope: "structure",
-      issuedAt: 1,
-      expiresAt: 2,
-      nonce: validEntryID
-    } as const;
     const fixtures = [
       { type: "status" },
       { type: "workbenchStatus" },
@@ -270,16 +264,15 @@ describe("IPC request schema", () => {
           type: "credential",
           aliases: [],
           tags: [],
+          endpoints: [],
           fields: [{ key: "password", label: "密码", type: "secret", agentVisible: true, searchable: true }]
-        },
-        lease
+        }
       },
       {
         type: "catalogPatchMetadata",
         entryID: validEntryID,
         patch: { title: "Komga" },
-        expectedRevision: 1,
-        lease: { ...lease, scope: "metadata" }
+        expectedRevision: 1
       },
       {
         type: "catalogCommit",
@@ -297,8 +290,7 @@ describe("IPC request schema", () => {
             tags: []
           }
         },
-        expectedRevision: 1,
-        lease
+        expectedRevision: 1
       },
       {
         type: "catalogAddSecretPlaceholder",
@@ -307,16 +299,14 @@ describe("IPC request schema", () => {
         label: "Token",
         agentVisible: true,
         searchable: true,
-        expectedRevision: 1,
-        lease
+        expectedRevision: 1
       },
       {
         type: "catalogBindExistingSecret",
         entryID: validEntryID,
         key: "password",
         secretRef: validReference,
-        expectedRevision: 1,
-        lease
+        expectedRevision: 1
       },
       { type: "catalogValidate" },
       { type: "inspectReference", reference: validReference },
@@ -395,8 +385,7 @@ describe("IPC request schema", () => {
       request: {
         ...base,
         fields: [{ key: "password", label: "密码", type: "secret", value: "plaintext" }]
-      },
-      lease: { scope: "structure", issuedAt: 1, expiresAt: 2, nonce: validEntryID }
+      }
     })).toThrow();
     expect(() => IpcRequest.parse({
       type: "catalogPatchMetadata",
@@ -404,8 +393,7 @@ describe("IPC request schema", () => {
       patch: {
         fields: [{ key: "username", label: "用户名", type: "text", value: "admin", secretRef: validReference }]
       },
-      expectedRevision: 1,
-      lease: { scope: "metadata", issuedAt: 1, expiresAt: 2, nonce: validEntryID }
+      expectedRevision: 1
     })).toThrow();
   });
 });

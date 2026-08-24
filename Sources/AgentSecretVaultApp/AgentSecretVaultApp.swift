@@ -32,8 +32,9 @@ struct AgentSecretVaultApplication: App {
                 sensitiveIndexEntries: runtime.sensitiveIndexEntries,
                 sensitiveCatalogSnapshot: runtime.sensitiveCatalogSnapshot,
                 sensitiveCatalogError: runtime.sensitiveIndexError,
-                sensitiveMigrationPreview: runtime.sensitiveMigrationPreview,
-                sensitiveMigrationError: runtime.sensitiveMigrationError,
+                sensitiveCatalogCanAdoptV2: runtime.sensitiveCatalogCanAdoptV2,
+                catalogAgentWriteStatus: runtime.catalogAgentWriteStatus,
+                catalogAgentWriteError: runtime.catalogAgentWriteError,
                 sensitiveScanRootURL: runtime.sensitiveScanRootURL,
                 sensitiveScanCandidates: runtime.sensitiveScanCandidates,
                 sensitiveScanRules: runtime.sensitiveScanRules,
@@ -58,20 +59,26 @@ struct AgentSecretVaultApplication: App {
                 validateSensitiveCatalog: {
                     await runtime.validateSensitiveCatalog()
                 },
+                adoptExternalV2Catalog: {
+                    await runtime.adoptExternalV2Catalog()
+                },
                 createCatalogIndex: { title in
                     await runtime.createCatalogIndex(title: title)
                 },
                 createCatalogEntry: { indexID, title, presetID in
                     await runtime.createCatalogEntry(indexID: indexID, title: title, presetID: presetID)
                 },
+                updateCatalogEntry: { entry in
+                    await runtime.updateCatalogEntry(entry)
+                },
                 fillCatalogSecret: { entryID, key, label, plaintext in
                     await runtime.fillCatalogSecret(entryID: entryID, key: key, label: label, plaintext: plaintext)
                 },
-                prepareSensitiveMigration: {
-                    await runtime.prepareSensitiveMigration()
+                enableCatalogAgentWrite: { mode in
+                    await runtime.enableCatalogAgentWrite(mode: mode)
                 },
-                confirmSensitiveMigration: {
-                    await runtime.confirmSensitiveMigration()
+                revokeCatalogAgentWrite: {
+                    await runtime.revokeCatalogAgentWrite()
                 },
                 chooseSensitiveScanRoot: {
                     runtime.chooseSensitiveScanRoot()
@@ -222,8 +229,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var sensitiveIndexURL: URL?
     @Published var sensitiveIndexEntries: [SensitiveInformationDocumentReference] = []
     @Published var sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
-    @Published var sensitiveMigrationPreview: SecretCatalogMigrationPreview?
-    @Published var sensitiveMigrationError: String?
+    @Published var sensitiveCatalogCanAdoptV2 = false
+    @Published var catalogAgentWriteStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled)
+    @Published var catalogAgentWriteError: String?
     @Published var sensitiveIndexError: String?
     @Published var sensitiveScanRootURL: URL?
     @Published var sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = []
@@ -250,11 +258,15 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
         do {
             let registration = AgentServiceRegistration.shared
-            try registration.registerIfNeeded()
+            try await registration.registerIfNeeded()
             agentServiceStatus = registration.status
             let client = try VaultIPCClient.defaultClient()
             agentClient = client
             appControlClient = try AppControlIPCClient.defaultClient()
+            if let appControlClient {
+                catalogAgentWriteStatus = (try? await appControlClient.catalogAgentWriteStatus())
+                    ?? CatalogAgentWriteAuthorizationStatus(mode: .disabled)
+            }
             startUIRequestObserver()
             sensitiveIndexStore = try makeSensitiveIndexStore()
             sensitiveCatalogStore = try makeSensitiveCatalogStore()
@@ -493,8 +505,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func refreshSensitiveIndex() async {
-        // The legacy heuristic parser is migration-only.  The structured
-        // Catalog snapshot is the only normal runtime representation.
+        // Managed catalog entries are rendered only from the strict v2 Store.
+        // The ordinary-note reader remains separate and is never a catalog
+        // fallback.
         sensitiveIndexEntries = []
     }
 
@@ -506,20 +519,24 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
         do {
             sensitiveCatalogSnapshot = try await sensitiveCatalogStore.snapshot()
+            sensitiveCatalogCanAdoptV2 = false
             if sensitiveCatalogSnapshot?.integrity == .verified {
                 sensitiveIndexError = nil
             }
-        } catch SensitiveCatalogDocumentStoreError.migrationRequired {
+        } catch SensitiveCatalogDocumentStoreError.legacyCatalogUnsupported {
             sensitiveCatalogSnapshot = nil
-            sensitiveIndexError = "当前敏感信息.md 是旧格式，请先在迁移预览中确认"
+            sensitiveCatalogCanAdoptV2 = false
+            sensitiveIndexError = "当前敏感信息.md 是旧版格式。SVLT 不提供自动升级，请先备份并手动转换为 Catalog v2。"
         } catch SensitiveCatalogDocumentStoreError.externalModification {
             sensitiveCatalogSnapshot = nil
             sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
         } catch SensitiveCatalogDocumentStoreError.integrityMissing {
             sensitiveCatalogSnapshot = nil
-            sensitiveIndexError = "目录完整性记录缺失，请验证并导入"
+            sensitiveCatalogCanAdoptV2 = true
+            sensitiveIndexError = "检测到合法但尚未被 SVLT 接管的 v2 文件，请验证并接管。"
         } catch {
             sensitiveCatalogSnapshot = nil
+            sensitiveCatalogCanAdoptV2 = false
             sensitiveIndexError = "敏感信息目录校验失败"
         }
     }
@@ -538,8 +555,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 if sensitiveCatalogSnapshot?.integrity == .verified {
                     sensitiveIndexError = nil
                 }
-            case .migrationRequired:
-                sensitiveIndexError = "当前敏感信息.md 是旧格式，请先生成并确认迁移预览"
+            case .legacyCatalogUnsupported:
+                sensitiveIndexError = "当前敏感信息.md 是旧版格式。SVLT 不提供自动升级，请手动转换为 Catalog v2。"
+            case .integrityMissing:
+                sensitiveCatalogCanAdoptV2 = true
+                sensitiveIndexError = "检测到合法但尚未被 SVLT 接管的 v2 文件，请验证并接管。"
             case .externalModification:
                 sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
             case .invalidCatalog:
@@ -552,37 +572,22 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func prepareSensitiveMigration() async {
-        guard let documentURL = sensitiveIndexURL else {
-            sensitiveMigrationError = "请先选择敏感信息.md"
+    func adoptExternalV2Catalog() async {
+        guard let appControlClient else {
+            sensitiveIndexError = "App-control 不可用，无法接管目录"
             return
         }
         do {
-            let data = try Data(contentsOf: documentURL)
-            guard let text = String(data: data, encoding: .utf8) else {
-                throw AgentSecretVaultRuntimeError.notStarted
+            let result = try await appControlClient.adoptCatalogExternalV2()
+            guard result.status == .found else {
+                sensitiveIndexError = "v2 文件校验失败，原文件保持不变"
+                return
             }
-            sensitiveMigrationPreview = try LegacySensitiveCatalogMigrator.preview(text)
-            sensitiveMigrationError = nil
+            await refreshSensitiveCatalog()
+        } catch VaultIPCClientError.responseFailure("LEGACY_CATALOG_UNSUPPORTED") {
+            sensitiveIndexError = "当前文件仍是旧版格式，不支持自动升级；请手动转换为 Catalog v2。"
         } catch {
-            sensitiveMigrationPreview = nil
-            sensitiveMigrationError = "无法生成迁移预览；旧文件保持不变"
-        }
-    }
-
-    func confirmSensitiveMigration() async {
-        guard let sensitiveCatalogStore, let preview = sensitiveMigrationPreview else {
-            return
-        }
-        do {
-            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.commitMigration(preview)
-            sensitiveMigrationPreview = nil
-            sensitiveMigrationError = nil
-            await refreshSensitiveIndex()
-        } catch SensitiveCatalogDocumentStoreError.referenceSetChanged {
-            sensitiveMigrationError = "迁移前后引用集合不一致，已停止写入"
-        } catch {
-            sensitiveMigrationError = "迁移未完成；旧文件和备份保持不变"
+            sensitiveIndexError = "v2 文件接管失败，原文件保持不变"
         }
     }
 
@@ -591,12 +596,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
         do {
-            let lease = try await appControlClient.issueCatalogLease(scope: .structure)
             _ = try await appControlClient.catalogCreateIndex(
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
             )
-            try? await appControlClient.revokeCatalogLease(nonce: lease.nonce)
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
         } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
@@ -608,27 +611,19 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func createCatalogEntry(indexID: String, title: String, presetID: String) async {
-        guard let agentClient,
-              let appControlClient,
+        guard let appControlClient,
               let preset = SensitiveCatalogEntryPreset.all.first(where: { $0.id == presetID }),
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
         do {
-            let lease = try await appControlClient.issueCatalogLease(scope: .structure)
-            let draft = try await agentClient.createCatalogDraft(
+            _ = try await appControlClient.catalogCreateEntry(
                 CatalogDraftRequest(
                     indexID: indexID,
                     title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                     fields: preset.makeFields()
                 ),
-                lease: lease
+                expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
             )
-            _ = try await agentClient.commitCatalogDraft(
-                draft,
-                expectedRevision: sensitiveCatalogSnapshot?.revision ?? draft.baseRevision,
-                lease: lease
-            )
-            try? await appControlClient.revokeCatalogLease(nonce: lease.nonce)
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
         } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
@@ -639,10 +634,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func fillCatalogSecret(entryID: String, key: String, label: String, plaintext: String) async {
-        guard let appControlClient, !plaintext.isEmpty else { return }
+    func fillCatalogSecret(entryID: String, key: String, label: String, plaintext: String) async -> String? {
+        guard let appControlClient, !plaintext.isEmpty else { return nil }
         do {
-            _ = try await appControlClient.catalogSecureInput(
+            let result = try await appControlClient.catalogSecureInput(
                 entryID: entryID,
                 key: key,
                 label: label,
@@ -651,10 +646,52 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             )
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
+            return result.reference
         } catch {
             // Do not include the secure input or error description in UI/audit
             // text; the App-control handler already returns a safe status code.
             sensitiveIndexError = "无法保存秘密字段，请验证目录状态后重试"
+            return nil
+        }
+    }
+
+    func updateCatalogEntry(_ entry: SecretCatalogEntry) async {
+        guard let appControlClient else { return }
+        do {
+            _ = try await appControlClient.catalogUpdateEntry(
+                entry,
+                expectedRevision: sensitiveCatalogSnapshot?.revision ?? 0
+            )
+            await refreshSensitiveCatalog()
+            sensitiveIndexError = nil
+        } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
+            await refreshSensitiveCatalog()
+            sensitiveIndexError = "目录已被其他本机客户端更新，请刷新后重试"
+        } catch VaultIPCClientError.responseFailure("CATALOG_APPROVAL_REQUIRED") {
+            sensitiveIndexError = "此字段安全变化需要本机批准"
+        } catch {
+            sensitiveIndexError = "无法保存目录字段，请验证目录状态后重试"
+        }
+    }
+
+    func enableCatalogAgentWrite(mode: CatalogAgentWriteMode) async {
+        guard let appControlClient else { return }
+        do {
+            catalogAgentWriteStatus = try await appControlClient.setCatalogAgentWriteMode(mode: mode)
+            catalogAgentWriteError = nil
+        } catch {
+            catalogAgentWriteError = "无法启用 Agent 目录编辑权限"
+        }
+    }
+
+    func revokeCatalogAgentWrite() async {
+        guard let appControlClient else { return }
+        do {
+            try await appControlClient.revokeCatalogAgentWrite()
+            catalogAgentWriteStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled)
+            catalogAgentWriteError = nil
+        } catch {
+            catalogAgentWriteError = "无法撤销 Agent 目录编辑权限"
         }
     }
 

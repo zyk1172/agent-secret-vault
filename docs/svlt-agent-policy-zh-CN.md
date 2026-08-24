@@ -32,11 +32,13 @@ SVLT 敏感信息目录写入规范
 3. 任务提到服务、设备、主机、账号或用途但没有引用时，先调用 `secret_search` 或 `secret_catalog_search`，不要要求用户复制引用 ID。
 4. 用 Index、Entry、alias、tag、endpoint、note 和允许返回的字段区分候选；不要把同一 endpoint 的不同 Entry 合并。
 5. 使用 `secret_catalog_get` 获取单个 Entry；每次目录写入后必须调用 `secret_catalog_validate`。
-6. Catalog 写入必须携带 App 签发的有效 metadata/structure lease。Agent 不得伪造、延长或自我批准 lease。
+6. Catalog 写入必须使用 App 当前有效的 metadata/structure 编辑授权，最长 10 分钟。MCP 不携带、生成、延长或伪造 lease/nonce；无授权时写入必须失败。
 7. 普通元数据写入可以静默完成；替换 secretRef、改变字段的 secret/metadata 属性、修改安全策略/目标 allowlist、删除秘密或批量迁移必须等待本机审批。
 8. 需要在本机使用秘密时，使用 `secret_action_router` 或更窄的专用工具；不要把明文放入 MCP 输入、命令行、URL、header、环境变量或回复。
 9. 用户需要亲自查看明文时，使用 `secret_reveal_request` 或 `paragraph_reveal_request`，只报告本地显示状态。
-10. 目录无效、迁移未确认、完整性失败、lease 过期或没有安全工具时停止，并只报告状态码和非敏感下一步。
+10. 目录无效、完整性失败、LEGACY_CATALOG_UNSUPPORTED、授权过期或没有安全工具时停止，并只报告状态码和非敏感下一步；不得自行转换旧版目录。
+11. 合法的 v2 文件只能由 App 的“验证并接管 v2 文件”流程接管；MCP、Obsidian 和 Agent 不得调用接管操作或直接建立完整性 sidecar。
+12. 结构修改、秘密 placeholder 和普通元数据写入都必须服从 App 当前的编辑授权；秘密替换、字段类型转换、删除秘密、目标 allowlist 和策略变化仍需本机审批。
 
 禁止事项：
 - 不得使用 shell、Python、sed、echo、编辑器或文件 API 直接读取/修改 managed catalog。
@@ -47,4 +49,4 @@ SVLT 敏感信息目录写入规范
 
 Schema 详见 [`svlt-catalog-schema-v2.md`](svlt-catalog-schema-v2.md)。App 的“智能体自动化 → 敏感信息目录规范”提供同一规范的复制、Schema 查看和目录验证入口。
 
-这份策略不授予额外权限。所有解密、展示、导出和本地执行仍以 SVLT 授权、lease、完整性检查和 MCP allowlist 为准。
+这份策略不授予额外权限。所有解密、展示、导出和本地执行仍以 SVLT 授权、完整性检查和 MCP allowlist 为准。旧版目录不支持自动升级；合法 v2 文件只能通过 App 的“验证并接管 v2 文件”流程接管，MCP 不得调用该流程。

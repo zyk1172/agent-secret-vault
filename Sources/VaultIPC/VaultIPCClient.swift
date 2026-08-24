@@ -76,10 +76,9 @@ public actor VaultIPCClient {
     }
 
     public func createCatalogDraft(
-        _ request: CatalogDraftRequest,
-        lease: CatalogWriteLease
+        _ request: CatalogDraftRequest
     ) async throws -> CatalogDraft {
-        let response = try await send(.catalogCreateDraft(request: request, lease: lease))
+        let response = try await send(.catalogCreateDraft(request: request))
         guard case let .catalogDraft(draft) = response else {
             throw unexpected(response)
         }
@@ -89,14 +88,12 @@ public actor VaultIPCClient {
     public func patchCatalogMetadata(
         entryID: String,
         patch: CatalogMetadataPatch,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
         let response = try await send(.catalogPatchMetadata(
             entryID: entryID,
             patch: patch,
-            expectedRevision: expectedRevision,
-            lease: lease
+            expectedRevision: expectedRevision
         ))
         guard case let .catalogWriteResult(result) = response else {
             throw unexpected(response)
@@ -106,13 +103,11 @@ public actor VaultIPCClient {
 
     public func commitCatalogDraft(
         _ draft: CatalogDraft,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
         let response = try await send(.catalogCommit(
             draft: draft,
-            expectedRevision: expectedRevision,
-            lease: lease
+            expectedRevision: expectedRevision
         ))
         guard case let .catalogWriteResult(result) = response else {
             throw unexpected(response)
@@ -126,8 +121,7 @@ public actor VaultIPCClient {
         label: String,
         agentVisible: Bool = true,
         searchable: Bool = true,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
         let response = try await send(.catalogAddSecretPlaceholder(
             entryID: entryID,
@@ -135,8 +129,7 @@ public actor VaultIPCClient {
             label: label,
             agentVisible: agentVisible,
             searchable: searchable,
-            expectedRevision: expectedRevision,
-            lease: lease
+            expectedRevision: expectedRevision
         ))
         guard case let .catalogWriteResult(result) = response else {
             throw unexpected(response)
@@ -148,15 +141,13 @@ public actor VaultIPCClient {
         entryID: String,
         key: String,
         secretRef: String,
-        expectedRevision: UInt64,
-        lease: CatalogWriteLease
+        expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
         let response = try await send(.catalogBindExistingSecret(
             entryID: entryID,
             key: key,
             secretRef: secretRef,
-            expectedRevision: expectedRevision,
-            lease: lease
+            expectedRevision: expectedRevision
         ))
         guard case let .catalogWriteResult(result) = response else {
             throw unexpected(response)

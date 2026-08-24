@@ -68,6 +68,20 @@ public struct CatalogEndpoint: Codable, Equatable, Sendable {
         self.host = host
         self.port = port
     }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case type
+        case host
+        case port
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try StrictCatalogCoding.rejectUnknownKeys(decoder, allowed: CodingKeys.allCases)
+        type = try container.decode(String.self, forKey: .type)
+        host = try container.decode(String.self, forKey: .host)
+        port = try container.decodeIfPresent(Int.self, forKey: .port)
+    }
 }
 
 /// A field in a v2 entry.  Ordinary metadata lives in `value`; a secret is
@@ -100,7 +114,7 @@ public struct SecretCatalogFieldValue: Codable, Equatable, Sendable {
         self.secretRef = secretRef
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case key
         case label
         case type
@@ -112,6 +126,7 @@ public struct SecretCatalogFieldValue: Codable, Equatable, Sendable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        try StrictCatalogCoding.rejectUnknownKeys(decoder, allowed: CodingKeys.allCases)
         key = try container.decode(String.self, forKey: .key)
         label = try container.decode(String.self, forKey: .label)
         type = try container.decode(SecretCatalogFieldType.self, forKey: .type)
@@ -172,6 +187,24 @@ public struct SecretCatalogIndex: Codable, Equatable, Sendable {
     /// A title edit intentionally constructs a new value with the same ID.
     public func renaming(to title: String) -> Self {
         Self(id: id, title: title, aliases: aliases, tags: tags, schema: schema)
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema
+        case id
+        case title
+        case aliases
+        case tags
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try StrictCatalogCoding.rejectUnknownKeys(decoder, allowed: CodingKeys.allCases)
+        schema = try container.decode(String.self, forKey: .schema)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        aliases = try container.decode([String].self, forKey: .aliases)
+        tags = try container.decode([String].self, forKey: .tags)
     }
 }
 
@@ -250,6 +283,34 @@ public struct SecretCatalogEntry: Codable, Equatable, Sendable {
             schema: schema
         )
     }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema
+        case id
+        case indexId
+        case title
+        case type
+        case aliases
+        case endpoints
+        case fields
+        case notes
+        case tags
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try StrictCatalogCoding.rejectUnknownKeys(decoder, allowed: CodingKeys.allCases)
+        schema = try container.decode(String.self, forKey: .schema)
+        id = try container.decode(String.self, forKey: .id)
+        indexId = try container.decode(String.self, forKey: .indexId)
+        title = try container.decode(String.self, forKey: .title)
+        type = try container.decode(String.self, forKey: .type)
+        aliases = try container.decode([String].self, forKey: .aliases)
+        endpoints = try container.decode([CatalogEndpoint].self, forKey: .endpoints)
+        fields = try container.decode([SecretCatalogFieldValue].self, forKey: .fields)
+        notes = try container.decodeIfPresent(String.self, forKey: .notes)
+        tags = try container.decode([String].self, forKey: .tags)
+    }
 }
 
 public struct SecretCatalogDocument: Codable, Equatable, Sendable {
@@ -267,6 +328,20 @@ public struct SecretCatalogDocument: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion
         self.indexes = indexes
         self.entries = entries
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion
+        case indexes
+        case entries
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try StrictCatalogCoding.rejectUnknownKeys(decoder, allowed: CodingKeys.allCases)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        indexes = try container.decode([SecretCatalogIndex].self, forKey: .indexes)
+        entries = try container.decode([SecretCatalogEntry].self, forKey: .entries)
     }
 
     public func validate() throws {
@@ -456,5 +531,33 @@ private enum CatalogValidation {
             .replacingOccurrences(of: " ", with: "")
             .replacingOccurrences(of: "_", with: "")
             .replacingOccurrences(of: "-", with: "")
+    }
+}
+
+private enum StrictCatalogCoding {
+    private struct AnyCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int?
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+            self.intValue = nil
+        }
+
+        init?(intValue: Int) {
+            self.stringValue = String(intValue)
+            self.intValue = intValue
+        }
+    }
+
+    static func rejectUnknownKeys<Key: CodingKey>(
+        _ decoder: any Decoder,
+        allowed: [Key]
+    ) throws {
+        let allowedNames = Set(allowed.map(\.stringValue))
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        guard container.allKeys.allSatisfy({ allowedNames.contains($0.stringValue) }) else {
+            throw SecretCatalogValidationError.unknownSchema
+        }
     }
 }

@@ -158,7 +158,10 @@ public struct SecretCatalogEntrySearchService: Sendable {
 
     private func normalize(_ value: String?) -> String {
         guard let value else { return "" }
-        return LegacySecretCatalogEntry.normalizeForSearch(value)
+        return value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private struct RankedMatch {

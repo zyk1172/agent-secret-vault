@@ -67,7 +67,6 @@ public actor VaultDaemonCore {
     private let controller: AppIPCController
     private let appControlController: AppControlIPCController
     private let services: VaultAppServices
-    private let catalogLeaseManager: CatalogWriteLeaseManager
     private let protectionKeyStore: AppProtectionKeyStore
     private let lifecycleMonitor: VaultDaemonLifecycleMonitor
     private var started = false
@@ -213,17 +212,14 @@ public actor VaultDaemonCore {
                 SymmetricKey(data: try await auditKeyStore.loadOrCreateAuditKeyData())
             }
         )
-        let catalogLeaseManager = CatalogWriteLeaseManager()
         let services = VaultAppServices(
             textEncryptor: encryptor,
             activeRoot: configuration.vaultRootURL,
             recordLister: recordStore,
             recordDeleter: recordStore,
             recordResolver: VaultRecordResolver(recordStore: recordStore),
-            catalogService: SecretCatalogService(selectionManifestURL: configuration.catalogSelectionURL),
             catalogDocumentStore: SensitiveCatalogDocumentStore(),
             catalogSelectionManifestURL: configuration.catalogSelectionURL,
-            catalogLeaseManager: catalogLeaseManager,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
             clearProtectedKeyState: {
@@ -266,7 +262,6 @@ public actor VaultDaemonCore {
         self.controller = controller
         self.appControlController = appControlController
         self.services = services
-        self.catalogLeaseManager = catalogLeaseManager
         self.protectionKeyStore = protectionKeyStore
         self.lifecycleMonitor = lifecycleMonitor
     }
