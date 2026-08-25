@@ -180,6 +180,7 @@ public struct VaultWorkbenchView: View {
     let createCatalogIndex: ((String) async -> CatalogMutationUIResult)?
     let createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)?
     let commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
+    let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
     let enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
     let revokeCatalogAgentWrite: (() async -> Void)?
@@ -228,6 +229,7 @@ public struct VaultWorkbenchView: View {
         createCatalogIndex: ((String) async -> CatalogMutationUIResult)? = nil,
         createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)? = nil,
         commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)? = nil,
+        replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)? = nil,
         applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)? = nil,
         enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)? = nil,
         revokeCatalogAgentWrite: (() async -> Void)? = nil,
@@ -274,6 +276,7 @@ public struct VaultWorkbenchView: View {
         self.createCatalogIndex = createCatalogIndex
         self.createCatalogEntry = createCatalogEntry
         self.commitCatalogEntryEdit = commitCatalogEntryEdit
+        self.replaceCatalogSecret = replaceCatalogSecret
         self.applyCatalogBatch = applyCatalogBatch
         self.enableCatalogAgentWrite = enableCatalogAgentWrite
         self.revokeCatalogAgentWrite = revokeCatalogAgentWrite
@@ -401,6 +404,7 @@ public struct VaultWorkbenchView: View {
                         createIndex: createCatalogIndex,
                         createEntry: createCatalogEntry,
                         commitEntryEdit: commitCatalogEntryEdit,
+                        replaceCatalogSecret: replaceCatalogSecret,
                         applyBatch: applyCatalogBatch,
                         catalogAgentWriteStatus: catalogAgentWriteStatus,
                         catalogAgentWriteError: catalogAgentWriteError,
@@ -903,6 +907,7 @@ private struct SensitiveCatalogEditorCard: View {
     let createIndex: ((String) async -> CatalogMutationUIResult)?
     let createEntry: ((String, String, String) async -> CatalogMutationUIResult)?
     let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
+    let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
     let catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus
     let catalogAgentWriteError: String?
@@ -1212,6 +1217,7 @@ private struct SensitiveCatalogEditorCard: View {
                     entries: currentSnapshot.document.entries.filter { $0.indexId == index.id },
                     createEntry: createEntry,
                     commitEntryEdit: commitEntryEdit,
+                    replaceCatalogSecret: replaceCatalogSecret,
                     applyBatch: applyBatch,
                 )
                 .frame(minWidth: 760, idealWidth: 900)
@@ -1262,6 +1268,7 @@ private struct SensitiveCatalogGroupSheet: View {
     let entries: [SecretCatalogEntry]
     let createEntry: ((String, String, String) async -> CatalogMutationUIResult)?
     let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
+    let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
 
     @Environment(\.dismiss) private var dismiss
@@ -1401,6 +1408,7 @@ private struct SensitiveCatalogGroupSheet: View {
                                     else { selectedEntryIDs.insert(entry.id) }
                                 },
                                 commitEntryEdit: commitEntryEdit,
+                                replaceCatalogSecret: replaceCatalogSecret,
                                 applyBatch: applyBatch,
                                 requestDelete: { prepareEntryDeletion(for: entry) }
                             )
@@ -1456,6 +1464,7 @@ private struct SensitiveCatalogEntryRow: View {
     let isSelected: Bool
     let toggleSelection: () -> Void
     let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
+    let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
     let requestDelete: () -> Void
 
@@ -1478,6 +1487,7 @@ private struct SensitiveCatalogEntryRow: View {
         isSelected: Bool = false,
         toggleSelection: @escaping () -> Void = {},
         commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?,
+        replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?,
         applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?,
         requestDelete: @escaping () -> Void = {}
     ) {
@@ -1487,6 +1497,7 @@ private struct SensitiveCatalogEntryRow: View {
         self.isSelected = isSelected
         self.toggleSelection = toggleSelection
         self.commitEntryEdit = commitEntryEdit
+        self.replaceCatalogSecret = replaceCatalogSecret
         self.applyBatch = applyBatch
         self.requestDelete = requestDelete
         _draftTitle = State(initialValue: entry.title)
@@ -1667,6 +1678,23 @@ private struct SensitiveCatalogEntryRow: View {
                             }
                         }
                     ),
+                    replaceSecret: replaceCatalogSecret,
+                    entryID: entry.id,
+                    onReplacementSuccess: { newReference in
+                        pendingSecretInputs.removeValue(forKey: field.key)
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
+                        let currentField = draftFields[currentIndex]
+                        draftFields[currentIndex] = SecretCatalogFieldValue(
+                            key: currentField.key,
+                            label: currentField.label,
+                            type: currentField.type,
+                            agentVisible: currentField.agentVisible,
+                            searchable: currentField.searchable,
+                            value: nil,
+                            secretRef: newReference
+                        )
+                        editorError = nil
+                    },
                     onUpdate: { updatedField in
                         if updatedField.key != field.key,
                            let pending = pendingSecretInputs.removeValue(forKey: field.key) {
@@ -1746,6 +1774,7 @@ private struct SensitiveCatalogEntryRow: View {
             isSaving = true
             let secretInputs = draftFields.compactMap { field -> CatalogSecretInput? in
                 guard field.type.isSecret,
+                      field.secretRef == nil,
                       let plaintext = pendingSecretInputs[field.key],
                       !plaintext.isEmpty
                 else { return nil }
@@ -1821,6 +1850,9 @@ private struct SensitiveCatalogEntryRow: View {
 private struct SensitiveCatalogFieldEditorRow: View {
     let field: SecretCatalogFieldValue
     @Binding var secretInput: String
+    let replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
+    let entryID: String
+    let onReplacementSuccess: (String) -> Void
     let onUpdate: (SecretCatalogFieldValue) -> Void
     let onDelete: () -> Void
     let onMoveUp: () -> Void
@@ -1835,11 +1867,16 @@ private struct SensitiveCatalogFieldEditorRow: View {
     @State private var draftAgentVisible: Bool
     @State private var draftSearchable: Bool
     @State private var showsSecret = true
+    @State private var isReplacingSecret = false
+    @State private var isSubmittingReplacement = false
     @State private var errorMessage: String?
 
     init(
         field: SecretCatalogFieldValue,
         secretInput: Binding<String>,
+        replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?,
+        entryID: String,
+        onReplacementSuccess: @escaping (String) -> Void = { _ in },
         onUpdate: @escaping (SecretCatalogFieldValue) -> Void,
         onDelete: @escaping () -> Void,
         onMoveUp: @escaping () -> Void,
@@ -1847,6 +1884,9 @@ private struct SensitiveCatalogFieldEditorRow: View {
     ) {
         self.field = field
         self._secretInput = secretInput
+        self.replaceSecret = replaceSecret
+        self.entryID = entryID
+        self.onReplacementSuccess = onReplacementSuccess
         self.onUpdate = onUpdate
         self.onDelete = onDelete
         self.onMoveUp = onMoveUp
@@ -1895,9 +1935,41 @@ private struct SensitiveCatalogFieldEditorRow: View {
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.orange)
                             .textSelection(.enabled)
-                        Text("已绑定；替换需要本机批准")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        if isReplacingSecret {
+                            if showsSecret {
+                                TextField("输入新密码", text: $secretInput)
+                                    .textFieldStyle(.roundedBorder)
+                            } else {
+                                SecureField("输入新密码", text: $secretInput)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                            Button(showsSecret ? "隐藏" : "显示") {
+                                showsSecret.toggle()
+                            }
+                            .buttonStyle(.borderless)
+                            Button("取消") {
+                                secretInput = ""
+                                isReplacingSecret = false
+                                errorMessage = nil
+                            }
+                            .buttonStyle(.borderless)
+                            Button(isSubmittingReplacement ? "提交中…" : "提交替换") {
+                                submitSecretReplacement()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil)
+                        } else {
+                            Text("已绑定")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Button("替换密码") {
+                                secretInput = ""
+                                errorMessage = nil
+                                isReplacingSecret = true
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(replaceSecret == nil)
+                        }
                     } else {
                         if showsSecret {
                             TextField("输入密码", text: $secretInput)
@@ -1910,7 +1982,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
                             showsSecret.toggle()
                         }
                         .buttonStyle(.borderless)
-                        Text("点击“应用字段”后，保存条目时一次提交")
+                        Text("应用字段后，保存条目时一次提交；密码不会写入 Markdown")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1936,6 +2008,10 @@ private struct SensitiveCatalogFieldEditorRow: View {
         }
         .padding(9)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onDisappear {
+            secretInput = ""
+            isReplacingSecret = false
+        }
     }
 
     @ViewBuilder
@@ -2012,6 +2088,29 @@ private struct SensitiveCatalogFieldEditorRow: View {
             secretRef: draftType.isSecret ? field.secretRef : nil
         ))
         errorMessage = nil
+    }
+
+    private func submitSecretReplacement() {
+        guard let replaceSecret, !secretInput.isEmpty else { return }
+        let plaintext = secretInput
+        isSubmittingReplacement = true
+        Task {
+            let result = await replaceSecret(entryID, field.key, field.label, plaintext)
+            secretInput = ""
+            isSubmittingReplacement = false
+            switch result {
+            case .success(let writeResult):
+                guard let newReference = writeResult.secretReference else {
+                    errorMessage = "替换成功但未收到新的安全引用，请刷新目录"
+                    return
+                }
+                isReplacingSecret = false
+                errorMessage = nil
+                onReplacementSuccess(newReference)
+            case .failure(let error):
+                errorMessage = error.displayText
+            }
+        }
     }
 
     private static func stringValue(_ value: SecretCatalogValue?) -> String {

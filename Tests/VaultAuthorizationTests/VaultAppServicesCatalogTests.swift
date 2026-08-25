@@ -8,6 +8,7 @@ private let serviceIndexID = "0123456789ABCDEFGHJKMNPQRS"
 private let serviceEntryID = "0123456789ABCDEFGHJKMNPQRT"
 private let servicePasswordRef = "secret://0123456789ABCDEFGHJKMNPQRS"
 private let servicePrivateKeyRef = "secret://0123456789ABCDEFGHJKMNPQRV"
+private let serviceFailedReplacementRef = "secret://0123456789ABCDEFGHJKMNPQRW"
 
 private struct CatalogTextEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
@@ -22,6 +23,41 @@ private struct CatalogMultiSecretEncryptor: TextEncrypting {
     }
 }
 
+private actor CatalogEncryptCallCounter {
+    private var count = 0
+
+    func next() -> Int {
+        count += 1
+        return count
+    }
+}
+
+private struct CatalogFailOnSecondEncryptor: TextEncrypting {
+    let counter: CatalogEncryptCallCounter
+
+    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
+        _ = (label, policy)
+        guard await counter.next() == 1 else {
+            struct SecondSecretCreationError: Error {}
+            throw SecondSecretCreationError()
+        }
+        return try SecretReference(servicePasswordRef)
+    }
+}
+
+private struct CatalogReplacementEncryptor: TextEncrypting {
+    let reference: String
+
+    init(reference: String = servicePrivateKeyRef) {
+        self.reference = reference
+    }
+
+    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
+        _ = (plaintext, label, policy)
+        return try SecretReference(reference)
+    }
+}
+
 private actor CatalogDeletingRecorder: RecordDeleting {
     private(set) var deletedIDs: [String] = []
 
@@ -30,8 +66,30 @@ private actor CatalogDeletingRecorder: RecordDeleting {
     }
 }
 
+private actor CatalogFailingDeletingRecorder: RecordDeleting {
+    private(set) var attemptedIDs: [String] = []
+
+    func delete(id: String) async throws {
+        attemptedIDs.append(id)
+        struct DeleteError: Error {}
+        throw DeleteError()
+    }
+}
+
+private struct CatalogRecordLister: RecordListing {
+    let ids: [String]
+
+    func recordIDs() async throws -> [String] { ids }
+}
+
 private struct CatalogRaceEncryptor: TextEncrypting {
     let store: SensitiveCatalogDocumentStore
+    let reference: String
+
+    init(store: SensitiveCatalogDocumentStore, reference: String = servicePasswordRef) {
+        self.store = store
+        self.reference = reference
+    }
 
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         _ = (plaintext, label, policy)
@@ -50,7 +108,7 @@ private struct CatalogRaceEncryptor: TextEncrypting {
             schema: entry.schema
         )
         _ = try await store.updateEntry(concurrentEntry, expectedRevision: snapshot.revision)
-        return try SecretReference(servicePasswordRef)
+        return try SecretReference(reference)
     }
 }
 
@@ -60,21 +118,29 @@ private enum CatalogMetadataStoreError: Error {
 }
 
 private struct CatalogMetadataRecordStore: RecordStore {
-    let record: EncryptedRecord
+    let records: [EncryptedRecord]
+
+    init(record: EncryptedRecord) {
+        records = [record]
+    }
+
+    init(records: [EncryptedRecord]) {
+        self.records = records
+    }
 
     func save(_: EncryptedRecord) async throws {
         throw CatalogMetadataStoreError.unexpectedWrite
     }
 
     func latest(id: String) async throws -> EncryptedRecord {
-        guard id == record.id else {
+        guard let record = records.first(where: { $0.id == id }) else {
             throw CatalogMetadataStoreError.missingRecord
         }
         return record
     }
 
     func versions(id: String) async throws -> [Int] {
-        guard id == record.id else {
+        guard let record = records.first(where: { $0.id == id }) else {
             throw CatalogMetadataStoreError.missingRecord
         }
         return [record.recordVersion]
@@ -83,10 +149,30 @@ private struct CatalogMetadataRecordStore: RecordStore {
 
 private actor CatalogApprovalRecorder: OperationApproving {
     private(set) var count = 0
+    private(set) var summaries: [String] = []
 
-    func approve(summary _: String) async throws {
+    func approve(summary: String) async throws {
         count += 1
+        summaries.append(summary)
     }
+}
+
+private func catalogMetadataRecord(id: String, label: String = "QNAP credential") -> EncryptedRecord {
+    EncryptedRecord(
+        formatVersion: 2,
+        id: id,
+        recordVersion: 1,
+        ciphertext: Data(),
+        nonce: Data(),
+        tag: Data(),
+        wrappedDataKey: Data(),
+        wrappedDataKeyNonce: Data(),
+        wrappedDataKeyTag: Data(),
+        label: label,
+        policy: .credential,
+        createdAt: Date(),
+        updatedAt: Date()
+    )
 }
 
 private func serviceDocument() -> SecretCatalogDocument {
@@ -597,8 +683,324 @@ private struct ExternalCatalogAdoptionFixture {
         )
     }
     #expect(await deleter.deletedIDs == [String(servicePasswordRef.dropFirst("secret://".count))])
+    #expect(try await fixture.store.pendingSecretCleanupReferenceIDs().isEmpty)
     let final = try await fixture.store.snapshot()
     #expect(final.document.entries.first?.fields.contains(where: { $0.key == "apiKey" }) == false)
+}
+
+@Test func appServiceReportsCleanupRequiredAndPersistsOpaqueReferenceWhenCompensationFails() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let deleter = CatalogFailingDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogRaceEncryptor(store: fixture.store),
+        activeRoot: nil,
+        recordLister: CatalogRecordLister(ids: [String(servicePasswordRef.dropFirst("secret://".count))]),
+        recordDeleter: deleter,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+    let initial = try await fixture.store.snapshot()
+    let entry = try #require(initial.document.entries.first)
+    let draft = SecretCatalogEntry(
+        id: entry.id,
+        indexId: entry.indexId,
+        title: entry.title,
+        type: entry.type,
+        aliases: entry.aliases,
+        endpoints: entry.endpoints,
+        fields: entry.fields + [SecretCatalogFieldValue(key: "apiKey", label: "API 密钥", type: .secret)],
+        notes: entry.notes,
+        tags: entry.tags,
+        schema: entry.schema
+    )
+
+    await #expect(throws: SecretCatalogAgentError.cleanupRequired) {
+        _ = try await service.catalogCommitEntryEdit(
+            draft,
+            secretInputs: [CatalogSecretInput(key: "apiKey", label: "API 密钥", plaintext: "cleanup-canary")],
+            expectedRevision: initial.revision
+        )
+    }
+    #expect(await deleter.attemptedIDs == [String(servicePasswordRef.dropFirst("secret://".count))])
+    #expect(try await fixture.store.pendingSecretCleanupReferenceIDs() == [String(servicePasswordRef.dropFirst("secret://".count))])
+    let orphanScan = try await service.scanOrphans(markdownReferences: [])
+    #expect(orphanScan.unreferencedRecords == [servicePasswordRef])
+    let markdown = try String(contentsOf: fixture.documentURL, encoding: .utf8)
+    #expect(!markdown.contains("cleanup-canary"))
+}
+
+@Test func appServiceCompensatesEverySecretCreatedBeforeLaterCreationFails() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let deleter = CatalogDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogFailOnSecondEncryptor(counter: CatalogEncryptCallCounter()),
+        activeRoot: nil,
+        recordDeleter: deleter,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+    let initial = try await fixture.store.snapshot()
+    let entry = try #require(initial.document.entries.first)
+    let draft = SecretCatalogEntry(
+        id: entry.id,
+        indexId: entry.indexId,
+        title: entry.title,
+        type: entry.type,
+        aliases: entry.aliases,
+        endpoints: entry.endpoints,
+        fields: entry.fields + [
+            SecretCatalogFieldValue(key: "apiKey", label: "API 密钥", type: .secret),
+            SecretCatalogFieldValue(key: "privateKey", label: "私钥", type: .secret)
+        ],
+        notes: entry.notes,
+        tags: entry.tags,
+        schema: entry.schema
+    )
+
+    do {
+        _ = try await service.catalogCommitEntryEdit(
+            draft,
+            secretInputs: [
+                CatalogSecretInput(key: "apiKey", label: "API 密钥", plaintext: "first-secret"),
+                CatalogSecretInput(key: "privateKey", label: "私钥", plaintext: "second-secret")
+            ],
+            expectedRevision: initial.revision
+        )
+        Issue.record("第二个 secret 创建失败时不应提交 Entry")
+    } catch {
+        #expect(String(describing: error).contains("SecondSecretCreationError"))
+    }
+    #expect(await deleter.deletedIDs == [String(servicePasswordRef.dropFirst("secret://".count))])
+    #expect(try await fixture.store.pendingSecretCleanupReferenceIDs().isEmpty)
+    let final = try await fixture.store.snapshot()
+    #expect(final.document.entries.first?.fields.contains(where: { $0.key == "apiKey" }) == false)
+    #expect(final.document.entries.first?.fields.contains(where: { $0.key == "privateKey" }) == false)
+}
+
+@Test func appServiceReplacementUsesApprovalAndDoesNotDeleteThePreviousRecord() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let boundEntry = SecretCatalogEntry(
+        id: serviceEntryID,
+        indexId: serviceIndexID,
+        title: "QNAP 管理后台登录",
+        fields: [SecretCatalogFieldValue(
+            key: "password",
+            label: "密码",
+            type: .secret,
+            secretRef: servicePasswordRef
+        )]
+    )
+    _ = try await fixture.store.updateEntry(boundEntry, expectedRevision: 1)
+    let recordStore = CatalogMetadataRecordStore(records: [
+        catalogMetadataRecord(id: String(servicePasswordRef.dropFirst("secret://".count))),
+        catalogMetadataRecord(id: String(servicePrivateKeyRef.dropFirst("secret://".count)))
+    ])
+    let approver = CatalogApprovalRecorder()
+    let deleter = CatalogDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogReplacementEncryptor(),
+        activeRoot: nil,
+        recordDeleter: deleter,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+
+    let result = try await service.catalogSecureInput(
+        entryID: serviceEntryID,
+        key: "password",
+        label: "密码",
+        plaintext: "replacement-canary",
+        policy: .credential
+    )
+    #expect(result.reference == servicePrivateKeyRef)
+    #expect(await approver.count == 1)
+    #expect(await approver.summaries.first?.contains("替换目录密码") == true)
+    #expect(await deleter.deletedIDs.isEmpty)
+    #expect(try await fixture.store.snapshot().document.entries.first?.fields.first?.secretRef == servicePrivateKeyRef)
+    let markdown = try String(contentsOf: fixture.documentURL, encoding: .utf8)
+    #expect(!markdown.contains("replacement-canary"))
+}
+
+@Test func appServiceEmptyReplacementInputLeavesExistingSecretUntouched() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let boundEntry = SecretCatalogEntry(
+        id: serviceEntryID,
+        indexId: serviceIndexID,
+        title: "QNAP 管理后台登录",
+        fields: [SecretCatalogFieldValue(
+            key: "password",
+            label: "密码",
+            type: .secret,
+            secretRef: servicePasswordRef
+        )]
+    )
+    let before = try await fixture.store.updateEntry(boundEntry, expectedRevision: 1)
+    let deleter = CatalogDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogReplacementEncryptor(),
+        activeRoot: nil,
+        recordDeleter: deleter,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    await #expect(throws: SecretCatalogAgentError.invalidOperation) {
+        _ = try await service.catalogSecureInput(
+            entryID: serviceEntryID,
+            key: "password",
+            label: "密码",
+            plaintext: "",
+            policy: .credential
+        )
+    }
+
+    let after = try await fixture.store.snapshot()
+    #expect(after.revision == before.revision)
+    #expect(after.document.entries.first?.fields.first?.secretRef == servicePasswordRef)
+    #expect(await deleter.deletedIDs.isEmpty)
+    #expect(try await fixture.store.pendingSecretCleanupReferenceIDs().isEmpty)
+}
+
+@Test func appServiceReplacementFailureKeepsOldBindingAndPersistsNewOrphanID() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let boundEntry = SecretCatalogEntry(
+        id: serviceEntryID,
+        indexId: serviceIndexID,
+        title: "QNAP 管理后台登录",
+        fields: [SecretCatalogFieldValue(
+            key: "password",
+            label: "密码",
+            type: .secret,
+            secretRef: servicePasswordRef
+        )]
+    )
+    _ = try await fixture.store.updateEntry(boundEntry, expectedRevision: 1)
+    let recordStore = CatalogMetadataRecordStore(records: [
+        catalogMetadataRecord(id: String(servicePasswordRef.dropFirst("secret://".count))),
+        catalogMetadataRecord(id: String(serviceFailedReplacementRef.dropFirst("secret://".count)))
+    ])
+    let approver = CatalogApprovalRecorder()
+    let deleter = CatalogFailingDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogRaceEncryptor(
+            store: fixture.store,
+            reference: serviceFailedReplacementRef
+        ),
+        activeRoot: nil,
+        recordLister: CatalogRecordLister(ids: [
+            String(servicePasswordRef.dropFirst("secret://".count)),
+            String(serviceFailedReplacementRef.dropFirst("secret://".count))
+        ]),
+        recordDeleter: deleter,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+
+    await #expect(throws: SecretCatalogAgentError.cleanupRequired) {
+        _ = try await service.catalogSecureInput(
+            entryID: serviceEntryID,
+            key: "password",
+            label: "密码",
+            plaintext: "replacement-failure-canary",
+            policy: .credential
+        )
+    }
+
+    let final = try await fixture.store.snapshot()
+    #expect(final.document.entries.first?.fields.first?.secretRef == servicePasswordRef)
+    #expect(await approver.count == 1)
+    #expect(await deleter.attemptedIDs == [String(serviceFailedReplacementRef.dropFirst("secret://".count))])
+    #expect(try await fixture.store.pendingSecretCleanupReferenceIDs() == [String(serviceFailedReplacementRef.dropFirst("secret://".count))])
+    let orphanScan = try await service.scanOrphans(markdownReferences: [servicePasswordRef])
+    #expect(orphanScan.unreferencedRecords == [serviceFailedReplacementRef])
+    let markdown = try String(contentsOf: fixture.documentURL, encoding: .utf8)
+    #expect(!markdown.contains("replacement-failure-canary"))
+}
+
+@Test func appServiceReconciliationNeverDeletesAReferenceThatWasBoundAfterFailure() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let boundEntry = SecretCatalogEntry(
+        id: serviceEntryID,
+        indexId: serviceIndexID,
+        title: "QNAP 管理后台登录",
+        fields: [SecretCatalogFieldValue(
+            key: "password",
+            label: "密码",
+            type: .secret,
+            secretRef: servicePasswordRef
+        )]
+    )
+    _ = try await fixture.store.updateEntry(boundEntry, expectedRevision: 1)
+    try await fixture.store.recordPendingSecretCleanup(referenceIDs: [
+        String(servicePasswordRef.dropFirst("secret://".count))
+    ])
+    let deleter = CatalogDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordDeleter: deleter,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let remaining = try await service.reconcilePendingCatalogSecretCleanup()
+
+    #expect(remaining.isEmpty)
+    #expect(await deleter.deletedIDs.isEmpty)
+    #expect(try await fixture.store.pendingSecretCleanupReferenceIDs().isEmpty)
+}
+
+@Test func appServiceReconciliationDeletesOnlyStillOrphanedCleanupReferences() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let boundEntry = SecretCatalogEntry(
+        id: serviceEntryID,
+        indexId: serviceIndexID,
+        title: "QNAP 管理后台登录",
+        fields: [SecretCatalogFieldValue(
+            key: "password",
+            label: "密码",
+            type: .secret,
+            secretRef: servicePasswordRef
+        )]
+    )
+    _ = try await fixture.store.updateEntry(boundEntry, expectedRevision: 1)
+    let orphanID = String(serviceFailedReplacementRef.dropFirst("secret://".count))
+    try await fixture.store.recordPendingSecretCleanup(referenceIDs: [
+        String(servicePasswordRef.dropFirst("secret://".count)),
+        orphanID
+    ])
+    let deleter = CatalogDeletingRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordDeleter: deleter,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let remaining = try await service.reconcilePendingCatalogSecretCleanup()
+
+    #expect(remaining.isEmpty)
+    #expect(await deleter.deletedIDs == [orphanID])
+    #expect(try await fixture.store.pendingSecretCleanupReferenceIDs().isEmpty)
 }
 
 private func serviceCatalogError(

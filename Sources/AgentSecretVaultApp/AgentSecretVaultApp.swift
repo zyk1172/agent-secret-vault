@@ -89,6 +89,14 @@ struct AgentSecretVaultApplication: App {
                 commitCatalogEntryEdit: { entry, secretInputs in
                     await runtime.commitCatalogEntryEdit(entry: entry, secretInputs: secretInputs)
                 },
+                replaceCatalogSecret: { entryID, key, label, plaintext in
+                    await runtime.replaceCatalogSecret(
+                        entryID: entryID,
+                        key: key,
+                        label: label,
+                        plaintext: plaintext
+                    )
+                },
                 applyCatalogBatch: { mutation in
                     await runtime.applyCatalogBatch(mutation)
                 },
@@ -951,6 +959,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             message = "智能体的安全目录编辑已关闭"
         case "CATALOG_APPROVAL_REQUIRED":
             message = "此目录变更需要本机批准"
+        case "CATALOG_CLEANUP_REQUIRED":
+            message = "目录保存失败；有新的加密记录待清理，请稍后执行清理或孤儿扫描"
         case "CATALOG_OPERATION_DENIED":
             message = "此目录变更被本机策略拒绝"
         case "CATALOG_AUTHORIZATION_CANCELLED":
@@ -1005,6 +1015,60 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             return .failure(error)
         } catch {
             let error = catalogMutationUIError(for: error, operation: "保存条目")
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
+    }
+
+    func replaceCatalogSecret(
+        entryID: String,
+        key: String,
+        label: String,
+        plaintext: String
+    ) async -> CatalogMutationUIResult {
+        guard let appControlClient else {
+            let error = CatalogMutationUIError(code: "APP_CONTROL_UNAVAILABLE", message: "本机控制服务不可用")
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        }
+        do {
+            let result = try await appControlClient.catalogSecureInput(
+                entryID: entryID,
+                key: key,
+                label: label,
+                plaintext: plaintext,
+                policy: .credential
+            )
+            await refreshSensitiveCatalog()
+            sensitiveIndexError = nil
+            return .success(CatalogWriteResult(
+                revision: result.revision,
+                secretReference: result.reference
+            ))
+        } catch VaultIPCClientError.responseFailure("CATALOG_CLEANUP_REQUIRED") {
+            let error = CatalogMutationUIError(
+                code: "CATALOG_CLEANUP_REQUIRED",
+                message: "替换失败；新的加密记录未能自动清理，请稍后执行孤儿扫描"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
+            await refreshSensitiveCatalog()
+            let error = CatalogMutationUIError(
+                code: "CATALOG_REVISION_CONFLICT",
+                message: "目录已被其他本机客户端更新，请刷新后重试"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        } catch VaultIPCClientError.responseFailure("CATALOG_APPROVAL_REQUIRED") {
+            let error = CatalogMutationUIError(
+                code: "CATALOG_APPROVAL_REQUIRED",
+                message: "替换密码需要本机批准"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
+        } catch {
+            let error = catalogMutationUIError(for: error, operation: "替换密码")
             sensitiveIndexError = error.displayText
             return .failure(error)
         }

@@ -11,6 +11,10 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
     case revisionConflict
     case invalidOperation
     case approvalRequired
+    /// The Catalog write failed and at least one newly-created opaque record
+    /// could not be deleted. The ID is persisted in cleanup metadata for a
+    /// later orphan scan/reconciliation; plaintext is never included.
+    case cleanupRequired
 }
 
 /// The user-facing App-control setting for Agent catalog writes.  The
@@ -163,10 +167,19 @@ public struct CatalogSecretInput: Codable, Equatable, Sendable {
 public struct CatalogWriteResult: Codable, Equatable, Sendable {
     public let revision: UInt64
     public let entry: SecretCatalogEntryMatch?
+    /// Opaque reference returned only by the App-controlled secure-input
+    /// flow. It is never plaintext and is optional so existing catalog write
+    /// responses remain wire-compatible.
+    public let secretReference: String?
 
-    public init(revision: UInt64, entry: SecretCatalogEntryMatch? = nil) {
+    public init(
+        revision: UInt64,
+        entry: SecretCatalogEntryMatch? = nil,
+        secretReference: String? = nil
+    ) {
         self.revision = revision
         self.entry = entry
+        self.secretReference = secretReference
     }
 }
 

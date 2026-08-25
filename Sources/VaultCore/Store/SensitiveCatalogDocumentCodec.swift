@@ -18,6 +18,16 @@ public enum SensitiveCatalogDocumentCodec {
         case managedV3
     }
 
+    public struct V2MigrationResult: Equatable, Sendable {
+        public let document: SecretCatalogDocument
+        public let unmanagedMarkdown: String?
+
+        public init(document: SecretCatalogDocument, unmanagedMarkdown: String? = nil) {
+            self.document = document
+            self.unmanagedMarkdown = unmanagedMarkdown
+        }
+    }
+
     public static func format(_ data: Data) -> DocumentFormat {
         guard let text = String(data: data, encoding: .utf8) else { return .unmanaged }
         return format(text)
@@ -47,11 +57,21 @@ public enum SensitiveCatalogDocumentCodec {
         }
     }
 
-    public static func encode(_ document: SecretCatalogDocument) throws -> String {
+    public static func encode(
+        _ document: SecretCatalogDocument,
+        unmanagedMarkdown: String? = nil
+    ) throws -> String {
         try document.validate()
         var lines = [v3Marker, "# \(rootTitle)", ""]
         lines.append(contentsOf: SVLTAgentCatalogPolicy.documentPolicyBlock.components(separatedBy: "\n"))
         lines.append("")
+        if let unmanagedMarkdown {
+            let normalized = try validatedUnmanagedMarkdown(unmanagedMarkdown)
+            if !normalized.isEmpty {
+                lines.append(contentsOf: normalized.components(separatedBy: "\n"))
+                lines.append("")
+            }
+        }
         for (offset, index) in document.indexes.enumerated() {
             if offset > 0 { lines.append("") }
             lines.append(contentsOf: renderIndex(index, entries: document.entries.filter { $0.indexId == index.id }))
@@ -59,17 +79,24 @@ public enum SensitiveCatalogDocumentCodec {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    public static func canonicalData(_ document: SecretCatalogDocument) throws -> Data {
-        Data(try encode(document).utf8)
+    public static func canonicalData(
+        _ document: SecretCatalogDocument,
+        unmanagedMarkdown: String? = nil
+    ) throws -> Data {
+        Data(try encode(document, unmanagedMarkdown: unmanagedMarkdown).utf8)
     }
 
     /// Remove the two-entry policy catalog that was emitted by the v2 App.
     /// The matcher is intentionally structural and content-based: an index
     /// with only one coincidental title is not deleted during migration.
     public static func migrateV2DocumentForV3(_ document: SecretCatalogDocument) throws -> SecretCatalogDocument {
+        try migrateV2DocumentForV3WithNotes(document).document
+    }
+
+    public static func migrateV2DocumentForV3WithNotes(_ document: SecretCatalogDocument) throws -> V2MigrationResult {
         try document.validate()
         let policyIndexes = document.indexes.filter { $0.title == "SVLT 管理规范" }
-        guard policyIndexes.isEmpty == false else { return document }
+        guard policyIndexes.isEmpty == false else { return V2MigrationResult(document: document) }
         guard policyIndexes.count == 1, let policyIndex = policyIndexes.first else {
             throw SecretCatalogValidationError.ambiguousLegacyPolicy
         }
@@ -107,7 +134,9 @@ public enum SensitiveCatalogDocumentCodec {
         let remainingEntries = document.entries.filter { $0.indexId != policyIndex.id }
         let migrated = SecretCatalogDocument(indexes: remainingIndexes, entries: remainingEntries)
         try migrated.validate()
-        return migrated
+        let directoryDescription = policyEntries.first(where: { $0.title == "目录说明" })
+            .flatMap(renderLegacyDirectoryDescription)
+        return V2MigrationResult(document: migrated, unmanagedMarkdown: directoryDescription)
     }
 
     /// v2 is input-only and exists for the explicit App migration flow.
@@ -302,8 +331,41 @@ private extension SensitiveCatalogDocumentCodec {
                     entry = currentEntry
                     source.fields[FieldKey(id: current.id, key: current.key)] = FieldSource(markerRange: current.markerRange, bodyRange: bodyRange, blockRange: current.markerRange.lowerBound..<line.end)
                     field = nil
+                } else if trimmed.contains("<!-- SVLT-") || trimmed.contains("<!-- /SVLT-") {
+                    // Field bodies are data, not a second marker language.
+                    // Reject an injected SVLT token before it can be retained
+                    // as ordinary text by a non-secret field.
+                    throw SecretCatalogValidationError.unmanagedContent
                 }
                 continue
+            }
+
+            // Every non-policy line outside a secret field is metadata or
+            // Markdown, regardless of whether the parser later attaches it to
+            // a managed block. Keep the invariant at this source boundary so
+            // ignored/unmanaged lines cannot become a second secret-ref
+            // storage channel.
+            guard MarkdownReferenceScanner.references(in: line.text).isEmpty else {
+                throw SecretCatalogValidationError.secretReferenceInMetadata
+            }
+            let isManagedMarker =
+                trimmed == "<!-- /SVLT-INDEX -->" ||
+                trimmed == "<!-- /SVLT-ENTRY -->" ||
+                trimmed == "<!-- /SVLT-FIELD -->" ||
+                (trimmed.hasPrefix("<!-- SVLT-INDEX ") && trimmed.hasSuffix(" -->")) ||
+                (trimmed.hasPrefix("<!-- SVLT-ENTRY ") && trimmed.hasSuffix(" -->")) ||
+                (trimmed.hasPrefix("<!-- SVLT-FIELD ") && trimmed.hasSuffix(" -->"))
+            // Notes delimiters are managed only inside an active entry. The
+            // same marker text at document level is not an unmanaged Markdown
+            // escape hatch.
+            let isEntryNotesMarker = entry != nil && (
+                trimmed == "<!-- SVLT-NOTES-BEGIN -->" ||
+                trimmed == "<!-- SVLT-NOTES-END -->"
+            )
+            if (trimmed.contains("<!-- SVLT-") || trimmed.contains("<!-- /SVLT-")),
+               !isManagedMarker,
+               !isEntryNotesMarker {
+                throw SecretCatalogValidationError.unmanagedContent
             }
             if let raw = marker(trimmed, prefix: "<!-- SVLT-FIELD ", line: line) {
                 guard var currentEntry = entry, currentEntry.title != nil else { throw SecretCatalogValidationError.missingEntryBlock }
@@ -689,6 +751,41 @@ private extension SensitiveCatalogDocumentCodec {
         case .list(let values): return values
         case .number, .boolean: return []
         }
+    }
+
+    static func renderLegacyDirectoryDescription(_ entry: SecretCatalogEntry) -> String? {
+        var content: [String] = []
+        if let notes = entry.notes, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            content.append(notes.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        for field in entry.fields {
+            let value = visibleStrings(field.value).joined(separator: ", ")
+            content.append("\(field.label)：\(value)")
+        }
+        if !entry.aliases.isEmpty {
+            content.append("别名：\(entry.aliases.joined(separator: "、"))")
+        }
+        if !entry.tags.isEmpty {
+            content.append("标签：\(entry.tags.joined(separator: "、"))")
+        }
+        guard !content.isEmpty else { return nil }
+        let body = content.joined(separator: "\n")
+        let lines = body.components(separatedBy: "\n").map { line in
+            line.isEmpty ? ">" : "> \(line)"
+        }
+        return (["> [!note]- 目录说明"] + lines).joined(separator: "\n")
+    }
+
+    static func validatedUnmanagedMarkdown(_ value: String) throws -> String {
+        let normalized = normalizeNewlines(value).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count <= 20_000,
+              !normalized.contains("\0"),
+              !normalized.contains("\r"),
+              MarkdownReferenceScanner.referenceIDs(in: normalized).isEmpty
+        else {
+            throw SecretCatalogValidationError.secretReferenceInMetadata
+        }
+        return normalized
     }
     static func decodeV2Block(_ json: String, level: Int, indexTitle: String?, entryTitle: String?, active: SecretCatalogIndex?, indexes: inout [SecretCatalogIndex], entries: inout [SecretCatalogEntry], indexCount: inout Int, entryCount: inout Int, current: inout SecretCatalogIndex?) throws {
         guard let data = json.data(using: .utf8), let envelope = try? JSONDecoder().decode(Envelope.self, from: data) else { throw SecretCatalogValidationError.malformedJSON }

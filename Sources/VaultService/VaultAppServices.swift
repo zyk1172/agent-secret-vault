@@ -1131,7 +1131,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
         }
 
-        guard let recordDeleter else {
+        guard recordDeleter != nil else {
             throw SecretCatalogAgentError.invalidOperation
         }
 
@@ -1184,13 +1184,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
-            for reference in createdReferences {
-                try? await recordDeleter.delete(id: reference.id)
+            if let cleanupError = await compensateCreatedReferences(createdReferences) {
+                throw cleanupError
             }
             throw catalogAgentError(for: error)
         } catch {
-            for reference in createdReferences {
-                try? await recordDeleter.delete(id: reference.id)
+            if let cleanupError = await compensateCreatedReferences(createdReferences) {
+                throw cleanupError
             }
             throw error
         }
@@ -1268,6 +1268,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         plaintext: String,
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64) {
+        guard !plaintext.isEmpty else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
         let snapshot = try await catalogSnapshotForAgent()
         guard let entry = snapshot.document.entries.first(where: { $0.id == entryID }),
               let field = entry.fields.first(where: { $0.key == key }),
@@ -1276,25 +1279,60 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
 
-        if let existingReference = field.secretRef {
-            let parsedReference: SecretReference
-            do {
-                parsedReference = try SecretReference(existingReference)
-            } catch {
-                throw SecretCatalogAgentError.invalidOperation
-            }
-            let metadata = try await policyMetadata(for: [parsedReference])
-            let descriptor = SecretOperationDescriptor(
-                actionType: .changeSecretPolicy,
-                secretReferences: [parsedReference],
-                requestedEffects: ["replace-catalog-secret"]
-            )
-            let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-            try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
-        }
-
         let secret = try await textEncryptor.encryptText(plaintext, label: label, policy: policy)
         do {
+            if field.secretRef != nil {
+                let replacementFields = entry.fields.map { currentField in
+                    guard currentField.key == key else { return currentField }
+                    return SecretCatalogFieldValue(
+                        key: currentField.key,
+                        label: currentField.label,
+                        type: currentField.type,
+                        agentVisible: currentField.agentVisible,
+                        searchable: currentField.searchable,
+                        value: nil,
+                        secretRef: secret.description
+                    )
+                }
+                var candidateEntries = snapshot.document.entries
+                guard let entryOffset = candidateEntries.firstIndex(where: { $0.id == entry.id }) else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+                candidateEntries[entryOffset] = SecretCatalogEntry(
+                    id: entry.id,
+                    indexId: entry.indexId,
+                    title: entry.title,
+                    type: entry.type,
+                    aliases: entry.aliases,
+                    endpoints: entry.endpoints,
+                    fields: replacementFields,
+                    notes: entry.notes,
+                    tags: entry.tags,
+                    schema: entry.schema
+                )
+                let candidate = SecretCatalogDocument(
+                    indexes: snapshot.document.indexes,
+                    entries: candidateEntries
+                )
+                try candidate.validate()
+                let diff = CatalogSemanticDiff.between(old: snapshot.document, new: candidate)
+                guard diff.changes.contains(where: {
+                    $0.kind == .replaceSecret
+                        && $0.entryID == entryID
+                        && $0.fieldKey == key
+                        && $0.oldSecretRef == field.secretRef
+                        && $0.newSecretRef == secret.description
+                }) else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+                try await authorizeCatalogDiff(
+                    diff,
+                    transport: .directManagedFileWrite,
+                    requireAgentSafeWrite: false,
+                    requestedEffect: "catalog-replace-secret"
+                )
+            }
+
             let updated = try await catalogDocumentStore!.bindSecret(
                 secret.description,
                 toFieldKey: key,
@@ -1304,17 +1342,31 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return (secret.description, updated.revision)
         } catch let error as SensitiveCatalogDocumentStoreError {
             guard error == .revisionConflict else {
+                if let cleanupError = await compensateCreatedReferences([secret]) {
+                    throw cleanupError
+                }
                 throw catalogAgentError(for: error)
             }
 
             // Filling an empty placeholder is safe to retry with the same
             // already-encrypted reference. Never overwrite a concurrent bind.
-            let current = try await catalogSnapshotForAgent()
+            let current: SensitiveCatalogSnapshot
+            do {
+                current = try await catalogSnapshotForAgent()
+            } catch {
+                if let cleanupError = await compensateCreatedReferences([secret]) {
+                    throw cleanupError
+                }
+                throw error
+            }
             guard let currentEntry = current.document.entries.first(where: { $0.id == entryID }),
                   let currentField = currentEntry.fields.first(where: { $0.key == key }),
                   currentField.type.isSecret,
                   currentField.secretRef == nil
             else {
+                if let cleanupError = await compensateCreatedReferences([secret]) {
+                    throw cleanupError
+                }
                 throw SecretCatalogAgentError.revisionConflict
             }
             do {
@@ -1326,8 +1378,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 )
                 return (secret.description, updated.revision)
             } catch let retryError as SensitiveCatalogDocumentStoreError {
+                if let cleanupError = await compensateCreatedReferences([secret]) {
+                    throw cleanupError
+                }
                 throw catalogAgentError(for: retryError)
             }
+        } catch {
+            if let cleanupError = await compensateCreatedReferences([secret]) {
+                throw cleanupError
+            }
+            throw error
         }
     }
 
@@ -1561,7 +1621,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func authorizeCatalogDiff(
         _ diff: CatalogSemanticDiff,
         transport: CatalogMutationKind,
-        requireAgentSafeWrite: Bool = true
+        requireAgentSafeWrite: Bool = true,
+        requestedEffect: String = "catalog-semantic-approval"
     ) async throws {
         let catalogDecision = catalogMutationPolicyEngine.evaluate(diff, transport: transport)
         switch catalogDecision {
@@ -1584,7 +1645,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             if references.isEmpty {
                 descriptor = SecretOperationDescriptor(
                     actionType: .changeAuthorizationRules,
-                    requestedEffects: ["catalog-semantic-approval"]
+                    requestedEffects: [requestedEffect]
                 )
                 metadata = []
             } else {
@@ -1596,7 +1657,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 descriptor = SecretOperationDescriptor(
                     actionType: diff.changesSecretTarget ? .changeDestinationBinding : .changeSecretPolicy,
                     secretReferences: references,
-                    requestedEffects: ["catalog-semantic-approval"]
+                    requestedEffects: [requestedEffect]
                 )
             }
             let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
@@ -1615,7 +1676,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let labelText = labels.isEmpty ? "未命名凭据" : labels.prefix(3).joined(separator: "、")
         let target = safeDisplayLabel(decision.normalizedDestination ?? "本机")
         let detail = safeDisplayLabel(operationDetail(for: descriptor))
-        return "SVLT 请求本机审批：\(displayName(for: descriptor.actionType))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+        return "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+    }
+
+    private func displayName(for descriptor: SecretOperationDescriptor) -> String {
+        if descriptor.requestedEffects.contains("catalog-replace-secret") {
+            return "替换目录密码"
+        }
+        return displayName(for: descriptor.actionType)
     }
 
     private func operationDetail(for descriptor: SecretOperationDescriptor) -> String {
@@ -1952,6 +2020,55 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return result
     }
 
+    /// Retries durable compensation entries. The returned IDs are still
+    /// unresolved and remain persisted for a later run; no secret value is
+    /// loaded or included in the result.
+    public func reconcilePendingCatalogSecretCleanup() async throws -> [String] {
+        guard let catalogDocumentStore else {
+            throw SecretCatalogAgentError.unavailable
+        }
+        let pending = try await catalogDocumentStore.pendingSecretCleanupReferenceIDs()
+        guard !pending.isEmpty else { return [] }
+
+        // Cleanup metadata is authenticated, but it is still only a recovery
+        // hint. Re-read the current accepted Catalog before every deletion
+        // pass and refuse to delete a record that has since become referenced.
+        // A pending external change makes the accepted state unavailable, so
+        // snapshot() fails closed and no deletion is attempted.
+        let current = try await catalogDocumentStore.snapshot()
+        let referencedIDs = Set(current.document.entries.flatMap { entry in
+            entry.fields.compactMap { field in
+                field.secretRef.flatMap { try? SecretReference($0).id }
+            }
+        })
+        let referencedPending = pending.filter { referencedIDs.contains($0) }
+        var orphanPending = pending.filter { !referencedIDs.contains($0) }
+        var resolved = referencedPending
+
+        guard let recordDeleter else {
+            if !resolved.isEmpty {
+                try await catalogDocumentStore.clearPendingSecretCleanup(referenceIDs: resolved)
+            }
+            return orphanPending
+        }
+
+        var remaining: [String] = []
+        for id in orphanPending {
+            do {
+                try await recordDeleter.delete(id: id)
+                resolved.append(id)
+            } catch {
+                remaining.append(id)
+            }
+        }
+        if !resolved.isEmpty {
+            try await catalogDocumentStore.clearPendingSecretCleanup(referenceIDs: resolved)
+        }
+        await notifySavedReferencesChanged()
+        orphanPending = remaining
+        return orphanPending
+    }
+
     private static func canonicalReference(_ reference: String) -> String? {
         try? SecretReference(reference).description
     }
@@ -2122,6 +2239,56 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
              .referenceSetChanged, .writeFailed:
             return .invalidCatalog
         }
+    }
+
+    /// Compensate records created before a Catalog commit. Deletion is
+    /// attempted for every ID so a multi-secret transaction does not abandon
+    /// the remaining records after the first failure. Any failure is made
+    /// explicit to the caller and persisted as opaque cleanup metadata.
+    private func compensateCreatedReferences(
+        _ references: [SecretReference]
+    ) async -> SecretCatalogAgentError? {
+        guard !references.isEmpty else { return nil }
+        guard let recordDeleter else {
+            guard let catalogDocumentStore else {
+                return .cleanupRequired
+            }
+            do {
+                try await catalogDocumentStore.recordPendingSecretCleanup(
+                    referenceIDs: references.map(\.id)
+                )
+            } catch {
+                return .cleanupRequired
+            }
+            return .cleanupRequired
+        }
+
+        var failedIDs: [String] = []
+        for reference in references {
+            do {
+                try await recordDeleter.delete(id: reference.id)
+            } catch {
+                failedIDs.append(reference.id)
+            }
+        }
+        guard !failedIDs.isEmpty else {
+            await notifySavedReferencesChanged()
+            return nil
+        }
+
+        // The cleanup record contains only opaque IDs. If its write itself
+        // fails, the operation still reports cleanupRequired; the caller must
+        // not mistake a best-effort compensation failure for a clean rollback.
+        guard let catalogDocumentStore else {
+            return .cleanupRequired
+        }
+        do {
+            try await catalogDocumentStore.recordPendingSecretCleanup(referenceIDs: failedIDs)
+        } catch {
+            return .cleanupRequired
+        }
+        await notifySavedReferencesChanged()
+        return .cleanupRequired
     }
 
     private func catalogSnapshotForAgent() async throws -> SensitiveCatalogSnapshot {
