@@ -38,7 +38,8 @@ import Foundation
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("## 表示分组，### 表示条目"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("secret_catalog_validate"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("SVLT v3"))
-    #expect(VaultWorkbenchCopy.catalogPolicy.contains("可以使用 App、MCP、Obsidian"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("三种写入路径"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("Agent 只能申请"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("policy block"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("SVLT 是 opt-in"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("USER_EXPLICIT_PLAINTEXT"))
@@ -47,6 +48,11 @@ import Foundation
     #expect(VaultWorkbenchCopy.catalogSchema.contains("empty placeholder or opaque secretRef"))
     #expect(!VaultWorkbenchCopy.catalogPolicy.contains("ASV_CANARY"))
     #expect(!VaultWorkbenchCopy.catalogSchema.contains("secret://012345"))
+}
+
+@Test func workbenchHidesLocalScanFromNormalNavigation() {
+    #expect(!VaultWorkbenchSection.regularCases.contains(.records))
+    #expect(VaultWorkbenchSection.allCases.contains(.records))
 }
 
 @Test func primaryWorkbenchCopyAvoidsBilingualSeparators() {

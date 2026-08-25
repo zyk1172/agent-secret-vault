@@ -16,6 +16,76 @@ private struct CatalogTextEncryptor: TextEncrypting {
     }
 }
 
+@Test func agentWriteAccessRequestRequiresExplicitUserApproval() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let captured = RequestCapture()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier(present: { request in
+            Task { await captured.set(request) }
+        })
+    )
+
+    let task = Task {
+        try await service.requestCatalogWriteAccess(
+            source: .codex,
+            reasonCategory: .knowledgeMaintenance,
+            duration: .singleUse
+        )
+    }
+    var request: CatalogAgentWriteAccessRequest?
+    for _ in 0..<100 where request == nil {
+        request = await captured.current()
+        if request == nil { try await Task.sleep(for: .milliseconds(10)) }
+    }
+    guard let request else { throw CancellationError() }
+
+    let pending = try await service.pendingCatalogWriteAccessRequest(id: request.id)
+    #expect(pending.source == .codex)
+    #expect(await service.catalogAgentWriteStatus().mode == .disabled)
+    try await service.respondToCatalogWriteAccessRequest(id: request.id, approved: true)
+    try await task.value
+    #expect(await service.catalogAgentWriteStatus().isActive())
+}
+
+@Test func rejectedAgentWriteRequestDoesNotGrantAccess() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let captured = RequestCapture()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier(present: { request in
+            Task { await captured.set(request) }
+        })
+    )
+    let task = Task {
+        try await service.requestCatalogWriteAccess(
+            source: .claude,
+            reasonCategory: .other,
+            duration: .tenMinutes
+        )
+    }
+    var request: CatalogAgentWriteAccessRequest?
+    for _ in 0..<100 where request == nil {
+        request = await captured.current()
+        if request == nil { try await Task.sleep(for: .milliseconds(10)) }
+    }
+    guard let request else { throw CancellationError() }
+    try await service.respondToCatalogWriteAccessRequest(id: request.id, approved: false)
+    let error = await serviceCatalogError { try await task.value }
+    #expect(error == .agentWriteNotAllowed)
+    #expect(await service.catalogAgentWriteStatus().mode == .disabled)
+}
+
 private struct CatalogMultiSecretEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         let reference = plaintext == "password-canary" ? servicePasswordRef : servicePrivateKeyRef
@@ -290,6 +360,7 @@ private struct ExternalCatalogAdoptionFixture {
         catalogSelectionManifestURL: fixture.selectionURL,
         catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
+    await fixture.agentAuthorization.grant(.tenMinutes)
     let request = CatalogDraftRequest(indexID: serviceIndexID, title: "Komga")
 
     let draft = try await service.createCatalogDraft(request)
@@ -326,7 +397,7 @@ private struct ExternalCatalogAdoptionFixture {
         catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
 
-    #expect(await service.catalogAgentWriteStatus().mode == .safe)
+    #expect(await service.catalogAgentWriteStatus().mode == .disabled)
     await service.revokeCatalogAgentWrite()
     #expect(await service.catalogAgentWriteStatus().mode == .disabled)
     let enabled = try await service.setCatalogAgentWriteMode(mode: .safe, duration: nil)
@@ -346,6 +417,7 @@ private struct ExternalCatalogAdoptionFixture {
         catalogSelectionManifestURL: fixture.selectionURL,
         catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
+    await fixture.agentAuthorization.grant(.tenMinutes)
 
     let result = try await service.createCatalogEntry(CatalogDraftRequest(
         indexID: serviceIndexID,
@@ -1014,4 +1086,11 @@ private func serviceCatalogError(
     } catch {
         return nil
     }
+}
+
+private actor RequestCapture {
+    private var value: CatalogAgentWriteAccessRequest?
+
+    func set(_ newValue: CatalogAgentWriteAccessRequest) { value = newValue }
+    func current() -> CatalogAgentWriteAccessRequest? { value }
 }

@@ -1102,3 +1102,40 @@ private func writeManagedV2WithLegacySidecar(
         _ = try await store.snapshot()
     }
 }
+
+@Test func catalogStoreRecoversLastVerifiedSnapshotAfterMalformedExternalEdit() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let first = SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")])
+    _ = try await store.canonicalWrite(first)
+    let second = SecretCatalogDocument(
+        indexes: first.indexes + [SecretCatalogIndex(id: storeSecondIndexID, title: "临时恢复测试")],
+        entries: first.entries
+    )
+    _ = try await store.canonicalWrite(second)
+
+    #expect(try await store.listRecoverySnapshots().count == 1)
+    let original = try String(contentsOf: fixture.document, encoding: .utf8)
+    let broken = original.replacingOccurrences(of: "<!-- /SVLT-INDEX -->", with: "", options: [], range: original.range(of: "<!-- /SVLT-INDEX -->"))
+    try broken.write(to: fixture.document, atomically: true, encoding: .utf8)
+    await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
+        _ = try await store.snapshot()
+    }
+
+    let restored = try await store.restoreLatestRecoverySnapshot()
+    #expect(restored.revision == 3)
+    #expect(restored.integrity == .verified)
+    #expect(restored.document.indexes.map(\.title) == ["QNAP", "临时恢复测试"])
+    let recoveryRoot = fixture.root.appendingPathComponent("Recovery")
+    let emergencyCount = try FileManager.default.contentsOfDirectory(
+        at: recoveryRoot,
+        includingPropertiesForKeys: nil,
+        options: []
+    ).count
+    #expect(emergencyCount >= 1)
+}

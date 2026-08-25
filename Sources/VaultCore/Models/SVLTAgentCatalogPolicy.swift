@@ -88,8 +88,8 @@ public enum SVLTAgentCatalogPolicy {
     5. 同一条目不得出现重复 field key。
     6. 新建条目默认只建立一个实际需要的字段，不得为了“完整”自动生成一堆空字段。
     7. 字段不够时再增加。
-    8. 可以使用 App、MCP、Obsidian、编辑器、脚本或其他工具修改，不限制写入渠道。
-    9. 无论使用什么方式，都必须产生符合 SVLT v3 的结构。
+    8. SVLT 正式支持三种写入路径：App 受控写入、Agent 经 MCP 写入、Obsidian/编辑器/脚本直接修改文件。
+    9. 无论哪条路径，都必须产生符合 SVLT v3 的结构；直接写文件不会获得更高权限。
     10. 修改时采用最小修改原则，禁止为了新增一条记录重排整个文件。
     11. 必须保留用户原有 Markdown、双链、备注、空行以及非目标区域内容。
     12. [[双链]] 属于合法 Markdown 内容，禁止删除或展开成普通文本。
@@ -111,6 +111,10 @@ public enum SVLTAgentCatalogPolicy {
     28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
     29. 不得把 SVLT 解密得到的明文写回敏感信息.md。
     30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
+    31. Agent 的安全目录修改需要用户批准的有限授权；Agent 只能申请，不能自行开启。
+    32. 有限 Agent 授权不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
+    33. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
+    34. 恢复功能只能恢复结构和 opaque 引用，不能生成或展开明文。
     """
 
     public static let documentPolicyDigest: String = SHA256.hash(data: Data(text.utf8))

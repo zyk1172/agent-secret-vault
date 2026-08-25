@@ -27,6 +27,12 @@ public actor AppControlIPCClient {
         return status
     }
 
+    public func repairSensitiveCatalog() async throws -> CatalogValidationResult {
+        let response = try await send(.repairSensitiveCatalog)
+        guard case let .catalogStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         let response = try await send(.catalogAdoptExternalV2)
         guard case let .catalogStatus(status) = response else { throw unexpected(response) }
@@ -71,6 +77,17 @@ public actor AppControlIPCClient {
         let response = try await send(.catalogAgentWriteStatus)
         guard case let .catalogAgentWriteStatus(status) = response else { throw unexpected(response) }
         return status
+    }
+
+    public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {
+        let response = try await send(.catalogWriteAccessRequest(id: id))
+        guard case let .catalogWriteAccessRequest(request) = response else { throw unexpected(response) }
+        return request
+    }
+
+    public func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async throws {
+        let response = try await send(.respondToCatalogWriteAccessRequest(id: id, approved: approved))
+        guard case .operationCompleted = response else { throw unexpected(response) }
     }
 
     public func catalogCreateIndex(

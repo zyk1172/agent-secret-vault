@@ -47,6 +47,7 @@ struct AgentSecretVaultApplication: App {
                 sensitiveCatalogCanAdoptV3: runtime.sensitiveCatalogCanAdoptV3,
                 catalogAgentWriteStatus: runtime.catalogAgentWriteStatus,
                 catalogAgentWriteError: runtime.catalogAgentWriteError,
+                pendingWriteAccessRequest: runtime.pendingWriteAccessRequest,
                 sensitiveScanRootURL: runtime.sensitiveScanRootURL,
                 sensitiveScanCandidates: runtime.sensitiveScanCandidates,
                 sensitiveScanRules: runtime.sensitiveScanRules,
@@ -80,6 +81,9 @@ struct AgentSecretVaultApplication: App {
                 approveExternalCatalogChange: {
                     await runtime.approveExternalCatalogChange()
                 },
+                repairSensitiveCatalog: {
+                    await runtime.repairSensitiveCatalog()
+                },
                 createCatalogIndex: { title in
                     await runtime.createCatalogIndex(title: title)
                 },
@@ -105,6 +109,9 @@ struct AgentSecretVaultApplication: App {
                 },
                 revokeCatalogAgentWrite: {
                     await runtime.revokeCatalogAgentWrite()
+                },
+                respondToWriteAccessRequest: { id, approved in
+                    await runtime.respondToCatalogWriteAccessRequest(id: id, approved: approved)
                 },
                 chooseSensitiveScanRoot: {
                     runtime.chooseSensitiveScanRoot()
@@ -261,6 +268,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var sensitiveCatalogCanAdoptV3 = false
     @Published var catalogAgentWriteStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled)
     @Published var catalogAgentWriteError: String?
+    @Published var pendingWriteAccessRequest: CatalogAgentWriteAccessRequest?
     @Published var sensitiveIndexError: String?
     @Published var sensitiveScanRootURL: URL?
     @Published var sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = []
@@ -271,6 +279,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private var appControlClient: AppControlIPCClient?
     private let uiRevealSessionStore = RevealSessionStore(defaultTTLSeconds: 60)
     private var uiRequestObserver: NSObjectProtocol?
+    private var writeAccessObserver: NSObjectProtocol?
     private var presentedAgentSessionIDs: Set<String> = []
     private var sensitiveIndexStore: SensitiveInformationDocumentStore?
     private var sensitiveCatalogStore: SensitiveCatalogDocumentStore?
@@ -297,6 +306,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                     ?? CatalogAgentWriteAuthorizationStatus(mode: .disabled)
             }
             startUIRequestObserver()
+            startWriteAccessObserver()
             sensitiveIndexStore = try makeSensitiveIndexStore()
             sensitiveCatalogStore = try makeSensitiveCatalogStore()
             guard let sensitiveIndexStore else {
@@ -534,6 +544,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             DistributedNotificationCenter.default().removeObserver(uiRequestObserver)
             self.uiRequestObserver = nil
         }
+        if let writeAccessObserver {
+            DistributedNotificationCenter.default().removeObserver(writeAccessObserver)
+            self.writeAccessObserver = nil
+        }
         RevealSessionLifecycle.clearAll()
         await uiRevealSessionStore.clearAll()
         presentedAgentSessionIDs.removeAll()
@@ -564,6 +578,39 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 await self?.presentAgentRevealSession(sessionID: sessionID)
             }
         }
+    }
+
+    private func startWriteAccessObserver() {
+        guard writeAccessObserver == nil else { return }
+        writeAccessObserver = DistributedNotificationCenter.default().addObserver(
+            forName: CatalogAgentWriteAccessRequest.notificationName,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let rawID = notification.userInfo?["requestID"] as? String,
+                  let id = UUID(uuidString: rawID)
+            else { return }
+            Task { @MainActor [weak self] in
+                await self?.loadPendingWriteAccessRequest(id: id)
+            }
+        }
+    }
+
+    private func loadPendingWriteAccessRequest(id: UUID) async {
+        guard let appControlClient else { return }
+        pendingWriteAccessRequest = try? await appControlClient.pendingCatalogWriteAccessRequest(id: id)
+    }
+
+    func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async {
+        guard let appControlClient else { return }
+        do {
+            try await appControlClient.respondToCatalogWriteAccessRequest(id: id, approved: approved)
+            catalogAgentWriteStatus = (try? await appControlClient.catalogAgentWriteStatus())
+                ?? CatalogAgentWriteAuthorizationStatus(mode: .disabled)
+        } catch {
+            catalogAgentWriteError = approved ? "授权请求处理失败" : "已保留拒绝结果"
+        }
+        pendingWriteAccessRequest = nil
     }
 
     private func presentPendingRevealSessions() async {
@@ -1115,6 +1162,24 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             catalogAgentWriteError = nil
         } catch {
             catalogAgentWriteError = "无法撤销智能体目录编辑权限"
+        }
+    }
+
+    func repairSensitiveCatalog() async {
+        guard let appControlClient else {
+            sensitiveIndexError = "本机控制服务不可用，无法修复目录"
+            return
+        }
+        do {
+            let result = try await appControlClient.repairSensitiveCatalog()
+            if result.status == .found {
+                await refreshSensitiveCatalog()
+                sensitiveIndexError = nil
+            } else {
+                sensitiveIndexError = "敏感信息目录修复未完成"
+            }
+        } catch {
+            sensitiveIndexError = "敏感信息目录修复失败或已取消"
         }
     }
 

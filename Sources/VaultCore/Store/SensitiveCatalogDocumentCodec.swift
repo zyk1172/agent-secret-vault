@@ -197,7 +197,8 @@ public enum SensitiveCatalogDocumentCodec {
         for index in new.indexes where oldIndexes[index.id] == nil {
             newIndexesOnDisk.insert(index.id)
             let at = indexInsertOffset(index.id, new.indexes, parsed.source, data.count)
-            let rendered = renderIndex(index, entries: new.entries.filter { $0.indexId == index.id }).joined(separator: "\n") + "\n"
+            let boundary = at == 0 || data[at - 1] == 0x0A ? "" : "\n"
+            let rendered = boundary + renderIndex(index, entries: new.entries.filter { $0.indexId == index.id }).joined(separator: "\n") + "\n"
             patch(&patches, at..<at, Data(rendered.utf8), order: new.indexes.firstIndex { $0.id == index.id } ?? 0)
         }
         for id in Set(oldIndexes.keys).intersection(newIndexes.keys) {

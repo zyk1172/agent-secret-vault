@@ -198,6 +198,13 @@ public actor VaultIPCClient {
         )
     }
 
+    public func requestCatalogWriteAccess(_ request: CatalogAgentWriteAccessRequest) async throws {
+        let response = try await send(.catalogRequestWriteAccess(request))
+        guard case .operationCompleted = response else {
+            throw unexpected(response)
+        }
+    }
+
     public func pendingRevealSessionIDs() async throws -> [String] {
         let response = try await send(.pendingRevealSessions)
         guard case let .revealSessionIDs(sessionIDs) = response else {

@@ -3,6 +3,7 @@ import VaultCore
 
 public enum AppControlRequest: Codable, Equatable, Sendable {
     case catalogStatus
+    case repairSensitiveCatalog
     case catalogAdoptExternalV2
     case catalogAdoptExternalV3
     case catalogApproveExternalChange(
@@ -13,6 +14,8 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
     case setCatalogAgentWriteMode(mode: CatalogAgentWriteMode, duration: TimeInterval?)
     case revokeCatalogAgentWrite
     case catalogAgentWriteStatus
+    case catalogWriteAccessRequest(id: UUID)
+    case respondToCatalogWriteAccessRequest(id: UUID, approved: Bool)
     case catalogCreateIndex(
         title: String,
         aliases: [String],
@@ -61,10 +64,13 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case entry
         case secretInputs
         case mutation
+        case id
+        case approved
     }
 
     private enum RequestType: String, Codable {
         case catalogStatus
+        case repairSensitiveCatalog
         case catalogAdoptExternalV2
         case catalogAdoptExternalV3
         case catalogApproveExternalChange
@@ -78,6 +84,8 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case catalogApplyBatch
         case catalogBindExistingSecret
         case catalogSecureInput
+        case catalogWriteAccessRequest
+        case respondToCatalogWriteAccessRequest
     }
 
     public init(from decoder: any Decoder) throws {
@@ -85,6 +93,8 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         switch try container.decode(RequestType.self, forKey: .type) {
         case .catalogStatus:
             self = .catalogStatus
+        case .repairSensitiveCatalog:
+            self = .repairSensitiveCatalog
         case .catalogAdoptExternalV2:
             self = .catalogAdoptExternalV2
         case .catalogAdoptExternalV3:
@@ -104,6 +114,13 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             self = .revokeCatalogAgentWrite
         case .catalogAgentWriteStatus:
             self = .catalogAgentWriteStatus
+        case .catalogWriteAccessRequest:
+            self = .catalogWriteAccessRequest(id: try container.decode(UUID.self, forKey: .id))
+        case .respondToCatalogWriteAccessRequest:
+            self = .respondToCatalogWriteAccessRequest(
+                id: try container.decode(UUID.self, forKey: .id),
+                approved: try container.decode(Bool.self, forKey: .approved)
+            )
         case .catalogCreateIndex:
             self = .catalogCreateIndex(
                 title: try container.decode(String.self, forKey: .title),
@@ -155,6 +172,8 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         switch self {
         case .catalogStatus:
             try container.encode(RequestType.catalogStatus, forKey: .type)
+        case .repairSensitiveCatalog:
+            try container.encode(RequestType.repairSensitiveCatalog, forKey: .type)
         case .catalogAdoptExternalV2:
             try container.encode(RequestType.catalogAdoptExternalV2, forKey: .type)
         case .catalogAdoptExternalV3:
@@ -172,6 +191,13 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.revokeCatalogAgentWrite, forKey: .type)
         case .catalogAgentWriteStatus:
             try container.encode(RequestType.catalogAgentWriteStatus, forKey: .type)
+        case let .catalogWriteAccessRequest(id):
+            try container.encode(RequestType.catalogWriteAccessRequest, forKey: .type)
+            try container.encode(id, forKey: .id)
+        case let .respondToCatalogWriteAccessRequest(id, approved):
+            try container.encode(RequestType.respondToCatalogWriteAccessRequest, forKey: .type)
+            try container.encode(id, forKey: .id)
+            try container.encode(approved, forKey: .approved)
         case let .catalogCreateIndex(title, aliases, tags, expectedRevision):
             try container.encode(RequestType.catalogCreateIndex, forKey: .type)
             try container.encode(title, forKey: .title)
@@ -215,6 +241,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
 public enum AppControlResponse: Codable, Equatable, Sendable {
     case catalogStatus(CatalogValidationResult)
     case catalogAgentWriteStatus(CatalogAgentWriteAuthorizationStatus)
+    case catalogWriteAccessRequest(CatalogAgentWriteAccessRequest)
     case catalogWriteResult(CatalogWriteResult)
     case secretBound(reference: String, revision: UInt64)
     case operationCompleted
@@ -232,6 +259,7 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
     private enum ResponseType: String, Codable {
         case catalogStatus
         case catalogAgentWriteStatus
+        case catalogWriteAccessRequest
         case catalogWriteResult
         case secretBound
         case operationCompleted
@@ -245,6 +273,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
             self = .catalogStatus(try container.decode(CatalogValidationResult.self, forKey: .status))
         case .catalogAgentWriteStatus:
             self = .catalogAgentWriteStatus(try container.decode(CatalogAgentWriteAuthorizationStatus.self, forKey: .status))
+        case .catalogWriteAccessRequest:
+            self = .catalogWriteAccessRequest(try container.decode(CatalogAgentWriteAccessRequest.self, forKey: .status))
         case .catalogWriteResult:
             self = .catalogWriteResult(try container.decode(CatalogWriteResult.self, forKey: .result))
         case .secretBound:
@@ -268,6 +298,9 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case let .catalogAgentWriteStatus(status):
             try container.encode(ResponseType.catalogAgentWriteStatus, forKey: .type)
             try container.encode(status, forKey: .status)
+        case let .catalogWriteAccessRequest(request):
+            try container.encode(ResponseType.catalogWriteAccessRequest, forKey: .type)
+            try container.encode(request, forKey: .status)
         case let .catalogWriteResult(result):
             try container.encode(ResponseType.catalogWriteResult, forKey: .type)
             try container.encode(result, forKey: .result)
@@ -296,6 +329,7 @@ public struct AuthenticatedAppControlRequest: Codable, Equatable, Sendable {
 
 public protocol AppControlServicing: Sendable {
     func catalogStatus() async throws -> CatalogValidationResult
+    func repairSensitiveCatalog() async throws -> CatalogValidationResult
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult
     func adoptCatalogExternalV3() async throws -> CatalogValidationResult
     func approveCatalogExternalChange(
@@ -309,6 +343,8 @@ public protocol AppControlServicing: Sendable {
     ) async throws -> CatalogAgentWriteAuthorizationStatus
     func revokeCatalogAgentWrite() async
     func catalogAgentWriteStatus() async -> CatalogAgentWriteAuthorizationStatus
+    func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest
+    func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async throws
     func catalogCreateIndex(
         title: String,
         aliases: [String],

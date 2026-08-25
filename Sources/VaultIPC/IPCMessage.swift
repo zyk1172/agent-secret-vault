@@ -98,6 +98,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     )
     case catalogApplyBatch(mutation: CatalogBatchMutation, expectedRevision: UInt64)
     case catalogValidate
+    case catalogRequestWriteAccess(CatalogAgentWriteAccessRequest)
     case pendingRevealSessions
     case inspectReference(reference: String)
     case deleteRecord(reference: String)
@@ -170,6 +171,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case catalogBindExistingSecret
         case catalogApplyBatch
         case catalogValidate
+        case catalogRequestWriteAccess
         case pendingRevealSessions
         case inspectReference
         case deleteRecord
@@ -260,6 +262,10 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             )
         case .catalogValidate:
             self = .catalogValidate
+        case .catalogRequestWriteAccess:
+            self = .catalogRequestWriteAccess(
+                try container.decode(CatalogAgentWriteAccessRequest.self, forKey: .request)
+            )
         case .pendingRevealSessions:
             self = .pendingRevealSessions
         case .inspectReference:
@@ -394,6 +400,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(expectedRevision, forKey: .expectedRevision)
         case .catalogValidate:
             try container.encode(RequestType.catalogValidate, forKey: .type)
+        case let .catalogRequestWriteAccess(request):
+            try container.encode(RequestType.catalogRequestWriteAccess, forKey: .type)
+            try container.encode(request, forKey: .request)
         case .pendingRevealSessions:
             try container.encode(RequestType.pendingRevealSessions, forKey: .type)
         case let .inspectReference(reference):

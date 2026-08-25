@@ -6,14 +6,12 @@ import VaultCore
 /// whether the current authorization permits an operation.
 public actor CatalogAgentWriteAuthorization {
     public static let maximumLifetime: TimeInterval = 600
+    public static let maximumExtendedLifetime: TimeInterval = 1800
 
     private let now: @Sendable () -> Date
-    // Safe catalog editing is opt-in at the App-control preference level, but
-    // is enabled by default so ordinary directory creation does not require a
-    // temporary structure lease. Dangerous mutations still go through the
-    // CatalogMutationPolicyEngine and local approval.
-    private var currentMode: CatalogAgentWriteMode = .safe
+    private var currentMode: CatalogAgentWriteMode = .disabled
     private var currentExpiry: Date?
+    private var currentRemainingUses: Int?
 
     public init(now: @escaping @Sendable () -> Date = Date.init) {
         self.now = now
@@ -31,7 +29,16 @@ public actor CatalogAgentWriteAuthorization {
         }
         let issuedAt = now()
         currentMode = mode
-        currentExpiry = mode == .safe ? nil : issuedAt.addingTimeInterval(duration)
+        currentExpiry = issuedAt.addingTimeInterval(duration)
+        currentRemainingUses = nil
+        return status()
+    }
+
+    public func grant(_ duration: CatalogAgentWriteAccessDuration) -> CatalogAgentWriteAuthorizationStatus {
+        let issuedAt = now()
+        currentMode = .safe
+        currentExpiry = issuedAt.addingTimeInterval(duration.lifetime)
+        currentRemainingUses = duration == .singleUse ? 1 : nil
         return status()
     }
 
@@ -43,11 +50,16 @@ public actor CatalogAgentWriteAuthorization {
     public func status() -> CatalogAgentWriteAuthorizationStatus {
         let expiry = currentExpiry
         if currentMode != .disabled, let expiry, expiry <= now() {
-            currentMode = .disabled
-            currentExpiry = nil
-            return CatalogAgentWriteAuthorizationStatus(mode: .disabled)
+            revoke()
         }
-        return CatalogAgentWriteAuthorizationStatus(mode: currentMode, expiresAt: expiry)
+        if currentMode == .safe, let remaining = currentRemainingUses, remaining <= 0 {
+            revoke()
+        }
+        return CatalogAgentWriteAuthorizationStatus(
+            mode: currentMode,
+            expiresAt: currentMode == .disabled ? nil : expiry,
+            remainingUses: currentRemainingUses
+        )
     }
 
     public func validate(requiredScope: CatalogAgentWriteScope) throws {
@@ -62,6 +74,9 @@ public actor CatalogAgentWriteAuthorization {
     public func validateSafeWrite() throws {
         guard status().mode == .safe else {
             throw SecretCatalogAgentError.agentWriteNotAllowed
+        }
+        if let remaining = currentRemainingUses {
+            currentRemainingUses = remaining - 1
         }
     }
 }

@@ -48,6 +48,11 @@ public protocol WorkbenchServicing: Sendable {
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func validateCatalog() async throws -> CatalogValidationResult
+    func requestCatalogWriteAccess(
+        source: CatalogAgentWriteRequestSource,
+        reasonCategory: CatalogAgentWriteReasonCategory,
+        duration: CatalogAgentWriteAccessDuration
+    ) async throws
     func pendingRevealSessionIDs() async throws -> [String]
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
     func encryptText(
@@ -151,6 +156,14 @@ public extension WorkbenchServicing {
     }
 
     func validateCatalog() async throws -> CatalogValidationResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func requestCatalogWriteAccess(
+        source _: CatalogAgentWriteRequestSource,
+        reasonCategory _: CatalogAgentWriteReasonCategory,
+        duration _: CatalogAgentWriteAccessDuration
+    ) async throws {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
@@ -259,6 +272,13 @@ public struct IPCRequestHandler: Sendable {
                 revision: result.revision,
                 filePreflight: result.filePreflight
             )
+        case let .catalogRequestWriteAccess(request):
+            try await service.requestCatalogWriteAccess(
+                source: request.source,
+                reasonCategory: request.reasonCategory,
+                duration: request.duration
+            )
+            return .operationCompleted
         case .pendingRevealSessions:
             return .revealSessionIDs(try await service.pendingRevealSessionIDs())
         case let .inspectReference(reference):

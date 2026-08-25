@@ -276,6 +276,15 @@ export const CatalogFilePreflight = z.object({
 }).strict();
 export type CatalogFilePreflight = z.infer<typeof CatalogFilePreflight>;
 
+export const CatalogAgentWriteAccessRequest = z.object({
+  id: z.string().uuid(),
+  source: z.enum(["codex", "claude", "openclaw", "mcp-client"]),
+  reasonCategory: z.enum(["knowledge-maintenance", "catalog-repair", "bulk-import", "other"]),
+  duration: z.enum(["single-use", "10-minutes", "30-minutes"]),
+  createdAt: z.string().datetime()
+}).strict();
+export type CatalogAgentWriteAccessRequest = z.infer<typeof CatalogAgentWriteAccessRequest>;
+
 export const CatalogValidationResult = z.object({
   status: z.enum([
     "FOUND",
@@ -524,6 +533,7 @@ export const IpcRequest = z.discriminatedUnion("type", [
     })
     .strict(),
   z.object({ type: z.literal("catalogValidate") }).strict(),
+  z.object({ type: z.literal("catalogRequestWriteAccess"), request: CatalogAgentWriteAccessRequest }).strict(),
   z
     .object({
       type: z.literal("inspectReference"),
@@ -672,6 +682,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
       output: SecretOperationOutput
     })
     .strict(),
+  z.object({ type: z.literal("operationCompleted") }).strict(),
   z
     .object({
       type: z.literal("failure"),

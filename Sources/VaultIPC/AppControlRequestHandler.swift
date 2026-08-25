@@ -18,6 +18,8 @@ public struct AppControlRequestHandler: Sendable {
             switch request {
             case .catalogStatus:
                 return .catalogStatus(try await service.catalogStatus())
+            case .repairSensitiveCatalog:
+                return .catalogStatus(try await service.repairSensitiveCatalog())
             case .catalogAdoptExternalV2:
                 return .catalogStatus(try await service.adoptCatalogExternalV2())
             case .catalogAdoptExternalV3:
@@ -35,6 +37,11 @@ public struct AppControlRequestHandler: Sendable {
                 return .operationCompleted
             case .catalogAgentWriteStatus:
                 return .catalogAgentWriteStatus(await service.catalogAgentWriteStatus())
+            case let .catalogWriteAccessRequest(id):
+                return .catalogWriteAccessRequest(try await service.pendingCatalogWriteAccessRequest(id: id))
+            case let .respondToCatalogWriteAccessRequest(id, approved):
+                try await service.respondToCatalogWriteAccessRequest(id: id, approved: approved)
+                return .operationCompleted
             case let .catalogCreateIndex(title, aliases, tags, expectedRevision):
                 return .catalogWriteResult(try await service.catalogCreateIndex(
                     title: title,
@@ -94,6 +101,7 @@ public struct AppControlRequestHandler: Sendable {
         case .approvalRequired: return "CATALOG_APPROVAL_REQUIRED"
         case .writeFailed: return "CATALOG_WRITE_FAILED"
         case .cleanupRequired: return "CATALOG_CLEANUP_REQUIRED"
+        case .agentWriteApprovalUnavailable: return "CATALOG_AGENT_WRITE_APPROVAL_UNAVAILABLE"
         }
     }
 

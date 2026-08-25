@@ -236,6 +236,8 @@ public final class AppIPCController: @unchecked Sendable {
                 code = "CATALOG_WRITE_FAILED"
             case .cleanupRequired:
                 code = "CATALOG_CLEANUP_REQUIRED"
+            case .agentWriteApprovalUnavailable:
+                code = "CATALOG_AGENT_WRITE_APPROVAL_UNAVAILABLE"
             }
             Self.log(code: code)
             return try IPCFrameCodec.encode(IPCResponse.failure(code: code))

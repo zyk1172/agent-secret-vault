@@ -161,6 +161,24 @@ private func qnapDocument() -> SecretCatalogDocument {
     #expect(patchedText.contains("QNAP 管理后台登录（更新）"))
 }
 
+@Test func catalogV3IndexInsertAddsLineBoundaryBeforeTrailingUserMarkdown() throws {
+    let old = try SensitiveCatalogDocumentCodec.decode(try SensitiveCatalogDocumentCodec.encode(qnapDocument()))
+    var decorated = String(decoding: try SensitiveCatalogDocumentCodec.minimalPatch(
+        SensitiveCatalogDocumentCodec.encode(qnapDocument()).data(using: .utf8)!,
+        from: old,
+        to: old
+    ), as: UTF8.self)
+    decorated = String(decorated.dropLast()) + "\n用户保留的尾注"
+    let newIndex = SecretCatalogIndex(id: "0123456789ABCDEFGHJKMNPQRZ", title: "新增")
+    let next = SecretCatalogDocument(indexes: old.indexes + [newIndex], entries: old.entries)
+    let patched = String(decoding: try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(decorated.utf8), from: old, to: next
+    ), as: UTF8.self)
+
+    #expect(patched.contains("用户保留的尾注\n<!-- SVLT-INDEX"))
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+}
+
 @Test func catalogV3MinimalPatchPreservesUnrelatedBytesWhenAnotherEntryChanges() throws {
     let original = try SensitiveCatalogDocumentCodec.encode(qnapDocument())
     let decorated = original.replacingOccurrences(

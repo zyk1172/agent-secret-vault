@@ -79,7 +79,7 @@ public enum VaultWorkbenchMotion {
     public static let interactive = Animation.easeInOut(duration: 0.18)
 }
 
-public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
+public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable {
     case overview
     case paragraph
     case secrets
@@ -88,6 +88,10 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable {
     case security
 
     public var id: String { rawValue }
+
+    /// Local scanning remains available to maintenance/recovery code, but is
+    /// deliberately absent from the normal product navigation.
+    public static let regularCases: [Self] = allCases.filter { $0 != .records }
 
     public var title: String {
         switch self {
@@ -164,6 +168,7 @@ public struct VaultWorkbenchView: View {
     let sensitiveCatalogCanAdoptV3: Bool
     let catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus
     let catalogAgentWriteError: String?
+    let pendingWriteAccessRequest: CatalogAgentWriteAccessRequest?
     let sensitiveScanRootURL: URL?
     let sensitiveScanCandidates: [LocalSensitiveInformationCandidate]
     let sensitiveScanRules: [SensitiveScanRuleDefinition]
@@ -177,6 +182,7 @@ public struct VaultWorkbenchView: View {
     let adoptExternalV2Catalog: (() async -> Void)?
     let adoptExternalV3Catalog: (() async -> Void)?
     let approveExternalCatalogChange: (() async -> Void)?
+    let repairSensitiveCatalog: (() async -> Void)?
     let createCatalogIndex: ((String) async -> CatalogMutationUIResult)?
     let createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)?
     let commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
@@ -184,6 +190,7 @@ public struct VaultWorkbenchView: View {
     let applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
     let enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
     let revokeCatalogAgentWrite: (() async -> Void)?
+    let respondToWriteAccessRequest: ((UUID, Bool) async -> Void)?
     let chooseSensitiveScanRoot: (() -> Void)?
     let scanSensitiveInformation: (() async -> Void)?
     let encryptSensitiveCandidates: ((Set<String>) async -> Void)?
@@ -193,6 +200,7 @@ public struct VaultWorkbenchView: View {
     let addSensitiveScanRule: ((SensitiveScanRuleDefinition) -> Void)?
     let removeSensitiveScanRule: ((String) -> Void)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
+    @State private var writeAccessRequest: CatalogAgentWriteAccessRequest?
 
     public init(
         status: WorkbenchStatus,
@@ -213,6 +221,7 @@ public struct VaultWorkbenchView: View {
         sensitiveCatalogCanAdoptV3: Bool = false,
         catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled),
         catalogAgentWriteError: String? = nil,
+        pendingWriteAccessRequest: CatalogAgentWriteAccessRequest? = nil,
         sensitiveScanRootURL: URL? = nil,
         sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = [],
         sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults,
@@ -226,6 +235,7 @@ public struct VaultWorkbenchView: View {
         adoptExternalV2Catalog: (() async -> Void)? = nil,
         adoptExternalV3Catalog: (() async -> Void)? = nil,
         approveExternalCatalogChange: (() async -> Void)? = nil,
+        repairSensitiveCatalog: (() async -> Void)? = nil,
         createCatalogIndex: ((String) async -> CatalogMutationUIResult)? = nil,
         createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)? = nil,
         commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)? = nil,
@@ -233,6 +243,7 @@ public struct VaultWorkbenchView: View {
         applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)? = nil,
         enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)? = nil,
         revokeCatalogAgentWrite: (() async -> Void)? = nil,
+        respondToWriteAccessRequest: ((UUID, Bool) async -> Void)? = nil,
         chooseSensitiveScanRoot: (() -> Void)? = nil,
         scanSensitiveInformation: (() async -> Void)? = nil,
         encryptSensitiveCandidates: ((Set<String>) async -> Void)? = nil,
@@ -260,6 +271,7 @@ public struct VaultWorkbenchView: View {
         self.sensitiveCatalogCanAdoptV3 = sensitiveCatalogCanAdoptV3
         self.catalogAgentWriteStatus = catalogAgentWriteStatus
         self.catalogAgentWriteError = catalogAgentWriteError
+        self.pendingWriteAccessRequest = pendingWriteAccessRequest
         self.sensitiveScanRootURL = sensitiveScanRootURL
         self.sensitiveScanCandidates = sensitiveScanCandidates
         self.sensitiveScanRules = sensitiveScanRules
@@ -273,6 +285,7 @@ public struct VaultWorkbenchView: View {
         self.adoptExternalV2Catalog = adoptExternalV2Catalog
         self.adoptExternalV3Catalog = adoptExternalV3Catalog
         self.approveExternalCatalogChange = approveExternalCatalogChange
+        self.repairSensitiveCatalog = repairSensitiveCatalog
         self.createCatalogIndex = createCatalogIndex
         self.createCatalogEntry = createCatalogEntry
         self.commitCatalogEntryEdit = commitCatalogEntryEdit
@@ -280,6 +293,7 @@ public struct VaultWorkbenchView: View {
         self.applyCatalogBatch = applyCatalogBatch
         self.enableCatalogAgentWrite = enableCatalogAgentWrite
         self.revokeCatalogAgentWrite = revokeCatalogAgentWrite
+        self.respondToWriteAccessRequest = respondToWriteAccessRequest
         self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
         self.scanSensitiveInformation = scanSensitiveInformation
         self.encryptSensitiveCandidates = encryptSensitiveCandidates
@@ -304,6 +318,28 @@ public struct VaultWorkbenchView: View {
             }
         }
         .navigationTitle(selectedSection.title)
+        .onChange(of: pendingWriteAccessRequest) { request in
+            writeAccessRequest = request
+        }
+        .alert(item: $writeAccessRequest) { request in
+            Alert(
+                title: Text("\(request.source.displayName) 请求打开智能体目录编辑"),
+                message: Text("""
+                    范围：安全目录修改
+                    原因类别：\(request.reasonCategory.displayName)
+                    有效期：\(request.duration.displayName)
+
+                    允许：新建分组、新建条目、普通 metadata、空密码 placeholder。
+                    不允许：查看明文、写入明文、绑定/替换 secretRef、删除带密码条目或绕过审批。
+                    """),
+                primaryButton: .default(Text("批准")) {
+                    Task { await respondToWriteAccessRequest?(request.id, true) }
+                },
+                secondaryButton: .cancel(Text("拒绝")) {
+                    Task { await respondToWriteAccessRequest?(request.id, false) }
+                }
+            )
+        }
         .frame(minWidth: 1080, minHeight: 720)
         .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchNavigate)) { notification in
             guard
@@ -322,7 +358,7 @@ public struct VaultWorkbenchView: View {
 
             List(selection: $selectedSection) {
                 Section("菜单") {
-                    ForEach(VaultWorkbenchSection.allCases) { section in
+                    ForEach(VaultWorkbenchSection.regularCases) { section in
                         Label(section.title, systemImage: section.systemImage)
                             .tag(section)
                     }
@@ -411,6 +447,12 @@ public struct VaultWorkbenchView: View {
                         enableAgentWrite: enableCatalogAgentWrite,
                         revokeAgentWrite: revokeCatalogAgentWrite
                     )
+                    if sensitiveCatalogError?.contains("校验失败") == true || sensitiveCatalogError?.contains("外部修改") == true {
+                        Button("修复 / 恢复") {
+                            Task { await repairSensitiveCatalog?() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                     SensitiveIndexLibraryCard(
                         indexURL: sensitiveIndexURL,
                         entries: sensitiveIndexEntries,
@@ -950,7 +992,7 @@ private struct SensitiveCatalogEditorCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 if errorMessage.contains("待审批"), let approveExternalChange {
-                    Button("批准并接纳外部修改") {
+                        Button("批准并接纳外部修改") {
                         Task { await approveExternalChange() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -1017,7 +1059,7 @@ private struct SensitiveCatalogEditorCard: View {
                         Label("智能体目录编辑", systemImage: "person.crop.circle.badge.checkmark")
                             .font(.headline)
                         Spacer()
-                        if catalogAgentWriteStatus.mode == .disabled {
+                        if !catalogAgentWriteStatus.isActive() {
                             Button("允许普通目录修改") {
                                 Task {
                                     isWorking = true
@@ -1037,11 +1079,28 @@ private struct SensitiveCatalogEditorCard: View {
                             .buttonStyle(.bordered)
                         }
                     }
-                    Text(catalogAgentWriteStatus.mode == .disabled
-                        ? "当前禁止智能体修改目录。开启后，新增分组、条目和普通字段可自动完成；密码绑定、替换和删除仍需本机批准。"
-                        : "当前允许普通目录修改。密码绑定、替换和删除仍需本机批准。")
+                    Text(catalogAgentWriteStatus.isActive()
+                        ? "已允许安全目录修改。密码绑定、替换和删除仍需本机批准。"
+                        : "当前禁止智能体修改目录。Agent 可通过 MCP 发起申请。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if catalogAgentWriteStatus.isActive() {
+                        HStack(spacing: 8) {
+                            if let uses = catalogAgentWriteStatus.remainingUses {
+                                Text("剩余 \(uses) 次")
+                            } else if let expiresAt = catalogAgentWriteStatus.expiresAt {
+                                Text("有效期至 \(expiresAt.formatted(date: .omitted, time: .shortened))")
+                            }
+                            Spacer()
+                            Button("立即关闭") {
+                                Task {
+                                    await revokeAgentWrite()
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .font(.caption.weight(.medium))
+                    }
                     if let catalogAgentWriteError {
                         Label(catalogAgentWriteError, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)

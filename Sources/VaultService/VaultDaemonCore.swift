@@ -218,7 +218,12 @@ public actor VaultDaemonCore {
             recordLister: recordStore,
             recordDeleter: recordStore,
             recordResolver: VaultRecordResolver(recordStore: recordStore),
-            catalogDocumentStore: SensitiveCatalogDocumentStore(),
+            catalogDocumentStore: SensitiveCatalogDocumentStore(
+                secretReferenceExists: { reference in
+                    guard let id = try? SecretReference(reference).id else { return false }
+                    return (try? await recordStore.latest(id: id)) != nil
+                }
+            ),
             catalogSelectionManifestURL: configuration.catalogSelectionURL,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,

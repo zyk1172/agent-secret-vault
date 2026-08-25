@@ -8,6 +8,10 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 3)
     }
 
+    func repairSensitiveCatalog() async throws -> CatalogValidationResult {
+        CatalogValidationResult(status: .found, revision: 4)
+    }
+
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         CatalogValidationResult(status: .found, revision: 1)
     }
@@ -37,6 +41,16 @@ private struct ControlService: AppControlServicing {
     func catalogAgentWriteStatus() async -> CatalogAgentWriteAuthorizationStatus {
         CatalogAgentWriteAuthorizationStatus(mode: .disabled, expiresAt: nil)
     }
+
+    func pendingCatalogWriteAccessRequest(id _: UUID) async throws -> CatalogAgentWriteAccessRequest {
+        CatalogAgentWriteAccessRequest(
+            source: .codex,
+            reasonCategory: .knowledgeMaintenance,
+            duration: .singleUse
+        )
+    }
+
+    func respondToCatalogWriteAccessRequest(id _: UUID, approved _: Bool) async throws {}
 
     func catalogCreateIndex(
         title: String,

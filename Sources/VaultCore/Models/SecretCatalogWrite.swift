@@ -15,6 +15,7 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
     /// Callers receive only a stable diagnostic code, never a path, Markdown
     /// body, or underlying filesystem detail.
     case writeFailed
+    case agentWriteApprovalUnavailable
     /// The Catalog write failed and at least one newly-created opaque record
     /// could not be deleted. The ID is persisted in cleanup metadata for a
     /// later orphan scan/reconciliation; plaintext is never included.
@@ -26,8 +27,8 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
 /// supply or manufacture a token, nonce, or lease.
 public enum CatalogAgentWriteMode: String, Codable, CaseIterable, Sendable {
     case disabled
-    /// Safe catalog editing is the normal Agent mode. It is an App-controlled
-    /// on/off preference, not a ten-minute structure lease.
+    /// Safe catalog editing is always a bounded user grant; it is never a
+    /// persistent preference.
     case safe
     /// Kept for wire compatibility with older clients. New mutations must use
     /// CatalogMutationPolicyEngine instead of treating these as global gates.
@@ -56,17 +57,98 @@ public enum CatalogAgentWriteMode: String, Codable, CaseIterable, Sendable {
 public struct CatalogAgentWriteAuthorizationStatus: Codable, Equatable, Sendable {
     public let mode: CatalogAgentWriteMode
     public let expiresAt: Date?
+    public let remainingUses: Int?
 
-    public init(mode: CatalogAgentWriteMode, expiresAt: Date? = nil) {
+    public init(mode: CatalogAgentWriteMode, expiresAt: Date? = nil, remainingUses: Int? = nil) {
         self.mode = mode
         self.expiresAt = expiresAt
+        self.remainingUses = remainingUses
     }
 
     public func isActive(at date: Date = Date()) -> Bool {
-        if mode == .safe {
-            return true
+        guard mode != .disabled else { return false }
+        guard let expiresAt else { return false }
+        return expiresAt > date
+    }
+}
+
+public enum CatalogAgentWriteAccessDuration: String, Codable, CaseIterable, Sendable {
+    case singleUse = "single-use"
+    case tenMinutes = "10-minutes"
+    case thirtyMinutes = "30-minutes"
+
+    public var displayName: String {
+        switch self {
+        case .singleUse: return "单次"
+        case .tenMinutes: return "10 分钟"
+        case .thirtyMinutes: return "30 分钟"
         }
-        return mode != .disabled && (expiresAt.map { $0 > date } ?? false)
+    }
+
+    public var lifetime: TimeInterval {
+        switch self {
+        case .singleUse: return 60
+        case .tenMinutes: return 600
+        case .thirtyMinutes: return 1800
+        }
+    }
+}
+
+public enum CatalogAgentWriteRequestSource: String, Codable, CaseIterable, Sendable {
+    case codex
+    case claude
+    case openclaw
+    case mcpClient = "mcp-client"
+
+    public var displayName: String {
+        switch self {
+        case .codex: return "Codex"
+        case .claude: return "Claude"
+        case .openclaw: return "OpenClaw"
+        case .mcpClient: return "MCP Client"
+        }
+    }
+}
+
+public enum CatalogAgentWriteReasonCategory: String, Codable, CaseIterable, Sendable {
+    case knowledgeMaintenance = "knowledge-maintenance"
+    case catalogRepair = "catalog-repair"
+    case bulkImport = "bulk-import"
+    case other
+
+    public var displayName: String {
+        switch self {
+        case .knowledgeMaintenance: return "知识库维护"
+        case .catalogRepair: return "目录修复"
+        case .bulkImport: return "批量整理"
+        case .other: return "其他目录维护"
+        }
+    }
+}
+
+public struct CatalogAgentWriteAccessRequest: Codable, Equatable, Identifiable, Sendable {
+    public static let notificationName = Notification.Name(
+        "com.agent-secret-vault.catalog.write-access-request"
+    )
+
+    public let id: UUID
+    public let source: CatalogAgentWriteRequestSource
+    public let reasonCategory: CatalogAgentWriteReasonCategory
+    public let duration: CatalogAgentWriteAccessDuration
+    public let createdAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        source: CatalogAgentWriteRequestSource,
+        reasonCategory: CatalogAgentWriteReasonCategory,
+        duration: CatalogAgentWriteAccessDuration,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.source = source
+        self.reasonCategory = reasonCategory
+        self.duration = duration
+        self.createdAt = createdAt
     }
 }
 

@@ -76,6 +76,29 @@ private enum CatalogMutationPhase: String {
     case store = "store"
 }
 
+private final class CatalogWriteAccessContinuationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    func store(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.continuation = continuation
+    }
+
+    func resume(throwing error: Error? = nil) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let continuation else { return }
+        self.continuation = nil
+        if let error {
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume()
+        }
+    }
+}
+
 public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private static let catalogMutationLogger = Logger(subsystem: "AgentSecretVault", category: "CatalogMutation")
     private let textEncryptor: any TextEncrypting
@@ -111,10 +134,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)?
     private let auditLog: EncryptedAuditLog?
     private let exportDirectory: URL
+    private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
     private var pluginConnectedAt: Date?
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
     private var approvalPending = false
+    private var pendingWriteAccessRequests: [UUID: CatalogAgentWriteAccessRequest] = [:]
+    private var writeAccessContinuations: [UUID: CatalogWriteAccessContinuationBox] = [:]
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -147,7 +173,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         auditObserver: (@Sendable (AgentAutomationAuditEntry) async -> Void)? = nil,
         savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)? = nil,
         auditLog: EncryptedAuditLog? = nil,
-        exportDirectory: URL? = nil
+        exportDirectory: URL? = nil,
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier = CatalogAgentWriteAccessNotifier()
     ) {
         self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
@@ -182,6 +209,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.savedReferencesObserver = savedReferencesObserver
         self.auditLog = auditLog
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
+        self.writeAccessNotifier = writeAccessNotifier
     }
 
     public init(
@@ -215,7 +243,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         auditObserver: (@Sendable (AgentAutomationAuditEntry) async -> Void)? = nil,
         savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)? = nil,
         auditLog: EncryptedAuditLog? = nil,
-        exportDirectory: URL? = nil
+        exportDirectory: URL? = nil,
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier = CatalogAgentWriteAccessNotifier()
     ) {
         self.init(
             textEncryptor: encryptSelection,
@@ -248,7 +277,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             auditObserver: auditObserver,
             savedReferencesObserver: savedReferencesObserver,
             auditLog: auditLog,
-            exportDirectory: exportDirectory
+            exportDirectory: exportDirectory,
+            writeAccessNotifier: writeAccessNotifier
         )
     }
 
@@ -843,6 +873,23 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         try await validateCatalog()
     }
 
+    public func repairSensitiveCatalog() async throws -> CatalogValidationResult {
+        let store = try await selectedCatalogStoreForApp()
+        let preview = try await store.recoveryPreview()
+        guard preview.summary != nil else {
+            throw SecretCatalogAgentError.integrityMissing
+        }
+        try await store.validateLatestRecoveryReferences()
+        let approver = operationApprover
+        try await approver.approve(summary: "恢复敏感信息目录到最后已验证快照")
+        do {
+            _ = try await store.restoreLatestRecoverySnapshot()
+            return try await validateCatalog()
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw catalogAgentError(for: error)
+        }
+    }
+
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         let store = try await selectedCatalogStoreForApp()
         do {
@@ -958,6 +1005,63 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     public func catalogAgentWriteStatus() async -> CatalogAgentWriteAuthorizationStatus {
         await catalogAgentWriteAuthorization.status()
+    }
+
+    public func requestCatalogWriteAccess(
+        source: CatalogAgentWriteRequestSource,
+        reasonCategory: CatalogAgentWriteReasonCategory,
+        duration: CatalogAgentWriteAccessDuration
+    ) async throws {
+        let request = CatalogAgentWriteAccessRequest(
+            source: source,
+            reasonCategory: reasonCategory,
+            duration: duration
+        )
+        pendingWriteAccessRequests[request.id] = request
+        defer { pendingWriteAccessRequests.removeValue(forKey: request.id) }
+        let continuationBox = CatalogWriteAccessContinuationBox()
+        writeAccessContinuations[request.id] = continuationBox
+
+        var timeoutTask: Task<Void, Never>?
+        do {
+            try await withCheckedThrowingContinuation { continuation in
+                continuationBox.store(continuation)
+                timeoutTask = Task { [weak continuationBox] in
+                    try? await Task.sleep(for: .seconds(60))
+                    continuationBox?.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
+                }
+                writeAccessNotifier.present(request)
+            }
+        } catch {
+            writeAccessContinuations.removeValue(forKey: request.id)?.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
+            timeoutTask?.cancel()
+            if error is VaultAppServicesRevealError || error is CancellationError {
+                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
+            }
+            throw error
+        }
+        timeoutTask?.cancel()
+    }
+
+    public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {
+        guard let request = pendingWriteAccessRequests[id] else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+        return request
+    }
+
+    public func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async throws {
+        guard let request = pendingWriteAccessRequests.removeValue(forKey: id),
+              let continuation = writeAccessContinuations.removeValue(forKey: id)
+        else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+        if approved {
+            await catalogAgentWriteAuthorization.grant(request.duration)
+            continuation.resume()
+        } else {
+            continuation.resume(throwing: SecretCatalogAgentError.agentWriteNotAllowed)
+        }
     }
 
     public func catalogCreateIndex(
