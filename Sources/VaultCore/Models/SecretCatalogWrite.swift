@@ -187,19 +187,49 @@ public struct CatalogWriteResult: Codable, Equatable, Sendable {
     }
 }
 
+/// Safe diagnostics produced by the running SVLTAgent for the selected
+/// Catalog document. These values deliberately contain no path, document
+/// bytes, title, reference, or plaintext. They are useful for local
+/// installation diagnostics only; Catalog mutations still expose the stable
+/// CATALOG_WRITE_FAILED code to IPC/MCP callers.
+public struct CatalogFilePreflight: Codable, Equatable, Sendable {
+    public let read: String
+    public let parentTempCreate: String
+    public let parentTempFsync: String
+    public let parentRename: String
+    public let parentFsync: String
+
+    public init(
+        read: String,
+        parentTempCreate: String,
+        parentTempFsync: String,
+        parentRename: String,
+        parentFsync: String
+    ) {
+        self.read = read
+        self.parentTempCreate = parentTempCreate
+        self.parentTempFsync = parentTempFsync
+        self.parentRename = parentRename
+        self.parentFsync = parentFsync
+    }
+}
+
 public struct CatalogValidationResult: Codable, Equatable, Sendable {
     public let status: SecretCatalogSearchStatus
     public let revision: UInt64?
     public let pendingExternalChange: CatalogPendingExternalChange?
+    public let filePreflight: CatalogFilePreflight?
 
     public init(
         status: SecretCatalogSearchStatus,
         revision: UInt64? = nil,
-        pendingExternalChange: CatalogPendingExternalChange? = nil
+        pendingExternalChange: CatalogPendingExternalChange? = nil,
+        filePreflight: CatalogFilePreflight? = nil
     ) {
         self.status = status
         self.revision = revision
         self.pendingExternalChange = pendingExternalChange
+        self.filePreflight = filePreflight
     }
 }
 

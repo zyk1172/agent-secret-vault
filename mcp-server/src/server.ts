@@ -14,6 +14,7 @@ import {
   CatalogBatchMutation,
   CatalogDraft,
   CatalogDraftRequest,
+  CatalogFilePreflight,
   CatalogMetadataPatch,
   CatalogWriteResult,
   CatalogValidationResult,
@@ -246,7 +247,11 @@ const CatalogDraftOutput = z
 
 const CatalogValidationOutput = z
   .union([
-    z.object({ status: z.string().min(1), revision: z.number().int().nonnegative().nullable().optional() }).strict(),
+    z.object({
+      status: z.string().min(1),
+      revision: z.number().int().nonnegative().nullable().optional(),
+      filePreflight: CatalogFilePreflight.optional()
+    }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Catalog validation status; it never returns document content.");
@@ -1013,10 +1018,18 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
         EmptyInput.parse(input);
         const response = await client.request({ type: "catalogValidate" });
         if (response.type === "catalogValidation") {
-          return structuredResult({
+          const result: {
+            status: string;
+            revision: number | null;
+            filePreflight?: typeof response.filePreflight;
+          } = {
             status: response.catalogStatus,
             revision: response.revision ?? null
-          });
+          };
+          if (response.filePreflight) {
+            result.filePreflight = response.filePreflight;
+          }
+          return structuredResult(result);
         }
         return structuredResult(statusOnly(response));
       }

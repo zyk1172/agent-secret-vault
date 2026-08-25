@@ -1146,8 +1146,15 @@ private struct SensitiveCatalogEditorCard: View {
                             .foregroundStyle(.orange)
                     }
 
-                    let columns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 3)
-                    LazyVGrid(columns: columns, spacing: 14) {
+                    let columns = Array(
+                        repeating: GridItem(
+                            .flexible(minimum: 0, maximum: .infinity),
+                            spacing: 6,
+                            alignment: .topLeading
+                        ),
+                        count: 3
+                    )
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
                         ForEach(snapshot.document.indexes, id: \.id) { index in
                             let entries = snapshot.document.entries.filter { $0.indexId == index.id }
                             let secretFieldCount = entries.flatMap(\.fields).filter { $0.type.isSecret }.count
@@ -1166,10 +1173,12 @@ private struct SensitiveCatalogEditorCard: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(index.title)
                                             .font(.headline)
+                                            .lineLimit(2)
                                         if !index.aliases.isEmpty {
                                             Text(index.aliases.joined(separator: "、"))
                                                 .font(.callout)
                                                 .foregroundStyle(.secondary)
+                                                .lineLimit(2)
                                         }
                                     }
                                     Spacer()
@@ -1181,10 +1190,10 @@ private struct SensitiveCatalogEditorCard: View {
                                 }
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .aspectRatio(1.618, contentMode: .fit)
+                            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
                             .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 14, style: .continuous)

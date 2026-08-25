@@ -267,6 +267,15 @@ export const CatalogWriteResult = z.object({
 }).strict();
 export type CatalogWriteResult = z.infer<typeof CatalogWriteResult>;
 
+export const CatalogFilePreflight = z.object({
+  read: z.string().min(1).max(128),
+  parentTempCreate: z.string().min(1).max(128),
+  parentTempFsync: z.string().min(1).max(128),
+  parentRename: z.string().min(1).max(128),
+  parentFsync: z.string().min(1).max(128)
+}).strict();
+export type CatalogFilePreflight = z.infer<typeof CatalogFilePreflight>;
+
 export const CatalogValidationResult = z.object({
   status: z.enum([
     "FOUND",
@@ -279,7 +288,8 @@ export const CatalogValidationResult = z.object({
     "PENDING_EXTERNAL_CHANGE",
     "CATALOG_INVALID"
   ]),
-  revision: z.number().int().nonnegative().nullable().optional()
+  revision: z.number().int().nonnegative().nullable().optional(),
+  filePreflight: CatalogFilePreflight.nullable().optional()
 }).strict();
 export type CatalogValidationResult = z.infer<typeof CatalogValidationResult>;
 
@@ -631,7 +641,8 @@ export const IpcResponse = z.discriminatedUnion("type", [
     .object({
       type: z.literal("catalogValidation"),
       catalogStatus: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE", "LEGACY_CATALOG_UNSUPPORTED", "INTEGRITY_MISSING", "EXTERNAL_CATALOG_MODIFICATION", "PENDING_EXTERNAL_CHANGE", "CATALOG_INVALID"]),
-      revision: z.number().int().nonnegative().nullable().optional()
+      revision: z.number().int().nonnegative().nullable().optional(),
+      filePreflight: CatalogFilePreflight.optional()
     })
     .strict(),
   z

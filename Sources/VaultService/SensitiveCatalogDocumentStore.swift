@@ -189,6 +189,47 @@ internal protocol CatalogAtomicWriteFaultInjecting: Sendable {
     func beforeAtomicReplace(to url: URL) throws
 }
 
+private enum CatalogFileIOStage: String {
+    case readDocument = "document-read"
+    case readIntegrity = "integrity-read"
+    case acquireLock = "lock-acquire"
+    case createTemporary = "temp-create"
+    case writeTemporary = "temp-write"
+    case fsyncTemporary = "temp-fsync"
+    case closeTemporary = "temp-close"
+    case replaceDocument = "document-replace"
+    case fsyncDocumentDirectory = "document-directory-fsync"
+    case replaceIntegrity = "integrity-replace"
+    case fsyncIntegrityDirectory = "integrity-directory-fsync"
+    case keychainIntegrity = "integrity-keychain"
+    case preflightRead = "preflight-read"
+    case preflightTempCreate = "preflight-temp-create"
+    case preflightTempFsync = "preflight-temp-fsync"
+    case preflightTempClose = "preflight-temp-close"
+    case preflightRename = "preflight-rename"
+    case preflightDirectoryFsync = "preflight-directory-fsync"
+}
+
+private enum CatalogIOOperation: String {
+    case catalogRead = "catalog-read"
+    case catalogValidate = "catalog-validate"
+    case catalogMutation = "catalog-mutation"
+    case catalogMigration = "catalog-migration"
+    case catalogCleanup = "catalog-cleanup"
+}
+
+private enum CatalogWriteTarget: Equatable {
+    case document
+    case integrity
+    case cleanup
+    case internalState
+}
+
+private struct POSIXFileWriteError: Error {
+    let stage: CatalogFileIOStage
+    let status: Int32
+}
+
 public struct CatalogExternalChange: Codable, Equatable, Sendable {
     public let rawSHA256: String
     public let semanticSHA256: String
@@ -275,6 +316,86 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     public func selectedDocumentURL() -> URL? { documentURL }
+
+    /// Runs a non-destructive probe in the selected document's parent from
+    /// the process that owns this Store. The probe never opens the document
+    /// for writing and never returns its path or contents.
+    public func preflightFileAccess() throws -> CatalogFilePreflight {
+        guard let documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
+        let parent = documentURL.deletingLastPathComponent().standardizedFileURL
+        let read = preflightReadStatus(documentURL)
+        let temporary = parent.appendingPathComponent(".svlt-write-probe-\(UUID().uuidString)")
+        let renamed = parent.appendingPathComponent(".svlt-write-probe-\(UUID().uuidString)")
+
+        var tempCreate = "PARENT_TEMP_CREATE_SKIPPED"
+        var tempFsync = "PARENT_TEMP_FSYNC_SKIPPED"
+        var rename = "PARENT_RENAME_SKIPPED"
+        var parentFsync = "PARENT_FSYNC_SKIPPED"
+        var descriptor: Int32 = -1
+        var temporaryExists = false
+        var renamedExists = false
+
+        let createStatus = temporary.path.withCString { path in
+            svlt_create_file(path, &descriptor)
+        }
+        if createStatus == 0 {
+            temporaryExists = true
+            tempCreate = "PARENT_TEMP_CREATE_OK"
+            let fsyncStatus = svlt_fsync_file_descriptor(descriptor)
+            if fsyncStatus == 0 {
+                tempFsync = "PARENT_TEMP_FSYNC_OK"
+            } else {
+                tempFsync = preflightFailure(stage: .preflightTempFsync, errno: fsyncStatus)
+            }
+            let closeStatus = svlt_close_file_descriptor(descriptor)
+            descriptor = -1
+            if closeStatus != 0 && tempFsync == "PARENT_TEMP_FSYNC_OK" {
+                tempFsync = preflightFailure(stage: .preflightTempClose, errno: closeStatus)
+            }
+        } else {
+            tempCreate = preflightFailure(stage: .preflightTempCreate, errno: createStatus)
+        }
+
+        if temporaryExists {
+            let renameStatus = temporary.path.withCString { source in
+                renamed.path.withCString { destination in
+                    svlt_rename_file(source, destination)
+                }
+            }
+            if renameStatus == 0 {
+                renamedExists = true
+                temporaryExists = false
+                rename = "PARENT_RENAME_OK"
+            } else {
+                rename = preflightFailure(stage: .preflightRename, errno: renameStatus)
+            }
+        }
+
+        let parentFsyncStatus = parent.path.withCString { path in
+            svlt_fsync_directory(path)
+        }
+        parentFsync = parentFsyncStatus == 0
+            ? "PARENT_FSYNC_OK"
+            : preflightFailure(stage: .preflightDirectoryFsync, errno: parentFsyncStatus)
+
+        if descriptor >= 0 {
+            _ = svlt_close_file_descriptor(descriptor)
+        }
+        if temporaryExists {
+            _ = temporary.path.withCString { path in svlt_unlink_file(path) }
+        }
+        if renamedExists {
+            _ = renamed.path.withCString { path in svlt_unlink_file(path) }
+        }
+
+        return CatalogFilePreflight(
+            read: read,
+            parentTempCreate: tempCreate,
+            parentTempFsync: tempFsync,
+            parentRename: rename,
+            parentFsync: parentFsync
+        )
+    }
 
     /// Records opaque secret IDs whose best-effort deletion failed while a
     /// Catalog transaction was being compensated. This state is intentionally
@@ -369,8 +490,11 @@ public actor SensitiveCatalogDocumentStore {
     @discardableResult
     public func createEntry(_ entry: SecretCatalogEntry, expectedRevision: UInt64? = nil) throws -> SensitiveCatalogSnapshot {
         try mutate(expectedRevision: expectedRevision) { document in
-            guard document.indexes.contains(where: { $0.id == entry.indexId }), !document.entries.contains(where: { $0.id == entry.id }) else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
-            return SecretCatalogDocument(indexes: document.indexes, entries: document.entries + [entry])
+            do {
+                return try document.insertingEntryInSourceOrder(entry)
+            } catch {
+                throw SensitiveCatalogDocumentStoreError.invalidOperation
+            }
         }
     }
 
@@ -387,11 +511,11 @@ public actor SensitiveCatalogDocumentStore {
     @discardableResult
     public func moveEntry(id: String, toIndexID: String, expectedRevision: UInt64? = nil) throws -> SensitiveCatalogSnapshot {
         try mutate(expectedRevision: expectedRevision) { document in
-            guard document.indexes.contains(where: { $0.id == toIndexID }), let offset = document.entries.firstIndex(where: { $0.id == id }) else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
-            let old = document.entries[offset]
-            var entries = document.entries
-            entries[offset] = SecretCatalogEntry(id: old.id, indexId: toIndexID, title: old.title, type: old.type, aliases: old.aliases, endpoints: old.endpoints, fields: old.fields, notes: old.notes, tags: old.tags, schema: old.schema)
-            return SecretCatalogDocument(indexes: document.indexes, entries: entries)
+            do {
+                return try document.movingEntryInSourceOrder(id: id, toIndexID: toIndexID)
+            } catch {
+                throw SensitiveCatalogDocumentStoreError.invalidOperation
+            }
         }
     }
 
@@ -802,7 +926,7 @@ public actor SensitiveCatalogDocumentStore {
                 guard try decodeV3(raw) == targetDocument else {
                     throw SensitiveCatalogDocumentStoreError.malformedDocument
                 }
-                try atomicWrite(raw, to: url)
+            try atomicWrite(raw, to: url, operation: .catalogMutation, target: .document)
                 let revision = previous + 1
                 let record = try makeRecord(document: targetDocument, revision: revision, raw: raw)
                 try atomicWriteIntegrity(record)
@@ -813,7 +937,7 @@ public actor SensitiveCatalogDocumentStore {
                 }
                 let raw = try SensitiveCatalogDocumentCodec.canonicalData(targetDocument)
                 guard !fileManager.fileExists(atPath: url.path) else { continue }
-                try atomicWrite(raw, to: url)
+                try atomicWrite(raw, to: url, operation: .catalogMutation, target: .document)
                 let revision = previous + 1
                 let record = try makeRecord(document: targetDocument, revision: revision, raw: raw)
                 try atomicWriteIntegrity(record)
@@ -1020,7 +1144,7 @@ public actor SensitiveCatalogDocumentStore {
     private func readDocumentData() throws -> Data {
         guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
         try assertSafeFile(url)
-        return try readFileData(from: url)
+        return try readFileData(from: url, stage: .readDocument, operation: .catalogRead)
     }
 
     /// Reads the managed document through a descriptor rather than
@@ -1030,7 +1154,11 @@ public actor SensitiveCatalogDocumentStore {
     /// symlink and is revalidated as a regular file before any bytes are
     /// consumed. Integrity/CAS checks still happen at the existing call
     /// sites.
-    private func readFileData(from url: URL) throws -> Data {
+    private func readFileData(
+        from url: URL,
+        stage: CatalogFileIOStage = .readDocument,
+        operation: CatalogIOOperation = .catalogRead
+    ) throws -> Data {
         try assertSafeFile(url)
         var bytes: UnsafeMutableRawPointer?
         var length = 0
@@ -1042,6 +1170,7 @@ public actor SensitiveCatalogDocumentStore {
               length <= svltPosixFileReaderMaximumBytes
         else {
             if let bytes { svlt_free_file(bytes) }
+            logIOFailure(stage: stage, status: status, operation: operation)
             throw SensitiveCatalogDocumentStoreError.writeFailed
         }
         defer { svlt_free_file(bytes) }
@@ -1057,7 +1186,11 @@ public actor SensitiveCatalogDocumentStore {
             updatedAt: iso8601String(Date())
         )
         let key: Data
-        do { key = try keyStore.loadOrCreateKey() } catch { throw SensitiveCatalogDocumentStoreError.writeFailed }
+        do { key = try keyStore.loadOrCreateKey() }
+        catch {
+            logIOFailure(stage: .keychainIntegrity, status: -1, operation: .catalogMutation)
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
         let mac = HMAC<SHA256>.authenticationCode(for: integrityPayload(state), using: SymmetricKey(data: key))
         return CatalogIntegrityRecord(acceptedState: state, hmac: Data(mac).base64EncodedString())
     }
@@ -1099,7 +1232,12 @@ public actor SensitiveCatalogDocumentStore {
     private func readIntegrityRecord(at url: URL) throws -> CatalogIntegrityRecord {
         guard fileManager.fileExists(atPath: url.path) else { throw SensitiveCatalogDocumentStoreError.integrityMissing }
         try assertSafeFile(url)
-        do { return try JSONDecoder().decode(CatalogIntegrityRecord.self, from: readFileData(from: url)) }
+        do {
+            return try JSONDecoder().decode(
+                CatalogIntegrityRecord.self,
+                from: readFileData(from: url, stage: .readIntegrity, operation: .catalogRead)
+            )
+        }
         catch { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
     }
 
@@ -1354,7 +1492,7 @@ public actor SensitiveCatalogDocumentStore {
                 createdAt: createdAt,
                 hmac: Data(mac).base64EncodedString()
             ))
-            try atomicWrite(data, to: url)
+            try atomicWrite(data, to: url, operation: .catalogCleanup, target: .cleanup)
         } catch let error as SensitiveCatalogDocumentStoreError {
             throw error
         } catch {
@@ -1393,7 +1531,14 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     private func atomicWriteIntegrity(_ record: CatalogIntegrityRecord) throws {
-        do { try atomicWrite(try encodedIntegrityData(record), to: try integrityURL()) }
+        do {
+            try atomicWrite(
+                try encodedIntegrityData(record),
+                to: try integrityURL(),
+                operation: .catalogMutation,
+                target: .integrity
+            )
+        }
         catch let error as SensitiveCatalogDocumentStoreError { throw error }
         catch { throw SensitiveCatalogDocumentStoreError.writeFailed }
     }
@@ -1674,44 +1819,111 @@ public actor SensitiveCatalogDocumentStore {
     private func withCatalogLock<T>(exclusive: Bool, _ operation: () throws -> T) throws -> T {
         let lockURL = try integrityURL().appendingPathExtension("lock")
         let parent = lockURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        do {
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch {
+            logFoundationIOFailure(stage: .acquireLock, error: error, operation: .catalogValidate)
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
         if fileManager.fileExists(atPath: lockURL.path) { try assertSafeFile(lockURL) }
         let descriptor = open(lockURL.path, O_CREAT | O_RDWR, mode_t(0o600))
-        guard descriptor >= 0 else { throw SensitiveCatalogDocumentStoreError.writeFailed }
+        guard descriptor >= 0 else {
+            let status = errno
+            logIOFailure(stage: .acquireLock, status: status, operation: .catalogMutation)
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
         defer { close(descriptor) }
-        guard flock(descriptor, exclusive ? LOCK_EX : LOCK_SH) == 0 else { throw SensitiveCatalogDocumentStoreError.writeFailed }
+        guard flock(descriptor, exclusive ? LOCK_EX : LOCK_SH) == 0 else {
+            let status = errno
+            logIOFailure(stage: .acquireLock, status: status, operation: .catalogMutation)
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
         defer { _ = flock(descriptor, LOCK_UN) }
         return try operation()
     }
 
-    private func atomicWrite(_ data: Data, to url: URL) throws {
+    private func atomicWrite(
+        _ data: Data,
+        to url: URL,
+        operation: CatalogIOOperation = .catalogMutation,
+        target: CatalogWriteTarget = .internalState
+    ) throws {
         let parent = url.deletingLastPathComponent()
         try assertSafeParent(url)
-        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let temporary = parent.appendingPathComponent(".svlt-catalog-\(UUID().uuidString).tmp")
         do {
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch {
+            logFoundationIOFailure(stage: .createTemporary, error: error, operation: operation)
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+        let temporary = parent.appendingPathComponent(".svlt-catalog-\(UUID().uuidString).tmp")
+        var descriptor: Int32 = -1
+        var temporaryExists = false
+        do {
+            let createStatus = temporary.path.withCString { path in
+                svlt_create_file(path, &descriptor)
+            }
+            guard createStatus == 0 else {
+                throw POSIXFileWriteError(stage: .createTemporary, status: createStatus)
+            }
+            temporaryExists = true
+
             let writeStatus = data.withUnsafeBytes { buffer in
-                svlt_write_file(temporary.path, buffer.baseAddress, buffer.count)
+                svlt_write_file_descriptor(descriptor, buffer.baseAddress, buffer.count)
             }
             guard writeStatus == 0 else {
-                throw POSIXFileWriteError(status: writeStatus)
+                throw POSIXFileWriteError(stage: .writeTemporary, status: writeStatus)
             }
+            let fsyncStatus = svlt_fsync_file_descriptor(descriptor)
+            guard fsyncStatus == 0 else {
+                throw POSIXFileWriteError(stage: .fsyncTemporary, status: fsyncStatus)
+            }
+            let closeStatus = svlt_close_file_descriptor(descriptor)
+            descriptor = -1
+            guard closeStatus == 0 else {
+                throw POSIXFileWriteError(stage: .closeTemporary, status: closeStatus)
+            }
+
             try atomicWriteFaultInjector?.beforeAtomicReplace(to: url)
             if fileManager.fileExists(atPath: url.path) {
                 try assertSafeFile(url)
             }
-            let replaceStatus = svlt_replace_file(temporary.path, url.path, parent.path)
+            let replaceStatus = temporary.path.withCString { source in
+                url.path.withCString { destination in
+                    svlt_replace_file(source, destination)
+                }
+            }
             guard replaceStatus == 0 else {
-                throw POSIXFileWriteError(status: replaceStatus)
+                throw POSIXFileWriteError(
+                    stage: target == .integrity ? .replaceIntegrity : .replaceDocument,
+                    status: replaceStatus
+                )
+            }
+            temporaryExists = false
+            let directoryStatus = parent.path.withCString { path in
+                svlt_fsync_directory(path)
+            }
+            guard directoryStatus == 0 else {
+                throw POSIXFileWriteError(
+                    stage: target == .integrity ? .fsyncIntegrityDirectory : .fsyncDocumentDirectory,
+                    status: directoryStatus
+                )
             }
         } catch {
-            try? fileManager.removeItem(at: temporary)
+            if descriptor >= 0 {
+                _ = svlt_close_file_descriptor(descriptor)
+                descriptor = -1
+            }
+            if temporaryExists {
+                _ = temporary.path.withCString { path in svlt_unlink_file(path) }
+            }
+            if let error = error as? POSIXFileWriteError {
+                logIOFailure(stage: error.stage, status: error.status, operation: operation)
+            } else if !(error is SensitiveCatalogDocumentStoreError) {
+                logFoundationIOFailure(stage: .replaceDocument, error: error, operation: operation)
+            }
             throw SensitiveCatalogDocumentStoreError.writeFailed
         }
-    }
-
-    private struct POSIXFileWriteError: Error {
-        let status: Int32
     }
 
     private func assertSafeParent(_ url: URL) throws {
@@ -1743,9 +1955,90 @@ public actor SensitiveCatalogDocumentStore {
 
     private func fsyncDirectory(at url: URL) throws {
         let descriptor = open(url.path, O_RDONLY | O_DIRECTORY)
-        guard descriptor >= 0 else { throw SensitiveCatalogDocumentStoreError.writeFailed }
+        guard descriptor >= 0 else {
+            let status = errno
+            logIOFailure(stage: .fsyncDocumentDirectory, status: status, operation: .catalogMigration)
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
         defer { close(descriptor) }
-        guard fsync(descriptor) == 0 else { throw SensitiveCatalogDocumentStoreError.writeFailed }
+        guard fsync(descriptor) == 0 else {
+            let status = errno
+            logIOFailure(stage: .fsyncDocumentDirectory, status: status, operation: .catalogMigration)
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+    }
+
+    private func preflightReadStatus(_ url: URL) -> String {
+        guard fileManager.fileExists(atPath: url.path) else {
+            return preflightFailure(stage: .preflightRead, errno: ENOENT)
+        }
+        do {
+            try assertSafeFile(url)
+        } catch {
+            return preflightFailure(stage: .preflightRead, errno: EINVAL)
+        }
+
+        var bytes: UnsafeMutableRawPointer?
+        var length = 0
+        let status = url.path.withCString { path in
+            svlt_read_file(path, &bytes, &length)
+        }
+        if let bytes {
+            svlt_free_file(bytes)
+        }
+        guard status == 0, length <= svltPosixFileReaderMaximumBytes else {
+            return preflightFailure(stage: .preflightRead, errno: status == 0 ? EIO : status)
+        }
+        return "READ_OK"
+    }
+
+    private func preflightFailure(stage: CatalogFileIOStage, errno status: Int32) -> String {
+        logIOFailure(stage: stage, status: status, operation: .catalogValidate)
+        return "FAILED errno=\(status) symbol=\(errnoSymbol(status))"
+    }
+
+    private func logIOFailure(
+        stage: CatalogFileIOStage,
+        status: Int32,
+        operation: CatalogIOOperation
+    ) {
+        NSLog(
+            "SVLT Catalog IO failure: stage=%@ errno=%d symbol=%@ operation=%@",
+            stage.rawValue,
+            status,
+            errnoSymbol(status),
+            operation.rawValue
+        )
+    }
+
+    private func logFoundationIOFailure(
+        stage: CatalogFileIOStage,
+        error: Error,
+        operation: CatalogIOOperation
+    ) {
+        let nsError = error as NSError
+        let status: Int32 = nsError.domain == NSPOSIXErrorDomain ? Int32(nsError.code) : -1
+        logIOFailure(stage: stage, status: status, operation: operation)
+    }
+
+    private func errnoSymbol(_ status: Int32) -> String {
+        switch status {
+        case EACCES: return "EACCES"
+        case EPERM: return "EPERM"
+        case ENOENT: return "ENOENT"
+        case EEXIST: return "EEXIST"
+        case EIO: return "EIO"
+        case EINVAL: return "EINVAL"
+        case ENOTDIR: return "ENOTDIR"
+        case EFBIG: return "EFBIG"
+        case ENOMEM: return "ENOMEM"
+        case EBUSY: return "EBUSY"
+        case ENOTSUP: return "ENOTSUP"
+        case EROFS: return "EROFS"
+        case EINTR: return "EINTR"
+        case -1: return "UNKNOWN"
+        default: return "ERRNO_\(status)"
+        }
     }
 
     private func sha256Hex(_ data: Data) -> String {

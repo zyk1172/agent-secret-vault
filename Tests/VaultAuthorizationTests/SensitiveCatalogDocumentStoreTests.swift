@@ -117,6 +117,64 @@ private func writeManagedV2WithLegacySidecar(
     #expect(!markdown.contains("password-plaintext-canary"))
 }
 
+@Test func catalogStoreCreatesEntryWithNotesAndNoFields() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let first = try await store.createIndex(title: "QNAP")
+    let indexID = try #require(first.document.indexes.first?.id)
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: indexID,
+        title: "MCP 回归条目",
+        endpoints: [CatalogEndpoint(type: "http", host: "192.168.2.240", port: 8080)],
+        notes: "MCP write-path regression metadata",
+        tags: ["svlt-regression"]
+    )
+
+    let result = try await store.createEntry(entry, expectedRevision: first.revision)
+    #expect(result.revision == first.revision + 1)
+    #expect(result.document.entries == [entry])
+}
+
+@Test func catalogStoreCreatesEntryInTheTargetIndexBeforeLaterIndexEntries() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let first = try await store.createIndex(title: "前面的分组")
+    let second = try await store.createIndex(title: "后面的分组", expectedRevision: first.revision)
+    let laterEntry = SecretCatalogEntry(
+        id: storeSecondEntryID,
+        indexId: try #require(second.document.indexes.last?.id),
+        title: "后面的已有条目"
+    )
+    let seeded = try await store.createEntry(laterEntry, expectedRevision: second.revision)
+    let earlierEntry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: try #require(first.document.indexes.first?.id),
+        title: "前面的新条目"
+    )
+
+    let result = try await store.createEntry(earlierEntry, expectedRevision: seeded.revision)
+    #expect(result.document.entries.map(\.id) == [storeEntryID, storeSecondEntryID])
+    #expect(result.revision == seeded.revision + 1)
+
+    let parsed = try SensitiveCatalogDocumentCodec.decode(
+        String(contentsOf: fixture.document, encoding: .utf8)
+    )
+    #expect(parsed == result.document)
+}
+
 @Test func catalogStoreScopesDefaultIntegrityPerDocumentAndIgnoresAStaleLegacySidecar() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

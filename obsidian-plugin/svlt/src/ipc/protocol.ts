@@ -67,6 +67,15 @@ export const OrphanScanResult = z.object({
   unreferencedRecords: z.array(SecretReference)
 }).strict();
 
+export const CatalogFilePreflight = z.object({
+  read: z.string().max(128),
+  parentTempCreate: z.string().max(128),
+  parentTempFsync: z.string().max(128),
+  parentRename: z.string().max(128),
+  parentFsync: z.string().max(128)
+}).strict();
+export type CatalogFilePreflight = z.infer<typeof CatalogFilePreflight>;
+
 export const IpcResponse = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("workbenchStatus"),
@@ -82,7 +91,8 @@ export const IpcResponse = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("catalogValidation"),
     catalogStatus: CatalogValidationStatus,
-    revision: z.number().int().nonnegative().nullable().optional()
+    revision: z.number().int().nonnegative().nullable().optional(),
+    filePreflight: CatalogFilePreflight.optional()
   }).strict(),
   z.object({ type: z.literal("failure"), code: z.string().min(1) }).strict()
 ]);

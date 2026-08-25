@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 import VaultAuthorization
 import VaultCore
 import VaultExecution
@@ -65,7 +66,17 @@ private struct AgentDecryptAuthorization: Sendable {
     let expiresAt: Date
 }
 
+private enum CatalogMutationPhase: String {
+    case inputValidation = "input-validation"
+    case policy = "policy"
+    case agentAuthorization = "agent-authorization"
+    case snapshot = "snapshot"
+    case model = "model"
+    case store = "store"
+}
+
 public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
+    private static let catalogMutationLogger = Logger(subsystem: "AgentSecretVault", category: "CatalogMutation")
     private let textEncryptor: any TextEncrypting
     private let activeRoot: URL?
     private let recordLister: (any RecordListing)?
@@ -587,25 +598,47 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             if containsReference {
                 try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .bindExistingSecret))
             }
+        } catch {
+            Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .inputValidation, error: error)
+            throw error
+        }
+
+        do {
             try await validateSafeCatalogMutation(.createEntry)
-            let snapshot = try await catalogSnapshotForAgent()
-            let entry = try makeCatalogEntry(from: request)
-            do {
-                let updated = try await catalogDocumentStore!.createEntry(entry, expectedRevision: snapshot.revision)
-                return CatalogWriteResult(
-                    revision: updated.revision,
-                    entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
-                )
-            } catch let error as SensitiveCatalogDocumentStoreError {
-                throw catalogAgentError(for: error)
-            }
+        } catch {
+            Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .agentAuthorization, error: error)
+            throw error
+        }
+
+        let snapshot: SensitiveCatalogSnapshot
+        do {
+            snapshot = try await catalogSnapshotForAgent()
+        } catch {
+            Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .snapshot, error: error)
+            throw error
+        }
+
+        let entry: SecretCatalogEntry
+        do {
+            entry = try makeCatalogEntry(from: request)
+        } catch {
+            Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .model, error: error)
+            throw error
+        }
+
+        do {
+            let updated = try await catalogDocumentStore!.createEntry(entry, expectedRevision: snapshot.revision)
+            return CatalogWriteResult(
+                revision: updated.revision,
+                entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
+            )
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .store, error: error)
+            throw catalogAgentError(for: error)
         } catch let error as SecretCatalogAgentError {
             throw error
         } catch {
-            // Keep unexpected implementation failures out of the MCP wire
-            // format. The type name is non-sensitive and is only a local
-            // diagnostic; request values and filesystem details are omitted.
-            NSLog("SVLT catalog create-entry failed [UNMAPPED_ERROR_%@]", String(reflecting: type(of: error)))
+            Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .store, error: error)
             throw SecretCatalogAgentError.writeFailed
         }
     }
@@ -756,22 +789,27 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func validateCatalog() async throws -> CatalogValidationResult {
+        let filePreflight = try? await catalogFilePreflightForAgent()
         do {
             let snapshot = try await catalogSnapshotForAgent()
-            return CatalogValidationResult(status: .found, revision: snapshot.revision)
+            return CatalogValidationResult(
+                status: .found,
+                revision: snapshot.revision,
+                filePreflight: filePreflight
+            )
         } catch let error as SecretCatalogAgentError {
             switch error {
             case .legacyCatalogUnsupported:
-                return CatalogValidationResult(status: .legacyCatalogUnsupported)
+                return CatalogValidationResult(status: .legacyCatalogUnsupported, filePreflight: filePreflight)
             case .integrityMissing:
-                return CatalogValidationResult(status: .integrityMissing)
+                return CatalogValidationResult(status: .integrityMissing, filePreflight: filePreflight)
             case .externalModification:
-                return CatalogValidationResult(status: .externalModification)
+                return CatalogValidationResult(status: .externalModification, filePreflight: filePreflight)
             case .pendingExternalChange:
                 guard let store = catalogDocumentStore,
                       let pending = try? await store.pendingExternalChange()
                 else {
-                    return CatalogValidationResult(status: .pendingExternalChange)
+                    return CatalogValidationResult(status: .pendingExternalChange, filePreflight: filePreflight)
                 }
                 return CatalogValidationResult(
                     status: .pendingExternalChange,
@@ -780,12 +818,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                         acceptedRevision: pending.acceptedRevision,
                         rawSHA256: pending.rawSHA256,
                         semanticSHA256: pending.semanticSHA256
-                    )
+                    ),
+                    filePreflight: filePreflight
                 )
             case .invalidCatalog:
-                return CatalogValidationResult(status: .invalidCatalog)
+                return CatalogValidationResult(status: .invalidCatalog, filePreflight: filePreflight)
             case .unavailable:
-                return CatalogValidationResult(status: .unavailable)
+                return CatalogValidationResult(status: .unavailable, filePreflight: filePreflight)
             default:
                 throw error
             }
@@ -2373,9 +2412,72 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
+    /// Resolves the selected document through the same manifest and Store
+    /// instance used by MCP mutations, then runs only the non-destructive file
+    /// access probe. This deliberately does not use the App process or a test
+    /// temporary directory as a permission substitute.
+    private func catalogFilePreflightForAgent() async throws -> CatalogFilePreflight {
+        guard let catalogDocumentStore else {
+            throw SecretCatalogAgentError.unavailable
+        }
+        let selectedURL: URL?
+        if let catalogSelectionStore {
+            selectedURL = try catalogSelectionStore.selectedDocumentURL()
+        } else {
+            selectedURL = await catalogDocumentStore.selectedDocumentURL()
+        }
+        guard let selectedURL else {
+            throw SecretCatalogAgentError.unavailable
+        }
+        try await catalogDocumentStore.selectDocument(at: selectedURL)
+        return try await catalogDocumentStore.preflightFileAccess()
+    }
+
     private func validateSafeCatalogMutation(_ kind: CatalogMutationKind) async throws {
-        try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: kind))
-        try await catalogAgentWriteAuthorization.validateSafeWrite()
+        do {
+            try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: kind))
+        } catch {
+            Self.logCatalogMutationFailure(operation: "catalog-mutation", phase: .policy, error: error)
+            throw error
+        }
+        do {
+            try await catalogAgentWriteAuthorization.validateSafeWrite()
+        } catch {
+            Self.logCatalogMutationFailure(operation: "catalog-mutation", phase: .agentAuthorization, error: error)
+            throw error
+        }
+    }
+
+    private static func logCatalogMutationFailure(
+        operation: String,
+        phase: CatalogMutationPhase,
+        error: Error
+    ) {
+        // Only a fixed operation/phase and the error type are logged. Never
+        // interpolate request values, paths, Markdown, secret references, or
+        // plaintext into the local diagnostic stream.
+        let errorType = String(reflecting: type(of: error))
+        let errorCode = safeCatalogMutationErrorCode(error)
+        catalogMutationLogger.error(
+            "SVLT Catalog mutation failure: operation=\(operation, privacy: .public) phase=\(phase.rawValue, privacy: .public) error=\(errorType, privacy: .public) code=\(errorCode, privacy: .public)"
+        )
+    }
+
+    private static func safeCatalogMutationErrorCode(_ error: Error) -> String {
+        // These enums have no associated values. Their case names are fixed
+        // diagnostic vocabulary and cannot contain request data, paths,
+        // Markdown, secret references, or plaintext. Unknown errors remain
+        // deliberately opaque.
+        if let error = error as? SecretCatalogValidationError {
+            return String(describing: error)
+        }
+        if let error = error as? SensitiveCatalogDocumentStoreError {
+            return String(describing: error)
+        }
+        if let error = error as? SecretCatalogAgentError {
+            return String(describing: error)
+        }
+        return "unknown"
     }
 
     private func makeCatalogEntry(from request: CatalogDraftRequest) throws -> SecretCatalogEntry {

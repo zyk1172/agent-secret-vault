@@ -402,25 +402,18 @@ public struct CatalogBatchMutation: Codable, Equatable, Sendable {
                 indexes.removeAll { $0.id == id }
                 entries.removeAll { $0.indexId == id }
             case let .createEntry(entry):
-                guard indexes.contains(where: { $0.id == entry.indexId }), !entries.contains(where: { $0.id == entry.id }) else {
-                    throw SecretCatalogValidationError.invalidID
-                }
-                entries.append(entry)
+                let current = SecretCatalogDocument(indexes: indexes, entries: entries)
+                let updated = try current.insertingEntryInSourceOrder(entry)
+                entries = updated.entries
             case let .updateEntry(entry):
                 guard let offset = entries.firstIndex(where: { $0.id == entry.id }), indexes.contains(where: { $0.id == entry.indexId }) else {
                     throw SecretCatalogValidationError.invalidID
                 }
                 entries[offset] = entry
             case let .moveEntry(id, toIndexID):
-                guard indexes.contains(where: { $0.id == toIndexID }), let offset = entries.firstIndex(where: { $0.id == id }) else {
-                    throw SecretCatalogValidationError.invalidID
-                }
-                let old = entries[offset]
-                entries[offset] = SecretCatalogEntry(
-                    id: old.id, indexId: toIndexID, title: old.title, type: old.type,
-                    aliases: old.aliases, endpoints: old.endpoints, fields: old.fields,
-                    notes: old.notes, tags: old.tags, schema: old.schema
-                )
+                let current = SecretCatalogDocument(indexes: indexes, entries: entries)
+                let updated = try current.movingEntryInSourceOrder(id: id, toIndexID: toIndexID)
+                entries = updated.entries
             case let .deleteEntry(id):
                 guard entries.contains(where: { $0.id == id }) else { throw SecretCatalogValidationError.invalidID }
                 entries.removeAll { $0.id == id }

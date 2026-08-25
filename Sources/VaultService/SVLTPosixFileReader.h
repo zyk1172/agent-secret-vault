@@ -10,7 +10,13 @@ int svlt_read_file(const char *path, void **bytes, size_t *length);
 
 void svlt_free_file(void *bytes);
 
-int svlt_write_file(const char *path, const void *bytes, size_t length);
-int svlt_replace_file(const char *temporaryPath, const char *targetPath, const char *parentPath);
+int svlt_create_file(const char *path, int *descriptor);
+int svlt_write_file_descriptor(int descriptor, const void *bytes, size_t length);
+int svlt_fsync_file_descriptor(int descriptor);
+int svlt_close_file_descriptor(int descriptor);
+int svlt_replace_file(const char *temporaryPath, const char *targetPath);
+int svlt_fsync_directory(const char *parentPath);
+int svlt_rename_file(const char *sourcePath, const char *destinationPath);
+int svlt_unlink_file(const char *path);
 
 #endif

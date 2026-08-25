@@ -40,7 +40,9 @@ import Testing
 
     #expect(source.contains("isSelectingIndexes"))
     #expect(source.contains("isSelectingEntries"))
-    #expect(source.contains(".aspectRatio(1.618"))
+    #expect(!source.contains(".aspectRatio(1.618"))
+    #expect(source.contains(".flexible(minimum: 0, maximum: .infinity)"))
+    #expect(source.contains("minHeight: 120"))
     #expect(source.contains(".alert(item: $pendingIndexDeletion)"))
     #expect(source.contains(".alert(item: $pendingEntryDeletion)"))
     #expect(source.contains("frame(maxHeight: 520)"))

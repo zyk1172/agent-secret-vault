@@ -1,4 +1,4 @@
-import type { AuthenticatedIpcRequest, IpcRequest, IpcResponse } from "./protocol";
+import type { AuthenticatedIpcRequest, CatalogFilePreflight, IpcRequest, IpcResponse } from "./protocol";
 
 const MAX_FRAME_BYTES = 1_048_576;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
@@ -110,10 +110,12 @@ function parseIpcResponse(json: string): IpcResponse {
     ].includes(parsed.catalogStatus) &&
     (parsed.revision === undefined || parsed.revision === null || isNonNegativeInteger(parsed.revision))
   ) {
+    const filePreflight = isCatalogFilePreflight(parsed.filePreflight) ? parsed.filePreflight : undefined;
     return {
       type: "catalogValidation",
       catalogStatus: parsed.catalogStatus as "FOUND" | "NOT_FOUND" | "INVALID_QUERY" | "CATALOG_UNAVAILABLE" | "LEGACY_CATALOG_UNSUPPORTED" | "INTEGRITY_MISSING" | "EXTERNAL_CATALOG_MODIFICATION" | "PENDING_EXTERNAL_CHANGE" | "CATALOG_INVALID",
-      ...(parsed.revision === undefined ? {} : { revision: parsed.revision as number | null })
+      ...(parsed.revision === undefined ? {} : { revision: parsed.revision as number | null }),
+      ...(filePreflight === undefined ? {} : { filePreflight })
     };
   }
 
@@ -147,6 +149,14 @@ function isSecretReferenceArray(value: unknown): value is string[] {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isCatalogFilePreflight(value: unknown): value is CatalogFilePreflight {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return ["read", "parentTempCreate", "parentTempFsync", "parentRename", "parentFsync"]
+    .every((key) => typeof value[key] === "string" && value[key].length <= 128);
 }
 
 export class LocalVaultClient {

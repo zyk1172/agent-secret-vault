@@ -254,7 +254,11 @@ public struct IPCRequestHandler: Sendable {
             ))
         case .catalogValidate:
             let result = try await service.validateCatalog()
-            return .catalogValidation(status: result.status, revision: result.revision)
+            return .catalogValidation(
+                status: result.status,
+                revision: result.revision,
+                filePreflight: result.filePreflight
+            )
         case .pendingRevealSessions:
             return .revealSessionIDs(try await service.pendingRevealSessionIDs())
         case let .inspectReference(reference):

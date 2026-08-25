@@ -614,7 +614,11 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case catalogSearchResult(SecretCatalogSearchResult)
     case catalogDraft(CatalogDraft)
     case catalogWriteResult(CatalogWriteResult)
-    case catalogValidation(status: SecretCatalogSearchStatus, revision: UInt64?)
+    case catalogValidation(
+        status: SecretCatalogSearchStatus,
+        revision: UInt64?,
+        filePreflight: CatalogFilePreflight?
+    )
     case revealSessionIDs([String])
     case referenceMetadata(SecretReferenceMetadata)
     case displayedToUser
@@ -639,6 +643,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case draft
         case revision
         case catalogStatus
+        case filePreflight
         case sessionIDs
         case metadata
         case reference
@@ -692,7 +697,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case .catalogValidation:
             self = .catalogValidation(
                 status: try container.decode(SecretCatalogSearchStatus.self, forKey: .catalogStatus),
-                revision: try container.decodeIfPresent(UInt64.self, forKey: .revision)
+                revision: try container.decodeIfPresent(UInt64.self, forKey: .revision),
+                filePreflight: try container.decodeIfPresent(CatalogFilePreflight.self, forKey: .filePreflight)
             )
         case .revealSessionIDs:
             self = .revealSessionIDs(try container.decode([String].self, forKey: .sessionIDs))
@@ -746,10 +752,11 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .catalogWriteResult(result):
             try container.encode(ResponseType.catalogWriteResult, forKey: .type)
             try container.encode(result, forKey: .result)
-        case let .catalogValidation(status, revision):
+        case let .catalogValidation(status, revision, filePreflight):
             try container.encode(ResponseType.catalogValidation, forKey: .type)
             try container.encode(status, forKey: .catalogStatus)
             try container.encodeIfPresent(revision, forKey: .revision)
+            try container.encodeIfPresent(filePreflight, forKey: .filePreflight)
         case let .revealSessionIDs(sessionIDs):
             try container.encode(ResponseType.revealSessionIDs, forKey: .type)
             try container.encode(sessionIDs, forKey: .sessionIDs)

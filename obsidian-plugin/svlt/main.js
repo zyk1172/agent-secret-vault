@@ -307,10 +307,12 @@ function parseIpcResponse(json) {
     "PENDING_EXTERNAL_CHANGE",
     "CATALOG_INVALID"
   ].includes(parsed.catalogStatus) && (parsed.revision === void 0 || parsed.revision === null || isNonNegativeInteger(parsed.revision))) {
+    const filePreflight = isCatalogFilePreflight(parsed.filePreflight) ? parsed.filePreflight : void 0;
     return {
       type: "catalogValidation",
       catalogStatus: parsed.catalogStatus,
-      ...parsed.revision === void 0 ? {} : { revision: parsed.revision }
+      ...parsed.revision === void 0 ? {} : { revision: parsed.revision },
+      ...filePreflight === void 0 ? {} : { filePreflight }
     };
   }
   if (parsed.type === "orphanScan" && isRecord(parsed.result)) {
@@ -338,6 +340,12 @@ function isSecretReferenceArray(value) {
 }
 function isNonNegativeInteger(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+function isCatalogFilePreflight(value) {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return ["read", "parentTempCreate", "parentTempFsync", "parentRename", "parentFsync"].every((key) => typeof value[key] === "string" && value[key].length <= 128);
 }
 var LocalVaultClient = class {
   requestTimeoutMs;

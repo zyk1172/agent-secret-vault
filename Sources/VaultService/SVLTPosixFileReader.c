@@ -18,7 +18,12 @@ int svlt_read_file(const char *path, void **bytes, size_t *length) {
     *bytes = NULL;
     *length = 0;
 
-    const int descriptor = open(path, O_RDONLY | O_NOFOLLOW);
+    // A selected path is revalidated as a regular file by Swift, but that
+    // check and open are still a TOCTOU boundary. O_NONBLOCK prevents a
+    // malicious or stale selection that resolves to a FIFO/device from
+    // hanging the Agent's single Catalog actor indefinitely; regular files
+    // retain the same read semantics.
+    const int descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     if (descriptor < 0) {
         return errno;
     }
@@ -91,56 +96,82 @@ void svlt_free_file(void *bytes) {
     free(bytes);
 }
 
-int svlt_write_file(const char *path, const void *bytes, size_t length) {
-    if (path == NULL || (bytes == NULL && length != 0)) {
+int svlt_create_file(const char *path, int *descriptor) {
+    if (path == NULL || descriptor == NULL) {
         return EINVAL;
     }
 
-    const int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
-    if (descriptor < 0) {
+    const int opened = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (opened < 0) {
         return errno;
+    }
+    *descriptor = opened;
+    return 0;
+}
+
+int svlt_write_file_descriptor(int descriptor, const void *bytes, size_t length) {
+    if (descriptor < 0 || (bytes == NULL && length != 0)) {
+        return EINVAL;
     }
 
     const uint8_t *source = (const uint8_t *)bytes;
     size_t written = 0;
-    int status = 0;
     while (written < length) {
         const ssize_t count = write(descriptor, source + written, length - written);
         if (count < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            status = errno;
-            break;
+            return errno;
         }
         if (count == 0) {
-            status = EIO;
-            break;
+            return EIO;
         }
         written += (size_t)count;
     }
-
-    if (status == 0 && fsync(descriptor) != 0) {
-        status = errno;
-    }
-    if (close(descriptor) != 0 && status == 0) {
-        status = errno;
-    }
-    if (status != 0) {
-        (void)unlink(path);
-    }
-    return status;
+    return 0;
 }
 
-int svlt_replace_file(const char *temporaryPath, const char *targetPath, const char *parentPath) {
-    if (temporaryPath == NULL || targetPath == NULL || parentPath == NULL) {
+int svlt_fsync_file_descriptor(int descriptor) {
+    if (descriptor < 0) {
+        return EINVAL;
+    }
+    if (fsync(descriptor) != 0) {
+        return errno;
+    }
+    return 0;
+}
+
+int svlt_close_file_descriptor(int descriptor) {
+    if (descriptor < 0) {
+        return EINVAL;
+    }
+    if (close(descriptor) != 0) {
+        return errno;
+    }
+    return 0;
+}
+
+int svlt_replace_file(const char *temporaryPath, const char *targetPath) {
+    if (temporaryPath == NULL || targetPath == NULL) {
         return EINVAL;
     }
     if (rename(temporaryPath, targetPath) != 0) {
         return errno;
     }
+    return 0;
+}
 
-    const int descriptor = open(parentPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+int svlt_fsync_directory(const char *parentPath) {
+    if (parentPath == NULL) {
+        return EINVAL;
+    }
+    // The selected Catalog may live on a provider-backed or otherwise
+    // untrusted filesystem. Directory open is part of the commit durability
+    // path, but it must not block the Agent's single IPC worker indefinitely.
+    // A normal local directory keeps the same fsync semantics; a provider
+    // that cannot service this non-blocking probe returns an errno instead.
+    const int descriptor = open(parentPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
     if (descriptor < 0) {
         return errno;
     }
@@ -152,4 +183,24 @@ int svlt_replace_file(const char *temporaryPath, const char *targetPath, const c
         status = errno;
     }
     return status;
+}
+
+int svlt_rename_file(const char *sourcePath, const char *destinationPath) {
+    if (sourcePath == NULL || destinationPath == NULL) {
+        return EINVAL;
+    }
+    if (rename(sourcePath, destinationPath) != 0) {
+        return errno;
+    }
+    return 0;
+}
+
+int svlt_unlink_file(const char *path) {
+    if (path == NULL) {
+        return EINVAL;
+    }
+    if (unlink(path) != 0) {
+        return errno;
+    }
+    return 0;
 }
