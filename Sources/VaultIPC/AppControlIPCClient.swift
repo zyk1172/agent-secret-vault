@@ -6,7 +6,10 @@ import VaultCore
 /// different token and has no API for MCP clients to call through.
 public actor AppControlIPCClient {
     private static let connectTimeoutMilliseconds: Int32 = 2_000
-    private static let ioTimeoutSeconds: Int32 = 3
+    // App-control approvals wait for device-owner authentication. Keep this
+    // above the Agent's 30-second authorization window; the ordinary MCP IPC
+    // client intentionally keeps its shorter timeout.
+    private static let ioTimeoutSeconds: Int32 = 40
 
     private let configuration: UnixSocketServerConfiguration
 
