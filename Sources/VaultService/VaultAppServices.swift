@@ -1026,9 +1026,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         do {
             try await withCheckedThrowingContinuation { continuation in
                 continuationBox.store(continuation)
-                timeoutTask = Task { [weak continuationBox] in
+                timeoutTask = Task { [continuationBox] in
                     try? await Task.sleep(for: .seconds(60))
-                    continuationBox?.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
+                    continuationBox.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
                 }
                 writeAccessNotifier.present(request)
             }

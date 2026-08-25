@@ -135,14 +135,14 @@ public struct CatalogAgentWriteAccessRequest: Codable, Equatable, Identifiable, 
     public let source: CatalogAgentWriteRequestSource
     public let reasonCategory: CatalogAgentWriteReasonCategory
     public let duration: CatalogAgentWriteAccessDuration
-    public let createdAt: Date
+    public let createdAt: String
 
     public init(
         id: UUID = UUID(),
         source: CatalogAgentWriteRequestSource,
         reasonCategory: CatalogAgentWriteReasonCategory,
         duration: CatalogAgentWriteAccessDuration,
-        createdAt: Date = Date()
+        createdAt: String = ISO8601DateFormatter().string(from: Date())
     ) {
         self.id = id
         self.source = source
