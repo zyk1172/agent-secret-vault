@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Obsidian-native, lossless Markdown codec for Catalog v3.
 ///
@@ -6,6 +7,7 @@ import Foundation
 /// managed ranges, allowing a writer to patch one object without reformatting
 /// the rest of the file.
 public enum SensitiveCatalogDocumentCodec {
+    private static let parseFailureLogger = Logger(subsystem: "AgentSecretVault", category: "CatalogParse")
     public static let marker = "<!-- SVLT-CATALOG schema=\"3\" -->"
     public static let v3Marker = marker
     public static let v2Marker = "<!-- SVLT-MANAGED-CATALOG schema=\"2\" -->"
@@ -50,7 +52,12 @@ public enum SensitiveCatalogDocumentCodec {
 
     public static func decode(_ text: String) throws -> SecretCatalogDocument {
         switch format(text) {
-        case .managedV3: return try parseV3(text).document
+        case .managedV3:
+            do { return try parseV3(text).document }
+            catch let error as SecretCatalogValidationError {
+                parseFailureLogger.error("SVLT Catalog parse failure: reason=\(String(describing: error), privacy: .public)")
+                throw error
+            }
         case .managedV2: return try decodeV2(text)
         case .legacy: throw SecretCatalogValidationError.legacyDocument
         case .unmanaged: throw SecretCatalogValidationError.invalidMarker

@@ -72,6 +72,7 @@ private enum CatalogMutationPhase: String {
     case agentAuthorization = "agent-authorization"
     case snapshot = "snapshot"
     case model = "model"
+    case identifierGeneration = "identifier-generation"
     case store = "store"
 }
 
@@ -571,8 +572,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 expectedRevision: snapshot.revision
             )
             return CatalogWriteResult(revision: updated.revision)
+        } catch let error as VaultCryptoError where error == .randomGenerationFailed {
+            Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .identifierGeneration, error: error)
+            throw SecretCatalogAgentError.writeFailed
         } catch let error as SensitiveCatalogDocumentStoreError {
+            Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .store, error: error)
             throw catalogAgentError(for: error)
+        } catch {
+            Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .store, error: error)
+            throw SecretCatalogAgentError.writeFailed
         }
     }
 
@@ -2265,6 +2273,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } catch let error as SecretCatalogAgentError {
             throw error
         } catch let error as SensitiveCatalogDocumentStoreError {
+            Self.logCatalogMutationFailure(operation: "catalog-snapshot", phase: .snapshot, error: error)
             switch error {
             case .legacyCatalogUnsupported:
                 throw SecretCatalogAgentError.legacyCatalogUnsupported

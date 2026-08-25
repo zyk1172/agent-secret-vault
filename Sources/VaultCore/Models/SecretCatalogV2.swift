@@ -501,7 +501,11 @@ public enum SecretCatalogOpaqueID {
     private static let allowedCharacters = Set(alphabet)
 
     public static func generate() throws -> String {
-        let bytes = try RandomBytes.generate(count: length)
+        // Catalog IDs are non-secret handles. arc4random_buf keeps generation
+        // available in the launchd Agent process without invoking the higher
+        // level Security API while retaining the same opaque ID alphabet.
+        var bytes = [UInt8](repeating: 0, count: length)
+        arc4random_buf(&bytes, length)
         return String(bytes.map { alphabet[Int($0) % alphabet.count] })
     }
 

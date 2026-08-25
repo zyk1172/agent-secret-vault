@@ -196,6 +196,17 @@ private func qnapDocument() -> SecretCatalogDocument {
     #expect(try SecretCatalogOpaqueID.validate(v2IndexID) == ())
 }
 
+@Test func catalogOpaqueIDsUseLaunchdSafeSystemRandomSource() throws {
+    let first = try SecretCatalogOpaqueID.generate()
+    let second = try SecretCatalogOpaqueID.generate()
+
+    #expect(first.count == SecretCatalogOpaqueID.length)
+    #expect(second.count == SecretCatalogOpaqueID.length)
+    #expect(try SecretCatalogOpaqueID.validate(first) == ())
+    #expect(try SecretCatalogOpaqueID.validate(second) == ())
+    #expect(first != second)
+}
+
 @Test func catalogV2RejectsSchemaAndFieldConflicts() throws {
     let index = SecretCatalogIndex(id: v2IndexID, title: "QNAP")
     let both = SecretCatalogFieldValue(
