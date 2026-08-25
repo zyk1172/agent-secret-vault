@@ -947,6 +947,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             message = "目录数据无效；请检查字段 key、类型和值"
         case "CATALOG_INVALID_OPERATION":
             message = "目录中不存在对应分组或条目，或操作参数无效"
+        case "CATALOG_WRITE_FAILED":
+            message = "目录写入失败；原目录内容未被安全提交，请稍后重试"
         case "EXTERNAL_CATALOG_MODIFICATION":
             message = "检测到目录被外部修改，已暂停写入"
         case "PENDING_EXTERNAL_CHANGE":

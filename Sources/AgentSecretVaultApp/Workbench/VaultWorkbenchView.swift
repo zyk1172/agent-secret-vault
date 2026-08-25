@@ -921,6 +921,7 @@ private struct SensitiveCatalogEditorCard: View {
     @State private var selectedIndexIDs: Set<String> = []
     @State private var isSelectingIndexes = false
     @State private var pendingIndexDeletion: CatalogDeletionRequest?
+    @State private var deletionError: CatalogMutationUIError?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1139,6 +1140,11 @@ private struct SensitiveCatalogEditorCard: View {
                         }
                         Spacer()
                     }
+                    if let deletionError {
+                        Label(deletionError.displayText, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
 
                     let columns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 3)
                     LazyVGrid(columns: columns, spacing: 14) {
@@ -1255,8 +1261,23 @@ private struct SensitiveCatalogEditorCard: View {
     private func deleteIndexes(_ ids: [String]) {
         Task {
             isWorking = true
-            _ = await applyBatch?(CatalogBatchMutation(operations: ids.map { .deleteIndex(id: $0) }))
-            selectedIndexIDs.subtract(ids)
+            deletionError = nil
+            guard let applyBatch else {
+                deletionError = CatalogMutationUIError(
+                    code: "APP_CONTROL_UNAVAILABLE",
+                    message: "本机控制服务不可用，无法删除分组"
+                )
+                pendingIndexDeletion = nil
+                isWorking = false
+                return
+            }
+            let result = await applyBatch(CatalogBatchMutation(operations: ids.map { .deleteIndex(id: $0) }))
+            switch result {
+            case .success:
+                selectedIndexIDs.subtract(ids)
+            case let .failure(error):
+                deletionError = error
+            }
             pendingIndexDeletion = nil
             isWorking = false
         }
@@ -1281,6 +1302,7 @@ private struct SensitiveCatalogGroupSheet: View {
     @State private var newlyCreatedEntryID: String?
     @State private var isWorking = false
     @State private var createError: CatalogEntryCreationError?
+    @State private var deletionError: CatalogMutationUIError?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1336,6 +1358,12 @@ private struct SensitiveCatalogGroupSheet: View {
                     .buttonStyle(.bordered)
                 }
                 Spacer()
+            }
+
+            if let deletionError {
+                Label(deletionError.displayText, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
 
             if isAdding {
@@ -1449,8 +1477,23 @@ private struct SensitiveCatalogGroupSheet: View {
     private func deleteEntries(_ ids: [String]) {
         Task {
             isWorking = true
-            _ = await applyBatch?(CatalogBatchMutation(operations: ids.map { .deleteEntry(id: $0) }))
-            selectedEntryIDs.subtract(ids)
+            deletionError = nil
+            guard let applyBatch else {
+                deletionError = CatalogMutationUIError(
+                    code: "APP_CONTROL_UNAVAILABLE",
+                    message: "本机控制服务不可用，无法删除条目"
+                )
+                pendingEntryDeletion = nil
+                isWorking = false
+                return
+            }
+            let result = await applyBatch(CatalogBatchMutation(operations: ids.map { .deleteEntry(id: $0) }))
+            switch result {
+            case .success:
+                selectedEntryIDs.subtract(ids)
+            case let .failure(error):
+                deletionError = error
+            }
             pendingEntryDeletion = nil
             isWorking = false
         }

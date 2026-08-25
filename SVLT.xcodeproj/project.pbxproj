@@ -190,6 +190,7 @@
 		CABB655945D94FAECF1968D7 /* SecretOperationPolicyEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E462546702466271D1A2EF45 /* SecretOperationPolicyEngineTests.swift */; };
 		CAEDD54069337C5E4687D70C /* SecretReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2505672E04071DB365029AD3 /* SecretReference.swift */; };
 		CB5FEA3C2FD2D443316E3B22 /* ParagraphRestoreBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 391B7EA61F337559990ACFAD /* ParagraphRestoreBuilderTests.swift */; };
+		CC4F9CAAB0F45B52E6992FEE /* SVLTPosixFileReader.h in Headers */ = {isa = PBXBuildFile; fileRef = 90FBD36E7696C9F92345494A /* SVLTPosixFileReader.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		CC958E5E9598F06F7A78CC21 /* SecurityBoundaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AAB93D5691841F8A5CDD71A /* SecurityBoundaryCard.swift */; };
 		CCDAFD910A96BC7CC11182BF /* SensitiveCatalogEditorPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 789685CA898EE7C3A92A1E10 /* SensitiveCatalogEditorPresetTests.swift */; };
 		CEA3A7D8DD9AC568BDE67B7C /* VaultCipherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33154C5926C0AD60B7A3BAD6 /* VaultCipherTests.swift */; };
@@ -219,6 +220,7 @@
 		F512D428D8F63A95BF173FF9 /* VaultAuthorization.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7EBECD686FBE1AC20E7DDE73 /* VaultAuthorization.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FB8E3AB8F2EFC2138579E2B8 /* VaultRecordResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23022B5D615A0EC150331764 /* VaultRecordResolverTests.swift */; };
 		FC1E948960779B78E1D1A86C /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB39665E9CAE6268579AD047 /* SmokeTests.swift */; };
+		FED7F608F0C11A67C05C6ED0 /* SVLTPosixFileReader.c in Sources */ = {isa = PBXBuildFile; fileRef = 0D6F389D72B025EC38DA3F70 /* SVLTPosixFileReader.c */; };
 		FF3AAEA2FFE618B22AB224C9 /* SelectionReplacing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EFA1BB5A9BA6A905587BD89 /* SelectionReplacing.swift */; };
 /* End PBXBuildFile section */
 
@@ -586,6 +588,7 @@
 		0B45898B2D2BE5426A9A6EFD /* SecretCatalogSelectionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretCatalogSelectionStore.swift; sourceTree = "<group>"; };
 		0B4B4A8BB2AD0189E518014F /* CatalogAgentWriteAuthorizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogAgentWriteAuthorizationTests.swift; sourceTree = "<group>"; };
 		0C218DAA9849CABB0A2CD84F /* VaultCipher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCipher.swift; sourceTree = "<group>"; };
+		0D6F389D72B025EC38DA3F70 /* SVLTPosixFileReader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = SVLTPosixFileReader.c; sourceTree = "<group>"; };
 		0E1EB27B8C917F17EDC0EBD9 /* MarkdownReferenceScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownReferenceScanner.swift; sourceTree = "<group>"; };
 		0E5B9A994288A49A5223AFA8 /* SecureViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureViewerView.swift; sourceTree = "<group>"; };
 		0E703A5D3FEA6B27316988B5 /* SVLTAgentCatalogPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVLTAgentCatalogPolicy.swift; sourceTree = "<group>"; };
@@ -689,6 +692,7 @@
 		8B49FAFA193074773E68D7D8 /* SensitiveCatalogEditorPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogEditorPreset.swift; sourceTree = "<group>"; };
 		8DACF6EEFDBA4E2099EBFF95 /* CatalogIntegrityKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogIntegrityKeyStore.swift; sourceTree = "<group>"; };
 		8FED4229FF2398AD8474E676 /* UnixSocketServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnixSocketServer.swift; sourceTree = "<group>"; };
+		90FBD36E7696C9F92345494A /* SVLTPosixFileReader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SVLTPosixFileReader.h; sourceTree = "<group>"; };
 		94F5FC297D9584566D3FAC4C /* VaultUICopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultUICopy.swift; sourceTree = "<group>"; };
 		9717C9E0B3C7FCC51AE52CB2 /* DeviceKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStoreTests.swift; sourceTree = "<group>"; };
 		9ADD85A32A6C95DDEB65DCA0 /* VaultUICopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultUICopyTests.swift; sourceTree = "<group>"; };
@@ -970,6 +974,8 @@
 				3A6300F93F6DE1FCF5878A1B /* SecretCatalogEntrySearchService.swift */,
 				2EFA1BB5A9BA6A905587BD89 /* SelectionReplacing.swift */,
 				78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */,
+				0D6F389D72B025EC38DA3F70 /* SVLTPosixFileReader.c */,
+				90FBD36E7696C9F92345494A /* SVLTPosixFileReader.h */,
 				1D3AAEC8E0FDA3FAF8C10253 /* VaultAppServices.swift */,
 				114E878E0FB68A4D79741DB1 /* VaultDaemonCore.swift */,
 				3F7DDA3AE88C763204AF4663 /* VaultDaemonLifecycleMonitor.swift */,
@@ -1274,6 +1280,17 @@
 		};
 /* End PBXGroup section */
 
+/* Begin PBXHeadersBuildPhase section */
+		7BA532C8AABD3B4A0F25C69B /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC4F9CAAB0F45B52E6992FEE /* SVLTPosixFileReader.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXHeadersBuildPhase section */
+
 /* Begin PBXNativeTarget section */
 		160319EC3D54A6D48327EF69 /* VaultExecution */ = {
 			isa = PBXNativeTarget;
@@ -1512,6 +1529,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 7730EEBCB279D030C16C6463 /* Build configuration list for PBXNativeTarget "VaultService" */;
 			buildPhases = (
+				7BA532C8AABD3B4A0F25C69B /* Headers */,
 				F3583EB3EAB5E4793929B211 /* Sources */,
 				6EEC4639251099F71483EE69 /* Frameworks */,
 			);
@@ -1803,6 +1821,7 @@
 				307FF8408D14E63800E91E7D /* EncryptSelectionCoordinator.swift in Sources */,
 				D2BA92B9789C4E2C19007B14 /* LegacyVaultMigrationVerifier.swift in Sources */,
 				795FA6D1A459183A229925D3 /* RevealSessionStore.swift in Sources */,
+				FED7F608F0C11A67C05C6ED0 /* SVLTPosixFileReader.c in Sources */,
 				7FAB5EC4851D3FCD9AABC450 /* SecretCatalogEntrySearchService.swift in Sources */,
 				FF3AAEA2FFE618B22AB224C9 /* SelectionReplacing.swift in Sources */,
 				75382AF607CE48DAB8135325 /* SensitiveCatalogDocumentStore.swift in Sources */,
@@ -2436,6 +2455,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/VaultService/SVLTPosixFileReader.h;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -2544,6 +2564,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/VaultService/SVLTPosixFileReader.h;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;

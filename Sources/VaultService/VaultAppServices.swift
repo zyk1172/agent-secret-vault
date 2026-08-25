@@ -552,13 +552,17 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     ) async throws -> CatalogWriteResult {
         try await validateSafeCatalogMutation(.createIndex)
         let snapshot = try await catalogSnapshotForAgent()
-        let updated = try await catalogDocumentStore!.createIndex(
-            title: title,
-            aliases: aliases,
-            tags: tags,
-            expectedRevision: snapshot.revision
-        )
-        return CatalogWriteResult(revision: updated.revision)
+        do {
+            let updated = try await catalogDocumentStore!.createIndex(
+                title: title,
+                aliases: aliases,
+                tags: tags,
+                expectedRevision: snapshot.revision
+            )
+            return CatalogWriteResult(revision: updated.revision)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw catalogAgentError(for: error)
+        }
     }
 
     /// Direct, single-call Agent creation for a safe Entry. Secret fields are
@@ -566,30 +570,44 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// plaintext secret values stay on their separate approval/secure-input
     /// paths.
     public func createCatalogEntry(_ request: CatalogDraftRequest) async throws -> CatalogWriteResult {
-        let containsReference = request.fields.contains { $0.secretRef != nil }
-        let containsSecretValue = request.fields.contains { $0.type.isSecret && $0.value != nil }
-        for reference in request.fields.compactMap(\.secretRef) {
-            guard (try? SecretReference(reference)) != nil else {
-                try catalogMutationPolicyEngine.requireSilent(
-                    CatalogMutationDescriptor(kind: .forgedSecretReference)
-                )
-                throw SecretCatalogAgentError.invalidOperation
+        do {
+            let containsReference = request.fields.contains { $0.secretRef != nil }
+            let containsSecretValue = request.fields.contains { $0.type.isSecret && $0.value != nil }
+            for reference in request.fields.compactMap(\.secretRef) {
+                guard (try? SecretReference(reference)) != nil else {
+                    try catalogMutationPolicyEngine.requireSilent(
+                        CatalogMutationDescriptor(kind: .forgedSecretReference)
+                    )
+                    throw SecretCatalogAgentError.invalidOperation
+                }
             }
+            if containsSecretValue {
+                try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .plaintextSecretInCatalog))
+            }
+            if containsReference {
+                try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .bindExistingSecret))
+            }
+            try await validateSafeCatalogMutation(.createEntry)
+            let snapshot = try await catalogSnapshotForAgent()
+            let entry = try makeCatalogEntry(from: request)
+            do {
+                let updated = try await catalogDocumentStore!.createEntry(entry, expectedRevision: snapshot.revision)
+                return CatalogWriteResult(
+                    revision: updated.revision,
+                    entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
+                )
+            } catch let error as SensitiveCatalogDocumentStoreError {
+                throw catalogAgentError(for: error)
+            }
+        } catch let error as SecretCatalogAgentError {
+            throw error
+        } catch {
+            // Keep unexpected implementation failures out of the MCP wire
+            // format. The type name is non-sensitive and is only a local
+            // diagnostic; request values and filesystem details are omitted.
+            NSLog("SVLT catalog create-entry failed [UNMAPPED_ERROR_%@]", String(reflecting: type(of: error)))
+            throw SecretCatalogAgentError.writeFailed
         }
-        if containsSecretValue {
-            try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .plaintextSecretInCatalog))
-        }
-        if containsReference {
-            try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .bindExistingSecret))
-        }
-        try await validateSafeCatalogMutation(.createEntry)
-        let snapshot = try await catalogSnapshotForAgent()
-        let entry = try makeCatalogEntry(from: request)
-        let updated = try await catalogDocumentStore!.createEntry(entry, expectedRevision: snapshot.revision)
-        return CatalogWriteResult(
-            revision: updated.revision,
-            entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
-        )
     }
 
     public func createCatalogDraft(
@@ -646,11 +664,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
         let updated = try metadataPatchedEntry(oldEntry, with: patch)
         try await validateCatalogPatchMutation(from: oldEntry, to: updated)
-        let updatedSnapshot = try await catalogDocumentStore!.updateEntry(updated, expectedRevision: expectedRevision)
-        return CatalogWriteResult(
-            revision: updatedSnapshot.revision,
-            entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
-        )
+        do {
+            let updatedSnapshot = try await catalogDocumentStore!.updateEntry(updated, expectedRevision: expectedRevision)
+            return CatalogWriteResult(
+                revision: updatedSnapshot.revision,
+                entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
+            )
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw catalogAgentError(for: error)
+        }
     }
 
     public func commitCatalogDraft(
@@ -669,12 +691,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         else {
             throw SecretCatalogAgentError.revisionConflict
         }
-        let updatedSnapshot = try await catalogDocumentStore!.createEntry(pending, expectedRevision: expectedRevision)
-        pendingCatalogDrafts.removeValue(forKey: draft.draftID)
-        return CatalogWriteResult(
-            revision: updatedSnapshot.revision,
-            entry: catalogSearchService.get(entryID: pending.id, document: updatedSnapshot.document).matches.first?.entry
-        )
+        do {
+            let updatedSnapshot = try await catalogDocumentStore!.createEntry(pending, expectedRevision: expectedRevision)
+            pendingCatalogDrafts.removeValue(forKey: draft.draftID)
+            return CatalogWriteResult(
+                revision: updatedSnapshot.revision,
+                entry: catalogSearchService.get(entryID: pending.id, document: updatedSnapshot.document).matches.first?.entry
+            )
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw catalogAgentError(for: error)
+        }
     }
 
     public func addCatalogSecretPlaceholder(
@@ -697,15 +723,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             agentVisible: agentVisible,
             searchable: searchable
         )
-        let updatedSnapshot = try await catalogDocumentStore!.addField(
-            field,
-            toEntryID: entryID,
-            expectedRevision: expectedRevision
-        )
-        return CatalogWriteResult(
-            revision: updatedSnapshot.revision,
-            entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
-        )
+        do {
+            let updatedSnapshot = try await catalogDocumentStore!.addField(
+                field,
+                toEntryID: entryID,
+                expectedRevision: expectedRevision
+            )
+            return CatalogWriteResult(
+                revision: updatedSnapshot.revision,
+                entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
+            )
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw catalogAgentError(for: error)
+        }
     }
 
     public func bindCatalogExistingSecret(
@@ -1255,6 +1285,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw SecretCatalogAgentError.revisionConflict
             case .invalidOperation:
                 throw SecretCatalogAgentError.invalidOperation
+            case .writeFailed:
+                throw SecretCatalogAgentError.writeFailed
             default:
                 throw SecretCatalogAgentError.invalidCatalog
             }
@@ -2235,8 +2267,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .revisionConflict
         case .invalidOperation:
             return .invalidOperation
+        case .writeFailed:
+            return .writeFailed
         case .malformedDocument, .symlinkRejected, .invalidIntegrity,
-             .referenceSetChanged, .writeFailed:
+             .referenceSetChanged:
             return .invalidCatalog
         }
     }
@@ -2329,8 +2363,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             case .invalidOperation:
                 throw SecretCatalogAgentError.invalidOperation
             case .noSelectedDocument, .malformedDocument,
-                 .invalidIntegrity, .symlinkRejected, .writeFailed, .referenceSetChanged:
+                 .invalidIntegrity, .symlinkRejected, .referenceSetChanged:
                 throw SecretCatalogAgentError.invalidCatalog
+            case .writeFailed:
+                throw SecretCatalogAgentError.writeFailed
             }
         } catch {
             throw SecretCatalogAgentError.unavailable
