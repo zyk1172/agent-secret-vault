@@ -1,6 +1,6 @@
 {
   "name": "svlt",
-  "version": "0.1.15",
+  "version": "0.1.17",
   "description": "Use a local macOS vault for secrets the user chooses to manage, without returning SVLT-managed plaintext to Codex, Claude, Hermes, or other MCP agents.",
   "author": {
     "name": "Local developer"
