@@ -10,8 +10,8 @@ requests without loading SwiftUI or creating a window.
 
 `SVLT.app` owns UI, settings, file selection, service registration, and local
 reveal presentation. `SVLTAgent` owns encryption, decryption, authorization,
-Unix-socket IPC, recovery, audit logging, migration, and controlled local
-execution. For SVLT-managed operations, Agents receive only opaque references
+Unix-socket IPC, transaction rollback, audit logging, migration, and controlled
+local execution. For SVLT-managed operations, Agents receive only opaque references
 such as:
 
 ```text
@@ -101,11 +101,13 @@ For Codex, Claude, Hermes, or another MCP-capable agent, follow
 
 Short version:
 
-1. Open SVLT and select or create the `敏感信息.md` that will be the active
+1. Open SVLT and select an existing `敏感信息.md` as the active
    SVLT Catalog v3 document. It is ordinary Obsidian Markdown with real `##`
    group headings, `###` entry headings, stable SVLT markers, and opaque
    `secret://` references; encrypted records remain in the local vault.
    Only credentials the user chooses to manage with SVLT belong in this path.
+   A blank packaged template is available from the Security Boundary page;
+   copying it into a vault remains an explicit user action.
 2. Use the generated MCP config:
 
 ```text
@@ -118,6 +120,8 @@ Short version:
    agents may use Catalog MCP, while users, Obsidian, scripts, and other
    writers may also edit valid v3 Markdown. The coordinator validates and
    reconciles those edits instead of treating the writer transport as risk.
+   The App can inspect the selected document's format and apply only a
+   semantic-preserving formatting repair after a fresh hash check.
    It does not override a user-selected QNAP MCP, external provider, logged-in
    CLI, environment variable, third-party password manager, or explicitly
    supplied plaintext for the current operation.
@@ -156,7 +160,7 @@ for one-lock, one-revision multi-operation changes.
    after device-owner authentication.
 6. Agent Catalog mutations each create their own operation-bound request; the
    App authenticates the user and the approved ticket is consumed once.
-7. The plugin is read-only. It never encrypts, decrypts, restores, or writes a
+7. The plugin is read-only. It never encrypts, decrypts, repairs, or writes a
    managed catalog, and it never returns plaintext.
 
 MCP `secret_create_request` remains a local app/plugin compatibility endpoint

@@ -102,15 +102,10 @@ public enum VaultWorkbenchMotion {
 public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable {
     case overview
     case secrets
-    case records
     case automation
     case security
 
     public var id: String { rawValue }
-
-    /// Local scanning remains available to maintenance/recovery code, but is
-    /// deliberately absent from the normal product navigation.
-    public static let regularCases: [Self] = allCases.filter { $0 != .records }
 
     public var title: String {
         switch self {
@@ -118,8 +113,6 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable 
             return "控制台"
         case .secrets:
             return "敏感信息"
-        case .records:
-            return "本地扫描"
         case .automation:
             return "智能体自动化"
         case .security:
@@ -133,8 +126,6 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable 
             return "状态、快捷入口和最近动作"
         case .secrets:
             return "分组目录与独立加密记录"
-        case .records:
-            return "本机规则候选与人工确认"
         case .automation:
             return "查看脱敏后的本机使用记录"
         case .security:
@@ -148,8 +139,6 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable 
             return "square.grid.2x2.fill"
         case .secrets:
             return "key.viewfinder"
-        case .records:
-            return "tray.full.fill"
         case .automation:
             return "sparkles.rectangle.stack.fill"
         case .security:
@@ -170,11 +159,9 @@ public struct VaultWorkbenchView: View {
     let enableAgentService: (() async -> Void)?
     let disableAgentService: (() async -> Void)?
     let restartAgentService: (() async -> Void)?
-    let orphanScanResult: OrphanScanResult?
-    let auditEntries: [AgentAutomationAuditEntry]
+    let auditEntries: [CatalogSecurityAuditEntry]
     let savedReferences: [SecretReferenceMetadata]
     let sensitiveIndexURL: URL?
-    let sensitiveIndexEntries: [SensitiveInformationDocumentReference]
     let sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
     let sensitiveCatalogError: String?
     let sensitiveCatalogCanAdoptV2: Bool
@@ -186,21 +173,16 @@ public struct VaultWorkbenchView: View {
     /// exceeds one the alert title shows the queue position so the user knows
     /// more requests follow.
     var pendingWriteAccessQueueCount: Int = 0
-    let sensitiveScanRootURL: URL?
-    let sensitiveScanCandidates: [LocalSensitiveInformationCandidate]
-    let sensitiveScanRules: [SensitiveScanRuleDefinition]
     let refreshSavedReferences: (() async -> Void)?
     let chooseSensitiveIndex: (() -> Void)?
-    let createSensitiveIndex: (() -> Void)?
-    let refreshSensitiveIndex: (() async -> Void)?
     let refreshSensitiveCatalog: (() async -> Void)?
     let validateSensitiveCatalog: (() async -> Void)?
     let adoptExternalV2Catalog: (() async -> Void)?
     let adoptExternalV3Catalog: (() async -> Void)?
     let approveExternalCatalogChange: (() async -> Void)?
-    let repairSensitiveCatalog: (() async -> Void)?
-    let recoveryPlan: (() async -> CatalogRecoveryPlan?)?
-    let restoreRecovery: ((CatalogRecoveryPlan) async -> Bool)?
+    let formatRepairPlan: CatalogFormatRepairPlan?
+    let checkSensitiveCatalogFormat: (() async -> Void)?
+    let repairSensitiveCatalogFormat: (() async -> Void)?
     let createCatalogIndex: ((String) async -> CatalogMutationUIResult)?
     let createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)?
     let commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
@@ -210,19 +192,9 @@ public struct VaultWorkbenchView: View {
     let enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
     let revokeCatalogAgentWrite: (() async -> Void)?
     let respondToWriteAccessRequest: ((UUID, Bool) async -> Void)?
-    let chooseSensitiveScanRoot: (() -> Void)?
-    let scanSensitiveInformation: (() async -> Void)?
-    let encryptSensitiveCandidates: ((Set<String>) async -> Void)?
-    let ignoreSensitiveCandidates: ((Set<String>) async -> Void)?
-    let jumpToSensitiveCandidate: ((LocalSensitiveInformationCandidate) -> Void)?
-    let deleteSensitiveCandidate: ((LocalSensitiveInformationCandidate) async -> Void)?
-    let addSensitiveScanRule: ((SensitiveScanRuleDefinition) -> Void)?
-    let removeSensitiveScanRule: ((String) -> Void)?
+    let showSensitiveCatalogTemplate: (() async -> Void)?
     @State private var selectedSection: VaultWorkbenchSection = .overview
     @State private var writeAccessRequest: CatalogAgentWriteAccessRequest?
-    @State private var recoveryPreviewPlan: CatalogRecoveryPlan?
-    @State private var recoveryError: String?
-    @State private var isPreparingRecovery = false
 
     public init(
         status: WorkbenchStatus,
@@ -232,11 +204,9 @@ public struct VaultWorkbenchView: View {
         enableAgentService: (() async -> Void)? = nil,
         disableAgentService: (() async -> Void)? = nil,
         restartAgentService: (() async -> Void)? = nil,
-        orphanScanResult: OrphanScanResult? = nil,
-        auditEntries: [AgentAutomationAuditEntry] = [],
+        auditEntries: [CatalogSecurityAuditEntry] = [],
         savedReferences: [SecretReferenceMetadata] = [],
         sensitiveIndexURL: URL? = nil,
-        sensitiveIndexEntries: [SensitiveInformationDocumentReference] = [],
         sensitiveCatalogSnapshot: SensitiveCatalogSnapshot? = nil,
         sensitiveCatalogError: String? = nil,
         sensitiveCatalogCanAdoptV2: Bool = false,
@@ -245,21 +215,16 @@ public struct VaultWorkbenchView: View {
         catalogAgentWriteError: String? = nil,
         pendingWriteAccessRequest: CatalogAgentWriteAccessRequest? = nil,
         pendingWriteAccessQueueCount: Int = 0,
-        sensitiveScanRootURL: URL? = nil,
-        sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = [],
-        sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults,
         refreshSavedReferences: (() async -> Void)? = nil,
         chooseSensitiveIndex: (() -> Void)? = nil,
-        createSensitiveIndex: (() -> Void)? = nil,
-        refreshSensitiveIndex: (() async -> Void)? = nil,
         refreshSensitiveCatalog: (() async -> Void)? = nil,
         validateSensitiveCatalog: (() async -> Void)? = nil,
         adoptExternalV2Catalog: (() async -> Void)? = nil,
         adoptExternalV3Catalog: (() async -> Void)? = nil,
         approveExternalCatalogChange: (() async -> Void)? = nil,
-        repairSensitiveCatalog: (() async -> Void)? = nil,
-        recoveryPlan: (() async -> CatalogRecoveryPlan?)? = nil,
-        restoreRecovery: ((CatalogRecoveryPlan) async -> Bool)? = nil,
+        formatRepairPlan: CatalogFormatRepairPlan? = nil,
+        checkSensitiveCatalogFormat: (() async -> Void)? = nil,
+        repairSensitiveCatalogFormat: (() async -> Void)? = nil,
         createCatalogIndex: ((String) async -> CatalogMutationUIResult)? = nil,
         createCatalogEntry: ((String, String, String) async -> CatalogMutationUIResult)? = nil,
         commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)? = nil,
@@ -269,14 +234,7 @@ public struct VaultWorkbenchView: View {
         enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)? = nil,
         revokeCatalogAgentWrite: (() async -> Void)? = nil,
         respondToWriteAccessRequest: ((UUID, Bool) async -> Void)? = nil,
-        chooseSensitiveScanRoot: (() -> Void)? = nil,
-        scanSensitiveInformation: (() async -> Void)? = nil,
-        encryptSensitiveCandidates: ((Set<String>) async -> Void)? = nil,
-        ignoreSensitiveCandidates: ((Set<String>) async -> Void)? = nil,
-        jumpToSensitiveCandidate: ((LocalSensitiveInformationCandidate) -> Void)? = nil,
-        deleteSensitiveCandidate: ((LocalSensitiveInformationCandidate) async -> Void)? = nil,
-        addSensitiveScanRule: ((SensitiveScanRuleDefinition) -> Void)? = nil,
-        removeSensitiveScanRule: ((String) -> Void)? = nil
+        showSensitiveCatalogTemplate: (() async -> Void)? = nil
     ) {
         self.status = status
         self.agentServiceStatus = agentServiceStatus
@@ -285,11 +243,9 @@ public struct VaultWorkbenchView: View {
         self.enableAgentService = enableAgentService
         self.disableAgentService = disableAgentService
         self.restartAgentService = restartAgentService
-        self.orphanScanResult = orphanScanResult
         self.auditEntries = auditEntries
         self.savedReferences = savedReferences
         self.sensitiveIndexURL = sensitiveIndexURL
-        self.sensitiveIndexEntries = sensitiveIndexEntries
         self.sensitiveCatalogSnapshot = sensitiveCatalogSnapshot
         self.sensitiveCatalogError = sensitiveCatalogError
         self.sensitiveCatalogCanAdoptV2 = sensitiveCatalogCanAdoptV2
@@ -298,21 +254,16 @@ public struct VaultWorkbenchView: View {
         self.catalogAgentWriteError = catalogAgentWriteError
         self.pendingWriteAccessRequest = pendingWriteAccessRequest
         self.pendingWriteAccessQueueCount = pendingWriteAccessQueueCount
-        self.sensitiveScanRootURL = sensitiveScanRootURL
-        self.sensitiveScanCandidates = sensitiveScanCandidates
-        self.sensitiveScanRules = sensitiveScanRules
         self.refreshSavedReferences = refreshSavedReferences
         self.chooseSensitiveIndex = chooseSensitiveIndex
-        self.createSensitiveIndex = createSensitiveIndex
-        self.refreshSensitiveIndex = refreshSensitiveIndex
         self.refreshSensitiveCatalog = refreshSensitiveCatalog
         self.validateSensitiveCatalog = validateSensitiveCatalog
         self.adoptExternalV2Catalog = adoptExternalV2Catalog
         self.adoptExternalV3Catalog = adoptExternalV3Catalog
         self.approveExternalCatalogChange = approveExternalCatalogChange
-        self.repairSensitiveCatalog = repairSensitiveCatalog
-        self.recoveryPlan = recoveryPlan
-        self.restoreRecovery = restoreRecovery
+        self.formatRepairPlan = formatRepairPlan
+        self.checkSensitiveCatalogFormat = checkSensitiveCatalogFormat
+        self.repairSensitiveCatalogFormat = repairSensitiveCatalogFormat
         self.createCatalogIndex = createCatalogIndex
         self.createCatalogEntry = createCatalogEntry
         self.commitCatalogEntryEdit = commitCatalogEntryEdit
@@ -322,14 +273,7 @@ public struct VaultWorkbenchView: View {
         self.enableCatalogAgentWrite = enableCatalogAgentWrite
         self.revokeCatalogAgentWrite = revokeCatalogAgentWrite
         self.respondToWriteAccessRequest = respondToWriteAccessRequest
-        self.chooseSensitiveScanRoot = chooseSensitiveScanRoot
-        self.scanSensitiveInformation = scanSensitiveInformation
-        self.encryptSensitiveCandidates = encryptSensitiveCandidates
-        self.ignoreSensitiveCandidates = ignoreSensitiveCandidates
-        self.jumpToSensitiveCandidate = jumpToSensitiveCandidate
-        self.deleteSensitiveCandidate = deleteSensitiveCandidate
-        self.addSensitiveScanRule = addSensitiveScanRule
-        self.removeSensitiveScanRule = removeSensitiveScanRule
+        self.showSensitiveCatalogTemplate = showSensitiveCatalogTemplate
     }
 
     public var body: some View {
@@ -379,32 +323,6 @@ public struct VaultWorkbenchView: View {
             }
             selectSection(section)
         }
-        .sheet(item: $recoveryPreviewPlan) { plan in
-            CatalogRecoverySheet(plan: plan, restore: restoreRecovery) { success in
-                recoveryPreviewPlan = nil
-                recoveryError = success ? nil : "恢复未完成，请检查目录状态"
-                if success {
-                    Task { await refreshSensitiveCatalog?() }
-                }
-            }
-            .frame(minWidth: 640, minHeight: 430)
-        }
-    }
-
-    private func prepareRecovery() async {
-        recoveryError = nil
-        isPreparingRecovery = true
-        defer { isPreparingRecovery = false }
-        guard let recoveryPlan else {
-            recoveryError = "本机控制服务不可用，无法生成恢复预览"
-            return
-        }
-        let plan = await recoveryPlan()
-        if let plan {
-            recoveryPreviewPlan = plan
-        } else {
-            recoveryError = "没有可用的已验证恢复快照，或无法生成恢复预览"
-        }
     }
 
     private var sidebar: some View {
@@ -413,7 +331,7 @@ public struct VaultWorkbenchView: View {
 
             List(selection: $selectedSection) {
                 Section("菜单") {
-                    ForEach(VaultWorkbenchSection.regularCases) { section in
+                    ForEach(VaultWorkbenchSection.allCases) { section in
                         Label(section.title, systemImage: section.systemImage)
                             .tag(section)
                     }
@@ -490,43 +408,17 @@ public struct VaultWorkbenchView: View {
                             replaceCatalogSecret: replaceCatalogSecret,
                             applyBatch: applyCatalogBatch
                         )
-                        if sensitiveCatalogError?.contains("校验失败") == true || sensitiveCatalogError?.contains("外部修改") == true {
-                            Button("修复 / 恢复") {
-                                Task { await prepareRecovery() }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isPreparingRecovery)
-                        }
-                        if let recoveryError {
-                            Label(recoveryError, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
+                        CatalogFormatCheckCard(
+                            plan: formatRepairPlan,
+                            check: checkSensitiveCatalogFormat,
+                            repair: repairSensitiveCatalogFormat
+                        )
                     }
                     SensitiveIndexLibraryCard(
                         indexURL: sensitiveIndexURL,
-                        entries: sensitiveIndexEntries,
-                        chooseIndex: chooseSensitiveIndex,
-                        createIndex: createSensitiveIndex,
-                        refresh: refreshSensitiveIndex
+                        chooseIndex: chooseSensitiveIndex
                     )
                 }
-            }
-        case .records:
-            WorkbenchPage(title: "本地扫描", subtitle: "按本机规则找出候选；不会自动加密或写回。", systemImage: selectedSection.systemImage) {
-                LocalSensitiveScanCard(
-                    scanRootURL: sensitiveScanRootURL,
-                    candidates: sensitiveScanCandidates,
-                    rules: sensitiveScanRules,
-                    chooseRoot: chooseSensitiveScanRoot,
-                    rescan: scanSensitiveInformation,
-                    encrypt: encryptSensitiveCandidates,
-                    ignore: ignoreSensitiveCandidates,
-                    jump: jumpToSensitiveCandidate,
-                    delete: deleteSensitiveCandidate,
-                    addRule: addSensitiveScanRule,
-                    removeRule: removeSensitiveScanRule
-                )
             }
         case .automation:
             WorkbenchPage(title: "智能体自动化", subtitle: "只显示脱敏审计。密码、token、Authorization header 不会进入这里。", systemImage: selectedSection.systemImage) {
@@ -536,7 +428,7 @@ public struct VaultWorkbenchView: View {
             }
         case .security:
             WorkbenchPage(title: "安全边界", subtitle: "明确哪些动作允许、哪些动作必须由本机授权。", systemImage: selectedSection.systemImage) {
-                SecurityBoundaryPanel()
+                SecurityBoundaryPanel(showTemplate: showSensitiveCatalogTemplate)
             }
         }
     }
@@ -546,7 +438,6 @@ public struct VaultWorkbenchView: View {
             OverviewStatusStrip(status: status)
 
             LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: 12),
                 GridItem(.flexible(), spacing: 12),
                 GridItem(.flexible(), spacing: 12),
                 GridItem(.flexible(), spacing: 12)
@@ -570,16 +461,6 @@ public struct VaultWorkbenchView: View {
                     compact: true
                 ) {
                     selectSection(.secrets)
-                }
-                QuickMenuCard(
-                    title: "记录维护",
-                    detail: "检查笔记引用和本机记录是否匹配，避免孤立密文或失效引用。",
-                    systemImage: "tray.full.fill",
-                    tint: .orange,
-                    actionTitle: "查看维护",
-                    compact: true
-                ) {
-                    selectSection(.records)
                 }
             }
 
@@ -785,7 +666,7 @@ private struct QuickMenuCard: View {
 }
 
 private struct CompactAuditPreviewCard: View {
-    let entries: [AgentAutomationAuditEntry]
+    let entries: [CatalogSecurityAuditEntry]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -812,10 +693,10 @@ private struct CompactAuditPreviewCard: View {
                 VStack(spacing: 6) {
                     ForEach(entries) { entry in
                         HStack(spacing: 8) {
-                            Image(systemName: iconName(for: entry.action))
+                            Image(systemName: iconName(for: entry.operation))
                                 .foregroundStyle(.blue)
                                 .frame(width: 18)
-                            Text(entry.action)
+                            Text(entry.operation.displayName)
                                 .font(.callout.weight(.semibold))
                                 .lineLimit(1)
                             Text(entry.target)
@@ -823,7 +704,7 @@ private struct CompactAuditPreviewCard: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                             Spacer()
-                            Text(entry.result)
+                            Text(entry.result.displayName)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
@@ -839,20 +720,21 @@ private struct CompactAuditPreviewCard: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private func iconName(for action: String) -> String {
-        if action.contains("文件") {
-            return "doc.badge.gearshape"
-        }
-        if action.contains("显示") {
+    private func iconName(for operation: AuditOperation) -> String {
+        switch operation {
+        case .reveal:
             return "eye"
-        }
-        if action.contains("扫描") {
-            return "magnifyingglass"
-        }
-        if action.contains("连接") {
+        case .catalogMutation, .formatCheck, .formatRepair:
+            return "doc.badge.gearshape"
+        case .authorization:
+            return "person.badge.key"
+        case .credentialUse:
+            return "key.fill"
+        case .secureExecute:
             return "cable.connector"
+        default:
+            return "bolt.horizontal.circle"
         }
-        return "bolt.horizontal.circle"
     }
 }
 
@@ -875,12 +757,7 @@ private struct SidebarStatusStrip: View {
 
 private struct SensitiveIndexLibraryCard: View {
     let indexURL: URL?
-    let entries: [SensitiveInformationDocumentReference]
     let chooseIndex: (() -> Void)?
-    let createIndex: (() -> Void)?
-    let refresh: (() async -> Void)?
-    @State private var copiedReference: String?
-    @State private var isRefreshing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -888,21 +765,6 @@ private struct SensitiveIndexLibraryCard: View {
                 Label("目录文件选择", systemImage: "doc.badge.lock")
                     .font(.title3.weight(.semibold))
                 Spacer()
-                Text("\(entries.count) 条")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                if let refresh, indexURL != nil {
-                    Button {
-                        Task {
-                            isRefreshing = true
-                            await refresh()
-                            isRefreshing = false
-                        }
-                    } label: {
-                        Label("刷新", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(isRefreshing)
-                }
             }
 
             if let indexURL {
@@ -914,35 +776,15 @@ private struct SensitiveIndexLibraryCard: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Menu("更多", systemImage: "ellipsis.circle") {
-                        Button("更换文件…") { chooseIndex?() }
-                        Button("新建另一个敏感信息目录…") { createIndex?() }
-                    }
-                    .fixedSize()
+                    Button("更换文件…") { chooseIndex?() }
+                        .buttonStyle(.bordered)
                 }
                 .padding(10)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                if entries.isEmpty {
-                    ContentUnavailableView(
-                        "由结构化目录管理",
-                        systemImage: "doc.text",
-                        description: Text("v2/v3 分组和条目内容由上方结构化编辑器显示；旧版 v1 文件请先备份并升级后再由 SVLT 接管。")
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 170)
-                } else {
-                    VStack(spacing: 8) {
-                        ForEach(entries) { entry in
-                            SensitiveIndexRow(entry: entry, copiedReference: copiedReference) { reference in
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(reference, forType: .string)
-                                withAnimation(VaultWorkbenchMotion.interactive) {
-                                    copiedReference = reference
-                                }
-                            }
-                        }
-                    }
-                }
+                Text("分组、条目和字段由结构化编辑器管理。普通笔记扫描已移出产品界面。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             } else {
                 ContentUnavailableView {
                     Label("尚未设置敏感信息目录", systemImage: "folder.badge.questionmark")
@@ -951,16 +793,98 @@ private struct SensitiveIndexLibraryCard: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 170)
 
-                HStack {
-                    Button("选择现有敏感信息.md") { chooseIndex?() }
-                        .buttonStyle(.bordered)
-                    Button("新建敏感信息.md") { createIndex?() }
-                        .buttonStyle(.borderedProminent)
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
+                Button("选择现有敏感信息.md") { chooseIndex?() }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                Text("需要查看空白模板时，请前往“安全边界”页面；模板副本不会接管或修改用户目录。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct CatalogFormatCheckCard: View {
+    let plan: CatalogFormatRepairPlan?
+    let check: (() async -> Void)?
+    let repair: (() async -> Void)?
+    @State private var isWorking = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("格式检查", systemImage: "checkmark.shield")
+                    .font(.headline.weight(.semibold))
+                Spacer()
+                Button("检查格式") {
+                    Task {
+                        isWorking = true
+                        await check?()
+                        isWorking = false
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(isWorking || check == nil)
+            }
+
+            if let plan {
+                if plan.diagnostics.isEmpty {
+                    Label("格式正常", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Label(
+                        plan.unrepairableDiagnostics.isEmpty ? "发现可修复格式问题" : "发现不能自动修复的问题",
+                        systemImage: plan.unrepairableDiagnostics.isEmpty ? "exclamationmark.triangle" : "xmark.octagon"
+                    )
+                    .foregroundStyle(plan.unrepairableDiagnostics.isEmpty ? .orange : .red)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(plan.diagnostics) { diagnostic in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("第 \(diagnostic.line) 行\(diagnostic.column.map { "、第 \($0) 列" } ?? "") · \(diagnostic.code)")
+                                    .font(.caption.weight(.semibold))
+                                Text(diagnostic.message)
+                                    .font(.callout)
+                                if let hint = diagnostic.hint {
+                                    Text(hint)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(9)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                    }
+
+                    if plan.canRepair, let repair {
+                        Button("修复格式") {
+                            Task {
+                                isWorking = true
+                                await repair()
+                                isWorking = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isWorking)
+                    } else if !plan.unrepairableDiagnostics.isEmpty {
+                        Text("当前问题不会自动覆盖，请按上面的精确诊断处理。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text("检查当前选中的敏感信息.md；检查结果只包含安全诊断，不显示正文或密文引用。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
@@ -1253,7 +1177,7 @@ private struct SensitiveCatalogEditorCard: View {
                     }
                 }
             } else if errorMessage == nil {
-                    Text("选择或新建敏感信息.md 后，SVLT 会在这里显示分组、条目和字段。")
+                    Text("选择现有敏感信息.md 后，SVLT 会在这里显示分组、条目和字段。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -1331,161 +1255,6 @@ private struct SensitiveCatalogEditorCard: View {
             }
             pendingIndexDeletion = nil
             isWorking = false
-        }
-    }
-}
-
-private struct CatalogRecoverySheet: View {
-    let plan: CatalogRecoveryPlan
-    let restore: ((CatalogRecoveryPlan) async -> Bool)?
-    let onComplete: (Bool) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var isRestoring = false
-    @State private var errorText: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.counterclockwise.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("恢复敏感信息目录")
-                        .font(.title2.weight(.semibold))
-                    Text("预览绑定当前文件哈希与快照；提交前会再次校验")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("关闭") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            Divider()
-
-            HStack(spacing: 10) {
-                recoveryTile(title: "当前状态", value: currentStateText, tint: currentStateTint)
-                recoveryTile(title: "目标版本", value: "版本 " + String(plan.snapshotRevision), tint: .blue)
-                recoveryTile(title: "目标快照", value: "\(plan.snapshotIndexCount) 组 · \(plan.snapshotEntryCount) 条目", tint: .green)
-                recoveryTile(title: "密码引用", value: String(plan.snapshotSecretReferenceCount), tint: .orange)
-            }
-
-            if let diff = plan.semanticDiff {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("将修改 \(diff.changes.count) 项语义数据", systemImage: "doc.badge.gearshape")
-                        .font(.headline)
-                    Text(diff.touchesExistingSecret
-                        ? "包含涉及已有密码引用的变更，恢复会先进入独立高风险审批。"
-                        : "恢复涉及普通结构与元数据；恢复完成后目录重新校验。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            } else if plan.currentState == .malformed {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("当前版本无法解析", systemImage: "exclamationmark.triangle.fill")
-                        .font(.headline)
-                        .foregroundStyle(.orange)
-                    Text("只恢复最后已验证快照的结构和不透明引用，不会生成或展开明文。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("恢复前 SVLT 会保存当前版本为紧急备份，并要求本机身份认证。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("快照创建时间：\(snapshotDateText)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if let errorText {
-                Label(errorText, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            HStack {
-                Button("取消") { dismiss() }
-                    .buttonStyle(.bordered)
-                Spacer()
-                Button(isRestoring ? "恢复中…" : "验证身份并恢复") {
-                    Task { await performRestore() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isRestoring || restore == nil)
-            }
-        }
-        .padding(22)
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    private var currentStateText: String {
-        switch plan.currentState {
-        case .accepted: return "已接受"
-        case .parseable: return "可解析外部修改"
-        case .malformed: return "无法解析"
-        case .integrityMismatch: return "完整性不匹配"
-        case .missing: return "文件缺失"
-        }
-    }
-
-    private var currentStateTint: Color {
-        switch plan.currentState {
-        case .accepted: return .green
-        case .parseable: return .blue
-        default: return .orange
-        }
-    }
-
-    private var snapshotDateText: String {
-        guard let date = ISO8601DateFormatter().date(from: plan.snapshotCreatedAt) else {
-            return plan.snapshotCreatedAt
-        }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date)
-    }
-
-    private func recoveryTile(title: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(tint)
-                .lineLimit(2)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func performRestore() async {
-        guard let restore else {
-            errorText = "本机控制服务不可用，无法恢复目录"
-            return
-        }
-        isRestoring = true
-        errorText = nil
-        defer { isRestoring = false }
-        let success = await restore(plan)
-        if success {
-            onComplete(true)
-            dismiss()
-        } else {
-            errorText = "恢复失败、已取消或当前文件已变化；请重新生成预览"
         }
     }
 }
@@ -2562,326 +2331,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
     }
 }
 
-private struct SensitiveIndexRow: View {
-    let entry: SensitiveInformationDocumentReference
-    let copiedReference: String?
-    let copyReference: (String) -> Void
-
-    private var reference: String { entry.reference }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text("REF")
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundStyle(.blue)
-                .frame(width: 48, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Text(entry.title)
-                        .font(.headline)
-                    Text("引用")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(entry.source.filePath):\(entry.source.line)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-
-                Text(reference)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Text("独立加密载荷")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    Button(copiedReference == reference ? "已复制" : "复制引用") {
-                        copyReference(reference)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            }
-        }
-        .padding(12)
-        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-private struct LocalSensitiveScanCard: View {
-    let scanRootURL: URL?
-    let candidates: [LocalSensitiveInformationCandidate]
-    let rules: [SensitiveScanRuleDefinition]
-    let chooseRoot: (() -> Void)?
-    let rescan: (() async -> Void)?
-    let encrypt: ((Set<String>) async -> Void)?
-    let ignore: ((Set<String>) async -> Void)?
-    let jump: ((LocalSensitiveInformationCandidate) -> Void)?
-    let delete: ((LocalSensitiveInformationCandidate) async -> Void)?
-    let addRule: ((SensitiveScanRuleDefinition) -> Void)?
-    let removeRule: ((String) -> Void)?
-    @State private var selectedIDs: Set<String> = []
-    @State private var isWorking = false
-    @State private var candidatePendingDeletion: LocalSensitiveInformationCandidate?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Label("本机规则候选", systemImage: "magnifyingglass")
-                    .font(.title3.weight(.semibold))
-                Spacer()
-                Text("\(candidates.count) 项")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Button("选择 Markdown") { chooseRoot?() }
-                    .buttonStyle(.bordered)
-                if scanRootURL != nil {
-                    Button("重新扫描") {
-                        Task {
-                            isWorking = true
-                            await rescan?()
-                            selectedIDs = []
-                            isWorking = false
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isWorking)
-                }
-            }
-
-            if let scanRootURL {
-                Text(scanRootURL.path)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } else {
-                Text("可选择一个 .md 文件或文件夹。本机只生成候选，不会自动加密。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            if candidates.isEmpty {
-                ContentUnavailableView(
-                    scanRootURL == nil ? "尚未选择 Markdown" : "没有候选",
-                    systemImage: scanRootURL == nil ? "doc.badge.questionmark" : "checkmark.shield",
-                    description: Text(scanRootURL == nil ? "选择文件或文件夹后显示可人工确认的候选。" : "已跳过含 secret:// 的段落和已忽略的候选。")
-                )
-                .frame(maxWidth: .infinity, minHeight: 170)
-            } else {
-                HStack {
-                    Button(selectedIDs.count == candidates.count ? "取消全选" : "全选") {
-                        selectedIDs = selectedIDs.count == candidates.count ? [] : Set(candidates.map(\.id))
-                    }
-                    .buttonStyle(.bordered)
-                    Spacer()
-                    Button("加密所选 \(selectedIDs.count) 项") {
-                        let ids = selectedIDs
-                        Task {
-                            isWorking = true
-                            await encrypt?(ids)
-                            selectedIDs = []
-                            isWorking = false
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(selectedIDs.isEmpty || isWorking)
-                }
-
-                VStack(spacing: 10) {
-                    ForEach(candidates) { candidate in
-                        LocalSensitiveCandidateRow(
-                            candidate: candidate,
-                            selected: selectedIDs.contains(candidate.id)
-                        ) { enabled in
-                            if enabled {
-                                selectedIDs.insert(candidate.id)
-                            } else {
-                                selectedIDs.remove(candidate.id)
-                            }
-                        } onIgnore: {
-                            Task { await ignore?([candidate.id]) }
-                        } onJump: {
-                            jump?(candidate)
-                        } onDelete: {
-                            candidatePendingDeletion = candidate
-                        }
-                    }
-                }
-            }
-
-            SensitiveRuleEditor(
-                rules: rules,
-                addRule: addRule,
-                removeRule: removeRule
-            )
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .alert("删除命中值？", isPresented: Binding(
-            get: { candidatePendingDeletion != nil },
-            set: { if !$0 { candidatePendingDeletion = nil } }
-        ), presenting: candidatePendingDeletion) { candidate in
-            Button("删除命中值", role: .destructive) {
-                Task {
-                    isWorking = true
-                    await delete?(candidate)
-                    isWorking = false
-                    candidatePendingDeletion = nil
-                }
-            }
-            Button("取消", role: .cancel) { candidatePendingDeletion = nil }
-        } message: { candidate in
-            Text("只删除 \(candidate.source.filePath) 第 \(candidate.source.line) 行的敏感值；不会删除整段正文或加密记录。")
-        }
-    }
-}
-
-private struct LocalSensitiveCandidateRow: View {
-    let candidate: LocalSensitiveInformationCandidate
-    let selected: Bool
-    let setSelected: (Bool) -> Void
-    let onIgnore: () -> Void
-    let onJump: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Toggle("", isOn: Binding(get: { selected }, set: setSelected))
-                .labelsHidden()
-                .toggleStyle(.checkbox)
-
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Text(candidate.title)
-                        .font(.headline)
-                    Text(candidate.rule)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(candidate.risk == .high ? .red : .orange)
-                    Spacer()
-                    Text("\(candidate.source.filePath):\(candidate.source.line)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-
-                highlightedParagraph
-                    .font(.system(.callout, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                Text("普通笔记中的命中值会被替换为 secret:// 引用；managed 敏感信息.md 不会由本地扫描直接写入。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 8) {
-                    Button("跳转") { onJump() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    Button("忽略") { onIgnore() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    Button("删除命中值", role: .destructive) { onDelete() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-            }
-        }
-        .padding(12)
-        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var highlightedParagraph: Text {
-        guard let range = candidate.paragraph.range(of: candidate.matchedValue) else {
-            return Text(candidate.paragraph)
-        }
-        return Text(candidate.paragraph[..<range.lowerBound])
-            + Text(candidate.paragraph[range]).foregroundColor(.red)
-            + Text(candidate.paragraph[range.upperBound...])
-    }
-}
-
-private struct SensitiveRuleEditor: View {
-    let rules: [SensitiveScanRuleDefinition]
-    let addRule: ((SensitiveScanRuleDefinition) -> Void)?
-    let removeRule: ((String) -> Void)?
-    @State private var name = ""
-    @State private var labels = ""
-    @State private var category = "Custom"
-    @State private var risk: SensitiveCandidateRisk = .medium
-
-    private var customRules: [SensitiveScanRuleDefinition] {
-        let defaultIDs = Set(SensitiveScanRuleDefinition.defaults.map(\.id))
-        return rules.filter { !defaultIDs.contains($0.id) }
-    }
-
-    var body: some View {
-        DisclosureGroup("识别规则（\(rules.count) 条）") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("默认规则已覆盖中英文名称、: / ：/ =、任意空格和常见引号或 Markdown 包裹。新增规则按“名称 + 冒号 + 明文”匹配。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                ForEach(SensitiveScanRuleDefinition.defaults) { rule in
-                    Text("\(rule.name)：\(rule.labels.joined(separator: "、"))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-                Text("新增规则")
-                    .font(.headline)
-                TextField("规则名称，例如 NAS 凭据", text: $name)
-                TextField("名称或别名，用逗号分隔，例如 nas 密码,NAS Password", text: $labels)
-                HStack {
-                    TextField("分类", text: $category)
-                    Picker("风险", selection: $risk) {
-                        Text("高").tag(SensitiveCandidateRisk.high)
-                        Text("中").tag(SensitiveCandidateRisk.medium)
-                    }
-                    .frame(width: 120)
-                    Button("添加规则") {
-                        let aliases = labels.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == "\n" })
-                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                            .filter { !$0.isEmpty }
-                        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !aliases.isEmpty else {
-                            return
-                        }
-                        addRule?(SensitiveScanRuleDefinition(name: name, labels: aliases, category: category, risk: risk))
-                        name = ""
-                        labels = ""
-                        category = "Custom"
-                        risk = .medium
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                if !customRules.isEmpty {
-                    Divider()
-                    ForEach(customRules) { rule in
-                        HStack {
-                            Text("\(rule.name)：\(rule.labels.joined(separator: "、"))")
-                                .font(.caption)
-                            Spacer()
-                            Button("删除", role: .destructive) { removeRule?(rule.id) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                        }
-                    }
-                }
-            }
-            .padding(.top, 10)
-        }
-    }
-}
-
 private struct SavedSecretReferencesCard: View {
     let references: [SecretReferenceMetadata]
     let refresh: (() async -> Void)?
@@ -3053,6 +2502,8 @@ private extension SavedSecretReferenceRow {
 }
 
 private struct SecurityBoundaryPanel: View {
+    let showTemplate: (() async -> Void)?
+
     private let rows = [
         ("聊天里保留什么", "只保留 secret:// 引用和非敏感上下文。"),
         ("明文在哪里出现", "只在本机授权后的 App 窗口、MCP 内部 runner 或用户明确导出的本地文件中短暂出现。"),
@@ -3065,6 +2516,26 @@ private struct SecurityBoundaryPanel: View {
             Text(VaultWorkbenchCopy.securityBoundary)
                 .font(.title3.weight(.semibold))
                 .lineSpacing(4)
+
+            HStack(spacing: 12) {
+                Image(systemName: "doc.text")
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("敏感信息模板")
+                        .font(.headline)
+                    Text("打开 SVLT 随应用安装的只读模板副本；不会选择、接管或修改用户目录。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("查看敏感信息模板") {
+                    Task { await showTemplate?() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(showTemplate == nil)
+            }
+            .padding(14)
+            .background(.background.opacity(0.70), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             LazyVGrid(columns: [
                 GridItem(.flexible(), spacing: 16),
@@ -3091,7 +2562,7 @@ private struct SecurityBoundaryPanel: View {
 }
 
 private struct AgentAutomationAuditCard: View {
-    let entries: [AgentAutomationAuditEntry]
+    let entries: [CatalogSecurityAuditEntry]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -3123,16 +2594,16 @@ private struct AgentAutomationAuditCard: View {
                 VStack(spacing: 10) {
                     ForEach(entries.prefix(6)) { entry in
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: iconName(for: entry.action))
+                            Image(systemName: iconName(for: entry.operation))
                                 .foregroundStyle(.blue)
                                 .frame(width: 24)
 
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
-                                    Text(entry.action)
+                                    Text(entry.operation.displayName)
                                         .font(.headline)
                                     Spacer()
-                                    Text(entry.result)
+                                    Text(entry.result.displayName)
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(.secondary)
                                 }
@@ -3140,7 +2611,7 @@ private struct AgentAutomationAuditCard: View {
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
-                                Text("\(entry.referenceCount) 个 secret:// 引用 · \(entry.occurredAt.formatted(date: .omitted, time: .standard))")
+                                Text("\(entry.source.displayName) · \(entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
                                     .font(.caption)
                                     .foregroundStyle(.tertiary)
                             }
@@ -3156,19 +2627,20 @@ private struct AgentAutomationAuditCard: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
-    private func iconName(for action: String) -> String {
-        if action.contains("文件") {
-            return "doc.badge.gearshape"
-        }
-        if action.contains("显示") {
+    private func iconName(for operation: AuditOperation) -> String {
+        switch operation {
+        case .reveal:
             return "eye"
-        }
-        if action.contains("扫描") {
-            return "magnifyingglass"
-        }
-        if action.contains("连接") {
+        case .catalogMutation, .formatCheck, .formatRepair:
+            return "doc.badge.gearshape"
+        case .authorization:
+            return "person.badge.key"
+        case .credentialUse:
+            return "key.fill"
+        case .secureExecute:
             return "cable.connector"
+        default:
+            return "bolt.horizontal.circle"
         }
-        return "bolt.horizontal.circle"
     }
 }

@@ -18,12 +18,12 @@ public struct AppControlRequestHandler: Sendable {
             switch request {
             case .catalogStatus:
                 return .catalogStatus(try await service.catalogStatus())
-            case .repairSensitiveCatalog:
-                return .catalogStatus(try await service.repairSensitiveCatalog())
-            case .catalogRecoveryPlan:
-                return .catalogRecoveryPlan(try await service.catalogRecoveryPlan())
-            case let .catalogRestoreRecovery(plan):
-                return .catalogStatus(try await service.catalogRestoreRecovery(plan))
+            case .catalogFormatRepairPlan:
+                return .catalogFormatRepairPlan(try await service.catalogFormatRepairPlan())
+            case let .catalogRepairFormat(expectedRawSHA256):
+                return .catalogStatus(try await service.repairCatalogFormat(expectedRawSHA256: expectedRawSHA256))
+            case let .catalogRecentAuditEntries(limit):
+                return .catalogRecentAuditEntries(try await service.catalogRecentAuditEntries(limit: limit))
             case .catalogAdoptExternalV2:
                 return .catalogStatus(try await service.adoptCatalogExternalV2())
             case .catalogAdoptExternalV3:
@@ -103,7 +103,7 @@ public struct AppControlRequestHandler: Sendable {
         case .invalidCatalog: return "CATALOG_INVALID"
         case .agentWriteNotAllowed: return "CATALOG_AGENT_WRITE_NOT_ALLOWED"
         case .revisionConflict: return "CATALOG_REVISION_CONFLICT"
-        case .recoveryConflict: return "RECOVERY_CONFLICT"
+        case .formatRepairConflict: return "FORMAT_REPAIR_CONFLICT"
         case .invalidOperation: return "CATALOG_INVALID_OPERATION"
         case .approvalRequired: return "CATALOG_APPROVAL_REQUIRED"
         case .writeFailed: return "CATALOG_WRITE_FAILED"

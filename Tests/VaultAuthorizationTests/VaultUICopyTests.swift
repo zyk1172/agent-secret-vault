@@ -59,8 +59,3 @@ import Testing
     #expect(VaultUICopy.secureViewerOpenReferenceHint.english.contains("secret://"))
     #expect(VaultUICopy.secureViewerOpenReferenceHint.chinese.contains("secret://"))
 }
-
-@Test func orphanReviewCopySaysScanningDoesNotDeleteAutomatically() {
-    #expect(VaultUICopy.orphanReviewSafety.english.contains("never deletes"))
-    #expect(VaultUICopy.orphanReviewSafety.chinese.contains("不会自动删除"))
-}

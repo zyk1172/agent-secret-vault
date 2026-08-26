@@ -24,16 +24,16 @@ import VaultIPC
     #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)"))
     #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)"))
     #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)"))
-    #expect(source.contains("Button(\"退出\") { clearSensitiveState(); Task { await requestTermination() } }"))
+    #expect(source.contains("Button(\"退出\")"))
 }
 
-@Test func compactPanelPreservesTheProtectedDeleteRequestPath() throws {
+@Test func compactPanelOmitsLegacyMaintenanceAndDeleteSurface() throws {
     let source = try menuBarSource(named: "MenuBarVaultPanel.swift")
 
-    #expect(source.contains("let requestPermanentDelete: (String) -> Void"))
-    #expect(source.contains(".confirmationDialog("))
-    #expect(source.contains("requestPermanentDelete(referencePendingDeletion)"))
-    #expect(source.contains("请求高风险授权"))
+    #expect(!source.contains("orphanScanResult"))
+    #expect(!source.contains("requestPermanentDelete"))
+    #expect(!source.contains("本地扫描"))
+    #expect(!source.contains("记录维护"))
 }
 
 @Test func compactPanelAnnouncesTheSelectedNavigationItem() throws {

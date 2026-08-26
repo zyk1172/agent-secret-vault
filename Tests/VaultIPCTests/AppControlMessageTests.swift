@@ -8,17 +8,18 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 3)
     }
 
-    func repairSensitiveCatalog() async throws -> CatalogValidationResult {
-        CatalogValidationResult(status: .found, revision: 4)
+    func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult {
+        _ = expectedRawSHA256
+        return CatalogValidationResult(status: .found, revision: 4)
     }
 
-    func catalogRecoveryPlan() async throws -> CatalogRecoveryPlan? {
+    func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan? {
         nil
     }
 
-    func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async throws -> CatalogValidationResult {
-        _ = plan
-        return CatalogValidationResult(status: .found, revision: 5)
+    func catalogRecentAuditEntries(limit: Int) async throws -> [CatalogSecurityAuditEntry] {
+        _ = limit
+        return []
     }
 
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult {

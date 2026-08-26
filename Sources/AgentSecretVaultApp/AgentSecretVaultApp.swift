@@ -36,11 +36,9 @@ struct AgentSecretVaultApplication: App {
                 restartAgentService: {
                     await runtime.restartAgentService()
                 },
-                orphanScanResult: runtime.orphanScanResult,
                 auditEntries: runtime.auditEntries,
                 savedReferences: runtime.savedReferences,
                 sensitiveIndexURL: runtime.sensitiveIndexURL,
-                sensitiveIndexEntries: runtime.sensitiveIndexEntries,
                 sensitiveCatalogSnapshot: runtime.sensitiveCatalogSnapshot,
                 sensitiveCatalogError: runtime.sensitiveIndexError,
                 sensitiveCatalogCanAdoptV2: runtime.sensitiveCatalogCanAdoptV2,
@@ -49,20 +47,11 @@ struct AgentSecretVaultApplication: App {
                 catalogAgentWriteError: runtime.catalogAgentWriteError,
                 pendingWriteAccessRequest: runtime.pendingWriteAccessRequest,
                 pendingWriteAccessQueueCount: runtime.pendingWriteAccessRequestIDs.count,
-                sensitiveScanRootURL: runtime.sensitiveScanRootURL,
-                sensitiveScanCandidates: runtime.sensitiveScanCandidates,
-                sensitiveScanRules: runtime.sensitiveScanRules,
                 refreshSavedReferences: {
                     await runtime.refreshSavedReferences()
                 },
                 chooseSensitiveIndex: {
                     runtime.chooseSensitiveIndex()
-                },
-                createSensitiveIndex: {
-                    runtime.createSensitiveIndex()
-                },
-                refreshSensitiveIndex: {
-                    await runtime.refreshSensitiveIndex()
                 },
                 refreshSensitiveCatalog: {
                     await runtime.refreshSensitiveCatalog()
@@ -79,14 +68,12 @@ struct AgentSecretVaultApplication: App {
                 approveExternalCatalogChange: {
                     await runtime.approveExternalCatalogChange()
                 },
-                repairSensitiveCatalog: {
-                    await runtime.repairSensitiveCatalog()
+                formatRepairPlan: runtime.formatRepairPlan,
+                checkSensitiveCatalogFormat: {
+                    await runtime.checkSensitiveCatalogFormat()
                 },
-                recoveryPlan: {
-                    await runtime.catalogRecoveryPlan()
-                },
-                restoreRecovery: { plan in
-                    await runtime.catalogRestoreRecovery(plan)
+                repairSensitiveCatalogFormat: {
+                    await runtime.repairSensitiveCatalogFormat()
                 },
                 createCatalogIndex: { title in
                     await runtime.createCatalogIndex(title: title)
@@ -120,29 +107,8 @@ struct AgentSecretVaultApplication: App {
                 respondToWriteAccessRequest: { id, approved in
                     await runtime.respondToCatalogWriteAccessRequest(id: id, approved: approved)
                 },
-                chooseSensitiveScanRoot: {
-                    runtime.chooseSensitiveScanRoot()
-                },
-                scanSensitiveInformation: {
-                    await runtime.scanSensitiveInformation()
-                },
-                encryptSensitiveCandidates: { candidateIDs in
-                    await runtime.encryptSensitiveCandidates(candidateIDs)
-                },
-                ignoreSensitiveCandidates: { candidateIDs in
-                    await runtime.ignoreSensitiveCandidates(candidateIDs)
-                },
-                jumpToSensitiveCandidate: { candidate in
-                    runtime.jumpToSensitiveCandidate(candidate)
-                },
-                deleteSensitiveCandidate: { candidate in
-                    await runtime.deleteSensitiveCandidate(candidate)
-                },
-                addSensitiveScanRule: { rule in
-                    runtime.addSensitiveScanRule(rule)
-                },
-                removeSensitiveScanRule: { id in
-                    runtime.removeSensitiveScanRule(id)
+                showSensitiveCatalogTemplate: {
+                    await runtime.showSensitiveCatalogTemplate()
                 }
             )
                 .task {
@@ -181,46 +147,27 @@ struct AgentSecretVaultApplication: App {
                     }
                     .keyboardShortcut("2", modifiers: [.command])
 
-                    Button("记录维护") {
-                        navigateWorkbench(to: .records)
-                    }
-                    .keyboardShortcut("3", modifiers: [.command])
-
                     Button("智能体自动化") {
                         navigateWorkbench(to: .automation)
                     }
-                    .keyboardShortcut("4", modifiers: [.command])
+                    .keyboardShortcut("3", modifiers: [.command])
 
                     Button("安全边界") {
                         navigateWorkbench(to: .security)
                     }
-                    .keyboardShortcut("5", modifiers: [.command])
+                    .keyboardShortcut("4", modifiers: [.command])
                 }
             }
 
         MenuBarExtra("SVLT", systemImage: MenuBarPresentation.statusItemSymbol) {
             MenuBarVaultPanel(
                 status: runtime.status,
-                orphanScanResult: runtime.orphanScanResult,
                 auditEntries: runtime.auditEntries,
                 savedReferences: runtime.savedReferences,
-                sensitiveScanRootURL: runtime.sensitiveScanRootURL,
-                sensitiveScanCandidateCount: runtime.sensitiveScanCandidates.count,
-                chooseSensitiveScanRoot: {
-                    runtime.chooseSensitiveScanRoot()
-                },
-                rescanSensitiveInformation: {
-                    await runtime.scanSensitiveInformation()
-                },
                 refreshSavedReferences: {
                     await runtime.refreshSavedReferences()
                 },
                 clearRevealSessions: { await runtime.clearRevealSessions() },
-                requestPermanentDelete: { reference in
-                    Task {
-                        await runtime.deleteRecord(reference)
-                    }
-                },
                 requestTermination: {
                     await appDelegate.requestMenuBarTermination()
                 }
@@ -257,11 +204,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var agentServiceStatus: AgentServiceStatus = .notRegistered
     @Published var agentServiceActionInFlight = false
     @Published var agentServiceActionErrorMessage: String?
-    @Published var orphanScanResult: OrphanScanResult?
-    @Published var auditEntries: [AgentAutomationAuditEntry] = []
+    @Published var auditEntries: [CatalogSecurityAuditEntry] = []
     @Published var savedReferences: [SecretReferenceMetadata] = []
     @Published var sensitiveIndexURL: URL?
-    @Published var sensitiveIndexEntries: [SensitiveInformationDocumentReference] = []
     @Published var sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
     @Published var sensitiveCatalogCanAdoptV2 = false
     @Published var sensitiveCatalogCanAdoptV3 = false
@@ -273,20 +218,19 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     /// count to present "待处理请求 1 / 3" style queue state.
     @Published var pendingWriteAccessRequestIDs: [UUID] = []
     @Published var sensitiveIndexError: String?
-    @Published var sensitiveScanRootURL: URL?
-    @Published var sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = []
-    @Published var sensitiveScanError: String?
-    @Published var sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults + SensitiveScanRulePreferences.customRules()
+    @Published var formatRepairPlan: CatalogFormatRepairPlan?
 
     private var agentClient: VaultIPCClient?
     private var appControlClient: AppControlIPCClient?
     private let uiRevealSessionStore = RevealSessionStore(defaultTTLSeconds: 60)
     private var uiRequestObserver: NSObjectProtocol?
     private var writeAccessObserver: NSObjectProtocol?
+    private var auditObserver: NSObjectProtocol?
     private var applicationActivationObserver: NSObjectProtocol?
     private var presentedAgentSessionIDs: Set<String> = []
     private var sensitiveIndexStore: SensitiveInformationDocumentStore?
     private var sensitiveCatalogStore: SensitiveCatalogDocumentStore?
+    private let catalogTemplateStore = SensitiveCatalogTemplateStore()
     private var started = false
     private var isStarting = false
     private var readinessTask: Task<Void, Never>?
@@ -312,7 +256,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             }
             startUIRequestObserver()
             startWriteAccessObserver()
+            startSecurityAuditObserver()
             startApplicationActivationObserver()
+            try? catalogTemplateStore.ensureInstalled()
             sensitiveIndexStore = try makeSensitiveIndexStore()
             sensitiveCatalogStore = try makeSensitiveCatalogStore()
             guard let sensitiveIndexStore else {
@@ -321,19 +267,17 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             sensitiveIndexURL = await sensitiveIndexStore.selectedDocumentURL().flatMap {
                 FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
             }
-            sensitiveScanRootURL = SensitiveIndexSelectionStore.selectedScanRootURL()
             if let documentURL = await sensitiveIndexStore.selectedDocumentURL(),
                FileManager.default.fileExists(atPath: documentURL.path) {
                 // A missing previously selected file is not recreated on
-                // startup. The user must explicitly choose an existing
-                // file or use the new-catalog entry point.
+                // startup. The user must explicitly choose an existing file.
                 SensitiveIndexSelectionStore.save(documentURL)
                 persistCatalogSelection(at: documentURL)
                 sensitiveIndexURL = documentURL
             }
 
-            await refreshSensitiveIndex()
             await refreshSensitiveCatalog()
+            await refreshAuditEntries()
             await refreshPendingCatalogWriteAccessRequests()
             started = true
 
@@ -383,7 +327,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 status = try await client.workbenchStatus()
                 agentServiceStatus = .running
                 await refreshSavedReferences()
-                await refreshSensitiveIndex()
+                await refreshAuditEntries()
                 await refreshPendingCatalogWriteAccessRequests()
                 await presentPendingRevealSessions()
                 return true
@@ -552,6 +496,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             DistributedNotificationCenter.default().removeObserver(writeAccessObserver)
             self.writeAccessObserver = nil
         }
+        if let auditObserver {
+            DistributedNotificationCenter.default().removeObserver(auditObserver)
+            self.auditObserver = nil
+        }
         if let applicationActivationObserver {
             NotificationCenter.default.removeObserver(applicationActivationObserver)
             self.applicationActivationObserver = nil
@@ -606,6 +554,19 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
+    private func startSecurityAuditObserver() {
+        guard auditObserver == nil else { return }
+        auditObserver = DistributedNotificationCenter.default().addObserver(
+            forName: CatalogSecurityAuditNotifier.notificationName,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.refreshAuditEntries()
+            }
+        }
+    }
+
     private func startApplicationActivationObserver() {
         guard applicationActivationObserver == nil else { return }
         applicationActivationObserver = NotificationCenter.default.addObserver(
@@ -615,6 +576,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 await self?.refreshPendingCatalogWriteAccessRequests()
+                await self?.refreshAuditEntries()
             }
         }
     }
@@ -718,19 +680,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func deleteRecord(_ reference: String) async {
-        guard let agentClient else {
-            return
-        }
-        do {
-            try await agentClient.deleteRecord(reference)
-            await refreshSavedReferences()
-            await refreshSensitiveIndex()
-        } catch {
-            sensitiveScanError = "无法删除加密记录"
-        }
-    }
-
     func refreshSavedReferences() async {
         guard !AgentServiceRegistration.shared.isExplicitlyDisabled else {
             savedReferences = []
@@ -752,11 +701,17 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func refreshSensitiveIndex() async {
-        // Managed catalog entries are rendered only from the strict v3 Store.
-        // The ordinary-note reader remains separate and is never a catalog
-        // fallback.
-        sensitiveIndexEntries = []
+    func refreshAuditEntries() async {
+        guard let appControlClient else {
+            auditEntries = []
+            return
+        }
+        do {
+            auditEntries = try await appControlClient.catalogRecentAuditEntries(limit: 100)
+        } catch {
+            // A transient AppControl failure should not erase the last known
+            // window; startup starts with an empty window and later retries.
+        }
     }
 
     func refreshSensitiveCatalog() async {
@@ -1245,58 +1200,41 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func repairSensitiveCatalog() async {
+    func checkSensitiveCatalogFormat() async {
         guard let appControlClient else {
-            sensitiveIndexError = "本机控制服务不可用，无法修复目录"
+            sensitiveIndexError = "本机控制服务不可用，无法检查格式"
             return
         }
         do {
-            let result = try await appControlClient.repairSensitiveCatalog()
-            if result.status == .found {
-                await refreshSensitiveCatalog()
-                sensitiveIndexError = nil
-            } else {
-                sensitiveIndexError = "敏感信息目录修复未完成"
-            }
+            formatRepairPlan = try await appControlClient.catalogFormatRepairPlan()
+            sensitiveIndexError = nil
         } catch {
-            sensitiveIndexError = "敏感信息目录修复失败或已取消"
+            formatRepairPlan = nil
+            sensitiveIndexError = "敏感信息目录格式检查失败"
         }
     }
 
-    func catalogRecoveryPlan() async -> CatalogRecoveryPlan? {
+    func repairSensitiveCatalogFormat() async {
         guard let appControlClient else {
-            sensitiveIndexError = "本机控制服务不可用，无法生成恢复预览"
-            return nil
+            sensitiveIndexError = "本机控制服务不可用，无法修复格式"
+            return
+        }
+        guard let plan = formatRepairPlan, plan.canRepair else {
+            sensitiveIndexError = "当前格式没有可安全修复的问题"
+            return
         }
         do {
-            let plan = try await appControlClient.catalogRecoveryPlan()
-            if plan == nil {
-                sensitiveIndexError = "没有可用的已验证恢复快照"
+            let result = try await appControlClient.repairCatalogFormat(expectedRawSHA256: plan.currentRawSHA256)
+            guard result.status == .found else {
+                sensitiveIndexError = "格式修复未完成"
+                return
             }
-            return plan
+            formatRepairPlan = nil
+            await refreshSensitiveCatalog()
+            sensitiveIndexError = nil
         } catch {
-            sensitiveIndexError = "无法生成恢复预览"
-            return nil
-        }
-    }
-
-    func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async -> Bool {
-        guard let appControlClient else {
-            sensitiveIndexError = "本机控制服务不可用，无法恢复目录"
-            return false
-        }
-        do {
-            let result = try await appControlClient.catalogRestoreRecovery(plan)
-            if result.status == .found {
-                await refreshSensitiveCatalog()
-                sensitiveIndexError = nil
-                return true
-            }
-            sensitiveIndexError = "敏感信息目录恢复未完成"
-            return false
-        } catch {
-            sensitiveIndexError = "敏感信息目录恢复失败、已取消或版本已变化"
-            return false
+            sensitiveIndexError = "格式修复失败或文件已发生变化，请重新检查"
+            await checkSensitiveCatalogFormat()
         }
     }
 
@@ -1315,106 +1253,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         Task { await activateSensitiveIndex(at: url) }
     }
 
-    func createSensitiveIndex() {
-        // Explicit directory picking: the App never silently overwrites an
-        // existing 敏感信息.md, and the target file is always created through
-        // the Catalog Store's journaled transaction.
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.message = "选择要新建敏感信息.md 的文件夹"
-        panel.prompt = "选择位置"
-
-        guard panel.runModal() == .OK, let directory = panel.url else {
-            return
-        }
-        Task { await createSensitiveCatalogTemplate(in: directory) }
-    }
-
-    /// Creates a canonical empty 敏感信息.md through the Catalog Store,
-    /// establishes its accepted integrity state, and selects it as the active
-    /// catalog. Existing files are never overwritten.
-    private func createSensitiveCatalogTemplate(in directory: URL) async {
-        guard let sensitiveCatalogStore, let sensitiveIndexStore else {
-            return
-        }
-        let target = directory.appendingPathComponent("敏感信息.md", isDirectory: false)
-        if FileManager.default.fileExists(atPath: target.path) {
-            presentExistingTargetDialog(for: target)
-            return
-        }
-
-        let priorURL = await sensitiveIndexStore.selectedDocumentURL()
+    func showSensitiveCatalogTemplate() async {
         do {
-            try await sensitiveIndexStore.selectDocument(at: target)
-            try await sensitiveCatalogStore.selectDocument(at: target)
-            _ = try await sensitiveCatalogStore.createEmptyCatalog()
-            SensitiveIndexSelectionStore.save(target)
-            persistCatalogSelection(at: target)
-            sensitiveIndexURL = target
-            sensitiveIndexError = nil
-            await refreshSensitiveIndex()
-            await refreshSensitiveCatalog()
-            await refreshSavedReferences()
-            presentCatalogCreationSuccess()
+            let url = try catalogTemplateStore.ensureInstalled()
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
-            // Failure-atomic creation: restore the previous selection so no
-            // half-created state is adopted.
-            try? await sensitiveIndexStore.selectDocument(at: priorURL)
-            try? await sensitiveCatalogStore.selectDocument(at: priorURL)
-            sensitiveIndexError = "无法创建敏感信息目录"
-            await refreshSensitiveIndex()
-            await refreshSensitiveCatalog()
-        }
-    }
-
-    @MainActor
-    private func presentCatalogCreationSuccess() {
-        let alert = NSAlert()
-        alert.messageText = "已创建敏感信息.md"
-        alert.informativeText = "已建立空白的 SVLT Catalog v3 目录，可直接在 Obsidian 中使用。"
-        alert.addButton(withTitle: "好")
-        alert.runModal()
-    }
-
-    /// Refuse to touch an existing target. A valid managed v3 catalog can be
-    /// adopted as-is; anything else is left untouched for manual inspection.
-    @MainActor
-    private func presentExistingTargetDialog(for target: URL) {
-        let data = (try? Data(contentsOf: target)) ?? Data()
-        let report = SensitiveCatalogDocumentCodec.validateDetailed(data)
-        let isValidCatalog = report.status == .found
-
-        let alert = NSAlert()
-        alert.messageText = "此位置已经存在敏感信息.md"
-        if isValidCatalog {
-            alert.informativeText = "该文件是有效的 SVLT 敏感信息目录。可以直接使用现有目录，SVLT 不会覆盖它。"
-            alert.addButton(withTitle: "使用现有目录")
-            alert.addButton(withTitle: "选择其他位置")
-            alert.addButton(withTitle: "取消")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                Task { await activateSensitiveIndex(at: target) }
-            case .alertSecondButtonReturn:
-                createSensitiveIndex()
-            default:
-                break
-            }
-        } else {
-            alert.informativeText = "目标位置已有同名文件，但不是有效的 SVLT 敏感信息目录。为保护数据，SVLT 不会覆盖它。"
-            alert.addButton(withTitle: "选择其他位置")
-            alert.addButton(withTitle: "打开检查")
-            alert.addButton(withTitle: "取消")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                createSensitiveIndex()
-            case .alertSecondButtonReturn:
-                NSWorkspace.shared.open(target)
-            default:
-                break
-            }
+            sensitiveIndexError = "无法打开敏感信息模板"
         }
     }
 
@@ -1434,7 +1278,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             persistCatalogSelection(at: url)
             sensitiveIndexURL = url
             sensitiveIndexError = nil
-            await refreshSensitiveIndex()
             await refreshSensitiveCatalog()
             await refreshSavedReferences()
         } catch {
@@ -1444,158 +1287,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func chooseSensitiveScanRoot() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.message = "选择要本地检查的 Markdown 文件或文件夹"
-        panel.prompt = "选择"
-
-        guard panel.runModal() == .OK, let url = panel.url else {
-            return
-        }
-        sensitiveScanRootURL = url
-        SensitiveIndexSelectionStore.saveScanRoot(url)
-        Task { await scanSensitiveInformation() }
-    }
-
-    func scanSensitiveInformation() async {
-        guard let sensitiveScanRootURL else {
-            sensitiveScanCandidates = []
-            sensitiveScanError = "请先选择 Markdown 文件或文件夹"
-            return
-        }
-
-        do {
-            let scanner = LocalSensitiveInformationScanner(rules: sensitiveScanRules)
-            let ignored = SensitiveScanRulePreferences.ignoredCandidateIDs()
-            sensitiveScanCandidates = try scanner.scan(
-                target: sensitiveScanRootURL,
-                excluding: sensitiveIndexURL
-            ).filter { !ignored.contains($0.id) }
-            sensitiveScanError = nil
-        } catch {
-            sensitiveScanCandidates = []
-            sensitiveScanError = "无法读取所选 Markdown 内容"
-        }
-    }
-
-    func encryptSensitiveCandidates(_ ids: Set<String>) async {
-        guard !ids.isEmpty, let agentClient else {
-            return
-        }
-
-        let selected = sensitiveScanCandidates.filter { ids.contains($0.id) }
-        let groupedByFile = Dictionary(grouping: selected) {
-            $0.fileURL.standardizedFileURL
-        }
-        var failed = false
-
-        for fileGroup in groupedByFile.values {
-            guard let first = fileGroup.first else { continue }
-            if first.fileURL.standardizedFileURL == sensitiveIndexURL?.standardizedFileURL {
-                failed = true
-                continue
-            }
-
-            do {
-                try LocalSensitiveInformationWriter.validate(fileGroup)
-                var references: [String] = []
-                var createdReferences: [String] = []
-                for candidate in fileGroup {
-                    let reference = try await agentClient.encryptText(
-                        candidate.matchedValue,
-                        label: candidate.title,
-                        policy: policy(for: candidate)
-                    )
-                    references.append(reference)
-                    createdReferences.append(reference)
-                }
-
-                do {
-                    try LocalSensitiveInformationWriter.replace(fileGroup, references: references)
-                } catch {
-                    for reference in createdReferences {
-                        if let id = try? SecretReference(reference).id {
-                            try? await agentClient.deleteRecord("secret://\(id)")
-                        }
-                    }
-                    throw error
-                }
-            } catch {
-                failed = true
-            }
-        }
-
-        await refreshSavedReferences()
-        await scanSensitiveInformation()
-        if failed {
-            sensitiveScanError = "部分候选未写回：文件可能已修改，或 managed 敏感信息目录必须使用 Catalog 编辑器"
-        }
-    }
-
-    func ignoreSensitiveCandidates(_ ids: Set<String>) async {
-        guard !ids.isEmpty else {
-            return
-        }
-        SensitiveScanRulePreferences.ignore(ids)
-        sensitiveScanCandidates.removeAll { ids.contains($0.id) }
-    }
-
-    func deleteSensitiveCandidate(_ candidate: LocalSensitiveInformationCandidate) async {
-        guard let agentClient else {
-            return
-        }
-        do {
-            try await agentClient.authorizeHighRisk(reason: "删除本地扫描命中值")
-            try LocalSensitiveInformationWriter.remove(candidate)
-            await scanSensitiveInformation()
-        } catch {
-            sensitiveScanError = "无法删除命中值：文件可能已修改"
-        }
-    }
-
-    func jumpToSensitiveCandidate(_ candidate: LocalSensitiveInformationCandidate) {
-        var components = URLComponents()
-        components.scheme = "obsidian"
-        components.host = "svlt"
-        components.queryItems = [
-            URLQueryItem(name: "file", value: candidate.fileURL.path),
-            URLQueryItem(name: "line", value: String(candidate.source.line))
-        ]
-        if let url = components.url {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    func addSensitiveScanRule(_ rule: SensitiveScanRuleDefinition) {
-        var custom = SensitiveScanRulePreferences.customRules()
-        custom.append(rule)
-        SensitiveScanRulePreferences.saveCustomRules(custom)
-        sensitiveScanRules = SensitiveScanRuleDefinition.defaults + custom
-    }
-
-    func removeSensitiveScanRule(_ id: String) {
-        var custom = SensitiveScanRulePreferences.customRules()
-        custom.removeAll { $0.id == id }
-        SensitiveScanRulePreferences.saveCustomRules(custom)
-        sensitiveScanRules = SensitiveScanRuleDefinition.defaults + custom
-    }
-
     private func makeSensitiveIndexStore() throws -> SensitiveInformationDocumentStore {
-        let selectedScanTarget = SensitiveIndexSelectionStore.selectedScanRootURL()
-        let selectedDocument = SensitiveIndexSelectionStore.selectedURL()
-            ?? SensitiveInformationDocumentStore.defaultDocumentURL(scanTargetURL: selectedScanTarget)
-        return SensitiveInformationDocumentStore(documentURL: selectedDocument)
+        SensitiveInformationDocumentStore(documentURL: SensitiveIndexSelectionStore.selectedURL())
     }
 
     private func makeSensitiveCatalogStore() throws -> SensitiveCatalogDocumentStore {
-        let selectedScanTarget = SensitiveIndexSelectionStore.selectedScanRootURL()
-        let selectedDocument = SensitiveIndexSelectionStore.selectedURL()
-            ?? SensitiveInformationDocumentStore.defaultDocumentURL(scanTargetURL: selectedScanTarget)
-        return SensitiveCatalogDocumentStore(documentURL: selectedDocument)
+        SensitiveCatalogDocumentStore(documentURL: SensitiveIndexSelectionStore.selectedURL())
     }
 
     private func persistCatalogSelection(at url: URL) {
@@ -1605,26 +1302,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         try? SecretCatalogSelectionStore(manifestURL: manifestURL).save(documentURL: url)
     }
 
-    private func policy(for candidate: LocalSensitiveInformationCandidate) -> SecretPolicy {
-        let highRiskCategories = Set([
-            "credential", "api key", "token", "cookie", "private key", "database"
-        ])
-        if candidate.risk == .high,
-           highRiskCategories.contains(candidate.category.lowercased()) {
-            return .credential
-        }
-        // Scanner uncertainty defaults to read. Users can promote a record to
-        // credential/externalSend through the explicit policy controls instead
-        // of silently making every match a high-risk secret.
-        return .read
-    }
-
-    private func recordAudit(_ entry: AgentAutomationAuditEntry) {
-        auditEntries.insert(entry, at: 0)
-        if auditEntries.count > 20 {
-            auditEntries.removeLast(auditEntries.count - 20)
-        }
-    }
 }
 
 private enum AgentSecretVaultRuntimeError: Error {

@@ -63,6 +63,22 @@ public struct EncryptedAuditLog: Sendable {
         return try export(auditKey: auditKey)
     }
 
+    /// Returns only the bounded recent window used by the local App. Full
+    /// audit export remains unavailable on the App-control protocol.
+    public func recent(limit: Int = 100) async throws -> [AuditEvent] {
+        guard let auditKeyProvider else {
+            throw EncryptedAuditLogError.auditKeyUnavailable
+        }
+        let key = try await auditKeyProvider()
+        return try recent(limit: limit, auditKey: key)
+    }
+
+    public func recent(limit: Int = 100, masterKey: SymmetricKey) async throws -> [AuditEvent] {
+        try prepareDirectory()
+        let auditKey = try auditDataKey(masterKey: masterKey)
+        return try recent(limit: limit, auditKey: auditKey)
+    }
+
     public func prune(retentionDays: Int, masterKey: SymmetricKey) async throws {
         try prepareDirectory()
         let cutoff = now().addingTimeInterval(-Double(retentionDays) * 24 * 60 * 60)
@@ -106,6 +122,14 @@ public struct EncryptedAuditLog: Sendable {
             try open(record, using: auditKey)
         }
         return events.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private func recent(limit: Int, auditKey: SymmetricKey) throws -> [AuditEvent] {
+        let boundedLimit = min(max(limit, 1), 100)
+        let events = try eventRecords().map { _, record in
+            try open(record, using: auditKey)
+        }
+        return Array(events.sorted { $0.timestamp > $1.timestamp }.prefix(boundedLimit))
     }
 
     private func prepareDirectory() throws {

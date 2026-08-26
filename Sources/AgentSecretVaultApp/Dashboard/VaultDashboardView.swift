@@ -51,12 +51,6 @@ public struct VaultDashboardView: View {
                 systemImage: "paperplane",
                 description: "对外发送需要重新授权，并且返回内容会经过脱敏处理。"
             )
-        case .orphanReview:
-            WorkflowInfoView(
-                title: "孤立记录检查",
-                systemImage: "tray.full",
-                description: "先运行孤立记录扫描，再查看候选加密记录。扫描只会找出候选项；删除仍然需要单独完成最高风险级别授权。"
-            )
         case .securityModel:
             SecurityModelSummaryView()
         }
@@ -68,7 +62,6 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
     case encryptText
     case revealSecret
     case agentSend
-    case orphanReview
     case securityModel
 
     public var id: String { rawValue }
@@ -79,7 +72,6 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
         case .encryptText: "加密文本"
         case .revealSecret: "查看明文"
         case .agentSend: "智能体发送"
-        case .orphanReview: "记录检查"
         case .securityModel: "安全边界"
         }
     }
@@ -90,7 +82,6 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
         case .encryptText: "text.badge.lock"
         case .revealSecret: "eye"
         case .agentSend: "paperplane"
-        case .orphanReview: "tray.full"
         case .securityModel: "shield.lefthalf.filled"
         }
     }

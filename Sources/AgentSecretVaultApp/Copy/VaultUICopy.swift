@@ -74,5 +74,4 @@ public enum VaultUICopy {
     public static let secureViewerEmptyTitle = BilingualText(english: "No plaintext is currently loaded.", chinese: "当前没有载入明文。")
     public static let secureViewerOpenReferenceHint = BilingualText(english: "Open a secret:// reference to reveal it temporarily after local authorization.", chinese: "打开一个 secret:// 引用并完成本机授权后，可在此临时查看明文。")
     public static let clipboardWarning = BilingualText(english: "Copy only when you are ready to paste immediately.", chinese: "只在准备立即粘贴时复制。")
-    public static let orphanReviewSafety = BilingualText(english: "Scanning only finds candidates. It never deletes encrypted records by itself.", chinese: "扫描只会找出候选项，不会自动删除任何加密记录。")
 }

@@ -27,22 +27,22 @@ public actor AppControlIPCClient {
         return status
     }
 
-    public func repairSensitiveCatalog() async throws -> CatalogValidationResult {
-        let response = try await send(.repairSensitiveCatalog)
-        guard case let .catalogStatus(status) = response else { throw unexpected(response) }
-        return status
-    }
-
-    public func catalogRecoveryPlan() async throws -> CatalogRecoveryPlan? {
-        let response = try await send(.catalogRecoveryPlan)
-        guard case let .catalogRecoveryPlan(plan) = response else { throw unexpected(response) }
+    public func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan? {
+        let response = try await send(.catalogFormatRepairPlan)
+        guard case let .catalogFormatRepairPlan(plan) = response else { throw unexpected(response) }
         return plan
     }
 
-    public func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async throws -> CatalogValidationResult {
-        let response = try await send(.catalogRestoreRecovery(plan: plan))
+    public func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult {
+        let response = try await send(.catalogRepairFormat(expectedRawSHA256: expectedRawSHA256))
         guard case let .catalogStatus(status) = response else { throw unexpected(response) }
         return status
+    }
+
+    public func catalogRecentAuditEntries(limit: Int = 100) async throws -> [CatalogSecurityAuditEntry] {
+        let response = try await send(.catalogRecentAuditEntries(limit: limit))
+        guard case let .catalogRecentAuditEntries(entries) = response else { throw unexpected(response) }
+        return entries
     }
 
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {

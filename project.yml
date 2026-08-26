@@ -92,6 +92,9 @@ targets:
       - path: Sources/AgentSecretVaultApp
         excludes:
           - AgentSecretVaultApp.swift
+      - path: Resources/Templates
+        buildPhase: resources
+        type: folder
     dependencies:
       - target: VaultCore
       - target: VaultAuthorization
@@ -131,6 +134,9 @@ targets:
     sources:
       - Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift
       - AppAssets/Assets.xcassets
+      - path: Resources/Templates
+        buildPhase: resources
+        type: folder
       - path: Config/com.agent-secret-vault.SVLT.agent.plist
         buildPhase:
           copyFiles:

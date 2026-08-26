@@ -86,7 +86,7 @@ private func qnapDocument() -> SecretCatalogDocument {
     let rendered = try SensitiveCatalogDocumentCodec.encode(SecretCatalogDocument())
 
     let missing = rendered.replacingOccurrences(
-        of: SVLTAgentCatalogPolicy.documentPolicyBlock + "\n\n",
+        of: SVLTAgentCatalogPolicy.documentPolicyBlock + "\n",
         with: ""
     )
     #expect(throws: SecretCatalogValidationError.invalidPolicyBlock) {

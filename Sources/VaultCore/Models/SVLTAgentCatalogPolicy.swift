@@ -118,7 +118,7 @@ public enum SVLTAgentCatalogPolicy {
     35. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
     36. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
     37. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
-    38. 恢复功能只能恢复结构和 opaque 引用，不能生成或展开明文。
+    38. 格式修复只能调整格式，不能改变结构或 opaque 引用，不能生成或展开明文。
     """
 
     public static let documentPolicyDigest: String = SHA256.hash(data: Data(text.utf8))

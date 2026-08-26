@@ -53,65 +53,6 @@ private final class FailOnceCatalogIntegrityWrite: @unchecked Sendable, CatalogA
     }
 }
 
-private enum RecoveryTamperKind: Equatable {
-    case documentBackup
-    case integrityBackup
-    case journal
-}
-
-private func testModificationDate(_ url: URL) -> Date {
-    let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-    return values?.contentModificationDate ?? .distantPast
-}
-
-private final class TamperRecoveryBeforeIntegrityFailure: @unchecked Sendable, CatalogAtomicWriteFaultInjecting {
-    let root: URL
-    let kind: RecoveryTamperKind
-    private let lock = NSLock()
-    private var didTamper = false
-
-    init(root: URL, kind: RecoveryTamperKind) {
-        self.root = root
-        self.kind = kind
-    }
-
-    func beforeAtomicReplace(to url: URL) throws {
-        guard url.lastPathComponent == "catalog-integrity.json" else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        guard !didTamper else { return }
-        didTamper = true
-
-        let recoveryRoot = root.appendingPathComponent("Recovery", isDirectory: true)
-        let candidates = (FileManager.default.enumerator(at: recoveryRoot, includingPropertiesForKeys: nil)?
-            .compactMap { $0 as? URL }) ?? []
-        let target: URL?
-        switch kind {
-        case .documentBackup:
-            target = candidates
-                .filter { $0.lastPathComponent.hasPrefix("recovery-document-backup-") }
-                .max { lhs, rhs in testModificationDate(lhs) < testModificationDate(rhs) }
-        case .integrityBackup:
-            target = candidates
-                .filter { $0.lastPathComponent.hasPrefix("recovery-integrity-backup-") }
-                .max { lhs, rhs in testModificationDate(lhs) < testModificationDate(rhs) }
-        case .journal:
-            target = candidates.first { $0.lastPathComponent == "recovery-journal.json" }
-        }
-        guard let target else { throw NSError(domain: "SVLTTest", code: 2) }
-
-        if kind == .journal {
-            var object = try JSONSerialization.jsonObject(with: Data(contentsOf: target)) as? [String: Any] ?? [:]
-            object["hmac"] = "invalid"
-            let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-            try data.write(to: target, options: [.atomic])
-        } else {
-            try Data([0x00, 0x01, 0x02]).write(to: target, options: [.atomic])
-        }
-        throw NSError(domain: "SVLTTest", code: 3)
-    }
-}
-
 private func writeManagedV2WithLegacySidecar(
     document: SecretCatalogDocument,
     fixture: CatalogStoreFixture,
@@ -274,91 +215,6 @@ private func writeManagedV2WithLegacySidecar(
     #expect(!files.contains { $0.hasSuffix(".tmp") })
 }
 
-@Test func catalogStoreRefusesATamperedRecoveryDocumentBackupBeforeAnyRestore() async throws {
-    let fixture = try CatalogStoreFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let setup = SensitiveCatalogDocumentStore(documentURL: fixture.document, integrityURL: fixture.integrity, keyStore: fixture.keyStore)
-    _ = try await setup.canonicalWrite(SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A")]))
-    _ = try await setup.canonicalWrite(SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A"), SecretCatalogIndex(id: storeSecondIndexID, title: "B")]))
-    let originalDocument = try Data(contentsOf: fixture.document)
-    let originalIntegrity = try Data(contentsOf: fixture.integrity)
-    let targetDocument = try Data(SensitiveCatalogDocumentCodec.encode(
-        SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A")])
-    ).utf8)
-
-    let failing = SensitiveCatalogDocumentStore(
-        documentURL: fixture.document,
-        integrityURL: fixture.integrity,
-        keyStore: fixture.keyStore,
-        atomicWriteFaultInjector: TamperRecoveryBeforeIntegrityFailure(root: fixture.root, kind: .documentBackup)
-    )
-    let snapshots = try await setup.listRecoverySnapshots()
-    let oldSnapshot = try #require(snapshots.last)
-    let plan = try #require(try await failing.recoveryPlan(snapshotID: oldSnapshot.id))
-    await #expect(throws: SensitiveCatalogDocumentStoreError.recoveryRollbackBackupInvalid) {
-        _ = try await failing.restoreRecoverySnapshot(plan)
-    }
-    #expect(FileManager.default.fileExists(atPath: fixture.document.path))
-    #expect(try Data(contentsOf: fixture.document) == targetDocument)
-    #expect(try Data(contentsOf: fixture.document) != originalDocument)
-    #expect(try Data(contentsOf: fixture.integrity) == originalIntegrity)
-}
-
-@Test func catalogStoreRefusesATamperedRecoveryIntegrityBackupBeforeAnyRestore() async throws {
-    let fixture = try CatalogStoreFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let setup = SensitiveCatalogDocumentStore(documentURL: fixture.document, integrityURL: fixture.integrity, keyStore: fixture.keyStore)
-    _ = try await setup.canonicalWrite(SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A")]))
-    _ = try await setup.canonicalWrite(SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A"), SecretCatalogIndex(id: storeSecondIndexID, title: "B")]))
-    let originalDocument = try Data(contentsOf: fixture.document)
-    let originalIntegrity = try Data(contentsOf: fixture.integrity)
-    let targetDocument = try Data(SensitiveCatalogDocumentCodec.encode(
-        SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A")])
-    ).utf8)
-
-    let failing = SensitiveCatalogDocumentStore(
-        documentURL: fixture.document,
-        integrityURL: fixture.integrity,
-        keyStore: fixture.keyStore,
-        atomicWriteFaultInjector: TamperRecoveryBeforeIntegrityFailure(root: fixture.root, kind: .integrityBackup)
-    )
-    let snapshots = try await setup.listRecoverySnapshots()
-    let oldSnapshot = try #require(snapshots.last)
-    let plan = try #require(try await failing.recoveryPlan(snapshotID: oldSnapshot.id))
-    await #expect(throws: SensitiveCatalogDocumentStoreError.recoveryRollbackBackupInvalid) {
-        _ = try await failing.restoreRecoverySnapshot(plan)
-    }
-    #expect(FileManager.default.fileExists(atPath: fixture.document.path))
-    #expect(try Data(contentsOf: fixture.document) == targetDocument)
-    #expect(try Data(contentsOf: fixture.document) != originalDocument)
-    #expect(try Data(contentsOf: fixture.integrity) == originalIntegrity)
-}
-
-@Test func catalogStoreDoesNotRollbackWhenRecoveryJournalHMACIsTampered() async throws {
-    let fixture = try CatalogStoreFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let setup = SensitiveCatalogDocumentStore(documentURL: fixture.document, integrityURL: fixture.integrity, keyStore: fixture.keyStore)
-    _ = try await setup.canonicalWrite(SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A")]))
-    _ = try await setup.canonicalWrite(SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "A"), SecretCatalogIndex(id: storeSecondIndexID, title: "B")]))
-    let originalDocument = try Data(contentsOf: fixture.document)
-
-    let failing = SensitiveCatalogDocumentStore(
-        documentURL: fixture.document,
-        integrityURL: fixture.integrity,
-        keyStore: fixture.keyStore,
-        atomicWriteFaultInjector: TamperRecoveryBeforeIntegrityFailure(root: fixture.root, kind: .journal)
-    )
-    let snapshots = try await setup.listRecoverySnapshots()
-    let oldSnapshot = try #require(snapshots.last)
-    let plan = try #require(try await failing.recoveryPlan(snapshotID: oldSnapshot.id))
-    await #expect(throws: SensitiveCatalogDocumentStoreError.invalidIntegrity) {
-        _ = try await failing.restoreRecoverySnapshot(plan)
-    }
-    // The document write succeeded, but no rollback was authorized by the
-    // tampered journal. The original document therefore remains changed.
-    #expect(try Data(contentsOf: fixture.document) != originalDocument)
-}
-
 @Test func catalogStoreWritesCanonicalDocumentAndIntegritySidecar() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -398,6 +254,76 @@ private func writeManagedV2WithLegacySidecar(
     #expect(markdown.contains(SensitiveCatalogDocumentCodec.marker))
     #expect(markdown.contains(storeSecretReference))
     #expect(!markdown.contains("password-plaintext-canary"))
+}
+
+@Test func catalogStoreRepairsLineEndingFormatWithoutChangingAcceptedSemantics() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let index = SecretCatalogIndex(id: storeIndexID, title: "QNAP")
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: storeIndexID,
+        title: "管理后台",
+        aliases: ["NAS"],
+        fields: [
+            SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("admin")),
+            SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)
+        ],
+        notes: "保留业务备注",
+        tags: ["production"]
+    )
+    let accepted = try await store.canonicalWrite(
+        SecretCatalogDocument(indexes: [index], entries: [entry])
+    )
+    let canonicalRaw = try Data(contentsOf: fixture.document)
+    let canonicalText = try #require(String(data: canonicalRaw, encoding: .utf8))
+    let damagedRaw = Data(canonicalText.replacingOccurrences(of: "\n", with: "\r\n").utf8)
+    try damagedRaw.write(to: fixture.document, options: [.atomic])
+
+    let plan = try #require(try await store.formatRepairPlan())
+    #expect(plan.currentRawSHA256 == CatalogSemanticDigest.rawSHA256(damagedRaw))
+    #expect(plan.currentRawSHA256 != CatalogSemanticDigest.rawSHA256(canonicalRaw))
+    #expect(plan.diagnostics.contains { $0.code.hasPrefix("FORMAT_") })
+    #expect(plan.canRepair)
+    #expect(plan.semanticSHA256 == CatalogSemanticDigest.sha256(accepted.document))
+    #expect(plan.diagnostics.allSatisfy { $0.line >= 1 && $0.column != nil })
+
+    let repaired = try await store.repairFormat(expectedRawSHA256: plan.currentRawSHA256)
+    #expect(repaired.revision == accepted.revision)
+    #expect(repaired.document == accepted.document)
+    #expect(repaired.document.entries.flatMap { $0.fields }.compactMap(\.secretRef) == [storeSecretReference])
+    #expect(try Data(contentsOf: fixture.document) == canonicalRaw)
+    #expect(try await store.snapshot().integrity == .verified)
+}
+
+@Test func catalogStoreRejectsFormatRepairWhenCurrentRawChangesAfterPlanning() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    _ = try await store.canonicalWrite(
+        SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")])
+    )
+    let raw = try Data(contentsOf: fixture.document)
+    let text = try #require(String(data: raw, encoding: .utf8))
+    let damagedRaw = Data(text.replacingOccurrences(of: "\n", with: "\r\n").utf8)
+    try damagedRaw.write(to: fixture.document, options: [.atomic])
+    let plan = try #require(try await store.formatRepairPlan())
+
+    let concurrentRaw = Data(text.replacingOccurrences(of: "\n", with: "\n\n").utf8)
+    try concurrentRaw.write(to: fixture.document, options: [.atomic])
+    await #expect(throws: SensitiveCatalogDocumentStoreError.formatRepairConflict) {
+        _ = try await store.repairFormat(expectedRawSHA256: plan.currentRawSHA256)
+    }
+    #expect(try Data(contentsOf: fixture.document) == concurrentRaw)
 }
 
 @Test func catalogStoreCreatesEntryWithNotesAndNoFields() async throws {
@@ -877,7 +803,7 @@ private func writeManagedV2WithLegacySidecar(
     #expect(snapshot.document.indexes.count == 2)
 }
 
-@Test func catalogStoreRejectsUnsupportedLegacyDocumentAndCanBackupItWithoutChangingIt() async throws {
+@Test func catalogStoreRejectsUnsupportedLegacyDocumentWithoutChangingIt() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let legacy = """
@@ -899,8 +825,6 @@ private func writeManagedV2WithLegacySidecar(
     } catch {
         #expect(error as? SensitiveCatalogDocumentStoreError == .legacyCatalogUnsupported)
     }
-    let backup = try await store.backupCurrentDocument()
-    #expect(backup?.lastPathComponent.contains("敏感信息.md.bak-") == true)
     #expect(try String(contentsOf: fixture.document, encoding: .utf8) == legacy)
 }
 
@@ -1384,88 +1308,4 @@ private func writeManagedV2WithLegacySidecar(
     await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
         _ = try await store.snapshot()
     }
-}
-
-@Test func catalogStoreRecoversLastVerifiedSnapshotAfterMalformedExternalEdit() async throws {
-    let fixture = try CatalogStoreFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let store = SensitiveCatalogDocumentStore(
-        documentURL: fixture.document,
-        integrityURL: fixture.integrity,
-        keyStore: fixture.keyStore
-    )
-    let first = SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")])
-    _ = try await store.canonicalWrite(first)
-    let second = SecretCatalogDocument(
-        indexes: first.indexes + [SecretCatalogIndex(id: storeSecondIndexID, title: "临时恢复测试")],
-        entries: first.entries
-    )
-    _ = try await store.canonicalWrite(second)
-
-    #expect(try await store.listRecoverySnapshots().count >= 2)
-    let original = try String(contentsOf: fixture.document, encoding: .utf8)
-    let broken = original.replacingOccurrences(of: "<!-- /SVLT-INDEX -->", with: "", options: [], range: original.range(of: "<!-- /SVLT-INDEX -->"))
-    try broken.write(to: fixture.document, atomically: true, encoding: .utf8)
-    await #expect(throws: SensitiveCatalogDocumentStoreError.malformedDocument) {
-        _ = try await store.snapshot()
-    }
-
-    let restored = try await store.restoreLatestRecoverySnapshot()
-    #expect(restored.revision == 3)
-    #expect(restored.integrity == .verified)
-    #expect(restored.document.indexes.map(\.title) == ["QNAP", "临时恢复测试"])
-    let recoveryRoot = fixture.root.appendingPathComponent("Recovery")
-    let emergencyCount = try FileManager.default.contentsOfDirectory(
-        at: recoveryRoot,
-        includingPropertiesForKeys: nil,
-        options: []
-    ).count
-    #expect(emergencyCount >= 1)
-}
-
-@Test func catalogStoreRollsBackRecoveryWhenIntegrityCommitFails() async throws {
-    let fixture = try CatalogStoreFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let setup = SensitiveCatalogDocumentStore(
-        documentURL: fixture.document,
-        integrityURL: fixture.integrity,
-        keyStore: fixture.keyStore
-    )
-    let first = SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")])
-    _ = try await setup.canonicalWrite(first)
-    let second = SecretCatalogDocument(
-        indexes: first.indexes + [SecretCatalogIndex(id: storeSecondIndexID, title: "临时恢复测试")],
-        entries: first.entries
-    )
-    _ = try await setup.canonicalWrite(second)
-
-    let originalDocument = try Data(contentsOf: fixture.document)
-    let originalIntegrity = try Data(contentsOf: fixture.integrity)
-
-    let failing = SensitiveCatalogDocumentStore(
-        documentURL: fixture.document,
-        integrityURL: fixture.integrity,
-        keyStore: fixture.keyStore,
-        atomicWriteFaultInjector: FailOnceCatalogIntegrityWrite()
-    )
-    let plan = try #require(try await failing.recoveryPlan())
-
-    await #expect(throws: SensitiveCatalogDocumentStoreError.writeFailed) {
-        _ = try await failing.restoreRecoverySnapshot(plan)
-    }
-
-    #expect(try Data(contentsOf: fixture.document) == originalDocument)
-    #expect(try Data(contentsOf: fixture.integrity) == originalIntegrity)
-    let journalFiles = FileManager.default.subpaths(atPath: fixture.root.path)?
-        .filter { $0.contains("recovery-journal.json") } ?? []
-    #expect(journalFiles.isEmpty)
-
-    let retry = SensitiveCatalogDocumentStore(
-        documentURL: fixture.document,
-        integrityURL: fixture.integrity,
-        keyStore: fixture.keyStore
-    )
-    let restored = try await retry.restoreLatestRecoverySnapshot()
-    #expect(restored.revision == 3)
-    #expect(restored.document.indexes.map(\.title) == ["QNAP", "临时恢复测试"])
 }

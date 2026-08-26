@@ -9,7 +9,7 @@ const DEFAULT_SOCKET_PATH = `${process.env.HOME ?? ""}/Library/Application Suppo
 
 /**
  * Obsidian is deliberately a validator-only client. It may read Markdown and
- * show source-safe diagnostics, but it never encrypts, decrypts, restores, or
+ * show source-safe diagnostics, but it never encrypts, decrypts, repairs, or
  * writes a managed catalog. The Swift Core remains the sole parser and
  * mutation authority.
  */
@@ -105,7 +105,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
       if (!deleted || deleted.path !== this.trackedCatalogPath) return;
       this.activeCatalogFile = undefined;
       new Notice("SVLT：SVLT 管理的敏感信息目录文件已不存在。");
-      // Keep the relative identity. If the user later restores a file at the
+      // Keep the relative identity. If the user later recreates a file at the
       // same Vault path, it remains tracked and malformed content is still
       // validated; no replacement file is created automatically.
     }) as EventRef;

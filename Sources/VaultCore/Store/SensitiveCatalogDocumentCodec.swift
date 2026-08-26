@@ -357,16 +357,19 @@ public enum SensitiveCatalogDocumentCodec {
         try document.validate()
         var lines = [v3Marker, "# \(rootTitle)", ""]
         lines.append(contentsOf: SVLTAgentCatalogPolicy.documentPolicyBlock.components(separatedBy: "\n"))
-        lines.append("")
+        var hasUnmanagedContent = false
         if let unmanagedMarkdown {
             let normalized = try validatedUnmanagedMarkdown(unmanagedMarkdown)
             if !normalized.isEmpty {
+                lines.append("")
                 lines.append(contentsOf: normalized.components(separatedBy: "\n"))
                 lines.append("")
+                hasUnmanagedContent = true
             }
         }
         for (offset, index) in document.indexes.enumerated() {
             if offset > 0 { lines.append("") }
+            if offset == 0 && !hasUnmanagedContent { lines.append("") }
             lines.append(contentsOf: renderIndex(index, entries: document.entries.filter { $0.indexId == index.id }))
         }
         return lines.joined(separator: "\n") + "\n"
@@ -377,6 +380,134 @@ public enum SensitiveCatalogDocumentCodec {
         unmanagedMarkdown: String? = nil
     ) throws -> Data {
         Data(try encode(document, unmanagedMarkdown: unmanagedMarkdown).utf8)
+    }
+
+    /// Builds a source-safe plan for formatting-only repair. The parser first
+    /// tries a narrowly tolerant policy-block normalization, then canonicalizes
+    /// only managed marker/heading lines and line endings. It never renders the
+    /// whole document, so unmanaged Markdown and semantic ordering remain
+    /// untouched.
+    public static func formatRepairPlan(_ data: Data) -> CatalogFormatRepairPlan? {
+        let rawSHA256 = CatalogSemanticDigest.rawSHA256(data)
+        let strict = validateDetailed(data)
+        guard let text = String(data: data, encoding: .utf8) else {
+            return CatalogFormatRepairPlan(
+                currentRawSHA256: rawSHA256,
+                diagnostics: strict.diagnostics,
+                unrepairableDiagnostics: strict.diagnostics
+            )
+        }
+
+        let policyCandidate = policyFormattingCandidate(text)
+        guard let candidateText = policyCandidate.text,
+              let candidateData = candidateText.data(using: .utf8),
+              let parsed = try? parseV3(candidateText)
+        else {
+            let diagnostics = strict.diagnostics.isEmpty
+                ? [CatalogValidationDiagnostic(
+                    code: "CATALOG_FORMAT_UNSAFE",
+                    line: 1,
+                    column: 1,
+                    scope: .document,
+                    message: "目录格式无法安全修复。",
+                    hint: "请在 SVLT App 中查看精确诊断，不要自动覆盖当前文件。"
+                )]
+                : strict.diagnostics
+            return CatalogFormatRepairPlan(
+                currentRawSHA256: rawSHA256,
+                diagnostics: diagnostics,
+                unrepairableDiagnostics: diagnostics,
+                semanticSHA256: nil
+            )
+        }
+
+        let candidateFormattedData = canonicalFormattingData(candidateData, parsed: parsed)
+        var diagnostics = strict.diagnostics
+        var repairableDiagnostics: [CatalogValidationDiagnostic] = []
+        var unrepairableDiagnostics: [CatalogValidationDiagnostic] = []
+
+        if strict.status != .found {
+            let policyDiagnostics = diagnostics.filter { $0.code == "POLICY_BLOCK_INVALID" }
+            let otherDiagnostics = diagnostics.filter { $0.code != "POLICY_BLOCK_INVALID" }
+            if policyCandidate.changed && !policyDiagnostics.isEmpty {
+                repairableDiagnostics.append(contentsOf: policyDiagnostics)
+            }
+            unrepairableDiagnostics.append(contentsOf: otherDiagnostics)
+            if !policyCandidate.changed {
+                unrepairableDiagnostics.append(contentsOf: policyDiagnostics)
+            }
+        }
+
+        if candidateFormattedData != data {
+            let location = firstDifferenceLocation(
+                original: text,
+                candidate: String(data: candidateFormattedData, encoding: .utf8) ?? candidateText
+            )
+            let formatDiagnostic = CatalogValidationDiagnostic(
+                code: policyCandidate.changed ? "FORMAT_POLICY_BLOCK" : "FORMAT_CANONICAL_LAYOUT",
+                line: location.line,
+                column: location.column,
+                scope: policyCandidate.changed ? .policy : .document,
+                message: policyCandidate.changed
+                    ? "策略块存在可安全修复的格式差异。"
+                    : "目录存在可安全修复的格式差异。",
+                hint: "只修复换行、策略块、marker 和结构 heading，不改变目录语义。"
+            )
+            if !repairableDiagnostics.contains(formatDiagnostic),
+               !unrepairableDiagnostics.contains(formatDiagnostic) {
+                repairableDiagnostics.append(formatDiagnostic)
+                diagnostics.append(formatDiagnostic)
+            }
+        }
+
+        let proposedRawSHA256 = candidateFormattedData == data
+            ? nil
+            : CatalogSemanticDigest.rawSHA256(candidateFormattedData)
+        let semanticSHA256 = CatalogSemanticDigest.sha256(parsed.document)
+        if repairableDiagnostics.isEmpty && unrepairableDiagnostics.isEmpty,
+           candidateFormattedData != data {
+            let fallback = diagnostics.last ?? CatalogValidationDiagnostic(
+                code: "FORMAT_CANONICAL_LAYOUT",
+                line: 1,
+                scope: .document,
+                message: "目录存在可安全修复的格式差异。",
+                hint: "只修复格式，不改变目录语义。"
+            )
+            repairableDiagnostics = [fallback]
+        }
+
+        return CatalogFormatRepairPlan(
+            currentRawSHA256: rawSHA256,
+            diagnostics: diagnostics,
+            repairableDiagnostics: repairableDiagnostics,
+            unrepairableDiagnostics: unrepairableDiagnostics,
+            proposedRawSHA256: proposedRawSHA256,
+            semanticSHA256: semanticSHA256
+        )
+    }
+
+    /// Recomputes the same candidate represented by `formatRepairPlan`.
+    /// Callers must still compare the current raw hash while holding their
+    /// own storage lock before committing the returned bytes.
+    public static func applyingFormatRepair(to data: Data) throws -> Data {
+        guard let plan = formatRepairPlan(data), plan.canRepair else {
+            throw SecretCatalogValidationError.referenceSetChanged
+        }
+        let text = try utf8(data)
+        let policyCandidate = policyFormattingCandidate(text)
+        guard let candidateText = policyCandidate.text,
+              let candidateData = candidateText.data(using: .utf8),
+              let parsed = try? parseV3(candidateText)
+        else {
+            throw SecretCatalogValidationError.referenceSetChanged
+        }
+        let result = canonicalFormattingData(candidateData, parsed: parsed)
+        guard CatalogSemanticDigest.rawSHA256(result) == plan.proposedRawSHA256,
+              try parseV3(try utf8(result)).document == parsed.document
+        else {
+            throw SecretCatalogValidationError.referenceSetChanged
+        }
+        return result
     }
 
     /// Remove the two-entry policy catalog that was emitted by the v2 App.
@@ -566,6 +697,93 @@ public enum SensitiveCatalogDocumentCodec {
 }
 
 private extension SensitiveCatalogDocumentCodec {
+    struct PolicyFormattingCandidate {
+        let text: String?
+        let changed: Bool
+    }
+
+    static func policyFormattingCandidate(_ text: String) -> PolicyFormattingCandidate {
+        let normalized = normalizeNewlines(text)
+        var lines = normalized.components(separatedBy: "\n")
+        let begin = lines.indices.filter {
+            lines[$0].trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyBeginMarker
+        }
+        let end = lines.indices.filter {
+            lines[$0].trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyEndMarker
+        }
+        let canonicalLines = SVLTAgentCatalogPolicy.documentPolicyBlock.components(separatedBy: "\n")
+
+        if begin.count == 1, end.count == 1, let beginIndex = begin.first, let endIndex = end.first, beginIndex < endIndex {
+            let observed = Array(lines[beginIndex...endIndex])
+            let lightlyDamaged = observed.count == canonicalLines.count && zip(observed, canonicalLines).allSatisfy {
+                $0.0.trimmingCharacters(in: .whitespaces) == $0.1.trimmingCharacters(in: .whitespaces)
+            }
+            guard lightlyDamaged else {
+                return PolicyFormattingCandidate(text: normalized, changed: normalized != text)
+            }
+            guard observed != canonicalLines else {
+                return PolicyFormattingCandidate(text: normalized, changed: normalized != text)
+            }
+            lines.replaceSubrange(beginIndex...endIndex, with: canonicalLines)
+            return PolicyFormattingCandidate(text: lines.joined(separator: "\n"), changed: true)
+        }
+
+        // A completely missing policy block is repairable only when the file
+        // still has the unique managed marker and root heading. Any partial or
+        // repeated marker is ambiguous and must fail closed.
+        guard begin.isEmpty, end.isEmpty,
+              lines.first == marker,
+              lines.enumerated().filter({ offset, line in
+                  offset > 0 && line.trimmingCharacters(in: .whitespaces) == "# \(rootTitle)"
+              }).count == 1,
+              let rootIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "# \(rootTitle)" })
+        else {
+            return PolicyFormattingCandidate(text: normalized, changed: normalized != text)
+        }
+        lines.insert(contentsOf: canonicalLines + [""], at: rootIndex + 1)
+        return PolicyFormattingCandidate(text: lines.joined(separator: "\n"), changed: true)
+    }
+
+    static func canonicalFormattingData(_ data: Data, parsed: Parsed) -> Data {
+        let document = parsed.document
+        let indexes = Dictionary(uniqueKeysWithValues: document.indexes.map { ($0.id, $0) })
+        let entries = Dictionary(uniqueKeysWithValues: document.entries.map { ($0.id, $0) })
+        var patches: [Patch] = []
+
+        for (id, source) in parsed.source.indexes {
+            guard let index = indexes[id] else { continue }
+            patch(&patches, source.markerRange, Data(renderIndexMarker(index).utf8))
+            patch(&patches, source.headingRange, Data("## \(index.title)".utf8))
+        }
+        for (id, source) in parsed.source.entries {
+            guard let entry = entries[id] else { continue }
+            patch(&patches, source.markerRange, Data(renderEntryMarker(entry).utf8))
+            patch(&patches, source.headingRange, Data("### \(entry.title)".utf8))
+            for field in entry.fields {
+                guard let fieldSource = parsed.source.fields[FieldKey(id: id, key: field.key)] else { continue }
+                patch(&patches, fieldSource.markerRange, Data(renderFieldMarker(field).utf8))
+            }
+        }
+        return apply(data, patches)
+    }
+
+    static func firstDifferenceLocation(original: String, candidate: String) -> (line: Int, column: Int) {
+        let originalCharacters = Array(original)
+        let candidateCharacters = Array(candidate)
+        let sharedCount = min(originalCharacters.count, candidateCharacters.count)
+        var offset = 0
+        while offset < sharedCount, originalCharacters[offset] == candidateCharacters[offset] {
+            offset += 1
+        }
+
+        let prefix = String(originalCharacters.prefix(offset))
+        let line = prefix.reduce(into: 1) { line, character in
+            if character == "\n" { line += 1 }
+        }
+        let column = prefix.reversed().prefix { $0 != "\n" }.count + 1
+        return (line, column)
+    }
+
     struct Line {
         let text: String
         let start: Int

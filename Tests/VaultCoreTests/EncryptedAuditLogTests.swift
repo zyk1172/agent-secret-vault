@@ -95,6 +95,27 @@ import Testing
     #expect(try await log.export(masterKey: masterKey) == [thirtyDaysOld])
 }
 
+@Test func encryptedAuditLogRecentReturnsBoundedNewestFirstWindow() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let log = EncryptedAuditLog(directoryURL: directory)
+    let masterKey = SymmetricKey(data: Data(repeating: 0xC3, count: 32))
+    let first = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_100))
+    let second = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_101))
+    let third = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_102))
+
+    try await log.append(first, masterKey: masterKey)
+    try await log.append(second, masterKey: masterKey)
+    try await log.append(third, masterKey: masterKey)
+
+    #expect(try await log.recent(limit: 2, masterKey: masterKey) == [third, second])
+    #expect((try await log.recent(limit: 0, masterKey: masterKey)).count == 1)
+    #expect((try await log.recent(limit: 101, masterKey: masterKey)).count == 3)
+}
+
 private func makeAuditEvent(timestamp: Date) -> AuditEvent {
     AuditEvent(
         timestamp: timestamp,

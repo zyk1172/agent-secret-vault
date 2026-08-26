@@ -228,8 +228,8 @@ public final class AppIPCController: @unchecked Sendable {
                 code = "CATALOG_AGENT_WRITE_NOT_ALLOWED"
             case .revisionConflict:
                 code = "CATALOG_REVISION_CONFLICT"
-            case .recoveryConflict:
-                code = "RECOVERY_CONFLICT"
+            case .formatRepairConflict:
+                code = "FORMAT_REPAIR_CONFLICT"
             case .invalidOperation:
                 code = "CATALOG_INVALID_OPERATION"
             case .approvalRequired:

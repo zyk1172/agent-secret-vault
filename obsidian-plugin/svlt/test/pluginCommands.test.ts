@@ -160,7 +160,7 @@ describe("plugin commands", () => {
           column: 1,
           scope: "document",
           message: "Catalog marker 缺失。",
-          hint: "恢复第一行 marker。"
+          hint: "补齐第一行 marker。"
         }]
       }, {
         markdownFiles: [file],

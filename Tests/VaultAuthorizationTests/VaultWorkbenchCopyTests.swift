@@ -51,8 +51,7 @@ import Foundation
 }
 
 @Test func workbenchHidesLocalScanFromNormalNavigation() {
-    #expect(!VaultWorkbenchSection.regularCases.contains(.records))
-    #expect(VaultWorkbenchSection.allCases.contains(.records))
+    #expect(VaultWorkbenchSection.allCases.map(\.rawValue) == ["overview", "secrets", "automation", "security"])
 }
 
 @Test func primaryWorkbenchCopyAvoidsBilingualSeparators() {
@@ -75,7 +74,6 @@ import Foundation
     #expect(titles == [
         "控制台",
         "敏感信息",
-        "本地扫描",
         "智能体自动化",
         "安全边界"
     ])
@@ -92,16 +90,22 @@ import Foundation
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     #expect(source.contains("SensitiveIndexLibraryCard("))
-    #expect(source.contains("sensitiveIndexEntries"))
-    #expect(source.contains("独立加密载荷"))
-    #expect(source.contains("复制引用"))
+    #expect(!source.contains("sensitiveIndexEntries"))
+    #expect(source.contains("独立加密记录"))
+    #expect(source.contains("复制可用段落"))
     #expect(source.contains("尚未设置敏感信息目录"))
     #expect(source.contains("SVLT 使用合法的 Obsidian Markdown 管理账号、密码和其他敏感信息。"))
     #expect(source.contains("LazyVGrid"))
     #expect(source.contains("SensitiveCatalogGroupSheet"))
     #expect(source.contains("接纳外部 v3 文件"))
     #expect(source.contains("验证并接纳"))
-    #expect(source.contains("CatalogRecoverySheet"))
+    #expect(source.contains("CatalogFormatCheckCard("))
+    #expect(source.contains("检查格式"))
+    #expect(source.contains("修复格式"))
+    #expect(source.contains("查看敏感信息模板"))
+    #expect(!source.contains("LocalSensitiveScanCard"))
+    #expect(!source.contains("记录维护"))
+    #expect(!source.contains("恢复到版本"))
     #expect(source.contains("revealCatalogField"))
     #expect(source.contains("GridItem(.flexible(minimum: 0, maximum: .infinity)"))
     #expect(!source.contains("允许普通目录修改"))

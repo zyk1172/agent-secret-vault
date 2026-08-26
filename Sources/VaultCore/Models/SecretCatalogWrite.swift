@@ -16,9 +16,9 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
     /// body, or underlying filesystem detail.
     case writeFailed
     case agentWriteApprovalUnavailable
-    /// The recovery preview no longer describes the current file or the
-    /// selected authenticated snapshot. Callers must build a new preview.
-    case recoveryConflict
+    /// The selected formatting repair plan no longer describes the current
+    /// bytes. Callers must check the file again before retrying.
+    case formatRepairConflict
     /// The Catalog write failed and at least one newly-created opaque record
     /// could not be deleted. The ID is persisted in cleanup metadata for a
     /// later orphan scan/reconciliation; plaintext is never included.
@@ -482,6 +482,43 @@ public struct CatalogValidationReport: Codable, Equatable, Sendable {
     }
 }
 
+/// A source-safe formatting repair proposal. The plan carries only hashes,
+/// diagnostics, and their classification; the Markdown candidate stays in
+/// the Core/Store process and is never transported to MCP clients.
+public struct CatalogFormatRepairPlan: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let currentRawSHA256: String
+    public let diagnostics: [CatalogValidationDiagnostic]
+    public let repairableDiagnostics: [CatalogValidationDiagnostic]
+    public let unrepairableDiagnostics: [CatalogValidationDiagnostic]
+    public let proposedRawSHA256: String?
+    public let semanticSHA256: String?
+
+    public init(
+        id: UUID = UUID(),
+        currentRawSHA256: String,
+        diagnostics: [CatalogValidationDiagnostic],
+        repairableDiagnostics: [CatalogValidationDiagnostic] = [],
+        unrepairableDiagnostics: [CatalogValidationDiagnostic] = [],
+        proposedRawSHA256: String? = nil,
+        semanticSHA256: String? = nil
+    ) {
+        self.id = id
+        self.currentRawSHA256 = currentRawSHA256
+        self.diagnostics = diagnostics
+        self.repairableDiagnostics = repairableDiagnostics
+        self.unrepairableDiagnostics = unrepairableDiagnostics
+        self.proposedRawSHA256 = proposedRawSHA256
+        self.semanticSHA256 = semanticSHA256
+    }
+
+    public var canRepair: Bool {
+        !repairableDiagnostics.isEmpty &&
+            unrepairableDiagnostics.isEmpty &&
+            proposedRawSHA256 != nil
+    }
+}
+
 public struct CatalogValidationResult: Codable, Equatable, Sendable {
     public let status: SecretCatalogSearchStatus
     public let revision: UInt64?
@@ -504,81 +541,6 @@ public struct CatalogValidationResult: Codable, Equatable, Sendable {
         self.pendingExternalChange = pendingExternalChange
         self.filePreflight = filePreflight
         self.diagnostics = diagnostics
-    }
-}
-
-/// The state observed while preparing a recovery operation.  A recovery plan
-/// is a read-only description; it never authorizes a restore by itself.
-public enum CatalogRecoveryCurrentState: String, Codable, CaseIterable, Sendable {
-    case accepted
-    case parseable
-    case malformed
-    case integrityMismatch = "integrity-mismatch"
-    case missing
-}
-
-/// An immutable, non-secret compare-and-swap description for restoring one
-/// authenticated recovery snapshot.  The semantic diff may contain opaque
-/// `secret://` handles, but never decrypted values; UI should present counts
-/// and risk categories rather than the handles themselves.
-public struct CatalogRecoveryPlan: Codable, Equatable, Identifiable, Sendable {
-    public let id: UUID
-    public let snapshotID: String
-    public let snapshotRevision: UInt64
-    public let snapshotCreatedAt: String
-    public let snapshotRawSHA256: String
-    public let snapshotSemanticSHA256: String
-    public let currentRawSHA256: String?
-    public let currentSemanticSHA256: String?
-    public let currentAcceptedRevision: UInt64?
-    public let currentState: CatalogRecoveryCurrentState
-    public let semanticDiff: CatalogSemanticDiff?
-    public let referenceSetSHA256: String
-    public let snapshotIndexCount: Int
-    public let snapshotEntryCount: Int
-    public let snapshotSecretReferenceCount: Int
-    public let currentIndexCount: Int?
-    public let currentEntryCount: Int?
-    public let currentSecretReferenceCount: Int?
-
-    public init(
-        id: UUID = UUID(),
-        snapshotID: String,
-        snapshotRevision: UInt64,
-        snapshotCreatedAt: String,
-        snapshotRawSHA256: String,
-        snapshotSemanticSHA256: String,
-        currentRawSHA256: String?,
-        currentSemanticSHA256: String?,
-        currentAcceptedRevision: UInt64?,
-        currentState: CatalogRecoveryCurrentState,
-        semanticDiff: CatalogSemanticDiff?,
-        referenceSetSHA256: String,
-        snapshotIndexCount: Int,
-        snapshotEntryCount: Int,
-        snapshotSecretReferenceCount: Int,
-        currentIndexCount: Int? = nil,
-        currentEntryCount: Int? = nil,
-        currentSecretReferenceCount: Int? = nil
-    ) {
-        self.id = id
-        self.snapshotID = snapshotID
-        self.snapshotRevision = snapshotRevision
-        self.snapshotCreatedAt = snapshotCreatedAt
-        self.snapshotRawSHA256 = snapshotRawSHA256
-        self.snapshotSemanticSHA256 = snapshotSemanticSHA256
-        self.currentRawSHA256 = currentRawSHA256
-        self.currentSemanticSHA256 = currentSemanticSHA256
-        self.currentAcceptedRevision = currentAcceptedRevision
-        self.currentState = currentState
-        self.semanticDiff = semanticDiff
-        self.referenceSetSHA256 = referenceSetSHA256
-        self.snapshotIndexCount = snapshotIndexCount
-        self.snapshotEntryCount = snapshotEntryCount
-        self.snapshotSecretReferenceCount = snapshotSecretReferenceCount
-        self.currentIndexCount = currentIndexCount
-        self.currentEntryCount = currentEntryCount
-        self.currentSecretReferenceCount = currentSecretReferenceCount
     }
 }
 
