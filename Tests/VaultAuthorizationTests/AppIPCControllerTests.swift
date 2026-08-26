@@ -6,6 +6,26 @@ import VaultIPC
 import VaultService
 @testable import AgentSecretVaultApp
 
+@Test func pendingCatalogWriteQueueConsumesOnlyTheCurrentRequestInFIFOOrder() {
+    let requestA = UUID()
+    let requestB = UUID()
+    let requestC = UUID()
+    var queue = PendingCatalogWriteAccessQueue()
+    queue.replace(with: [requestA, requestB, requestC])
+    #expect(queue.currentID == requestA)
+    #expect(queue.count == 3)
+
+    queue.finish(requestA)
+    #expect(queue.currentID == requestB)
+    #expect(queue.ids == [requestB, requestC])
+    queue.finish(requestB)
+    #expect(queue.currentID == requestC)
+    #expect(queue.count == 1)
+    queue.finish(requestC)
+    #expect(queue.currentID == nil)
+    #expect(queue.ids.isEmpty)
+}
+
 @Test func appIPCControllerPublishesEndpointMetadataWithoutSecrets() throws {
     let metadata = AppIPCController.EndpointMetadata(socketPath: "/tmp/asv.sock")
     let encoder = JSONEncoder()

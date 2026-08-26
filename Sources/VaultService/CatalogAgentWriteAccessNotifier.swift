@@ -25,6 +25,17 @@ public struct CatalogAgentWriteAccessNotifier: Sendable {
         activateApp()
     }
 
+    /// Notifies an already-running App that the authoritative pending queue
+    /// changed. Unlike `present`, this does not activate or launch the App;
+    /// it is used for expiry/cancellation cleanup.
+    public func notifyQueueChanged(requestID: UUID) {
+        DistributedNotificationCenter.default().post(
+            name: CatalogAgentWriteAccessRequest.notificationName,
+            object: nil,
+            userInfo: ["requestID": requestID.uuidString]
+        )
+    }
+
     public static func activateSVLTApp() {
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/open")

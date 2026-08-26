@@ -4,6 +4,26 @@ import VaultCore
 import VaultIPC
 import VaultService
 
+/// Ordered, single-consumer state for MCP Catalog approval requests. The App
+/// presents only `currentID`; completing it removes exactly that ID and leaves
+/// later requests in FIFO order.
+public struct PendingCatalogWriteAccessQueue: Equatable, Sendable {
+    public private(set) var ids: [UUID] = []
+
+    public init() {}
+
+    public mutating func replace(with ids: [UUID]) {
+        self.ids = ids
+    }
+
+    public mutating func finish(_ id: UUID) {
+        ids.removeAll { $0 == id }
+    }
+
+    public var currentID: UUID? { ids.first }
+    public var count: Int { ids.count }
+}
+
 public enum VaultWorkbenchCopy {
     public static let documentationURL = URL(string: "https://github.com/zyk1172/svlt") ?? URL(fileURLWithPath: "/")
 
@@ -162,6 +182,10 @@ public struct VaultWorkbenchView: View {
     let catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus
     let catalogAgentWriteError: String?
     let pendingWriteAccessRequest: CatalogAgentWriteAccessRequest?
+    /// Total number of still-pending agent Catalog write requests. When this
+    /// exceeds one the alert title shows the queue position so the user knows
+    /// more requests follow.
+    var pendingWriteAccessQueueCount: Int = 0
     let sensitiveScanRootURL: URL?
     let sensitiveScanCandidates: [LocalSensitiveInformationCandidate]
     let sensitiveScanRules: [SensitiveScanRuleDefinition]
@@ -220,6 +244,7 @@ public struct VaultWorkbenchView: View {
         catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled),
         catalogAgentWriteError: String? = nil,
         pendingWriteAccessRequest: CatalogAgentWriteAccessRequest? = nil,
+        pendingWriteAccessQueueCount: Int = 0,
         sensitiveScanRootURL: URL? = nil,
         sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = [],
         sensitiveScanRules: [SensitiveScanRuleDefinition] = SensitiveScanRuleDefinition.defaults,
@@ -272,6 +297,7 @@ public struct VaultWorkbenchView: View {
         self.catalogAgentWriteStatus = catalogAgentWriteStatus
         self.catalogAgentWriteError = catalogAgentWriteError
         self.pendingWriteAccessRequest = pendingWriteAccessRequest
+        self.pendingWriteAccessQueueCount = pendingWriteAccessQueueCount
         self.sensitiveScanRootURL = sensitiveScanRootURL
         self.sensitiveScanCandidates = sensitiveScanCandidates
         self.sensitiveScanRules = sensitiveScanRules
@@ -324,13 +350,16 @@ public struct VaultWorkbenchView: View {
             writeAccessRequest = request
         }
         .alert(item: $writeAccessRequest) { request in
-            Alert(
-                title: Text("\(request.displayName) 请求修改敏感信息目录"),
+            let queueSuffix = pendingWriteAccessQueueCount > 1
+                ? "（待处理请求 1 / \(pendingWriteAccessQueueCount)）"
+                : ""
+            return Alert(
+                title: Text("\(request.displayName) 请求修改敏感信息目录\(queueSuffix)"),
                 message: Text("""
                     操作：\(request.intent.map { $0.operation.displayName } ?? "目录修改")
                     原因类别：\(request.reasonCategory.displayName)
                     目标版本：\(request.intent.map { String($0.acceptedRevision) } ?? "未知")
-                    请求将在短时间内失效，授权仅消费一次。
+                    请求将在短时间内失效，授权仅消费一次。每一笔操作都需要单独验证。
                     """),
                 primaryButton: .default(Text("验证并授权")) {
                     Task { await respondToWriteAccessRequest?(request.id, true) }
@@ -444,8 +473,9 @@ public struct VaultWorkbenchView: View {
         case .secrets:
             WorkbenchPage(title: "敏感信息", subtitle: "分组卡片 → 条目 → 字段；Markdown 保留为可正常编辑的 Obsidian 文件。", systemImage: selectedSection.systemImage) {
                 VStack(spacing: 14) {
-                    SensitiveCatalogEditorCard(
-                        snapshot: sensitiveCatalogSnapshot,
+                    if sensitiveIndexURL != nil || sensitiveCatalogSnapshot != nil || sensitiveCatalogError != nil {
+                        SensitiveCatalogEditorCard(
+                            snapshot: sensitiveCatalogSnapshot,
                         errorMessage: sensitiveCatalogError,
                         canAdoptExternalV2: sensitiveCatalogCanAdoptV2,
                         adoptExternalV2: adoptExternalV2Catalog,
@@ -457,20 +487,21 @@ public struct VaultWorkbenchView: View {
                         createEntry: createCatalogEntry,
                         commitEntryEdit: commitCatalogEntryEdit,
                         revealCatalogField: revealCatalogField,
-                        replaceCatalogSecret: replaceCatalogSecret,
-                        applyBatch: applyCatalogBatch
-                    )
-                    if sensitiveCatalogError?.contains("校验失败") == true || sensitiveCatalogError?.contains("外部修改") == true {
-                        Button("修复 / 恢复") {
-                            Task { await prepareRecovery() }
+                            replaceCatalogSecret: replaceCatalogSecret,
+                            applyBatch: applyCatalogBatch
+                        )
+                        if sensitiveCatalogError?.contains("校验失败") == true || sensitiveCatalogError?.contains("外部修改") == true {
+                            Button("修复 / 恢复") {
+                                Task { await prepareRecovery() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isPreparingRecovery)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isPreparingRecovery)
-                    }
-                    if let recoveryError {
-                        Label(recoveryError, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                        if let recoveryError {
+                            Label(recoveryError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
                     SensitiveIndexLibraryCard(
                         indexURL: sensitiveIndexURL,
@@ -883,8 +914,11 @@ private struct SensitiveIndexLibraryCard: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Button("更换文件") { chooseIndex?() }
-                        .buttonStyle(.bordered)
+                    Menu("更多", systemImage: "ellipsis.circle") {
+                        Button("更换文件…") { chooseIndex?() }
+                        Button("新建另一个敏感信息目录…") { createIndex?() }
+                    }
+                    .fixedSize()
                 }
                 .padding(10)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -910,15 +944,15 @@ private struct SensitiveIndexLibraryCard: View {
                     }
                 }
             } else {
-                ContentUnavailableView(
-                    "选择敏感信息.md",
-                    systemImage: "folder.badge.questionmark",
-                    description: Text("此文件是加密记录唯一来源。可选择现有文件，或在任意路径新建。")
-                )
+                ContentUnavailableView {
+                    Label("尚未设置敏感信息目录", systemImage: "folder.badge.questionmark")
+                } description: {
+                    Text("SVLT 使用合法的 Obsidian Markdown 管理账号、密码和其他敏感信息。")
+                }
                 .frame(maxWidth: .infinity, minHeight: 170)
 
                 HStack {
-                    Button("选择文件") { chooseIndex?() }
+                    Button("选择现有敏感信息.md") { chooseIndex?() }
                         .buttonStyle(.bordered)
                     Button("新建敏感信息.md") { createIndex?() }
                         .buttonStyle(.borderedProminent)

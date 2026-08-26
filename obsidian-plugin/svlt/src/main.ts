@@ -22,6 +22,18 @@ export function shouldWatchCatalogFile(classified: string, isTracked: boolean): 
   return isTracked || classified.startsWith("managed");
 }
 
+/** Only vault-relative paths are allowed in plugin-local persisted state. */
+export function isSafeTrackedCatalogPath(path: string): boolean {
+  return path.length > 0
+    && !path.startsWith("/")
+    && !path.includes("\\")
+    && !path.split("/").some((component) => component === ".." || component.length === 0);
+}
+
+type TrackedCatalogData = {
+  managedCatalogPath?: unknown;
+};
+
 type ValidationResult = Extract<Awaited<ReturnType<LocalVaultClient["request"]>>, { type: "catalogValidation" }>;
 
 export default class AgentSecretVaultPlugin extends Plugin {
@@ -35,6 +47,8 @@ export default class AgentSecretVaultPlugin extends Plugin {
     fingerprint: string;
   };
   private activeCatalogFile?: TFile;
+  /** The only persisted Catalog identity: a Vault-relative path. */
+  private trackedCatalogPath?: string;
 
   private createVaultClient(): LocalVaultClient {
     return new LocalVaultClient(DEFAULT_SOCKET_PATH);
@@ -58,6 +72,8 @@ export default class AgentSecretVaultPlugin extends Plugin {
       callback: () => this.showCatalogDiagnostics()
     });
 
+    await this.loadTrackedCatalogIdentity();
+    await this.initializeTrackedCatalogFile();
     await this.refreshStatus();
     this.registerJumpProtocol();
     this.registerCatalogWatcher();
@@ -68,11 +84,74 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 
   private registerCatalogWatcher(): void {
-    const eventRef = this.app.vault.on("modify", (file) => {
+    const modifyRef = this.app.vault.on("modify", (file) => {
       if (!(file instanceof Object) || !("extension" in file) || (file as TFile).extension !== "md") return;
       void this.validateModifiedCatalog(file as TFile);
     }) as EventRef;
-    this.registerEvent(eventRef);
+    this.registerEvent(modifyRef);
+
+    const renameRef = this.app.vault.on("rename", (file, oldPath) => {
+      const renamed = file as TFile;
+      if (!renamed || typeof oldPath !== "string" || oldPath !== this.trackedCatalogPath) return;
+      if (!isSafeTrackedCatalogPath(renamed.path)) return;
+      this.trackedCatalogPath = renamed.path;
+      this.activeCatalogFile = renamed;
+      void this.saveTrackedCatalogIdentity();
+    }) as EventRef;
+    this.registerEvent(renameRef);
+
+    const deleteRef = this.app.vault.on("delete", (file) => {
+      const deleted = file as TFile;
+      if (!deleted || deleted.path !== this.trackedCatalogPath) return;
+      this.activeCatalogFile = undefined;
+      new Notice("SVLT：SVLT 管理的敏感信息目录文件已不存在。");
+      // Keep the relative identity. If the user later restores a file at the
+      // same Vault path, it remains tracked and malformed content is still
+      // validated; no replacement file is created automatically.
+    }) as EventRef;
+    this.registerEvent(deleteRef);
+
+    const fileOpenRef = this.app.workspace.on("file-open", (file) => {
+      if (!file || !(file instanceof Object) || !("extension" in file)) return;
+      void this.validateModifiedCatalog(file as TFile);
+    }) as EventRef;
+    this.registerEvent(fileOpenRef);
+
+    const activeLeafRef = this.app.workspace.on("active-leaf-change", () => {
+      const file = this.app.workspace.getActiveFile();
+      if (file) void this.validateModifiedCatalog(file);
+    }) as EventRef;
+    this.registerEvent(activeLeafRef);
+  }
+
+  private async loadTrackedCatalogIdentity(): Promise<void> {
+    const loader = (this as unknown as { loadData?: () => Promise<unknown> }).loadData;
+    if (typeof loader !== "function") return;
+    try {
+      const data = await loader.call(this) as TrackedCatalogData | null;
+      const path = typeof data?.managedCatalogPath === "string" ? data.managedCatalogPath : undefined;
+      this.trackedCatalogPath = path && isSafeTrackedCatalogPath(path) ? path : undefined;
+    } catch {
+      this.trackedCatalogPath = undefined;
+    }
+  }
+
+  private async saveTrackedCatalogIdentity(): Promise<void> {
+    const saver = (this as unknown as { saveData?: (data: unknown) => Promise<void> }).saveData;
+    if (typeof saver !== "function") return;
+    try {
+      await saver.call(this, { managedCatalogPath: this.trackedCatalogPath ?? null });
+    } catch {
+      // Persistence is best-effort; the in-memory identity remains active.
+    }
+  }
+
+  private async initializeTrackedCatalogFile(): Promise<void> {
+    const candidate = this.trackedCatalogPath
+      ? this.app.vault.getMarkdownFiles().find((file) => file.path === this.trackedCatalogPath)
+      : this.app.workspace.getActiveFile();
+    if (!candidate) return;
+    await this.validateModifiedCatalog(candidate);
   }
 
   private async validateModifiedCatalog(file: TFile): Promise<void> {
@@ -81,9 +160,19 @@ export default class AgentSecretVaultPlugin extends Plugin {
       // A marker-bearing file is enough to trigger the Core validator. The
       // Core, not this classifier, decides whether it is actually valid.
       const classified = classifyCatalogText(text);
-      const isTracked = this.activeCatalogFile?.path === file.path;
+      const isTracked = this.trackedCatalogPath === file.path || this.activeCatalogFile?.path === file.path;
       if (!shouldWatchCatalogFile(classified, isTracked)) return;
-      if (classified.startsWith("managed")) this.activeCatalogFile = file;
+      if (classified === "managedV3") {
+        this.activeCatalogFile = file;
+        if (this.trackedCatalogPath !== file.path) {
+          this.trackedCatalogPath = file.path;
+          await this.saveTrackedCatalogIdentity();
+        }
+      } else if (isTracked) {
+        // Preserve the tracked identity after the marker or other structure
+        // has been damaged; the Core validator must report the breakage.
+        this.activeCatalogFile = file;
+      }
       this.scheduleCatalogValidation();
     } catch {
       // The explicit command remains available; watcher failures are silent.
@@ -178,7 +267,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
   private publishDiagnosticsNotice(response: ValidationResult): void {
     const diagnostics = response.diagnostics ?? [];
     const first = response.diagnostics?.[0];
-    const location = first ? `第 ${first.line} 行${first.column ? `、第 ${first.column} 列` : ""}` : "未提供位置";
+    const location = first ? formatDiagnosticLocation(first) : "未提供位置";
     const count = diagnostics.length > 0 ? `${diagnostics.length} 个格式问题` : `目录状态 ${response.catalogStatus}`;
     new Notice(`SVLT：敏感信息目录有 ${count}，第一个位于 ${location}。`);
   }
@@ -235,6 +324,13 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 }
 
+function formatDiagnosticLocation(diagnostic: CatalogValidationDiagnostic): string {
+  const start = `第 ${diagnostic.line} 行${diagnostic.column ? `、第 ${diagnostic.column} 列` : ""}`;
+  if (diagnostic.endLine == null) return start;
+  const end = `第 ${diagnostic.endLine} 行${diagnostic.endColumn ? `、第 ${diagnostic.endColumn} 列` : ""}`;
+  return `${start} 至 ${end}`;
+}
+
 function validationFingerprint(response: ValidationResult): string {
   const diagnostics = (response.diagnostics ?? [])
     .map((diagnostic) => [
@@ -276,7 +372,7 @@ class CatalogDiagnosticsModal extends Modal {
       const severity = row.createSpan({ cls: "svlt-diagnostic-severity" });
       severity.textContent = diagnostic.severity === "error" ? "🔴" : "🟠";
       const location = row.createSpan({ cls: "svlt-diagnostic-location" });
-      location.textContent = `第 ${diagnostic.line} 行${diagnostic.column ? `、第 ${diagnostic.column} 列` : ""}`;
+      location.textContent = formatDiagnosticLocation(diagnostic);
       const code = row.createSpan({ cls: "svlt-diagnostic-code" });
       code.textContent = diagnostic.code;
       const message = row.createSpan({ cls: "svlt-diagnostic-message" });

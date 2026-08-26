@@ -142,6 +142,86 @@ private func qnapDocument() -> SecretCatalogDocument {
     #expect(diagnostic.line == secondDuplicateMarker.offset + 1)
 }
 
+@Test func detailedValidationUsesTheExactFourthFieldBodySpan() throws {
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: v2IndexID, title: "QNAP")],
+        entries: [SecretCatalogEntry(
+            id: v2EntryID,
+            indexId: v2IndexID,
+            title: "登录",
+            fields: [
+                SecretCatalogFieldValue(key: "one", label: "一", type: .text, value: .string("ok")),
+                SecretCatalogFieldValue(key: "two", label: "二", type: .text, value: .string("ok")),
+                SecretCatalogFieldValue(key: "three", label: "三", type: .text, value: .string("ok")),
+                SecretCatalogFieldValue(key: "port", label: "端口", type: .number, value: .number(443))
+            ]
+        )]
+    )
+    var lines = try SensitiveCatalogDocumentCodec.encode(document).components(separatedBy: "\n")
+    let markerLine = try #require(lines.firstIndex { $0.contains("\"key\":\"port\"") })
+    let bodyLine = markerLine + 1
+    lines[bodyLine] = "- 端口：not-a-number"
+
+    let report = SensitiveCatalogDocumentCodec.validateDetailed(Data(lines.joined(separator: "\n").utf8))
+    let diagnostic = try #require(report.diagnostics.first)
+    #expect(diagnostic.code == "FIELD_VALUE_INVALID")
+    #expect(diagnostic.line == bodyLine + 1)
+    #expect(diagnostic.endLine == bodyLine + 1)
+    #expect(diagnostic.column == 1)
+}
+
+@Test func detailedValidationUsesTheExactFourthSecretFieldBodySpan() throws {
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: v2IndexID, title: "QNAP")],
+        entries: [SecretCatalogEntry(
+            id: v2EntryID,
+            indexId: v2IndexID,
+            title: "登录",
+            fields: [
+                SecretCatalogFieldValue(key: "one", label: "一", type: .text, value: .string("ok")),
+                SecretCatalogFieldValue(key: "two", label: "二", type: .text, value: .string("ok")),
+                SecretCatalogFieldValue(key: "three", label: "三", type: .text, value: .string("ok")),
+                SecretCatalogFieldValue(key: "apiKey", label: "API 密钥", type: .secret)
+            ]
+        )]
+    )
+    var lines = try SensitiveCatalogDocumentCodec.encode(document).components(separatedBy: "\n")
+    let markerLine = try #require(lines.firstIndex { $0.contains("\"key\":\"apiKey\"") })
+    let bodyLine = markerLine + 1
+    lines[bodyLine] = "- API 密钥：not-opaque-reference"
+
+    let report = SensitiveCatalogDocumentCodec.validateDetailed(Data(lines.joined(separator: "\n").utf8))
+    let diagnostic = try #require(report.diagnostics.first)
+    #expect(diagnostic.code == "SECRET_FIELD_PLAINTEXT")
+    #expect(diagnostic.line == bodyLine + 1)
+    #expect(diagnostic.endLine == bodyLine + 1)
+}
+
+@Test func detailedValidationUsesTheExactThirdEntryHeadingSpan() throws {
+    let entries = (0..<4).map { offset in
+        SecretCatalogEntry(
+            id: [v2EntryID, v2KomgaEntryID, v2PasswordReference.replacingOccurrences(of: "secret://", with: ""), v2TokenReference.replacingOccurrences(of: "secret://", with: "")][offset],
+            indexId: v2IndexID,
+            title: "条目 \(offset + 1)"
+        )
+    }
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: v2IndexID, title: "QNAP")],
+        entries: entries
+    )
+    var lines = try SensitiveCatalogDocumentCodec.encode(document).components(separatedBy: "\n")
+    let entryMarkers = lines.enumerated().filter { $0.element.contains("<!-- SVLT-ENTRY ") }
+    let thirdMarker = try #require(entryMarkers.dropFirst(2).first)
+    let badHeadingLine = thirdMarker.offset + 1
+    lines[badHeadingLine] = "## 错误层级"
+
+    let report = SensitiveCatalogDocumentCodec.validateDetailed(Data(lines.joined(separator: "\n").utf8))
+    let diagnostic = try #require(report.diagnostics.first)
+    #expect(diagnostic.code == "HEADING_INVALID")
+    #expect(diagnostic.line == badHeadingLine + 1)
+    #expect(diagnostic.endLine == badHeadingLine + 1)
+}
+
 @Test func catalogV2IsInputOnlyAndDecodesToTheSameSemanticDocument() throws {
     let document = qnapDocument()
     let rendered = try SensitiveCatalogDocumentCodec.encodeV2(document)

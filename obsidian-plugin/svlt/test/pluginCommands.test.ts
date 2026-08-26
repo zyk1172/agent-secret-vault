@@ -4,8 +4,10 @@ const obsidianMock = vi.hoisted(() => ({
   registeredCommands: [] as Array<{ id: string; name: string; callback?: () => void; editorCallback?: (editor: unknown) => void }>,
   registeredEvents: [] as unknown[],
   vaultEvents: [] as Array<{ name: string; callback: (...args: unknown[]) => void }>,
+  workspaceEvents: [] as Array<{ name: string; callback: (...args: unknown[]) => void }>,
   notices: [] as string[],
-  statusItems: [] as HTMLElement[]
+  statusItems: [] as HTMLElement[],
+  savedData: undefined as unknown
 }));
 
 vi.mock("obsidian", () => ({
@@ -45,31 +47,54 @@ vi.mock("obsidian", () => ({
     }
 
     register(callback: () => void): void {
-      callback();
+      obsidianMock.registeredEvents.push(callback);
+    }
+
+    async loadData(): Promise<unknown> {
+      return obsidianMock.savedData;
+    }
+
+    async saveData(data: unknown): Promise<void> {
+      obsidianMock.savedData = data;
     }
   }
 }));
 
 import AgentSecretVaultPlugin, { commandDefinitions, shouldWatchCatalogFile } from "../src/main";
 
-function makeApp() {
+function makeApp(options: {
+  activeFile?: unknown;
+  markdownFiles?: unknown[];
+  fileContents?: Record<string, string>;
+} = {}) {
+  const fileContents = options.fileContents ?? {};
   return {
     vault: {
       on: (name: string, callback: (...args: unknown[]) => void) => {
         const eventRef = { name, callback };
         obsidianMock.vaultEvents.push(eventRef);
         return eventRef;
-      }
+      },
+      getMarkdownFiles: () => options.markdownFiles ?? [],
+      cachedRead: async (file: { path: string }) => fileContents[file.path] ?? ""
     },
     workspace: {
-      getActiveFile: () => null,
+      on: (name: string, callback: (...args: unknown[]) => void) => {
+        const eventRef = { name, callback };
+        obsidianMock.workspaceEvents.push(eventRef);
+        return eventRef;
+      },
+      getActiveFile: () => options.activeFile ?? null,
       getLeaf: () => ({ openFile: async () => undefined, view: null })
     }
   };
 }
 
-function makePlugin(clientResponse: unknown = { type: "failure", code: "APP_UNAVAILABLE" }) {
-  const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never) as unknown as {
+function makePlugin(
+  clientResponse: unknown = { type: "failure", code: "APP_UNAVAILABLE" },
+  appOptions: Parameters<typeof makeApp>[0] = {}
+) {
+  const plugin = new AgentSecretVaultPlugin(makeApp(appOptions) as never, {} as never) as unknown as {
     createVaultClient: () => unknown;
     onload: () => Promise<void>;
   };
@@ -84,8 +109,10 @@ describe("plugin commands", () => {
     obsidianMock.registeredCommands = [];
     obsidianMock.registeredEvents = [];
     obsidianMock.vaultEvents = [];
+    obsidianMock.workspaceEvents = [];
     obsidianMock.notices = [];
     obsidianMock.statusItems = [];
+    obsidianMock.savedData = undefined;
   });
 
   it("registers validator-only commands", () => {
@@ -108,7 +135,64 @@ describe("plugin commands", () => {
     expect(shouldWatchCatalogFile("unmanaged", false)).toBe(false);
   });
 
-  it("registers commands and a modify watcher on load", async () => {
+  it("accepts only vault-relative tracked catalog paths", async () => {
+    const { isSafeTrackedCatalogPath } = await import("../src/main");
+    expect(isSafeTrackedCatalogPath("敏感信息.md")).toBe(true);
+    expect(isSafeTrackedCatalogPath("folder/敏感信息.md")).toBe(true);
+    expect(isSafeTrackedCatalogPath("/Users/example/敏感信息.md")).toBe(false);
+    expect(isSafeTrackedCatalogPath("../敏感信息.md")).toBe(false);
+    expect(isSafeTrackedCatalogPath("folder\\敏感信息.md")).toBe(false);
+  });
+
+  it("validates a tracked Catalog after a cold-start marker deletion", async () => {
+    vi.useFakeTimers();
+    try {
+      const file = { path: "敏感信息.md", extension: "md" };
+      obsidianMock.savedData = { managedCatalogPath: "敏感信息.md" };
+      const plugin = makePlugin({
+        type: "catalogValidation",
+        catalogStatus: "CATALOG_INVALID",
+        diagnostics: [{
+          id: "CATALOG_MARKER_MISSING:1:1",
+          severity: "error",
+          code: "CATALOG_MARKER_MISSING",
+          line: 1,
+          column: 1,
+          scope: "document",
+          message: "Catalog marker 缺失。",
+          hint: "恢复第一行 marker。"
+        }]
+      }, {
+        markdownFiles: [file],
+        fileContents: { "敏感信息.md": "# 已删除 marker" }
+      });
+      await plugin.onload();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(obsidianMock.notices).toContain("SVLT：敏感信息目录有 1 个格式问题，第一个位于 第 1 行、第 1 列。");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("updates the persisted tracked path after a Catalog rename", async () => {
+    obsidianMock.savedData = { managedCatalogPath: "敏感信息.md" };
+    const plugin = makePlugin({
+      type: "workbenchStatus",
+      status: {
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: null,
+        pluginConnected: true
+      }
+    });
+    await plugin.onload();
+
+    const rename = obsidianMock.vaultEvents.find((event) => event.name === "rename");
+    await rename?.callback({ path: "archive/敏感信息.md", extension: "md" }, "敏感信息.md");
+    expect(obsidianMock.savedData).toEqual({ managedCatalogPath: "archive/敏感信息.md" });
+  });
+
+  it("registers commands and all catalog lifecycle watchers on load", async () => {
     const plugin = makePlugin({
       type: "workbenchStatus",
       status: {
@@ -125,7 +209,8 @@ describe("plugin commands", () => {
       "validate-catalog",
       "show-catalog-diagnostics"
     ]);
-    expect(obsidianMock.vaultEvents.map((event) => event.name)).toEqual(["modify"]);
+    expect(obsidianMock.vaultEvents.map((event) => event.name)).toEqual(["modify", "rename", "delete"]);
+    expect(obsidianMock.workspaceEvents.map((event) => event.name)).toEqual(["file-open", "active-leaf-change"]);
   });
 
   it("updates the status bar from live workbench status", async () => {

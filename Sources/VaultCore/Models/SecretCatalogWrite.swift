@@ -401,6 +401,23 @@ public enum CatalogDiagnosticScope: String, Codable, CaseIterable, Sendable {
     case unmanaged
 }
 
+/// A source-map location produced by the Catalog v3 parser. Coordinates are
+/// one-based and refer to the original Markdown source, not a re-rendered
+/// approximation.
+public struct CatalogSourceSpan: Codable, Equatable, Sendable {
+    public let startLine: Int
+    public let startColumn: Int
+    public let endLine: Int
+    public let endColumn: Int
+
+    public init(startLine: Int, startColumn: Int, endLine: Int, endColumn: Int) {
+        self.startLine = max(1, startLine)
+        self.startColumn = max(1, startColumn)
+        self.endLine = max(self.startLine, endLine)
+        self.endColumn = max(1, endColumn)
+    }
+}
+
 /// A source-safe Catalog diagnostic. Line and column are hints for an editor;
 /// the message must never echo Markdown values, secret references, paths, or
 /// plaintext.

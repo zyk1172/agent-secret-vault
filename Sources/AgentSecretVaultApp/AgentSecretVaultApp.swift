@@ -48,6 +48,7 @@ struct AgentSecretVaultApplication: App {
                 catalogAgentWriteStatus: runtime.catalogAgentWriteStatus,
                 catalogAgentWriteError: runtime.catalogAgentWriteError,
                 pendingWriteAccessRequest: runtime.pendingWriteAccessRequest,
+                pendingWriteAccessQueueCount: runtime.pendingWriteAccessRequestIDs.count,
                 sensitiveScanRootURL: runtime.sensitiveScanRootURL,
                 sensitiveScanCandidates: runtime.sensitiveScanCandidates,
                 sensitiveScanRules: runtime.sensitiveScanRules,
@@ -267,6 +268,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var catalogAgentWriteStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled)
     @Published var catalogAgentWriteError: String?
     @Published var pendingWriteAccessRequest: CatalogAgentWriteAccessRequest?
+    /// Snapshot of every still-pending agent Catalog write request, oldest
+    /// first. The first entry is the one currently shown; the UI uses the
+    /// count to present "待处理请求 1 / 3" style queue state.
+    @Published var pendingWriteAccessRequestIDs: [UUID] = []
     @Published var sensitiveIndexError: String?
     @Published var sensitiveScanRootURL: URL?
     @Published var sensitiveScanCandidates: [LocalSensitiveInformationCandidate] = []
@@ -285,6 +290,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private var started = false
     private var isStarting = false
     private var readinessTask: Task<Void, Never>?
+    private var pendingWriteAccessQueue = PendingCatalogWriteAccessQueue()
 
     func start() async {
         guard !started, !isStarting else {
@@ -312,22 +318,18 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             guard let sensitiveIndexStore else {
                 throw AgentSecretVaultRuntimeError.notStarted
             }
-            sensitiveIndexURL = await sensitiveIndexStore.selectedDocumentURL()
+            sensitiveIndexURL = await sensitiveIndexStore.selectedDocumentURL().flatMap {
+                FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
+            }
             sensitiveScanRootURL = SensitiveIndexSelectionStore.selectedScanRootURL()
-            do {
-                if let documentURL = await sensitiveIndexStore.selectedDocumentURL() {
-                    if !FileManager.default.fileExists(atPath: documentURL.path) {
-                        _ = try await sensitiveCatalogStore?.canonicalWrite(
-                            SecretCatalogDocument(),
-                            expectedRevision: 0
-                        )
-                    }
-                    SensitiveIndexSelectionStore.save(documentURL)
-                    persistCatalogSelection(at: documentURL)
-                    sensitiveIndexURL = documentURL
-                }
-            } catch {
-                sensitiveIndexError = "无法整理敏感信息.md"
+            if let documentURL = await sensitiveIndexStore.selectedDocumentURL(),
+               FileManager.default.fileExists(atPath: documentURL.path) {
+                // A missing previously selected file is not recreated on
+                // startup. The user must explicitly choose an existing
+                // file or use the new-catalog entry point.
+                SensitiveIndexSelectionStore.save(documentURL)
+                persistCatalogSelection(at: documentURL)
+                sensitiveIndexURL = documentURL
             }
 
             await refreshSensitiveIndex()
@@ -594,10 +596,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             queue: nil
         ) { [weak self] notification in
             guard let rawID = notification.userInfo?["requestID"] as? String,
-                  let id = UUID(uuidString: rawID)
+                  UUID(uuidString: rawID) != nil
             else { return }
             Task { @MainActor [weak self] in
-                await self?.loadPendingWriteAccessRequest(id: id)
+                // Re-query the ordered queue rather than replacing the
+                // request currently displayed by this notification.
+                await self?.refreshPendingCatalogWriteAccessRequests()
             }
         }
     }
@@ -616,19 +620,56 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     private func refreshPendingCatalogWriteAccessRequests() async {
-        guard let agentClient else { return }
-        let requestIDs = (try? await agentClient.pendingCatalogWriteAccessRequestIDs()) ?? []
+        guard let agentClient else {
+            pendingWriteAccessQueue.replace(with: [])
+            pendingWriteAccessRequestIDs = []
+            return
+        }
+        guard let requestIDs = try? await agentClient.pendingCatalogWriteAccessRequestIDs() else {
+            // A transient IPC failure must not dismiss the request currently
+            // being authenticated or make another request jump its place.
+            return
+        }
+        pendingWriteAccessQueue.replace(with: requestIDs)
+        pendingWriteAccessRequestIDs = pendingWriteAccessQueue.ids
+        if requestIDs.isEmpty {
+            pendingWriteAccessRequest = nil
+            return
+        }
+        if let current = pendingWriteAccessRequest, !requestIDs.contains(current.id) {
+            pendingWriteAccessRequest = nil
+        }
         for requestID in requestIDs {
             await loadPendingWriteAccessRequest(id: requestID)
             if pendingWriteAccessRequest != nil {
                 return
             }
+            // The request vanished (expired/cancelled/consumed) while we were
+            // loading it; drop it and try the next one in the same pass.
+            pendingWriteAccessQueue.finish(requestID)
+            pendingWriteAccessRequestIDs = pendingWriteAccessQueue.ids
         }
     }
 
     private func loadPendingWriteAccessRequest(id: UUID) async {
         guard let appControlClient else { return }
+        if let current = pendingWriteAccessRequest, current.id != id {
+            return
+        }
         pendingWriteAccessRequest = try? await appControlClient.pendingCatalogWriteAccessRequest(id: id)
+    }
+
+    /// After a terminal outcome for one request (approved, denied,
+    /// authentication failed/cancelled, expired), clear it and surface the
+    /// next pending request on a later main-queue turn. A new alert is never
+    /// presented from inside the dismissing alert's callback.
+    private func scheduleNextPendingCatalogWriteAccessRefresh() {
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self, self.pendingWriteAccessRequest == nil else { return }
+            await self.refreshPendingCatalogWriteAccessRequests()
+        }
     }
 
     func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async {
@@ -640,7 +681,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         } catch {
             catalogAgentWriteError = approved ? "授权请求处理失败" : "已保留拒绝结果"
         }
+        // Every terminal path lands here: consume exactly this one request
+        // and then continue with whatever is still pending.
         pendingWriteAccessRequest = nil
+        pendingWriteAccessQueue.finish(id)
+        pendingWriteAccessRequestIDs = pendingWriteAccessQueue.ids
+        scheduleNextPendingCatalogWriteAccessRefresh()
     }
 
     private func presentPendingRevealSessions() async {
@@ -716,6 +762,14 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     func refreshSensitiveCatalog() async {
         guard let sensitiveCatalogStore else {
             sensitiveCatalogSnapshot = nil
+            return
+        }
+        guard let selectedURL = await sensitiveCatalogStore.selectedDocumentURL(),
+              FileManager.default.fileExists(atPath: selectedURL.path)
+        else {
+            sensitiveCatalogSnapshot = nil
+            sensitiveCatalogCanAdoptV2 = false
+            sensitiveCatalogCanAdoptV3 = false
             return
         }
 
@@ -1262,16 +1316,106 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func createSensitiveIndex() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.nameFieldStringValue = "敏感信息.md"
-        panel.message = "新建集中维护的敏感信息.md"
-        panel.prompt = "新建"
+        // Explicit directory picking: the App never silently overwrites an
+        // existing 敏感信息.md, and the target file is always created through
+        // the Catalog Store's journaled transaction.
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.message = "选择要新建敏感信息.md 的文件夹"
+        panel.prompt = "选择位置"
 
-        guard panel.runModal() == .OK, let url = panel.url else {
+        guard panel.runModal() == .OK, let directory = panel.url else {
             return
         }
-        Task { await activateSensitiveIndex(at: url) }
+        Task { await createSensitiveCatalogTemplate(in: directory) }
+    }
+
+    /// Creates a canonical empty 敏感信息.md through the Catalog Store,
+    /// establishes its accepted integrity state, and selects it as the active
+    /// catalog. Existing files are never overwritten.
+    private func createSensitiveCatalogTemplate(in directory: URL) async {
+        guard let sensitiveCatalogStore, let sensitiveIndexStore else {
+            return
+        }
+        let target = directory.appendingPathComponent("敏感信息.md", isDirectory: false)
+        if FileManager.default.fileExists(atPath: target.path) {
+            presentExistingTargetDialog(for: target)
+            return
+        }
+
+        let priorURL = await sensitiveIndexStore.selectedDocumentURL()
+        do {
+            try await sensitiveIndexStore.selectDocument(at: target)
+            try await sensitiveCatalogStore.selectDocument(at: target)
+            _ = try await sensitiveCatalogStore.createEmptyCatalog()
+            SensitiveIndexSelectionStore.save(target)
+            persistCatalogSelection(at: target)
+            sensitiveIndexURL = target
+            sensitiveIndexError = nil
+            await refreshSensitiveIndex()
+            await refreshSensitiveCatalog()
+            await refreshSavedReferences()
+            presentCatalogCreationSuccess()
+        } catch {
+            // Failure-atomic creation: restore the previous selection so no
+            // half-created state is adopted.
+            try? await sensitiveIndexStore.selectDocument(at: priorURL)
+            try? await sensitiveCatalogStore.selectDocument(at: priorURL)
+            sensitiveIndexError = "无法创建敏感信息目录"
+            await refreshSensitiveIndex()
+            await refreshSensitiveCatalog()
+        }
+    }
+
+    @MainActor
+    private func presentCatalogCreationSuccess() {
+        let alert = NSAlert()
+        alert.messageText = "已创建敏感信息.md"
+        alert.informativeText = "已建立空白的 SVLT Catalog v3 目录，可直接在 Obsidian 中使用。"
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
+
+    /// Refuse to touch an existing target. A valid managed v3 catalog can be
+    /// adopted as-is; anything else is left untouched for manual inspection.
+    @MainActor
+    private func presentExistingTargetDialog(for target: URL) {
+        let data = (try? Data(contentsOf: target)) ?? Data()
+        let report = SensitiveCatalogDocumentCodec.validateDetailed(data)
+        let isValidCatalog = report.status == .found
+
+        let alert = NSAlert()
+        alert.messageText = "此位置已经存在敏感信息.md"
+        if isValidCatalog {
+            alert.informativeText = "该文件是有效的 SVLT 敏感信息目录。可以直接使用现有目录，SVLT 不会覆盖它。"
+            alert.addButton(withTitle: "使用现有目录")
+            alert.addButton(withTitle: "选择其他位置")
+            alert.addButton(withTitle: "取消")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                Task { await activateSensitiveIndex(at: target) }
+            case .alertSecondButtonReturn:
+                createSensitiveIndex()
+            default:
+                break
+            }
+        } else {
+            alert.informativeText = "目标位置已有同名文件，但不是有效的 SVLT 敏感信息目录。为保护数据，SVLT 不会覆盖它。"
+            alert.addButton(withTitle: "选择其他位置")
+            alert.addButton(withTitle: "打开检查")
+            alert.addButton(withTitle: "取消")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                createSensitiveIndex()
+            case .alertSecondButtonReturn:
+                NSWorkspace.shared.open(target)
+            default:
+                break
+            }
+        }
     }
 
     private func activateSensitiveIndex(at url: URL) async {
@@ -1281,14 +1425,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let priorURL = await sensitiveIndexStore.selectedDocumentURL()
 
         do {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+            }
             try await sensitiveIndexStore.selectDocument(at: url)
             try await sensitiveCatalogStore?.selectDocument(at: url)
-            if !FileManager.default.fileExists(atPath: url.path) {
-                _ = try await sensitiveCatalogStore?.canonicalWrite(
-                    SecretCatalogDocument(),
-                    expectedRevision: 0
-                )
-            }
             SensitiveIndexSelectionStore.save(url)
             persistCatalogSelection(at: url)
             sensitiveIndexURL = url

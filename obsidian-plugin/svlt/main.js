@@ -22,6 +22,7 @@ var main_exports = {};
 __export(main_exports, {
   commandDefinitions: () => commandDefinitions,
   default: () => AgentSecretVaultPlugin,
+  isSafeTrackedCatalogPath: () => isSafeTrackedCatalogPath,
   shouldWatchCatalogFile: () => shouldWatchCatalogFile
 });
 module.exports = __toCommonJS(main_exports);
@@ -274,6 +275,9 @@ var commandDefinitions = [
 function shouldWatchCatalogFile(classified, isTracked) {
   return isTracked || classified.startsWith("managed");
 }
+function isSafeTrackedCatalogPath(path) {
+  return path.length > 0 && !path.startsWith("/") && !path.includes("\\") && !path.split("/").some((component) => component === ".." || component.length === 0);
+}
 var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   catalogValidationTimer;
   statusBar;
@@ -281,6 +285,8 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   lastNoticeFingerprint;
   latestValidation;
   activeCatalogFile;
+  /** The only persisted Catalog identity: a Vault-relative path. */
+  trackedCatalogPath;
   createVaultClient() {
     return new LocalVaultClient(DEFAULT_SOCKET_PATH);
   }
@@ -300,6 +306,8 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
       name: "\u67E5\u770B SVLT \u76EE\u5F55\u8BCA\u65AD",
       callback: () => this.showCatalogDiagnostics()
     });
+    await this.loadTrackedCatalogIdentity();
+    await this.initializeTrackedCatalogFile();
     await this.refreshStatus();
     this.registerJumpProtocol();
     this.registerCatalogWatcher();
@@ -309,19 +317,77 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
     });
   }
   registerCatalogWatcher() {
-    const eventRef = this.app.vault.on("modify", (file) => {
+    const modifyRef = this.app.vault.on("modify", (file) => {
       if (!(file instanceof Object) || !("extension" in file) || file.extension !== "md") return;
       void this.validateModifiedCatalog(file);
     });
-    this.registerEvent(eventRef);
+    this.registerEvent(modifyRef);
+    const renameRef = this.app.vault.on("rename", (file, oldPath) => {
+      const renamed = file;
+      if (!renamed || typeof oldPath !== "string" || oldPath !== this.trackedCatalogPath) return;
+      if (!isSafeTrackedCatalogPath(renamed.path)) return;
+      this.trackedCatalogPath = renamed.path;
+      this.activeCatalogFile = renamed;
+      void this.saveTrackedCatalogIdentity();
+    });
+    this.registerEvent(renameRef);
+    const deleteRef = this.app.vault.on("delete", (file) => {
+      const deleted = file;
+      if (!deleted || deleted.path !== this.trackedCatalogPath) return;
+      this.activeCatalogFile = void 0;
+      new import_obsidian.Notice("SVLT\uFF1ASVLT \u7BA1\u7406\u7684\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728\u3002");
+    });
+    this.registerEvent(deleteRef);
+    const fileOpenRef = this.app.workspace.on("file-open", (file) => {
+      if (!file || !(file instanceof Object) || !("extension" in file)) return;
+      void this.validateModifiedCatalog(file);
+    });
+    this.registerEvent(fileOpenRef);
+    const activeLeafRef = this.app.workspace.on("active-leaf-change", () => {
+      const file = this.app.workspace.getActiveFile();
+      if (file) void this.validateModifiedCatalog(file);
+    });
+    this.registerEvent(activeLeafRef);
+  }
+  async loadTrackedCatalogIdentity() {
+    const loader = this.loadData;
+    if (typeof loader !== "function") return;
+    try {
+      const data = await loader.call(this);
+      const path = typeof data?.managedCatalogPath === "string" ? data.managedCatalogPath : void 0;
+      this.trackedCatalogPath = path && isSafeTrackedCatalogPath(path) ? path : void 0;
+    } catch {
+      this.trackedCatalogPath = void 0;
+    }
+  }
+  async saveTrackedCatalogIdentity() {
+    const saver = this.saveData;
+    if (typeof saver !== "function") return;
+    try {
+      await saver.call(this, { managedCatalogPath: this.trackedCatalogPath ?? null });
+    } catch {
+    }
+  }
+  async initializeTrackedCatalogFile() {
+    const candidate = this.trackedCatalogPath ? this.app.vault.getMarkdownFiles().find((file) => file.path === this.trackedCatalogPath) : this.app.workspace.getActiveFile();
+    if (!candidate) return;
+    await this.validateModifiedCatalog(candidate);
   }
   async validateModifiedCatalog(file) {
     try {
       const text = await this.app.vault.cachedRead(file);
       const classified = classifyCatalogText(text);
-      const isTracked = this.activeCatalogFile?.path === file.path;
+      const isTracked = this.trackedCatalogPath === file.path || this.activeCatalogFile?.path === file.path;
       if (!shouldWatchCatalogFile(classified, isTracked)) return;
-      if (classified.startsWith("managed")) this.activeCatalogFile = file;
+      if (classified === "managedV3") {
+        this.activeCatalogFile = file;
+        if (this.trackedCatalogPath !== file.path) {
+          this.trackedCatalogPath = file.path;
+          await this.saveTrackedCatalogIdentity();
+        }
+      } else if (isTracked) {
+        this.activeCatalogFile = file;
+      }
       this.scheduleCatalogValidation();
     } catch {
     }
@@ -400,7 +466,7 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   publishDiagnosticsNotice(response) {
     const diagnostics = response.diagnostics ?? [];
     const first = response.diagnostics?.[0];
-    const location = first ? `\u7B2C ${first.line} \u884C${first.column ? `\u3001\u7B2C ${first.column} \u5217` : ""}` : "\u672A\u63D0\u4F9B\u4F4D\u7F6E";
+    const location = first ? formatDiagnosticLocation(first) : "\u672A\u63D0\u4F9B\u4F4D\u7F6E";
     const count = diagnostics.length > 0 ? `${diagnostics.length} \u4E2A\u683C\u5F0F\u95EE\u9898` : `\u76EE\u5F55\u72B6\u6001 ${response.catalogStatus}`;
     new import_obsidian.Notice(`SVLT\uFF1A\u654F\u611F\u4FE1\u606F\u76EE\u5F55\u6709 ${count}\uFF0C\u7B2C\u4E00\u4E2A\u4F4D\u4E8E ${location}\u3002`);
   }
@@ -451,6 +517,12 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
     );
   }
 };
+function formatDiagnosticLocation(diagnostic) {
+  const start = `\u7B2C ${diagnostic.line} \u884C${diagnostic.column ? `\u3001\u7B2C ${diagnostic.column} \u5217` : ""}`;
+  if (diagnostic.endLine == null) return start;
+  const end = `\u7B2C ${diagnostic.endLine} \u884C${diagnostic.endColumn ? `\u3001\u7B2C ${diagnostic.endColumn} \u5217` : ""}`;
+  return `${start} \u81F3 ${end}`;
+}
 function validationFingerprint(response) {
   const diagnostics = (response.diagnostics ?? []).map((diagnostic) => [
     diagnostic.id,
@@ -486,7 +558,7 @@ var CatalogDiagnosticsModal = class extends import_obsidian.Modal {
       const severity = row.createSpan({ cls: "svlt-diagnostic-severity" });
       severity.textContent = diagnostic.severity === "error" ? "\u{1F534}" : "\u{1F7E0}";
       const location = row.createSpan({ cls: "svlt-diagnostic-location" });
-      location.textContent = `\u7B2C ${diagnostic.line} \u884C${diagnostic.column ? `\u3001\u7B2C ${diagnostic.column} \u5217` : ""}`;
+      location.textContent = formatDiagnosticLocation(diagnostic);
       const code = row.createSpan({ cls: "svlt-diagnostic-code" });
       code.textContent = diagnostic.code;
       const message = row.createSpan({ cls: "svlt-diagnostic-message" });

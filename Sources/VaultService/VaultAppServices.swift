@@ -1306,6 +1306,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         guard writeAccessStates[id] == .pending || writeAccessStates[id] == .authenticating else { return }
         writeAccessStates[id] = .expired
         Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }
+        writeAccessNotifier.notifyQueueChanged(requestID: id)
         writeAccessContinuations[id]?.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
     }
 
@@ -1313,6 +1314,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         guard writeAccessStates[id] == .pending || writeAccessStates[id] == .authenticating else { return }
         writeAccessStates[id] = .cancelled
         Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }
+        writeAccessNotifier.notifyQueueChanged(requestID: id)
         writeAccessContinuations[id]?.resume(throwing: CancellationError())
     }
 
@@ -2730,7 +2732,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .recoveryConflict
         case .invalidOperation:
             return .invalidOperation
-        case .writeFailed:
+        case .writeFailed, .recoveryRollbackBackupInvalid:
             return .writeFailed
         case .malformedDocument, .symlinkRejected, .invalidIntegrity,
              .referenceSetChanged:
@@ -2830,7 +2832,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             case .noSelectedDocument, .malformedDocument,
                  .invalidIntegrity, .symlinkRejected, .referenceSetChanged:
                 throw SecretCatalogAgentError.invalidCatalog
-            case .writeFailed:
+            case .writeFailed, .recoveryRollbackBackupInvalid:
                 throw SecretCatalogAgentError.writeFailed
             }
         } catch {
