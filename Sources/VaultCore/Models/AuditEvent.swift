@@ -6,6 +6,8 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         "timestamp",
         "source",
         "integration",
+        "correlationID",
+        "requestID",
         "referenceID",
         "referenceCount",
         "operation",
@@ -20,6 +22,11 @@ public struct AuditEvent: Codable, Equatable, Sendable {
     public let timestamp: Date
     public let source: AuditSource
     public let integration: String
+    /// Correlates the complete operation across the Agent and App control
+    /// planes. It is an opaque UUID, never a request payload or secret ID.
+    public let correlationID: UUID
+    /// Identifies one operation-bound authorization request when applicable.
+    public let requestID: UUID?
     public let referenceID: String?
     public let referenceCount: Int
     public let operation: AuditOperation
@@ -34,6 +41,8 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         timestamp: Date,
         source: AuditSource = .agent,
         integration: String,
+        correlationID: UUID = UUID(),
+        requestID: UUID? = nil,
         referenceID: String?,
         referenceCount: Int = 0,
         operation: AuditOperation,
@@ -47,6 +56,8 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         self.timestamp = timestamp
         self.source = source
         self.integration = integration
+        self.correlationID = correlationID
+        self.requestID = requestID
         self.referenceID = referenceID
         self.referenceCount = max(0, referenceCount)
         self.operation = operation
@@ -62,6 +73,8 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         case timestamp
         case source
         case integration
+        case correlationID
+        case requestID
         case referenceID
         case referenceCount
         case operation
@@ -80,6 +93,11 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         self.source = try container.decodeIfPresent(AuditSource.self, forKey: .source)
             ?? AuditSource(integration: integration)
         self.integration = integration
+        // Historical audit records predate explicit operation correlation.
+        // Reusing their event ID keeps those records self-contained without
+        // inferring a caller source from a new operation.
+        self.correlationID = try container.decodeIfPresent(UUID.self, forKey: .correlationID) ?? self.id
+        self.requestID = try container.decodeIfPresent(UUID.self, forKey: .requestID)
         self.referenceID = try container.decodeIfPresent(String.self, forKey: .referenceID)
         self.referenceCount = max(
             0,
@@ -100,6 +118,8 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         try container.encode(timestamp, forKey: .timestamp)
         try container.encode(source, forKey: .source)
         try container.encode(integration, forKey: .integration)
+        try container.encode(correlationID, forKey: .correlationID)
+        try container.encodeIfPresent(requestID, forKey: .requestID)
         try container.encodeIfPresent(referenceID, forKey: .referenceID)
         try container.encode(referenceCount, forKey: .referenceCount)
         try container.encode(operation, forKey: .operation)
@@ -109,6 +129,32 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(exitCode, forKey: .exitCode)
     }
+}
+
+/// Trusted caller metadata installed at the IPC handler boundary. Production
+/// AppControl requests use `.app`; Agent/MCP requests use `.agent`. The task
+/// local survives actor hops without mutable shared state, so concurrent
+/// requests cannot overwrite one another's audit source or correlation.
+public struct AuditContext: Equatable, Sendable {
+    public let source: AuditSource
+    public let correlationID: UUID
+    public let requestID: UUID?
+
+    public init(
+        source: AuditSource,
+        correlationID: UUID = UUID(),
+        requestID: UUID? = nil
+    ) {
+        self.source = source
+        self.correlationID = correlationID
+        self.requestID = requestID
+    }
+
+    public func withRequestID(_ requestID: UUID?) -> Self {
+        Self(source: source, correlationID: correlationID, requestID: requestID)
+    }
+
+    @TaskLocal public static var current: AuditContext?
 }
 
 public enum AuditSource: String, Codable, Equatable, Sendable {

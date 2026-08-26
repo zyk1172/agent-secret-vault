@@ -320,6 +320,25 @@ private struct CatalogFixture {
     }
 }
 
+@Test func agentCatalogValidationLoadsTheSharedSelectedDocument() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let result = try await service.validateCatalog()
+
+    #expect(result.status == .found)
+    #expect(result.revision == 1)
+    #expect(result.rawSHA256 != nil)
+    #expect(result.diagnostics.isEmpty)
+}
+
 private struct ExternalCatalogAdoptionFixture {
     let root: URL
     let documentURL: URL

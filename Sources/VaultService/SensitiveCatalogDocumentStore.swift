@@ -328,6 +328,58 @@ private struct POSIXFileWriteError: Error {
     let status: Int32
 }
 
+/// The POSIX probes run off the Catalog actor because File Provider can block
+/// directory operations. These boxes make the timeout boundary race-free and
+/// ensure a late read result is freed instead of leaking or mutating a local
+/// tuple after the caller has returned.
+private final class CatalogDirectoryFsyncResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Int32?
+    private var timedOut = false
+
+    func complete(_ status: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !timedOut else { return false }
+        result = status
+        return true
+    }
+
+    func resultAfterTimeout() -> Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        if let result { return result }
+        timedOut = true
+        return ETIMEDOUT
+    }
+}
+
+private final class CatalogReadFileResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: (status: Int32, bytes: UnsafeMutableRawPointer?, length: Int)?
+    private var timedOut = false
+
+    func complete(
+        status: Int32,
+        bytes: UnsafeMutableRawPointer?,
+        length: Int
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !timedOut else { return false }
+        result = (status, bytes, length)
+        return true
+    }
+
+    func resultAfterTimeout() -> (status: Int32, bytes: UnsafeMutableRawPointer?, length: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let result { return result }
+        timedOut = true
+        return (ETIMEDOUT, nil, 0)
+    }
+}
+
 public struct CatalogExternalChange: Codable, Equatable, Sendable {
     public let rawSHA256: String
     public let semanticSHA256: String
@@ -1955,33 +2007,36 @@ public actor SensitiveCatalogDocumentStore {
         guard !path.isEmpty else { return EINVAL }
         let semaphore = DispatchSemaphore(value: 0)
         let queue = DispatchQueue.global(qos: .utility)
-        var status = ETIMEDOUT
+        let resultBox = CatalogDirectoryFsyncResultBox()
         queue.async {
             let observed = path.withCString { svlt_fsync_directory($0) }
-            status = observed
+            _ = resultBox.complete(observed)
             semaphore.signal()
         }
         guard case .success = semaphore.wait(timeout: .now() + .seconds(3)) else {
-            return ETIMEDOUT
+            return resultBox.resultAfterTimeout()
         }
-        return status
+        return resultBox.resultAfterTimeout()
     }
 
     private func readFileStatus(_ path: String) -> (status: Int32, bytes: UnsafeMutableRawPointer?, length: Int) {
         let semaphore = DispatchSemaphore(value: 0)
         let queue = DispatchQueue.global(qos: .utility)
-        var result = (status: ETIMEDOUT, bytes: Optional<UnsafeMutableRawPointer>.none, length: 0)
+        let resultBox = CatalogReadFileResultBox()
         queue.async {
             var observedBytes: UnsafeMutableRawPointer?
             var observedLength = 0
             let status = path.withCString { svlt_read_file($0, &observedBytes, &observedLength) }
-            result = (status, observedBytes, observedLength)
+            if !resultBox.complete(status: status, bytes: observedBytes, length: observedLength),
+               let observedBytes {
+                svlt_free_file(observedBytes)
+            }
             semaphore.signal()
         }
         guard case .success = semaphore.wait(timeout: .now() + .seconds(3)) else {
-            return result
+            return resultBox.resultAfterTimeout()
         }
-        return result
+        return resultBox.resultAfterTimeout()
     }
 
     private func makeRecord(document: SecretCatalogDocument, revision: UInt64, raw: Data) throws -> CatalogIntegrityRecord {
@@ -2705,11 +2760,37 @@ public actor SensitiveCatalogDocumentStore {
             }
             temporaryExists = false
             let directoryStatus = directoryFsyncStatus(parent.path)
-            guard directoryStatus == 0 else {
-                throw POSIXFileWriteError(
-                    stage: target == .integrity ? .fsyncIntegrityDirectory : .fsyncDocumentDirectory,
-                    status: directoryStatus
+            if directoryStatus == ETIMEDOUT, target == .document {
+                // File Provider may complete the atomic rename but cannot
+                // service a parent-directory fsync. The rename is still
+                // accepted only after an immediate read-back hash check; the
+                // pair journal and final semantic/integrity verification keep
+                // the accepted Catalog failure-atomic. The integrity sidecar
+                // remains strict because it is local SVLT state.
+                let readBackMatches = (try? readFileData(
+                    from: url,
+                    stage: .readDocument,
+                    operation: operation
+                )).map { sha256Hex($0) == sha256Hex(data) } == true
+                guard readBackMatches else {
+                    throw POSIXFileWriteError(
+                        stage: .fsyncDocumentDirectory,
+                        status: directoryStatus
+                    )
+                }
+                NSLog(
+                    "SVLT Catalog document directory fsync deferred: errno=%d symbol=%@ operation=%@",
+                    directoryStatus,
+                    errnoSymbol(directoryStatus),
+                    operation.rawValue
                 )
+            } else {
+                guard directoryStatus == 0 else {
+                    throw POSIXFileWriteError(
+                        stage: target == .integrity ? .fsyncIntegrityDirectory : .fsyncDocumentDirectory,
+                        status: directoryStatus
+                    )
+                }
             }
         } catch {
             if descriptor >= 0 {
@@ -2835,6 +2916,7 @@ public actor SensitiveCatalogDocumentStore {
         case EFBIG: return "EFBIG"
         case ENOMEM: return "ENOMEM"
         case EBUSY: return "EBUSY"
+        case ETIMEDOUT: return "ETIMEDOUT"
         case ENOTSUP: return "ENOTSUP"
         case EROFS: return "EROFS"
         case EINTR: return "EINTR"

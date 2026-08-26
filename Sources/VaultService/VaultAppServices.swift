@@ -152,6 +152,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var pendingWriteAccessRequests: [UUID: CatalogAgentWriteAccessRequest] = [:]
     private var writeAccessContinuations: [UUID: CatalogWriteAccessContinuationBox] = [:]
     private var writeAccessStates: [UUID: CatalogWriteAccessState] = [:]
+    /// The Agent creates the request context; the App later uses the same
+    /// correlation/request IDs when it records the device-owner decision.
+    private var pendingWriteAuditContexts: [UUID: AuditContext] = [:]
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -582,31 +585,52 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
         let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
+        let operationContext: AuditContext
         if requireAgentSafeWrite, !diff.isEmpty {
             let intent = CatalogAgentWriteIntent(
                 operation: .batchMutation,
                 acceptedRevision: snapshot.revision,
                 candidateSemanticSHA256: CatalogSemanticDigest.sha256(next)
             )
-            try await requestAgentCatalogAuthorization(intent, reasonCategory: .bulkImport)
+            operationContext = try await requestAgentCatalogAuthorization(intent, reasonCategory: .bulkImport)
+        } else {
+            operationContext = agentAuditContext()
         }
         try await authorizeCatalogDiff(
             diff,
             transport: .batchMutation,
             requireAgentSafeWrite: false
         )
+        await emitCatalogMutationStarted(
+            action: "批量修改目录",
+            referenceCount: diff.referencedSecretRefs.count,
+            context: operationContext
+        )
         do {
             let updated = try await catalogDocumentStore!.applyBatch(mutation, expectedRevision: expectedRevision)
             await emitAudit(
                 action: "批量修改目录",
                 target: "catalog",
-                referenceCount: 0,
+                referenceCount: diff.referencedSecretRefs.count,
                 result: "成功",
+                context: operationContext,
                 operation: .catalogMutation
             )
             return CatalogWriteResult(revision: updated.revision)
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await emitCatalogMutationFailed(
+                action: "批量修改目录",
+                referenceCount: diff.referencedSecretRefs.count,
+                context: operationContext
+            )
             throw catalogAgentError(for: error)
+        } catch {
+            await emitCatalogMutationFailed(
+                action: "批量修改目录",
+                referenceCount: diff.referencedSecretRefs.count,
+                context: operationContext
+            )
+            throw SecretCatalogAgentError.writeFailed
         }
     }
 
@@ -627,7 +651,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let next = SecretCatalogDocument(indexes: snapshot.document.indexes + [index], entries: snapshot.document.entries)
         do { try next.validate() } catch { throw SecretCatalogAgentError.invalidOperation }
         let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
-        try await requestAgentCatalogAuthorization(
+        let operationContext = try await requestAgentCatalogAuthorization(
             CatalogAgentWriteIntent(
                 operation: .createIndex,
                 indexID: index.id,
@@ -637,16 +661,28 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             reasonCategory: .knowledgeMaintenance
         )
         try await authorizeCatalogDiff(diff, transport: .createIndex, requireAgentSafeWrite: false)
+        await emitCatalogMutationStarted(action: "创建目录分组", referenceCount: 0, context: operationContext)
         do {
             let updated = try await catalogDocumentStore!.createIndex(index, expectedRevision: snapshot.revision)
+            await emitAudit(
+                action: "创建目录分组",
+                target: "catalog",
+                referenceCount: 0,
+                result: "成功",
+                context: operationContext,
+                operation: .catalogMutation
+            )
             return CatalogWriteResult(revision: updated.revision)
         } catch let error as VaultCryptoError where error == .randomGenerationFailed {
+            await emitCatalogMutationFailed(action: "创建目录分组", referenceCount: 0, context: operationContext)
             Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .identifierGeneration, error: error)
             throw SecretCatalogAgentError.writeFailed
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await emitCatalogMutationFailed(action: "创建目录分组", referenceCount: 0, context: operationContext)
             Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .store, error: error)
             throw catalogAgentError(for: error)
         } catch {
+            await emitCatalogMutationFailed(action: "创建目录分组", referenceCount: 0, context: operationContext)
             Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .store, error: error)
             throw SecretCatalogAgentError.writeFailed
         }
@@ -699,7 +735,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
         let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
-        try await requestAgentCatalogAuthorization(
+        let operationContext = try await requestAgentCatalogAuthorization(
             CatalogAgentWriteIntent(
                 operation: .createEntry,
                 indexID: entry.indexId,
@@ -710,19 +746,32 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             reasonCategory: .knowledgeMaintenance
         )
         try await authorizeCatalogDiff(diff, transport: .createEntry, requireAgentSafeWrite: false)
+        let referenceCount = entry.fields.filter { $0.secretRef != nil }.count
+        await emitCatalogMutationStarted(action: "创建目录条目", referenceCount: referenceCount, context: operationContext)
 
         do {
             let updated = try await catalogDocumentStore!.createEntry(entry, expectedRevision: snapshot.revision)
+            await emitAudit(
+                action: "创建目录条目",
+                target: "catalog",
+                referenceCount: referenceCount,
+                result: "成功",
+                context: operationContext,
+                operation: .catalogMutation
+            )
             return CatalogWriteResult(
                 revision: updated.revision,
                 entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await emitCatalogMutationFailed(action: "创建目录条目", referenceCount: referenceCount, context: operationContext)
             Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .store, error: error)
             throw catalogAgentError(for: error)
         } catch let error as SecretCatalogAgentError {
+            await emitCatalogMutationFailed(action: "创建目录条目", referenceCount: referenceCount, context: operationContext)
             throw error
         } catch {
+            await emitCatalogMutationFailed(action: "创建目录条目", referenceCount: referenceCount, context: operationContext)
             Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .store, error: error)
             throw SecretCatalogAgentError.writeFailed
         }
@@ -791,7 +840,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         try catalogMutationPolicyEngine.requireSilent(
             CatalogMutationDescriptor(kind: .patchMetadata)
         )
-        try await requestAgentCatalogAuthorization(
+        let operationContext = try await requestAgentCatalogAuthorization(
             CatalogAgentWriteIntent(
                 operation: .patchMetadata,
                 indexID: updated.indexId,
@@ -802,14 +851,27 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             reasonCategory: .knowledgeMaintenance
         )
         try await authorizeCatalogDiff(diff, transport: .patchMetadata, requireAgentSafeWrite: false)
+        await emitCatalogMutationStarted(action: "修改目录条目元数据", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
         do {
             let updatedSnapshot = try await catalogDocumentStore!.updateEntry(updated, expectedRevision: expectedRevision)
+            await emitAudit(
+                action: "修改目录条目元数据",
+                target: "catalog",
+                referenceCount: diff.referencedSecretRefs.count,
+                result: "成功",
+                context: operationContext,
+                operation: .catalogMutation
+            )
             return CatalogWriteResult(
                 revision: updatedSnapshot.revision,
                 entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await emitCatalogMutationFailed(action: "修改目录条目元数据", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
             throw catalogAgentError(for: error)
+        } catch {
+            await emitCatalogMutationFailed(action: "修改目录条目元数据", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
+            throw SecretCatalogAgentError.writeFailed
         }
     }
 
@@ -835,7 +897,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } catch {
             throw SecretCatalogAgentError.invalidOperation
         }
-        try await requestAgentCatalogAuthorization(
+        let operationContext = try await requestAgentCatalogAuthorization(
             CatalogAgentWriteIntent(
                 operation: .commitDraft,
                 indexID: pending.indexId,
@@ -847,15 +909,28 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
         let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
         try await authorizeCatalogDiff(diff, transport: .createEntry, requireAgentSafeWrite: false)
+        await emitCatalogMutationStarted(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
         do {
             let updatedSnapshot = try await catalogDocumentStore!.createEntry(pending, expectedRevision: expectedRevision)
             pendingCatalogDrafts.removeValue(forKey: draft.draftID)
+            await emitAudit(
+                action: "提交目录条目草稿",
+                target: "catalog",
+                referenceCount: diff.referencedSecretRefs.count,
+                result: "成功",
+                context: operationContext,
+                operation: .catalogMutation
+            )
             return CatalogWriteResult(
                 revision: updatedSnapshot.revision,
                 entry: catalogSearchService.get(entryID: pending.id, document: updatedSnapshot.document).matches.first?.entry
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await emitCatalogMutationFailed(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
             throw catalogAgentError(for: error)
+        } catch {
+            await emitCatalogMutationFailed(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
+            throw SecretCatalogAgentError.writeFailed
         }
     }
 
@@ -906,7 +981,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
         let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
-        try await requestAgentCatalogAuthorization(
+        let operationContext = try await requestAgentCatalogAuthorization(
             CatalogAgentWriteIntent(
                 operation: .addSecretPlaceholder,
                 entryID: entryID,
@@ -917,18 +992,31 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             reasonCategory: .knowledgeMaintenance
         )
         try await authorizeCatalogDiff(diff, transport: .createSecretPlaceholder, requireAgentSafeWrite: false)
+        await emitCatalogMutationStarted(action: "新增目录加密字段占位", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
         do {
             let updatedSnapshot = try await catalogDocumentStore!.addField(
                 field,
                 toEntryID: entryID,
                 expectedRevision: expectedRevision
             )
+            await emitAudit(
+                action: "新增目录加密字段占位",
+                target: "catalog",
+                referenceCount: diff.referencedSecretRefs.count,
+                result: "成功",
+                context: operationContext,
+                operation: .catalogMutation
+            )
             return CatalogWriteResult(
                 revision: updatedSnapshot.revision,
                 entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await emitCatalogMutationFailed(action: "新增目录加密字段占位", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
             throw catalogAgentError(for: error)
+        } catch {
+            await emitCatalogMutationFailed(action: "新增目录加密字段占位", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
+            throw SecretCatalogAgentError.writeFailed
         }
     }
 
@@ -951,9 +1039,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     public func validateCatalog() async throws -> CatalogValidationResult {
         do {
-            guard let store = catalogDocumentStore else {
-                return CatalogValidationResult(status: .unavailable)
-            }
+            let store = try await selectedCatalogStoreForApp()
             let report = try await store.validationReport()
             return CatalogValidationResult(
                 status: report.status,
@@ -962,6 +1048,20 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 pendingExternalChange: report.pendingExternalChange,
                 diagnostics: report.diagnostics
             )
+        } catch let error as SecretCatalogAgentError {
+            switch error {
+            case .unavailable:
+                return CatalogValidationResult(status: .unavailable)
+            default:
+                return CatalogValidationResult(status: .invalidCatalog, diagnostics: [CatalogValidationDiagnostic(
+                    code: "CATALOG_VALIDATION_FAILED",
+                    line: 1,
+                    column: 1,
+                    scope: .document,
+                    message: "敏感信息目录验证失败。",
+                    hint: "请在 SVLT App 中检查目录状态。"
+                )])
+            }
         } catch let error as SensitiveCatalogDocumentStoreError {
             switch error {
             case .noSelectedDocument:
@@ -1011,7 +1111,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     if plan.diagnostics.isEmpty { return "格式正常" }
                     return plan.canRepair ? "发现可修复问题" : "发现需人工处理问题"
                 }(),
-                source: .app,
+                context: AuditContext.current ?? AuditContext(source: .app),
                 operation: .formatCheck
             )
             return plan
@@ -1029,7 +1129,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 target: "catalog-format",
                 referenceCount: 0,
                 result: "成功",
-                source: .app,
+                context: AuditContext.current ?? AuditContext(source: .app),
                 operation: .formatRepair
             )
             return try await validateCatalog()
@@ -1174,8 +1274,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func requestAgentCatalogAuthorization(
         _ intent: CatalogAgentWriteIntent,
         reasonCategory: CatalogAgentWriteReasonCategory
-    ) async throws {
+    ) async throws -> AuditContext {
         let requestID = UUID()
+        // IPCRequestHandler installs the trusted Agent context. The explicit
+        // fallback exists only for legacy in-process callers/tests that invoke
+        // this service directly; it is not used by the production transport.
+        let callerContext = AuditContext.current ?? AuditContext(source: .agent)
+        let operationContext = callerContext.withRequestID(requestID)
         let createdAt = now()
         let expiry = createdAt.addingTimeInterval(CatalogAgentWriteAuthorization.ticketLifetime)
         let request = CatalogAgentWriteAccessRequest(
@@ -1190,6 +1295,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
         pendingWriteAccessRequests[request.id] = request
         writeAccessStates[request.id] = .pending
+        pendingWriteAuditContexts[request.id] = operationContext
         let continuationBox = CatalogWriteAccessContinuationBox()
         writeAccessContinuations[request.id] = continuationBox
         await emitAudit(
@@ -1197,6 +1303,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             target: "catalog-write",
             referenceCount: 0,
             result: "请求中",
+            context: operationContext,
             operation: .authorization,
             authorizationOutcome: .requested,
             status: .requested
@@ -1207,6 +1314,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             timeoutTask?.cancel()
             pendingWriteAccessRequests.removeValue(forKey: request.id)
             writeAccessContinuations.removeValue(forKey: request.id)
+            pendingWriteAuditContexts.removeValue(forKey: request.id)
             pruneWriteAccessStates()
         }
         do {
@@ -1235,16 +1343,21 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             await catalogAgentWriteAuthorization.revoke(requestID: request.id)
             if error is CancellationError {
                 writeAccessStates[request.id] = .cancelled
-                await emitAudit(action: "智能体目录写入授权取消", target: "catalog-write", referenceCount: 0, result: "已取消", operation: .authorization, authorizationOutcome: .cancelled, status: .cancelled)
+                await emitAudit(action: "智能体目录写入授权取消", target: "catalog-write", referenceCount: 0, result: "已取消", context: operationContext, operation: .authorization, authorizationOutcome: .cancelled, status: .cancelled)
+                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
+            }
+            if writeAccessStates[request.id] == .expired {
+                await emitAudit(action: "智能体目录写入授权超时", target: "catalog-write", referenceCount: 0, result: "已超时", context: operationContext, operation: .authorization, authorizationOutcome: .expired, status: .expired)
                 throw SecretCatalogAgentError.agentWriteApprovalUnavailable
             }
             if error is VaultAppServicesRevealError || error is OperationAuthorizationError {
-                await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", operation: .authorization, authorizationOutcome: .denied, status: .failure)
+                await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: operationContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
                 throw SecretCatalogAgentError.agentWriteApprovalUnavailable
             }
-            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", operation: .authorization, authorizationOutcome: .denied, status: .failure)
+            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: operationContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
             throw error
         }
+        return operationContext
     }
 
     public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {
@@ -1275,10 +1388,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         else {
             throw SecretCatalogAgentError.invalidOperation
         }
+        let originalContext = pendingWriteAuditContexts[id]
+        let approvalContext = AuditContext(
+            source: .app,
+            correlationID: originalContext?.correlationID ?? AuditContext.current?.correlationID ?? UUID(),
+            requestID: id
+        )
         guard approved else {
             writeAccessStates[id] = .denied
             continuation.resume(throwing: SecretCatalogAgentError.agentWriteNotAllowed)
-            await emitAudit(action: "智能体目录写入授权拒绝", target: "catalog-write", referenceCount: 0, result: "已拒绝", operation: .authorization, authorizationOutcome: .denied, status: .failure)
+            await emitAudit(action: "智能体目录写入授权拒绝", target: "catalog-write", referenceCount: 0, result: "已拒绝", context: approvalContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
             return
         }
 
@@ -1293,7 +1412,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             _ = await catalogAgentWriteAuthorization.approve(requestID: id, intent: intent)
             writeAccessStates[id] = .approved
             continuation.resume()
-            await emitAudit(action: "智能体目录写入授权完成", target: "catalog-write", referenceCount: 0, result: "成功", operation: .authorization, authorizationOutcome: .approved)
+            await emitAudit(action: "智能体目录写入授权完成", target: "catalog-write", referenceCount: 0, result: "成功", context: approvalContext, operation: .authorization, authorizationOutcome: .approved)
         } catch let error as OperationAuthorizationError {
             writeAccessStates[id] = .denied
             await catalogAgentWriteAuthorization.revoke(requestID: id)
@@ -1301,13 +1420,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             let outcome: AuditAuthorizationOutcome = error == .cancelled ? .cancelled : (error == .timeout ? .expired : .denied)
             let result = error == .cancelled ? "已取消" : (error == .timeout ? "已超时" : "已拒绝")
             let auditStatus: AuditStatus = error == .cancelled ? .cancelled : (error == .timeout ? .expired : .failure)
-            await emitAudit(action: "智能体目录写入授权结束", target: "catalog-write", referenceCount: 0, result: result, operation: .authorization, authorizationOutcome: outcome, status: auditStatus)
+            await emitAudit(action: "智能体目录写入授权结束", target: "catalog-write", referenceCount: 0, result: result, context: approvalContext, operation: .authorization, authorizationOutcome: outcome, status: auditStatus)
             throw SecretCatalogAgentError.agentWriteApprovalUnavailable
         } catch {
             writeAccessStates[id] = .denied
             await catalogAgentWriteAuthorization.revoke(requestID: id)
             continuation.resume(throwing: SecretCatalogAgentError.agentWriteApprovalUnavailable)
-            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", operation: .authorization, authorizationOutcome: .denied, status: .failure)
+            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: approvalContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
             throw SecretCatalogAgentError.agentWriteApprovalUnavailable
         }
     }
@@ -1921,7 +2040,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             target: "catalog-field",
             referenceCount: 1,
             result: "已显示",
-            source: .app,
+            context: AuditContext.current ?? AuditContext(source: .app),
             operation: .reveal,
             authorizationOutcome: .approved,
             status: .displayedToUser
@@ -2703,7 +2822,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         target: String,
         referenceCount: Int,
         result: String,
-        source: AuditSource = .agent,
+        context: AuditContext? = nil,
         operation: AuditOperation? = nil,
         authorizationOutcome: AuditAuthorizationOutcome = .notRequired,
         status: AuditStatus? = nil
@@ -2715,13 +2834,21 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             result: result
         )
         await auditObserver?(entry)
+        // A production request always arrives through one of the two IPC
+        // handlers, which installs AuditContext.current. Do not infer `.agent`
+        // here: an unscoped event cannot be safely attributed to a caller.
+        guard let auditContext = context ?? AuditContext.current else {
+            return
+        }
         guard let auditLog else {
             return
         }
         let event = AuditEvent(
             timestamp: entry.occurredAt,
-            source: source,
-            integration: source == .app ? "agent-secret-vault-app-control" : "agent-secret-vault-mcp",
+            source: auditContext.source,
+            integration: auditContext.source == .app ? "agent-secret-vault-app-control" : "agent-secret-vault-mcp",
+            correlationID: auditContext.correlationID,
+            requestID: auditContext.requestID,
             referenceID: nil,
             referenceCount: referenceCount,
             operation: operation ?? auditOperation(for: action),
@@ -2748,6 +2875,48 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 }
             }
         }
+    }
+
+    private func agentAuditContext() -> AuditContext {
+        AuditContext.current ?? AuditContext(source: .agent)
+    }
+
+    private func appAuditContext() -> AuditContext {
+        AuditContext.current ?? AuditContext(source: .app)
+    }
+
+    private func emitCatalogMutationStarted(
+        action: String,
+        referenceCount: Int,
+        context: AuditContext
+    ) async {
+        await emitAudit(
+            action: action,
+            target: "catalog",
+            referenceCount: referenceCount,
+            result: "开始",
+            context: context,
+            operation: .catalogMutation,
+            authorizationOutcome: context.requestID == nil ? .notRequired : .approved,
+            status: .requested
+        )
+    }
+
+    private func emitCatalogMutationFailed(
+        action: String,
+        referenceCount: Int,
+        context: AuditContext
+    ) async {
+        await emitAudit(
+            action: action,
+            target: "catalog",
+            referenceCount: referenceCount,
+            result: "失败",
+            context: context,
+            operation: .catalogMutation,
+            authorizationOutcome: context.requestID == nil ? .notRequired : .approved,
+            status: .failure
+        )
     }
 
     private func auditOperation(for action: String) -> AuditOperation {

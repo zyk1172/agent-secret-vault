@@ -219,7 +219,14 @@ public struct IPCRequestHandler: Sendable {
     }
 
     public func handle(_ request: IPCRequest) async throws -> IPCResponse {
-        await service.recordPluginActivity()
+        let context = AuditContext(source: .agent)
+        return try await AuditContext.$current.withValue(context) {
+            await service.recordPluginActivity()
+            return try await handleInContext(request)
+        }
+    }
+
+    private func handleInContext(_ request: IPCRequest) async throws -> IPCResponse {
         switch request {
         case .status:
             return .status(locked: await service.status().locked)

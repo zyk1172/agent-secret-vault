@@ -160,6 +160,7 @@ public struct VaultWorkbenchView: View {
     let disableAgentService: (() async -> Void)?
     let restartAgentService: (() async -> Void)?
     let auditEntries: [CatalogSecurityAuditEntry]
+    let auditError: String?
     let savedReferences: [SecretReferenceMetadata]
     let sensitiveIndexURL: URL?
     let sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
@@ -205,6 +206,7 @@ public struct VaultWorkbenchView: View {
         disableAgentService: (() async -> Void)? = nil,
         restartAgentService: (() async -> Void)? = nil,
         auditEntries: [CatalogSecurityAuditEntry] = [],
+        auditError: String? = nil,
         savedReferences: [SecretReferenceMetadata] = [],
         sensitiveIndexURL: URL? = nil,
         sensitiveCatalogSnapshot: SensitiveCatalogSnapshot? = nil,
@@ -244,6 +246,7 @@ public struct VaultWorkbenchView: View {
         self.disableAgentService = disableAgentService
         self.restartAgentService = restartAgentService
         self.auditEntries = auditEntries
+        self.auditError = auditError
         self.savedReferences = savedReferences
         self.sensitiveIndexURL = sensitiveIndexURL
         self.sensitiveCatalogSnapshot = sensitiveCatalogSnapshot
@@ -423,7 +426,7 @@ public struct VaultWorkbenchView: View {
         case .automation:
             WorkbenchPage(title: "智能体自动化", subtitle: "只显示脱敏审计。密码、token、Authorization header 不会进入这里。", systemImage: selectedSection.systemImage) {
                 VStack(spacing: 14) {
-                    AgentAutomationAuditCard(entries: auditEntries)
+                    AgentAutomationAuditCard(entries: auditEntries, errorMessage: auditError)
                 }
             }
         case .security:
@@ -2563,6 +2566,7 @@ private struct SecurityBoundaryPanel: View {
 
 private struct AgentAutomationAuditCard: View {
     let entries: [CatalogSecurityAuditEntry]
+    let errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2578,6 +2582,15 @@ private struct AgentAutomationAuditCard: View {
             Text("App 只负责本机授权和解密；SSH、HTTP、文件写入等动作由 MCP 工具执行。这里仅显示脱敏审计，不保存明文。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
 
             if entries.isEmpty {
                 HStack(spacing: 10) {

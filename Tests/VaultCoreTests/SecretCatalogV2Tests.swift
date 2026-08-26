@@ -110,6 +110,33 @@ private func qnapDocument() -> SecretCatalogDocument {
     }
 }
 
+@Test func catalogV3FormatRepairMigratesOnlyTheKnownPreviousPolicyBlock() throws {
+    let rendered = try SensitiveCatalogDocumentCodec.encode(SecretCatalogDocument())
+    for legacyPolicyBlock in SVLTAgentCatalogPolicy.legacyDocumentPolicyBlocks {
+        let legacy = rendered.replacingOccurrences(
+            of: SVLTAgentCatalogPolicy.documentPolicyBlock,
+            with: legacyPolicyBlock
+        )
+
+        #expect(throws: SecretCatalogValidationError.invalidPolicyBlock) {
+            try SensitiveCatalogDocumentCodec.decode(legacy)
+        }
+
+        let plan = try #require(SensitiveCatalogDocumentCodec.formatRepairPlan(Data(legacy.utf8)))
+        #expect(plan.canRepair)
+        #expect(plan.repairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+        #expect(plan.unrepairableDiagnostics.isEmpty)
+
+        let repaired = try SensitiveCatalogDocumentCodec.applyingFormatRepair(to: Data(legacy.utf8))
+        #expect(repaired == Data(rendered.utf8))
+
+        let unrelated = legacy.replacingOccurrences(of: "> 13. 密码字段不得保存明文。", with: "> 13. 不可信内容。")
+        let unrelatedPlan = try #require(SensitiveCatalogDocumentCodec.formatRepairPlan(Data(unrelated.utf8)))
+        #expect(!unrelatedPlan.canRepair)
+        #expect(unrelatedPlan.unrepairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+    }
+}
+
 @Test func detailedValidationReportsTheSecondDuplicateFieldMarkerLine() throws {
     let document = SecretCatalogDocument(
         indexes: [SecretCatalogIndex(id: v2IndexID, title: "QNAP")],

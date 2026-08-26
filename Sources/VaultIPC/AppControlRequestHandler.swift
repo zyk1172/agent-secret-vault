@@ -14,6 +14,13 @@ public struct AppControlRequestHandler: Sendable {
     }
 
     public func handle(_ request: AppControlRequest) async -> AppControlResponse {
+        let context = AuditContext(source: .app)
+        return await AuditContext.$current.withValue(context) {
+            await handleInContext(request)
+        }
+    }
+
+    private func handleInContext(_ request: AppControlRequest) async -> AppControlResponse {
         do {
             switch request {
             case .catalogStatus:

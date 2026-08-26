@@ -301,6 +301,43 @@ private func writeManagedV2WithLegacySidecar(
     #expect(try await store.snapshot().integrity == .verified)
 }
 
+@Test func catalogStoreRepairsKnownPreviousPolicyBlockWithoutChangingAcceptedSemantics() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let index = SecretCatalogIndex(id: storeIndexID, title: "QNAP")
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: storeIndexID,
+        title: "管理后台",
+        fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)]
+    )
+    let accepted = try await store.canonicalWrite(
+        SecretCatalogDocument(indexes: [index], entries: [entry])
+    )
+    let canonical = try String(contentsOf: fixture.document, encoding: .utf8)
+    let legacy = canonical.replacingOccurrences(
+        of: SVLTAgentCatalogPolicy.documentPolicyBlock,
+        with: SVLTAgentCatalogPolicy.legacyDocumentPolicyBlock
+    )
+    try Data(legacy.utf8).write(to: fixture.document, options: [.atomic])
+
+    let plan = try #require(try await store.formatRepairPlan())
+    #expect(plan.canRepair)
+    #expect(plan.repairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+    #expect(plan.semanticSHA256 == CatalogSemanticDigest.sha256(accepted.document))
+
+    let repaired = try await store.repairFormat(expectedRawSHA256: plan.currentRawSHA256)
+    #expect(repaired.revision == accepted.revision)
+    #expect(repaired.document == accepted.document)
+    #expect(try String(contentsOf: fixture.document, encoding: .utf8) == canonical)
+    #expect(try await store.snapshot().integrity == .verified)
+}
+
 @Test func catalogStoreRejectsFormatRepairWhenCurrentRawChangesAfterPlanning() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

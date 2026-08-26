@@ -37,6 +37,7 @@ struct AgentSecretVaultApplication: App {
                     await runtime.restartAgentService()
                 },
                 auditEntries: runtime.auditEntries,
+                auditError: runtime.auditError,
                 savedReferences: runtime.savedReferences,
                 sensitiveIndexURL: runtime.sensitiveIndexURL,
                 sensitiveCatalogSnapshot: runtime.sensitiveCatalogSnapshot,
@@ -205,6 +206,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var agentServiceActionInFlight = false
     @Published var agentServiceActionErrorMessage: String?
     @Published var auditEntries: [CatalogSecurityAuditEntry] = []
+    @Published var auditError: String?
     @Published var savedReferences: [SecretReferenceMetadata] = []
     @Published var sensitiveIndexURL: URL?
     @Published var sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
@@ -704,13 +706,17 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     func refreshAuditEntries() async {
         guard let appControlClient else {
             auditEntries = []
+            auditError = "本机控制服务不可用，安全活动记录暂时不可用。"
             return
         }
         do {
             auditEntries = try await appControlClient.catalogRecentAuditEntries(limit: 100)
+            auditError = nil
         } catch {
             // A transient AppControl failure should not erase the last known
-            // window; startup starts with an empty window and later retries.
+            // window; expose a stable safe warning instead of hiding an audit
+            // integrity/decryption failure behind an empty UI state.
+            auditError = "安全活动记录暂时不可用，可能存在完整性异常或本机控制服务不可用。"
         }
     }
 

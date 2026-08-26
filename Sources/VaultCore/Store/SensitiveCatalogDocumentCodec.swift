@@ -705,8 +705,11 @@ private extension SensitiveCatalogDocumentCodec {
     static func policyFormattingCandidate(_ text: String) -> PolicyFormattingCandidate {
         let normalized = normalizeNewlines(text)
         var lines = normalized.components(separatedBy: "\n")
+        let knownPolicyBlocks = [SVLTAgentCatalogPolicy.documentPolicyBlock]
+            + SVLTAgentCatalogPolicy.legacyDocumentPolicyBlocks
+        let knownBeginMarkers = Set(knownPolicyBlocks.compactMap { policyBeginMarker($0) })
         let begin = lines.indices.filter {
-            lines[$0].trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyBeginMarker
+            knownBeginMarkers.contains(lines[$0].trimmingCharacters(in: .whitespaces))
         }
         let end = lines.indices.filter {
             lines[$0].trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyEndMarker
@@ -715,10 +718,13 @@ private extension SensitiveCatalogDocumentCodec {
 
         if begin.count == 1, end.count == 1, let beginIndex = begin.first, let endIndex = end.first, beginIndex < endIndex {
             let observed = Array(lines[beginIndex...endIndex])
-            let lightlyDamaged = observed.count == canonicalLines.count && zip(observed, canonicalLines).allSatisfy {
-                $0.0.trimmingCharacters(in: .whitespaces) == $0.1.trimmingCharacters(in: .whitespaces)
+            let recognizedBlock = knownPolicyBlocks.first { candidate in
+                let candidateLines = candidate.components(separatedBy: "\n")
+                return observed.count == candidateLines.count && zip(observed, candidateLines).allSatisfy {
+                    $0.0.trimmingCharacters(in: .whitespaces) == $0.1.trimmingCharacters(in: .whitespaces)
+                }
             }
-            guard lightlyDamaged else {
+            guard recognizedBlock != nil else {
                 return PolicyFormattingCandidate(text: normalized, changed: normalized != text)
             }
             guard observed != canonicalLines else {
@@ -742,6 +748,10 @@ private extension SensitiveCatalogDocumentCodec {
         }
         lines.insert(contentsOf: canonicalLines + [""], at: rootIndex + 1)
         return PolicyFormattingCandidate(text: lines.joined(separator: "\n"), changed: true)
+    }
+
+    static func policyBeginMarker(_ block: String) -> String? {
+        block.components(separatedBy: "\n").first
     }
 
     static func canonicalFormattingData(_ data: Data, parsed: Parsed) -> Data {

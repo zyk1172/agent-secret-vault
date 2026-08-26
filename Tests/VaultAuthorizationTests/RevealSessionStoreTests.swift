@@ -439,14 +439,16 @@ import VaultIPC
         auditLog: auditLog
     )
 
-    _ = try await services.restoreReferences(
-        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
-        context: RevealContext(
-            reason: "Use SSH password for local device",
-            template: "Token: {{0}}",
-            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+    _ = try await AuditContext.$current.withValue(AuditContext(source: .agent)) {
+        try await services.restoreReferences(
+            references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+            context: RevealContext(
+                reason: "Use SSH password for local device",
+                template: "Token: {{0}}",
+                ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+            )
         )
-    )
+    }
 
     let events = try await auditLog.export(masterKey: key)
     #expect(events.count >= 3)
