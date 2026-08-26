@@ -98,6 +98,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     )
     case catalogApplyBatch(mutation: CatalogBatchMutation, expectedRevision: UInt64)
     case catalogValidate
+    case catalogFilePreflight
     case catalogRequestWriteAccess(CatalogAgentWriteAccessRequest)
     case pendingRevealSessions
     case inspectReference(reference: String)
@@ -171,6 +172,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case catalogBindExistingSecret
         case catalogApplyBatch
         case catalogValidate
+        case catalogFilePreflight
         case catalogRequestWriteAccess
         case pendingRevealSessions
         case inspectReference
@@ -262,6 +264,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             )
         case .catalogValidate:
             self = .catalogValidate
+        case .catalogFilePreflight:
+            self = .catalogFilePreflight
         case .catalogRequestWriteAccess:
             self = .catalogRequestWriteAccess(
                 try container.decode(CatalogAgentWriteAccessRequest.self, forKey: .request)
@@ -400,6 +404,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(expectedRevision, forKey: .expectedRevision)
         case .catalogValidate:
             try container.encode(RequestType.catalogValidate, forKey: .type)
+        case .catalogFilePreflight:
+            try container.encode(RequestType.catalogFilePreflight, forKey: .type)
         case let .catalogRequestWriteAccess(request):
             try container.encode(RequestType.catalogRequestWriteAccess, forKey: .type)
             try container.encode(request, forKey: .request)
@@ -626,8 +632,11 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case catalogValidation(
         status: SecretCatalogSearchStatus,
         revision: UInt64?,
+        rawSHA256: String?,
+        diagnostics: [CatalogValidationDiagnostic],
         filePreflight: CatalogFilePreflight?
     )
+    case catalogFilePreflight(CatalogFilePreflight)
     case revealSessionIDs([String])
     case referenceMetadata(SecretReferenceMetadata)
     case displayedToUser
@@ -652,6 +661,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case draft
         case revision
         case catalogStatus
+        case rawSHA256
+        case diagnostics
         case filePreflight
         case sessionIDs
         case metadata
@@ -672,6 +683,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case catalogDraft
         case catalogWriteResult
         case catalogValidation
+        case catalogFilePreflight
         case revealSessionIDs
         case referenceMetadata
         case displayedToUser
@@ -707,8 +719,12 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .catalogValidation(
                 status: try container.decode(SecretCatalogSearchStatus.self, forKey: .catalogStatus),
                 revision: try container.decodeIfPresent(UInt64.self, forKey: .revision),
+                rawSHA256: try container.decodeIfPresent(String.self, forKey: .rawSHA256),
+                diagnostics: try container.decodeIfPresent([CatalogValidationDiagnostic].self, forKey: .diagnostics) ?? [],
                 filePreflight: try container.decodeIfPresent(CatalogFilePreflight.self, forKey: .filePreflight)
             )
+        case .catalogFilePreflight:
+            self = .catalogFilePreflight(try container.decode(CatalogFilePreflight.self, forKey: .filePreflight))
         case .revealSessionIDs:
             self = .revealSessionIDs(try container.decode([String].self, forKey: .sessionIDs))
         case .referenceMetadata:
@@ -761,11 +777,16 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .catalogWriteResult(result):
             try container.encode(ResponseType.catalogWriteResult, forKey: .type)
             try container.encode(result, forKey: .result)
-        case let .catalogValidation(status, revision, filePreflight):
+        case let .catalogValidation(status, revision, rawSHA256, diagnostics, filePreflight):
             try container.encode(ResponseType.catalogValidation, forKey: .type)
             try container.encode(status, forKey: .catalogStatus)
             try container.encodeIfPresent(revision, forKey: .revision)
+            try container.encodeIfPresent(rawSHA256, forKey: .rawSHA256)
+            try container.encode(diagnostics, forKey: .diagnostics)
             try container.encodeIfPresent(filePreflight, forKey: .filePreflight)
+        case let .catalogFilePreflight(preflight):
+            try container.encode(ResponseType.catalogFilePreflight, forKey: .type)
+            try container.encode(preflight, forKey: .filePreflight)
         case let .revealSessionIDs(sessionIDs):
             try container.encode(ResponseType.revealSessionIDs, forKey: .type)
             try container.encode(sessionIDs, forKey: .sessionIDs)

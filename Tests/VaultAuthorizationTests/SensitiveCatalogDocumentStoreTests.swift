@@ -1119,7 +1119,7 @@ private func writeManagedV2WithLegacySidecar(
     )
     _ = try await store.canonicalWrite(second)
 
-    #expect(try await store.listRecoverySnapshots().count == 1)
+    #expect(try await store.listRecoverySnapshots().count >= 2)
     let original = try String(contentsOf: fixture.document, encoding: .utf8)
     let broken = original.replacingOccurrences(of: "<!-- /SVLT-INDEX -->", with: "", options: [], range: original.range(of: "<!-- /SVLT-INDEX -->"))
     try broken.write(to: fixture.document, atomically: true, encoding: .utf8)

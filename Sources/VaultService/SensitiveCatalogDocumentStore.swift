@@ -14,6 +14,7 @@ public enum SensitiveCatalogDocumentStoreError: Error, Equatable, Sendable {
     case integrityMissing
     case externalModification
     case pendingExternalChange
+    case recoveryConflict
     case invalidIntegrity
     case revisionConflict
     case invalidOperation
@@ -274,11 +275,15 @@ public struct CatalogRecoverySnapshotSummary: Equatable, Sendable, Identifiable 
 }
 
 private struct CatalogRecoverySnapshotEnvelope: Codable {
+    static let currentSchemaVersion = 2
+
     var schemaVersion: Int
     var revision: UInt64
     var createdAt: Date
     var rawSHA256: String
     var semanticSHA256: String
+    var acceptedUpdatedAt: String
+    var acceptedStateHMAC: String
     var raw: Data
     var hmac: Data
 }
@@ -346,44 +351,95 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     public func recoveryPreview() throws -> (summary: CatalogRecoverySnapshotSummary?, changes: Int) {
-        guard let snapshot = try loadRecoverySnapshots().max(by: { $0.summary.createdAt < $1.summary.createdAt }) else {
+        guard let plan = try recoveryPlan() else {
             return (nil, 0)
         }
-        let current = (try? snapshotUnlocked())?.document
-        let diff = current.map { CatalogSemanticDiff.between(old: $0, new: snapshot.document) }
-        return (snapshot.summary, diff?.changes.count ?? 0)
+        let summary = CatalogRecoverySnapshotSummary(
+            id: plan.snapshotID,
+            revision: plan.snapshotRevision,
+            createdAt: ISO8601DateFormatter().date(from: plan.snapshotCreatedAt) ?? .distantPast,
+            indexCount: plan.snapshotIndexCount,
+            entryCount: plan.snapshotEntryCount,
+            secretReferenceCount: plan.snapshotSecretReferenceCount
+        )
+        return (summary, plan.semanticDiff?.changes.count ?? 0)
     }
 
-    public func restoreLatestRecoverySnapshot() throws -> SensitiveCatalogSnapshot {
-        guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
-        return try withCatalogLock(exclusive: true) {
+    /// Builds a read-only plan from the newest authenticated snapshot and the
+    /// current on-disk state. No write probe, backup, or mutation occurs.
+    public func recoveryPlan() throws -> CatalogRecoveryPlan? {
+        try withCatalogLock(exclusive: false) {
             guard let snapshot = try loadRecoverySnapshots().max(by: { $0.summary.createdAt < $1.summary.createdAt }) else {
-                throw SensitiveCatalogDocumentStoreError.integrityMissing
+                return nil
             }
-            if fileManager.fileExists(atPath: url.path) {
-                _ = try emergencyBackupCurrentDocument()
-            }
-            let previous = ((try? readIntegrityRecord())?.revision ?? snapshot.summary.revision) + 1
-            try atomicWrite(snapshot.envelope.raw, to: url, operation: .catalogMutation, target: .document)
-            let record = try makeRecord(
-                document: snapshot.document,
-                revision: previous,
-                raw: snapshot.envelope.raw
-            )
-            try atomicWriteIntegrity(record)
-            return SensitiveCatalogSnapshot(document: snapshot.document, revision: previous, integrity: .verified)
+            return try makeRecoveryPlan(for: snapshot)
         }
     }
 
-    func validateLatestRecoveryReferences() async throws {
-        guard let snapshot = try loadRecoverySnapshots().max(by: { $0.summary.createdAt < $1.summary.createdAt }) else {
-            throw SensitiveCatalogDocumentStoreError.integrityMissing
+    /// Validates every opaque reference in the exact snapshot selected by a
+    /// recovery plan. The reference values are never returned to callers.
+    public func validateRecoveryReferences(for plan: CatalogRecoveryPlan) async throws {
+        let snapshot = try withCatalogLock(exclusive: false) {
+            try loadRecoverySnapshot(id: plan.snapshotID)
+        }
+        guard snapshot.summary.revision == plan.snapshotRevision,
+              snapshot.envelope.rawSHA256 == plan.snapshotRawSHA256,
+              snapshot.envelope.semanticSHA256 == plan.snapshotSemanticSHA256,
+              CatalogSemanticDigest.referenceSetSHA256(snapshot.document) == plan.referenceSetSHA256
+        else {
+            throw SensitiveCatalogDocumentStoreError.recoveryConflict
         }
         for reference in referenceSet(snapshot.document).sorted() {
             guard let secretReferenceExists, await secretReferenceExists(reference) else {
                 throw SensitiveCatalogDocumentStoreError.invalidOperation
             }
         }
+    }
+
+    /// Restores exactly the snapshot and current-state pair described by the
+    /// plan. All hashes and counts are re-read while holding the catalog lock;
+    /// a changed current file or snapshot is a CAS conflict.
+    @discardableResult
+    public func restoreRecoverySnapshot(_ plan: CatalogRecoveryPlan) throws -> SensitiveCatalogSnapshot {
+        try withCatalogLock(exclusive: true) {
+            guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
+            let snapshot = try loadRecoverySnapshot(id: plan.snapshotID)
+            let currentPlan = try makeRecoveryPlan(for: snapshot, id: plan.id)
+            guard currentPlan == plan else {
+                throw SensitiveCatalogDocumentStoreError.recoveryConflict
+            }
+            if fileManager.fileExists(atPath: url.path) {
+                _ = try emergencyBackupCurrentDocument()
+            }
+            let baseRevision = currentPlan.currentAcceptedRevision ?? snapshot.summary.revision
+            guard baseRevision < UInt64.max else {
+                throw SensitiveCatalogDocumentStoreError.writeFailed
+            }
+            let targetRevision = baseRevision + 1
+            try atomicWrite(snapshot.envelope.raw, to: url, operation: .catalogMutation, target: .document)
+            let record = try makeRecord(
+                document: snapshot.document,
+                revision: targetRevision,
+                raw: snapshot.envelope.raw
+            )
+            try atomicWriteIntegrity(record)
+            try? captureRecoverySnapshot(raw: snapshot.envelope.raw, record: record)
+            return SensitiveCatalogSnapshot(document: snapshot.document, revision: targetRevision, integrity: .verified)
+        }
+    }
+
+    public func restoreLatestRecoverySnapshot() throws -> SensitiveCatalogSnapshot {
+        guard let plan = try recoveryPlan() else {
+            throw SensitiveCatalogDocumentStoreError.integrityMissing
+        }
+        return try restoreRecoverySnapshot(plan)
+    }
+
+    func validateLatestRecoveryReferences() async throws {
+        guard let plan = try recoveryPlan() else {
+            throw SensitiveCatalogDocumentStoreError.integrityMissing
+        }
+        try await validateRecoveryReferences(for: plan)
     }
 
     /// Runs a non-destructive probe in the selected document's parent from
@@ -440,9 +496,7 @@ public actor SensitiveCatalogDocumentStore {
             }
         }
 
-        let parentFsyncStatus = parent.path.withCString { path in
-            svlt_fsync_directory(path)
-        }
+        let parentFsyncStatus = directoryFsyncStatus(parent.path)
         parentFsync = parentFsyncStatus == 0
             ? "PARENT_FSYNC_OK"
             : preflightFailure(stage: .preflightDirectoryFsync, errno: parentFsyncStatus)
@@ -500,6 +554,16 @@ public actor SensitiveCatalogDocumentStore {
 
     public func validate() throws -> SensitiveCatalogSnapshot { try snapshot() }
 
+    /// Read-only Catalog validation for editor integrations. Unlike
+    /// `snapshot()`, this path never reconciles accepted state, writes an
+    /// integrity sidecar, creates a recovery archive, or runs the parent
+    /// directory write probe.
+    public func validationReport() throws -> CatalogValidationReport {
+        try withCatalogLock(exclusive: false) {
+            try validationReportUnlocked()
+        }
+    }
+
     public func integrityStatus() -> SensitiveCatalogIntegrityStatus {
         do { return try snapshot().integrity }
         catch SensitiveCatalogDocumentStoreError.legacyCatalogUnsupported { return .legacyCatalogUnsupported }
@@ -532,6 +596,11 @@ public actor SensitiveCatalogDocumentStore {
     @discardableResult
     public func createIndex(title: String, aliases: [String] = [], tags: [String] = [], expectedRevision: UInt64? = nil) throws -> SensitiveCatalogSnapshot {
         let index = try SecretCatalogIndex.generated(title: title, aliases: aliases, tags: tags)
+        return try createIndex(index, expectedRevision: expectedRevision)
+    }
+
+    @discardableResult
+    public func createIndex(_ index: SecretCatalogIndex, expectedRevision: UInt64? = nil) throws -> SensitiveCatalogSnapshot {
         return try mutate(expectedRevision: expectedRevision) { document in
             guard !document.indexes.contains(where: { $0.id == index.id }) else { throw SensitiveCatalogDocumentStoreError.invalidOperation }
             return SecretCatalogDocument(indexes: document.indexes + [index], entries: document.entries)
@@ -864,6 +933,114 @@ public actor SensitiveCatalogDocumentStore {
         return value
     }
 
+    private func validationReportUnlocked() throws -> CatalogValidationReport {
+        guard let url = documentURL else {
+            throw SensitiveCatalogDocumentStoreError.noSelectedDocument
+        }
+        guard fileManager.fileExists(atPath: url.path) else {
+            return CatalogValidationReport(status: .notFound)
+        }
+        try assertSafeFile(url)
+
+        let raw: Data
+        do {
+            raw = try readFileData(from: url, stage: .readDocument, operation: .catalogValidate)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            throw error
+        } catch {
+            throw SensitiveCatalogDocumentStoreError.writeFailed
+        }
+        let parsed = SensitiveCatalogDocumentCodec.validateDetailed(raw)
+        guard parsed.status == .found else { return parsed }
+
+        let stateURL = try integrityURL()
+        guard fileManager.fileExists(atPath: stateURL.path) else {
+            return CatalogValidationReport(
+                status: .integrityMissing,
+                rawSHA256: parsed.rawSHA256,
+                diagnostics: [CatalogValidationDiagnostic(
+                    code: "INTEGRITY_MISSING",
+                    line: 1,
+                    column: 1,
+                    scope: .document,
+                    message: "目录内容有效，但没有已接受的完整性状态。",
+                    hint: "请在 SVLT App 中完成目录初始化或迁移。"
+                )]
+            )
+        }
+
+        let record: CatalogIntegrityRecord
+        do {
+            record = try readIntegrityRecord(at: stateURL)
+            try verify(record)
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            let diagnostic = CatalogValidationDiagnostic(
+                code: "INTEGRITY_INVALID",
+                line: 1,
+                column: 1,
+                scope: .document,
+                message: "目录完整性状态验证失败。",
+                hint: "请在 SVLT App 中检查完整性状态或使用 Recovery。"
+            )
+            switch error {
+            case .integrityMissing, .invalidIntegrity, .externalModification:
+                return CatalogValidationReport(
+                    status: .invalidCatalog,
+                    rawSHA256: parsed.rawSHA256,
+                    diagnostics: [diagnostic]
+                )
+            default:
+                throw error
+            }
+        }
+
+        let document: SecretCatalogDocument
+        do {
+            document = try SensitiveCatalogDocumentCodec.decode(raw)
+        } catch {
+            return parsed
+        }
+        let rawSHA256 = sha256Hex(raw)
+        guard document != record.acceptedDocument else {
+            return CatalogValidationReport(
+                status: .found,
+                revision: record.revision,
+                rawSHA256: rawSHA256
+            )
+        }
+
+        let diff = CatalogSemanticDiff.between(old: record.acceptedDocument, new: document)
+        guard diff.requiresApproval else {
+            // Safe external metadata changes are deliberately reported as
+            // syntactically valid. Accepted-state reconciliation remains in
+            // the App/store mutation path, not in this validator.
+            return CatalogValidationReport(
+                status: .found,
+                revision: record.revision,
+                rawSHA256: rawSHA256
+            )
+        }
+        let semanticSHA256 = semanticDigest(document)
+        return CatalogValidationReport(
+            status: .pendingExternalChange,
+            revision: record.revision,
+            rawSHA256: rawSHA256,
+            pendingExternalChange: CatalogPendingExternalChange(
+                acceptedRevision: record.revision,
+                rawSHA256: rawSHA256,
+                semanticSHA256: semanticSHA256
+            ),
+            diagnostics: [CatalogValidationDiagnostic(
+                code: "PENDING_EXTERNAL_CHANGE",
+                line: 1,
+                column: 1,
+                scope: .document,
+                message: "目录存在尚未批准的高风险外部修改。",
+                hint: "请在 SVLT App 中查看语义差异并完成独立审批。"
+            )]
+        )
+    }
+
     private func snapshotUnlocked() throws -> SensitiveCatalogSnapshot {
         guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
         try recoverInterruptedV2MigrationUnlocked()
@@ -995,11 +1172,23 @@ public actor SensitiveCatalogDocumentStore {
                 guard try decodeV3(raw) == targetDocument else {
                     throw SensitiveCatalogDocumentStoreError.malformedDocument
                 }
-                try captureRecoverySnapshot(raw: raw, document: targetDocument, revision: previous)
-            try atomicWrite(raw, to: url, operation: .catalogMutation, target: .document)
+                // Archive only the state that was already authenticated by
+                // the accepted-state sidecar. `raw`/`targetDocument` are the
+                // candidate and must never become a trusted recovery source.
+                if let accepted = try? readIntegrityRecord(),
+                   accepted.revision == previous,
+                   accepted.acceptedDocument == currentDocument,
+                   accepted.rawSHA256 == sha256Hex(before) {
+                    try verify(accepted)
+                    try captureRecoverySnapshot(raw: before, record: accepted)
+                }
+                try atomicWrite(raw, to: url, operation: .catalogMutation, target: .document)
                 let revision = previous + 1
                 let record = try makeRecord(document: targetDocument, revision: revision, raw: raw)
                 try atomicWriteIntegrity(record)
+                // The new state is trusted only after both document and
+                // integrity commits have succeeded.
+                try? captureRecoverySnapshot(raw: raw, record: record)
                 return SensitiveCatalogSnapshot(document: targetDocument, revision: revision, integrity: .verified)
             } else {
                 guard sourceDocument == SecretCatalogDocument() else {
@@ -1011,6 +1200,7 @@ public actor SensitiveCatalogDocumentStore {
                 let revision = previous + 1
                 let record = try makeRecord(document: targetDocument, revision: revision, raw: raw)
                 try atomicWriteIntegrity(record)
+                try? captureRecoverySnapshot(raw: raw, record: record)
                 return SensitiveCatalogSnapshot(document: targetDocument, revision: revision, integrity: .verified)
             }
         }
@@ -1232,9 +1422,10 @@ public actor SensitiveCatalogDocumentStore {
         try assertSafeFile(url)
         var bytes: UnsafeMutableRawPointer?
         var length = 0
-        let status = url.path.withCString { path in
-            svlt_read_file(path, &bytes, &length)
-        }
+        let observed = readFileStatus(url.path)
+        let status = observed.status
+        bytes = observed.bytes
+        length = observed.length
         guard status == 0,
               let bytes,
               length <= svltPosixFileReaderMaximumBytes
@@ -1264,19 +1455,27 @@ public actor SensitiveCatalogDocumentStore {
         return directory
     }
 
-    private func captureRecoverySnapshot(raw: Data, document: SecretCatalogDocument, revision: UInt64) throws {
+    private func captureRecoverySnapshot(raw: Data, record: CatalogIntegrityRecord) throws {
+        try verify(record)
+        guard record.rawSHA256 == sha256Hex(raw),
+              record.semanticSHA256 == semanticDigest(record.acceptedDocument)
+        else {
+            throw SensitiveCatalogDocumentStoreError.invalidIntegrity
+        }
         let directory = try recoveryDirectory()
         var envelope = CatalogRecoverySnapshotEnvelope(
-            schemaVersion: 1,
-            revision: revision,
+            schemaVersion: CatalogRecoverySnapshotEnvelope.currentSchemaVersion,
+            revision: record.revision,
             createdAt: Date(),
             rawSHA256: sha256Hex(raw),
-            semanticSHA256: semanticDigest(document),
+            semanticSHA256: semanticDigest(record.acceptedDocument),
+            acceptedUpdatedAt: record.updatedAt,
+            acceptedStateHMAC: record.hmac,
             raw: raw,
             hmac: Data()
         )
         envelope.hmac = recoveryHMAC(envelope: envelope, excludingMAC: true)
-        let name = "snapshot-\(revision)-\(ISO8601DateFormatter().string(from: envelope.createdAt).replacingOccurrences(of: ":", with: ""))-\(UUID().uuidString.lowercased()).json"
+        let name = "snapshot-\(record.revision)-\(ISO8601DateFormatter().string(from: envelope.createdAt).replacingOccurrences(of: ":", with: ""))-\(UUID().uuidString.lowercased()).json"
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(envelope)
@@ -1299,11 +1498,16 @@ public actor SensitiveCatalogDocumentStore {
         var result: [LoadedCatalogRecoverySnapshot] = []
         for url in try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) where url.lastPathComponent.hasPrefix("snapshot-") {
             guard let envelope = try? JSONDecoder().decode(CatalogRecoverySnapshotEnvelope.self, from: readFileData(from: url)),
-                  envelope.schemaVersion == 1,
+                  envelope.schemaVersion == CatalogRecoverySnapshotEnvelope.currentSchemaVersion,
                   envelope.hmac == recoveryHMAC(envelope: envelope, excludingMAC: true),
                   sha256Hex(envelope.raw) == envelope.rawSHA256,
                   let document = try? decodeV3(envelope.raw),
-                  semanticDigest(document) == envelope.semanticSHA256
+                  semanticDigest(document) == envelope.semanticSHA256,
+                  envelope.revision > 0,
+                  !envelope.acceptedUpdatedAt.isEmpty,
+                  let acceptedStateHMAC = Data(base64Encoded: envelope.acceptedStateHMAC),
+                  acceptedStateHMAC.count == 32,
+                  acceptedStateMatches(envelope: envelope, document: document, expectedHMAC: acceptedStateHMAC)
             else { continue }
             result.append(LoadedCatalogRecoverySnapshot(
                 summary: CatalogRecoverySnapshotSummary(
@@ -1321,6 +1525,102 @@ public actor SensitiveCatalogDocumentStore {
         return result
     }
 
+    private func loadRecoverySnapshot(id: String) throws -> LoadedCatalogRecoverySnapshot {
+        guard !id.isEmpty,
+              let item = try loadRecoverySnapshots().first(where: { $0.summary.id == id })
+        else {
+            throw SensitiveCatalogDocumentStoreError.revisionConflict
+        }
+        return item
+    }
+
+    private func makeRecoveryPlan(
+        for snapshot: LoadedCatalogRecoverySnapshot,
+        id: UUID = UUID()
+    ) throws -> CatalogRecoveryPlan {
+        let current: (raw: Data, document: SecretCatalogDocument?, record: CatalogIntegrityRecord?)?
+        if let url = documentURL, fileManager.fileExists(atPath: url.path) {
+            try assertSafeFile(url)
+            let raw = try readFileData(from: url)
+            let document = try? decodeV3(raw)
+            let record: CatalogIntegrityRecord?
+            if let document {
+                record = try? {
+                    let value = try readIntegrityRecord()
+                    try verify(value)
+                    return value
+                }()
+            } else {
+                record = nil
+            }
+            current = (raw, document, record)
+        } else {
+            current = nil
+        }
+
+        let currentDocument = current?.document
+        let currentRawSHA256 = current.map { sha256Hex($0.raw) }
+        let currentSemanticSHA256 = currentDocument.map(semanticDigest)
+        let currentAcceptedRevision = current?.record?.revision
+        let currentState: CatalogRecoveryCurrentState
+        if let current {
+            if current.document == nil {
+                currentState = .malformed
+            } else if current.record == nil {
+                currentState = .integrityMismatch
+            } else if current.record?.acceptedDocument == current.document,
+                      current.record?.rawSHA256 == currentRawSHA256 {
+                currentState = .accepted
+            } else {
+                currentState = .parseable
+            }
+        } else {
+            currentState = .missing
+        }
+
+        let diff = currentDocument.map { CatalogSemanticDiff.between(old: $0, new: snapshot.document) }
+        return CatalogRecoveryPlan(
+            id: id,
+            snapshotID: snapshot.summary.id,
+            snapshotRevision: snapshot.summary.revision,
+            snapshotCreatedAt: iso8601String(snapshot.summary.createdAt),
+            snapshotRawSHA256: snapshot.envelope.rawSHA256,
+            snapshotSemanticSHA256: snapshot.envelope.semanticSHA256,
+            currentRawSHA256: currentRawSHA256,
+            currentSemanticSHA256: currentSemanticSHA256,
+            currentAcceptedRevision: currentAcceptedRevision,
+            currentState: currentState,
+            semanticDiff: diff,
+            referenceSetSHA256: CatalogSemanticDigest.referenceSetSHA256(snapshot.document),
+            snapshotIndexCount: snapshot.document.indexes.count,
+            snapshotEntryCount: snapshot.document.entries.count,
+            snapshotSecretReferenceCount: referenceSet(snapshot.document).count,
+            currentIndexCount: currentDocument?.indexes.count,
+            currentEntryCount: currentDocument?.entries.count,
+            currentSecretReferenceCount: currentDocument.map { referenceSet($0).count }
+        )
+    }
+
+    private func acceptedStateMatches(
+        envelope: CatalogRecoverySnapshotEnvelope,
+        document: SecretCatalogDocument,
+        expectedHMAC: Data
+    ) -> Bool {
+        guard let key = try? keyStore.loadOrCreateKey() else { return false }
+        let state = CatalogAcceptedState(
+            revision: envelope.revision,
+            semanticSHA256: envelope.semanticSHA256,
+            acceptedDocument: document,
+            rawSHA256: envelope.rawSHA256,
+            updatedAt: envelope.acceptedUpdatedAt
+        )
+        let computed = Data(HMAC<SHA256>.authenticationCode(
+            for: integrityPayload(state),
+            using: SymmetricKey(data: key)
+        ))
+        return constantTimeEqual(computed, expectedHMAC)
+    }
+
     private func emergencyBackupCurrentDocument() throws -> Int {
         guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
         let raw = try readFileData(from: url)
@@ -1334,11 +1634,44 @@ public actor SensitiveCatalogDocumentStore {
         envelope: CatalogRecoverySnapshotEnvelope,
         excludingMAC: Bool
     ) -> Data {
-        var payload = Data("SVLT-CATALOG-RECOVERY-V1\n".utf8)
-        payload.append(Data("\(envelope.revision)\n\(envelope.rawSHA256)\n\(envelope.semanticSHA256)\n".utf8))
+        var payload = Data("SVLT-CATALOG-RECOVERY-V2\n".utf8)
+        payload.append(Data("\(envelope.schemaVersion)\n\(envelope.revision)\n\(envelope.createdAt.timeIntervalSince1970)\n\(envelope.rawSHA256)\n\(envelope.semanticSHA256)\n\(envelope.acceptedUpdatedAt)\n\(envelope.acceptedStateHMAC)\n".utf8))
         payload.append(envelope.raw)
         guard let key = try? keyStore.loadOrCreateKey() else { return Data() }
         return Data(HMAC<SHA256>.authenticationCode(for: payload, using: SymmetricKey(data: key)))
+    }
+
+    private func directoryFsyncStatus(_ path: String) -> Int32 {
+        guard !path.isEmpty else { return EINVAL }
+        let semaphore = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue.global(qos: .utility)
+        var status = ETIMEDOUT
+        queue.async {
+            let observed = path.withCString { svlt_fsync_directory($0) }
+            status = observed
+            semaphore.signal()
+        }
+        guard case .success = semaphore.wait(timeout: .now() + .seconds(3)) else {
+            return ETIMEDOUT
+        }
+        return status
+    }
+
+    private func readFileStatus(_ path: String) -> (status: Int32, bytes: UnsafeMutableRawPointer?, length: Int) {
+        let semaphore = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue.global(qos: .utility)
+        var result = (status: ETIMEDOUT, bytes: Optional<UnsafeMutableRawPointer>.none, length: 0)
+        queue.async {
+            var observedBytes: UnsafeMutableRawPointer?
+            var observedLength = 0
+            let status = path.withCString { svlt_read_file($0, &observedBytes, &observedLength) }
+            result = (status, observedBytes, observedLength)
+            semaphore.signal()
+        }
+        guard case .success = semaphore.wait(timeout: .now() + .seconds(3)) else {
+            return result
+        }
+        return result
     }
 
     private func makeRecord(document: SecretCatalogDocument, revision: UInt64, raw: Data) throws -> CatalogIntegrityRecord {
@@ -1379,10 +1712,7 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     private func semanticDigest(_ document: SecretCatalogDocument) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let data = (try? encoder.encode(document)) ?? Data()
-        return sha256Hex(data)
+        CatalogSemanticDigest.sha256(document)
     }
 
     private func referenceSet(_ document: SecretCatalogDocument) -> Set<String> {
@@ -2064,9 +2394,7 @@ public actor SensitiveCatalogDocumentStore {
                 )
             }
             temporaryExists = false
-            let directoryStatus = parent.path.withCString { path in
-                svlt_fsync_directory(path)
-            }
+            let directoryStatus = directoryFsyncStatus(parent.path)
             guard directoryStatus == 0 else {
                 throw POSIXFileWriteError(
                     stage: target == .integrity ? .fsyncIntegrityDirectory : .fsyncDocumentDirectory,

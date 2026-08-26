@@ -16,6 +16,9 @@ public enum SecretCatalogAgentError: Error, Equatable, Sendable {
     /// body, or underlying filesystem detail.
     case writeFailed
     case agentWriteApprovalUnavailable
+    /// The recovery preview no longer describes the current file or the
+    /// selected authenticated snapshot. Callers must build a new preview.
+    case recoveryConflict
     /// The Catalog write failed and at least one newly-created opaque record
     /// could not be deleted. The ID is persisted in cleanup metadata for a
     /// later orphan scan/reconciliation; plaintext is never included.
@@ -74,8 +77,14 @@ public struct CatalogAgentWriteAuthorizationStatus: Codable, Equatable, Sendable
 
 public enum CatalogAgentWriteAccessDuration: String, Codable, CaseIterable, Sendable {
     case singleUse = "single-use"
+    /// Deprecated wire values. They remain decodable for old clients, but the
+    /// service must reject them instead of creating a reusable grant.
+    @available(*, deprecated, message: "Agent catalog authorization is bound to one semantic operation")
     case tenMinutes = "10-minutes"
+    @available(*, deprecated, message: "Agent catalog authorization is bound to one semantic operation")
     case thirtyMinutes = "30-minutes"
+
+    public static let allCases: [Self] = [.singleUse]
 
     public var displayName: String {
         switch self {
@@ -101,12 +110,78 @@ public enum CatalogAgentWriteRequestSource: String, Codable, CaseIterable, Senda
     case mcpClient = "mcp-client"
 
     public var displayName: String {
+        // This is self-reported by an MCP caller and is only a display hint.
+        "MCP 智能体"
+    }
+}
+
+public enum CatalogAgentWriteOperation: String, Codable, CaseIterable, Sendable {
+    case createIndex
+    case createEntry
+    case patchMetadata
+    case commitDraft
+    case addSecretPlaceholder
+    case batchMutation
+
+    public var displayName: String {
         switch self {
-        case .codex: return "Codex"
-        case .claude: return "Claude"
-        case .openclaw: return "OpenClaw"
-        case .mcpClient: return "MCP Client"
+        case .createIndex: return "新建分组"
+        case .createEntry: return "新建条目"
+        case .patchMetadata: return "修改条目元数据"
+        case .commitDraft: return "提交条目草稿"
+        case .addSecretPlaceholder: return "新增加密字段占位"
+        case .batchMutation: return "批量修改目录"
         }
+    }
+}
+
+/// Exact, non-secret binding material for one Agent Catalog mutation.
+public struct CatalogAgentWriteIntent: Codable, Equatable, Sendable {
+    public let requestID: UUID?
+    public let operation: CatalogAgentWriteOperation
+    public let indexID: String?
+    public let entryID: String?
+    public let fieldKey: String?
+    public let acceptedRevision: UInt64
+    public let candidateSemanticSHA256: String
+
+    public init(
+        requestID: UUID? = nil,
+        operation: CatalogAgentWriteOperation,
+        indexID: String? = nil,
+        entryID: String? = nil,
+        fieldKey: String? = nil,
+        acceptedRevision: UInt64,
+        candidateSemanticSHA256: String
+    ) {
+        self.requestID = requestID
+        self.operation = operation
+        self.indexID = indexID
+        self.entryID = entryID
+        self.fieldKey = fieldKey
+        self.acceptedRevision = acceptedRevision
+        self.candidateSemanticSHA256 = candidateSemanticSHA256
+    }
+
+    public func bound(to requestID: UUID) -> Self {
+        Self(
+            requestID: requestID,
+            operation: operation,
+            indexID: indexID,
+            entryID: entryID,
+            fieldKey: fieldKey,
+            acceptedRevision: acceptedRevision,
+            candidateSemanticSHA256: candidateSemanticSHA256
+        )
+    }
+
+    public func matches(_ other: Self) -> Bool {
+        operation == other.operation
+            && indexID == other.indexID
+            && entryID == other.entryID
+            && fieldKey == other.fieldKey
+            && acceptedRevision == other.acceptedRevision
+            && candidateSemanticSHA256 == other.candidateSemanticSHA256
     }
 }
 
@@ -136,19 +211,35 @@ public struct CatalogAgentWriteAccessRequest: Codable, Equatable, Identifiable, 
     public let reasonCategory: CatalogAgentWriteReasonCategory
     public let duration: CatalogAgentWriteAccessDuration
     public let createdAt: String
+    /// Optional for decoding a legacy generic request. New service-created
+    /// requests always carry an exact operation-bound intent.
+    public let intent: CatalogAgentWriteIntent?
+    public let expiresAt: String?
+    /// Populated only by a trusted transport. MCP self-reporting leaves it nil.
+    public let verifiedSource: String?
 
     public init(
         id: UUID = UUID(),
         source: CatalogAgentWriteRequestSource,
         reasonCategory: CatalogAgentWriteReasonCategory,
-        duration: CatalogAgentWriteAccessDuration,
-        createdAt: String = ISO8601DateFormatter().string(from: Date())
+        duration: CatalogAgentWriteAccessDuration = .singleUse,
+        createdAt: String = ISO8601DateFormatter().string(from: Date()),
+        intent: CatalogAgentWriteIntent? = nil,
+        expiresAt: String? = nil,
+        verifiedSource: String? = nil
     ) {
         self.id = id
         self.source = source
         self.reasonCategory = reasonCategory
         self.duration = duration
         self.createdAt = createdAt
+        self.intent = intent
+        self.expiresAt = expiresAt
+        self.verifiedSource = verifiedSource
+    }
+
+    public var displayName: String {
+        verifiedSource ?? "未验证的 MCP 客户端"
     }
 }
 
@@ -296,22 +387,181 @@ public struct CatalogFilePreflight: Codable, Equatable, Sendable {
     }
 }
 
-public struct CatalogValidationResult: Codable, Equatable, Sendable {
+public enum CatalogDiagnosticSeverity: String, Codable, CaseIterable, Sendable {
+    case error
+    case warning
+}
+
+public enum CatalogDiagnosticScope: String, Codable, CaseIterable, Sendable {
+    case document
+    case policy
+    case index
+    case entry
+    case field
+    case unmanaged
+}
+
+/// A source-safe Catalog diagnostic. Line and column are hints for an editor;
+/// the message must never echo Markdown values, secret references, paths, or
+/// plaintext.
+public struct CatalogValidationDiagnostic: Codable, Equatable, Sendable, Identifiable {
+    public let id: String
+    public let severity: CatalogDiagnosticSeverity
+    public let code: String
+    public let line: Int
+    public let column: Int?
+    public let endLine: Int?
+    public let endColumn: Int?
+    public let scope: CatalogDiagnosticScope
+    public let message: String
+    public let hint: String?
+
+    public init(
+        id: String? = nil,
+        severity: CatalogDiagnosticSeverity = .error,
+        code: String,
+        line: Int,
+        column: Int? = nil,
+        endLine: Int? = nil,
+        endColumn: Int? = nil,
+        scope: CatalogDiagnosticScope,
+        message: String,
+        hint: String? = nil
+    ) {
+        self.id = id ?? "\(code):\(line):\(column ?? 1)"
+        self.severity = severity
+        self.code = code
+        self.line = max(1, line)
+        self.column = column
+        self.endLine = endLine
+        self.endColumn = endColumn
+        self.scope = scope
+        self.message = message
+        self.hint = hint
+    }
+}
+
+/// Read-only validation output shared by the App, MCP bridge, and Obsidian
+/// plugin. It contains no document body or secret-bearing field values.
+public struct CatalogValidationReport: Codable, Equatable, Sendable {
     public let status: SecretCatalogSearchStatus
     public let revision: UInt64?
+    public let rawSHA256: String?
     public let pendingExternalChange: CatalogPendingExternalChange?
-    public let filePreflight: CatalogFilePreflight?
+    public let diagnostics: [CatalogValidationDiagnostic]
 
     public init(
         status: SecretCatalogSearchStatus,
         revision: UInt64? = nil,
+        rawSHA256: String? = nil,
         pendingExternalChange: CatalogPendingExternalChange? = nil,
-        filePreflight: CatalogFilePreflight? = nil
+        diagnostics: [CatalogValidationDiagnostic] = []
     ) {
         self.status = status
         self.revision = revision
+        self.rawSHA256 = rawSHA256
+        self.pendingExternalChange = pendingExternalChange
+        self.diagnostics = diagnostics
+    }
+}
+
+public struct CatalogValidationResult: Codable, Equatable, Sendable {
+    public let status: SecretCatalogSearchStatus
+    public let revision: UInt64?
+    public let rawSHA256: String?
+    public let pendingExternalChange: CatalogPendingExternalChange?
+    public let filePreflight: CatalogFilePreflight?
+    public let diagnostics: [CatalogValidationDiagnostic]
+
+    public init(
+        status: SecretCatalogSearchStatus,
+        revision: UInt64? = nil,
+        rawSHA256: String? = nil,
+        pendingExternalChange: CatalogPendingExternalChange? = nil,
+        filePreflight: CatalogFilePreflight? = nil,
+        diagnostics: [CatalogValidationDiagnostic] = []
+    ) {
+        self.status = status
+        self.revision = revision
+        self.rawSHA256 = rawSHA256
         self.pendingExternalChange = pendingExternalChange
         self.filePreflight = filePreflight
+        self.diagnostics = diagnostics
+    }
+}
+
+/// The state observed while preparing a recovery operation.  A recovery plan
+/// is a read-only description; it never authorizes a restore by itself.
+public enum CatalogRecoveryCurrentState: String, Codable, CaseIterable, Sendable {
+    case accepted
+    case parseable
+    case malformed
+    case integrityMismatch = "integrity-mismatch"
+    case missing
+}
+
+/// An immutable, non-secret compare-and-swap description for restoring one
+/// authenticated recovery snapshot.  The semantic diff may contain opaque
+/// `secret://` handles, but never decrypted values; UI should present counts
+/// and risk categories rather than the handles themselves.
+public struct CatalogRecoveryPlan: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let snapshotID: String
+    public let snapshotRevision: UInt64
+    public let snapshotCreatedAt: String
+    public let snapshotRawSHA256: String
+    public let snapshotSemanticSHA256: String
+    public let currentRawSHA256: String?
+    public let currentSemanticSHA256: String?
+    public let currentAcceptedRevision: UInt64?
+    public let currentState: CatalogRecoveryCurrentState
+    public let semanticDiff: CatalogSemanticDiff?
+    public let referenceSetSHA256: String
+    public let snapshotIndexCount: Int
+    public let snapshotEntryCount: Int
+    public let snapshotSecretReferenceCount: Int
+    public let currentIndexCount: Int?
+    public let currentEntryCount: Int?
+    public let currentSecretReferenceCount: Int?
+
+    public init(
+        id: UUID = UUID(),
+        snapshotID: String,
+        snapshotRevision: UInt64,
+        snapshotCreatedAt: String,
+        snapshotRawSHA256: String,
+        snapshotSemanticSHA256: String,
+        currentRawSHA256: String?,
+        currentSemanticSHA256: String?,
+        currentAcceptedRevision: UInt64?,
+        currentState: CatalogRecoveryCurrentState,
+        semanticDiff: CatalogSemanticDiff?,
+        referenceSetSHA256: String,
+        snapshotIndexCount: Int,
+        snapshotEntryCount: Int,
+        snapshotSecretReferenceCount: Int,
+        currentIndexCount: Int? = nil,
+        currentEntryCount: Int? = nil,
+        currentSecretReferenceCount: Int? = nil
+    ) {
+        self.id = id
+        self.snapshotID = snapshotID
+        self.snapshotRevision = snapshotRevision
+        self.snapshotCreatedAt = snapshotCreatedAt
+        self.snapshotRawSHA256 = snapshotRawSHA256
+        self.snapshotSemanticSHA256 = snapshotSemanticSHA256
+        self.currentRawSHA256 = currentRawSHA256
+        self.currentSemanticSHA256 = currentSemanticSHA256
+        self.currentAcceptedRevision = currentAcceptedRevision
+        self.currentState = currentState
+        self.semanticDiff = semanticDiff
+        self.referenceSetSHA256 = referenceSetSHA256
+        self.snapshotIndexCount = snapshotIndexCount
+        self.snapshotEntryCount = snapshotEntryCount
+        self.snapshotSecretReferenceCount = snapshotSecretReferenceCount
+        self.currentIndexCount = currentIndexCount
+        self.currentEntryCount = currentEntryCount
+        self.currentSecretReferenceCount = currentSecretReferenceCount
     }
 }
 

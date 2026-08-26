@@ -33,6 +33,18 @@ public actor AppControlIPCClient {
         return status
     }
 
+    public func catalogRecoveryPlan() async throws -> CatalogRecoveryPlan? {
+        let response = try await send(.catalogRecoveryPlan)
+        guard case let .catalogRecoveryPlan(plan) = response else { throw unexpected(response) }
+        return plan
+    }
+
+    public func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async throws -> CatalogValidationResult {
+        let response = try await send(.catalogRestoreRecovery(plan: plan))
+        guard case let .catalogStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         let response = try await send(.catalogAdoptExternalV2)
         guard case let .catalogStatus(status) = response else { throw unexpected(response) }
@@ -183,6 +195,14 @@ public actor AppControlIPCClient {
             throw unexpected(response)
         }
         return (reference, revision)
+    }
+
+    public func catalogRevealField(entryID: String, key: String) async throws -> String {
+        let response = try await send(.catalogRevealField(entryID: entryID, key: key))
+        guard case let .catalogFieldPlaintext(plaintext) = response else {
+            throw unexpected(response)
+        }
+        return plaintext
     }
 
     public func send(_ request: AppControlRequest) async throws -> AppControlResponse {

@@ -150,14 +150,14 @@ for one-lock, one-revision multi-operation changes.
 3. Pair the plugin with the local SVLT app.
 4. Open the v3 `敏感信息.md` in Obsidian and edit headings, notes, and
    `[[WikiLinks]]` normally. The plugin validates changes after a short debounce
-   and reports invalid or approval-required semantic changes in Chinese.
-5. Select sensitive text in Obsidian and encrypt it into an opaque `secret://`
-   reference.
-6. Use the App's local scan to review replacement candidates before converting
-   them to references.
-7. Use reveal for the current paragraph only when local display is needed. The
-   app opens an app-owned temporary reveal window; the plugin receives status
-   only, not decrypted values.
+   and reports precise diagnostics with line locations in Chinese.
+5. Keep credential management in the App: create groups and entries, fill or
+   replace passwords, and view plaintext by clicking "解密" on the exact field
+   after device-owner authentication.
+6. Agent Catalog mutations each create their own operation-bound request; the
+   App authenticates the user and the approved ticket is consumed once.
+7. The plugin is read-only. It never encrypts, decrypts, restores, or writes a
+   managed catalog, and it never returns plaintext.
 
 MCP `secret_create_request` remains a local app/plugin compatibility endpoint
 for creating opaque references. MCP does not expose a generic execution

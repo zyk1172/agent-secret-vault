@@ -20,6 +20,10 @@ public struct AppControlRequestHandler: Sendable {
                 return .catalogStatus(try await service.catalogStatus())
             case .repairSensitiveCatalog:
                 return .catalogStatus(try await service.repairSensitiveCatalog())
+            case .catalogRecoveryPlan:
+                return .catalogRecoveryPlan(try await service.catalogRecoveryPlan())
+            case let .catalogRestoreRecovery(plan):
+                return .catalogStatus(try await service.catalogRestoreRecovery(plan))
             case .catalogAdoptExternalV2:
                 return .catalogStatus(try await service.adoptCatalogExternalV2())
             case .catalogAdoptExternalV3:
@@ -77,6 +81,8 @@ public struct AppControlRequestHandler: Sendable {
                     policy: policy
                 )
                 return .secretBound(reference: result.reference, revision: result.revision)
+            case let .catalogRevealField(entryID, key):
+                return .catalogFieldPlaintext(try await service.catalogRevealField(entryID: entryID, key: key))
             }
         } catch let error as SecretCatalogAgentError {
             return .failure(code: Self.catalogCode(error))
@@ -97,6 +103,7 @@ public struct AppControlRequestHandler: Sendable {
         case .invalidCatalog: return "CATALOG_INVALID"
         case .agentWriteNotAllowed: return "CATALOG_AGENT_WRITE_NOT_ALLOWED"
         case .revisionConflict: return "CATALOG_REVISION_CONFLICT"
+        case .recoveryConflict: return "RECOVERY_CONFLICT"
         case .invalidOperation: return "CATALOG_INVALID_OPERATION"
         case .approvalRequired: return "CATALOG_APPROVAL_REQUIRED"
         case .writeFailed: return "CATALOG_WRITE_FAILED"

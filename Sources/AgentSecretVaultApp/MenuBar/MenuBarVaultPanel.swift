@@ -15,23 +15,21 @@ public struct MenuBarVaultPanel: View {
     let sensitiveScanCandidateCount: Int
     let chooseSensitiveScanRoot: () -> Void
     let rescanSensitiveInformation: () async -> Void
-    let restoreParagraph: (String) async throws -> RestoredParagraph
     let refreshSavedReferences: () async -> Void
     let clearRevealSessions: () async -> Void
     let requestPermanentDelete: (String) -> Void
     let requestTermination: () async -> Void
     @Environment(\.openWindow) private var openWindow
     @State private var selectedSection: VaultWorkbenchSection = .overview
-    @State private var restoreState = MenuBarParagraphRestoreState()
     @State private var copiedReference: String?
     @State private var isRefreshing = false
     @State private var referencePendingDeletion: String?
     @State private var isConfirmingDeletion = false
 
-    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], sensitiveScanRootURL: URL? = nil, sensitiveScanCandidateCount: Int = 0, chooseSensitiveScanRoot: @escaping () -> Void = {}, rescanSensitiveInformation: @escaping () async -> Void = {}, restoreParagraph: @escaping (String) async throws -> RestoredParagraph, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestPermanentDelete: @escaping (String) -> Void, requestTermination: @escaping () async -> Void) {
+    public init(status: WorkbenchStatus, orphanScanResult: OrphanScanResult?, auditEntries: [AgentAutomationAuditEntry], savedReferences: [SecretReferenceMetadata], sensitiveScanRootURL: URL? = nil, sensitiveScanCandidateCount: Int = 0, chooseSensitiveScanRoot: @escaping () -> Void = {}, rescanSensitiveInformation: @escaping () async -> Void = {}, refreshSavedReferences: @escaping () async -> Void, clearRevealSessions: @escaping () async -> Void, requestPermanentDelete: @escaping (String) -> Void, requestTermination: @escaping () async -> Void) {
         self.status = status; self.orphanScanResult = orphanScanResult; self.auditEntries = auditEntries; self.savedReferences = savedReferences
         self.sensitiveScanRootURL = sensitiveScanRootURL; self.sensitiveScanCandidateCount = sensitiveScanCandidateCount; self.chooseSensitiveScanRoot = chooseSensitiveScanRoot; self.rescanSensitiveInformation = rescanSensitiveInformation
-        self.restoreParagraph = restoreParagraph; self.refreshSavedReferences = refreshSavedReferences; self.clearRevealSessions = clearRevealSessions; self.requestPermanentDelete = requestPermanentDelete; self.requestTermination = requestTermination
+        self.refreshSavedReferences = refreshSavedReferences; self.clearRevealSessions = clearRevealSessions; self.requestPermanentDelete = requestPermanentDelete; self.requestTermination = requestTermination
     }
 
     public var body: some View {
@@ -88,7 +86,6 @@ public struct MenuBarVaultPanel: View {
     @ViewBuilder private var compactContent: some View {
         switch selectedSection {
         case .overview: overview
-        case .paragraph: MenuBarParagraphRestoreView(state: restoreState, restoreParagraph: restoreParagraph)
         case .secrets: savedReferencesView
         case .records: recordsView
         case .automation: auditView(entries: Array(auditEntries.prefix(6)))
@@ -99,7 +96,7 @@ public struct MenuBarVaultPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) { statusValue("本机通道", status.ipcAvailable); statusValue("策略引擎", status.ready && !status.approvalPending); statusValue("插件", status.pluginConnected) }
             Text("快捷入口").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            HStack(spacing: 8) { shortcut(.paragraph); shortcut(.secrets); shortcut(.records) }
+            HStack(spacing: 8) { shortcut(.secrets); shortcut(.records) }
             Text("最近动作").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             auditView(entries: Array(auditEntries.prefix(2)))
         }
@@ -148,5 +145,5 @@ public struct MenuBarVaultPanel: View {
     private func fact(_ title: String, _ detail: String) -> some View { VStack(alignment: .leading, spacing: 2) { Text(title).font(.caption.weight(.semibold)); Text(detail).font(.caption).foregroundStyle(.secondary) } }
     private var statusSummary: String { !status.ipcAvailable ? "本机通道未就绪" : (status.approvalPending ? "等待本机审批" : (!status.ready ? "策略引擎不可用" : (status.pluginConnected ? "本机通道和插件可用" : "等待 Obsidian 插件连接"))) }
     private func copy(_ text: String, for reference: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); copiedReference = reference }
-    private func clearSensitiveState() { restoreState.clearSensitiveOutput(); Task { await clearRevealSessions() } }
+    private func clearSensitiveState() { Task { await clearRevealSessions() } }
 }

@@ -3,9 +3,26 @@ import Testing
 import VaultAuthorization
 import VaultCore
 
-@Test func catalogAgentWriteAuthorizationIsAppControlledAndScoped() async throws {
+private func catalogWriteIntent(
+    requestID: UUID = UUID(),
+    operation: CatalogAgentWriteOperation = .createEntry,
+    revision: UInt64 = 1
+) -> CatalogAgentWriteIntent {
+    CatalogAgentWriteIntent(
+        requestID: requestID,
+        operation: operation,
+        indexID: "0123456789ABCDEFGHJKMNPQRS",
+        entryID: "0123456789ABCDEFGHJKMNPQRT",
+        acceptedRevision: revision,
+        candidateSemanticSHA256: String(repeating: "a", count: 64)
+    )
+}
+
+@Test func catalogAgentWriteAuthorizationRequiresExactOperationBinding() async throws {
     let clock = TestCatalogAuthorizationClock(Date(timeIntervalSinceReferenceDate: 100))
     let authorization = CatalogAgentWriteAuthorization(now: { clock.now })
+    let requestID = UUID()
+    let intent = catalogWriteIntent(requestID: requestID)
 
     #expect(await authorization.status().mode == .disabled)
     do {
@@ -14,70 +31,67 @@ import VaultCore
     } catch let error as SecretCatalogAgentError {
         #expect(error == .agentWriteNotAllowed)
     }
-    _ = await authorization.grant(.tenMinutes)
+
+    _ = await authorization.approve(requestID: requestID, intent: intent)
     #expect(await authorization.status().mode == .safe)
-    try await authorization.validateSafeWrite()
+    #expect(await authorization.status().remainingUses == 1)
 
-    let metadataStatus = try await authorization.enable(mode: .metadata, duration: 60)
-    #expect(metadataStatus.mode == .metadata)
-    try await authorization.validate(requiredScope: .metadata)
-    do {
-        try await authorization.validate(requiredScope: .structure)
-        Issue.record("expected scope denial")
-    } catch let error as SecretCatalogAgentError { #expect(error == .agentWriteNotAllowed) }
+    let wrongOperation = CatalogAgentWriteIntent(
+        requestID: requestID,
+        operation: .patchMetadata,
+        indexID: intent.indexID,
+        entryID: intent.entryID,
+        acceptedRevision: intent.acceptedRevision,
+        candidateSemanticSHA256: intent.candidateSemanticSHA256
+    )
+    await #expect(throws: SecretCatalogAgentError.agentWriteNotAllowed) {
+        try await authorization.consume(requestID: requestID, intent: wrongOperation)
+    }
 
-    _ = try await authorization.enable(mode: .structure, duration: 60)
-    try await authorization.validate(requiredScope: .metadata)
-    try await authorization.validate(requiredScope: .structure)
-
-    await authorization.revoke()
-    do {
-        try await authorization.validateSafeWrite()
-        Issue.record("expected revoked authorization")
-    } catch let error as SecretCatalogAgentError { #expect(error == .agentWriteNotAllowed) }
+    try await authorization.consume(requestID: requestID, intent: intent)
+    #expect(await authorization.status().mode == .disabled)
+    await #expect(throws: SecretCatalogAgentError.agentWriteNotAllowed) {
+        try await authorization.consume(requestID: requestID, intent: intent)
+    }
 }
 
-@Test func catalogAgentWriteAuthorizationExpiresAndCannotBeExtendedPastTenMinutes() async throws {
+@Test func catalogAgentWriteAuthorizationExpiresAndCannotBeRecreatedByLegacySetter() async throws {
     let clock = TestCatalogAuthorizationClock(Date(timeIntervalSinceReferenceDate: 200))
     let authorization = CatalogAgentWriteAuthorization(now: { clock.now })
+    let requestID = UUID()
+    let intent = catalogWriteIntent(requestID: requestID)
 
-    await #expect(throws: SecretCatalogAgentError.invalidOperation) {
-        _ = try await authorization.enable(mode: .structure, duration: 601)
-    }
-
-    _ = try await authorization.enable(mode: .metadata, duration: 60)
+    _ = await authorization.approve(requestID: requestID, intent: intent, lifetime: 60)
     clock.now = Date(timeIntervalSinceReferenceDate: 261)
     #expect(await authorization.status().mode == .disabled)
-    do {
-        try await authorization.validate(requiredScope: .metadata)
-        Issue.record("expected expired authorization")
-    } catch let error as SecretCatalogAgentError { #expect(error == .agentWriteNotAllowed) }
-
-    _ = try await authorization.enable(mode: .metadata, duration: 60)
-    await authorization.revoke()
-    #expect(await authorization.status().mode == .disabled)
-}
-
-@Test func catalogAgentWriteGrantIsBoundedRevocableAndSingleUse() async throws {
-    let clock = TestCatalogAuthorizationClock(Date(timeIntervalSinceReferenceDate: 300))
-    let authorization = CatalogAgentWriteAuthorization(now: { clock.now })
-
-    _ = await authorization.grant(.singleUse)
-    #expect(await authorization.status().remainingUses == 1)
-    try await authorization.validateSafeWrite()
-    #expect(await authorization.status().mode == .disabled)
-
-    _ = await authorization.grant(.tenMinutes)
-    clock.now = Date(timeIntervalSinceReferenceDate: 901)
-    do {
-        try await authorization.validateSafeWrite()
-        Issue.record("expected expired safe-write authorization")
-    } catch let error as SecretCatalogAgentError {
-        #expect(error == .agentWriteNotAllowed)
+    await #expect(throws: SecretCatalogAgentError.agentWriteNotAllowed) {
+        try await authorization.consume(requestID: requestID, intent: intent)
     }
 
-    _ = await authorization.grant(.thirtyMinutes)
-    await authorization.revoke()
+    await #expect(throws: SecretCatalogAgentError.agentWriteNotAllowed) {
+        _ = try await authorization.enable(mode: .safe, duration: 60)
+    }
+    await #expect(throws: SecretCatalogAgentError.agentWriteNotAllowed) {
+        try await authorization.validate(requiredScope: .structure)
+    }
+}
+
+@Test func catalogAgentWriteGrantIsOneShotRevocableAndNeverGeneric() async throws {
+    let clock = TestCatalogAuthorizationClock(Date(timeIntervalSinceReferenceDate: 300))
+    let authorization = CatalogAgentWriteAuthorization(now: { clock.now })
+    let requestID = UUID()
+    let intent = catalogWriteIntent(requestID: requestID)
+
+    let grantStatus = await authorization.grant(.tenMinutes)
+    #expect(grantStatus.mode == .disabled)
+
+    _ = await authorization.approve(requestID: requestID, intent: intent)
+    #expect(await authorization.status().remainingUses == 1)
+    try await authorization.consume(requestID: requestID, intent: intent)
+    #expect(await authorization.status().mode == .disabled)
+
+    _ = await authorization.approve(requestID: requestID, intent: intent)
+    await authorization.revoke(requestID: requestID)
     #expect(await authorization.status().mode == .disabled)
 }
 

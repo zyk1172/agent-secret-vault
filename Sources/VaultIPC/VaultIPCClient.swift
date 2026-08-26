@@ -188,13 +188,15 @@ public actor VaultIPCClient {
 
     public func validateCatalog() async throws -> CatalogValidationResult {
         let response = try await send(.catalogValidate)
-        guard case let .catalogValidation(status, revision, filePreflight) = response else {
+        guard case let .catalogValidation(status, revision, rawSHA256, diagnostics, filePreflight) = response else {
             throw unexpected(response)
         }
         return CatalogValidationResult(
             status: status,
             revision: revision,
-            filePreflight: filePreflight
+            rawSHA256: rawSHA256,
+            filePreflight: filePreflight,
+            diagnostics: diagnostics
         )
     }
 

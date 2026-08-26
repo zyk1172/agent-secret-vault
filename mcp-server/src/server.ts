@@ -12,9 +12,9 @@ import {
   AgentRiskAssessment,
   CatalogCreateEntryRequest,
   CatalogBatchMutation,
+  CatalogFilePreflight,
   CatalogDraft,
   CatalogDraftRequest,
-  CatalogFilePreflight,
   CatalogMetadataPatch,
   CatalogWriteResult,
   CatalogValidationResult,
@@ -68,10 +68,14 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
 29. 不得把 SVLT 解密得到的明文写回敏感信息.md。
 30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
-31. Agent 的安全目录修改需要用户批准的有限授权；Agent 只能申请，不能自行开启。
-32. 有限 Agent 授权不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
-33. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
-34. 恢复功能只能恢复结构和 opaque 引用，不能生成或展开明文。`;
+31. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次 operation-bound write request；Agent 不能自行开启权限。
+32. 用户批准 Agent Catalog mutation 前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
+33. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
+34. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
+35. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
+36. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
+37. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
+38. 恢复功能只能恢复结构和 opaque 引用，不能生成或展开明文。`;
 
 export interface VaultIpcClient {
   request(request: IpcRequest): Promise<IpcResponse>;
@@ -183,26 +187,6 @@ const CatalogCreateIndexInput = z
 
 const CatalogCreateEntryInput = CatalogCreateEntryRequest;
 
-const CatalogWriteAccessInput = z
-  .object({
-    requestedScope: z.literal("catalog-safe-write"),
-    source: z.enum(["codex", "claude", "openclaw", "mcp-client"]).default("mcp-client"),
-    reasonCategory: z.enum(["knowledge-maintenance", "catalog-repair", "bulk-import", "other"]).default("other"),
-    duration: z.enum(["single-use", "10-minutes", "30-minutes"]).default("single-use")
-  })
-  .strict();
-
-const CatalogWriteAccessOutput = z
-  .union([
-    z.object({
-      status: z.literal("GRANTED"),
-      mode: z.literal("safe"),
-      duration: z.string()
-    }).strict(),
-    z.object({ status: z.string().min(1) }).strict()
-  ])
-  .describe("User decision result for a bounded Agent write-access request. The request itself never grants access.");
-
 const CatalogPatchMetadataInput = z
   .object({
     entryID: z.string().length(26),
@@ -274,7 +258,19 @@ const CatalogValidationOutput = z
     z.object({
       status: z.string().min(1),
       revision: z.number().int().nonnegative().nullable().optional(),
-      filePreflight: CatalogFilePreflight.optional()
+      rawSHA256: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
+      diagnostics: z.array(z.object({
+        id: z.string().min(1),
+        severity: z.enum(["error", "warning"]),
+        code: z.string().min(1),
+        line: z.number().int().positive(),
+        column: z.number().int().positive().nullable().optional(),
+        endLine: z.number().int().positive().nullable().optional(),
+        endColumn: z.number().int().positive().nullable().optional(),
+        scope: z.enum(["document", "policy", "index", "entry", "field", "unmanaged"]),
+        message: z.string().min(1),
+        hint: z.string().nullable().optional()
+      }).strict()).default([])
     }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
@@ -1045,47 +1041,31 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           const result: {
             status: string;
             revision: number | null;
-            filePreflight?: typeof response.filePreflight;
+            rawSHA256?: string | null;
+            diagnostics?: typeof response.diagnostics;
           } = {
             status: response.catalogStatus,
-            revision: response.revision ?? null
+            revision: response.revision ?? null,
+            rawSHA256: response.rawSHA256 ?? null,
+            diagnostics: response.diagnostics ?? []
           };
-          if (response.filePreflight) {
-            result.filePreflight = response.filePreflight;
-          }
           return structuredResult(result);
         }
         return structuredResult(statusOnly(response));
       }
     },
     {
-      name: "secret_catalog_request_write_access",
-      title: "Request Catalog Safe Write Access",
+      name: "secret_catalog_file_preflight",
+      title: "Probe Catalog File Access",
       description:
-        "Asks the local user to approve bounded safe catalog edits. The Agent cannot approve this request, cannot provide free-form approval text, and secret operations still require separate high-risk approval.",
-      inputSchema: CatalogWriteAccessInput,
-      outputSchema: CatalogWriteAccessOutput,
+        "Runs an explicit, non-destructive parent-directory write probe for the selected catalog. It is intentionally separate from validation and should be used only to diagnose write failures.",
+      inputSchema: EmptyInput,
+      outputSchema: CatalogFilePreflight,
       async handler(input) {
-        const parsed = CatalogWriteAccessInput.parse(input);
-        if (parsed.requestedScope !== "catalog-safe-write") {
-          return structuredResult({ status: "INVALID_SCOPE" });
-        }
-        const response = await client.request({
-          type: "catalogRequestWriteAccess",
-          request: {
-            id: crypto.randomUUID(),
-            source: parsed.source,
-            reasonCategory: parsed.reasonCategory,
-            duration: parsed.duration,
-            createdAt: new Date().toISOString()
-          }
-        });
-        if (response.type === "operationCompleted") {
-          return structuredResult({
-            status: "GRANTED",
-            mode: "safe",
-            duration: parsed.duration
-          });
+        EmptyInput.parse(input);
+        const response = await client.request({ type: "catalogFilePreflight" });
+        if (response.type === "catalogFilePreflight") {
+          return structuredResult(response.filePreflight);
         }
         return structuredResult(statusOnly(response));
       }

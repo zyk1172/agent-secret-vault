@@ -52,6 +52,7 @@ describe("MCP tool contracts", () => {
       "secret_catalog_add_secret_placeholder",
       "secret_catalog_bind_existing_secret",
       "secret_catalog_validate",
+      "secret_catalog_file_preflight",
       "secret_inspect_reference",
       "ssh_command_with_secret",
       "local_http_request_with_secret",
@@ -210,8 +211,32 @@ describe("MCP tool contracts", () => {
     expect(JSON.stringify(client.requests)).not.toContain("plaintext");
 
     const validation = await tool(client, "secret_catalog_validate").handler({});
-    expect(validation.structuredContent).toEqual({ status: "FOUND", revision: 2 });
+    expect(validation.structuredContent).toEqual({
+      status: "FOUND",
+      revision: 2,
+      rawSHA256: null,
+      diagnostics: []
+    });
     expect(client.requests[1]).toEqual({ type: "catalogValidate" });
+  });
+
+  it("exposes an explicit catalog file preflight tool", async () => {
+    const preflight = {
+      read: "READ_OK",
+      parentTempCreate: "PARENT_TEMP_CREATE_OK",
+      parentTempFsync: "PARENT_TEMP_FSYNC_OK",
+      parentRename: "PARENT_RENAME_OK",
+      parentFsync: "PARENT_FSYNC_OK"
+    };
+    const client = new FakeClient([{
+      type: "catalogFilePreflight",
+      filePreflight: preflight
+    }]);
+
+    const result = await tool(client, "secret_catalog_file_preflight").handler({});
+
+    expect(client.requests).toEqual([{ type: "catalogFilePreflight" }]);
+    expect(result.structuredContent).toEqual(preflight);
   });
 
   it("serializes a v3 batch as one IPC mutation and keeps secret fields opaque", async () => {

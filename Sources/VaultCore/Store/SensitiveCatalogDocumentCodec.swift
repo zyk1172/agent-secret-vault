@@ -64,6 +64,210 @@ public enum SensitiveCatalogDocumentCodec {
         }
     }
 
+    /// Validates a Catalog without touching the filesystem. The returned
+    /// diagnostics are intentionally source-safe: only stable codes,
+    /// locations, and remediation text leave the Core parser.
+    public static func validateDetailed(_ data: Data) -> CatalogValidationReport {
+        let rawSHA256 = CatalogSemanticDigest.rawSHA256(data)
+        guard let text = String(data: data, encoding: .utf8) else {
+            return CatalogValidationReport(
+                status: .invalidCatalog,
+                rawSHA256: rawSHA256,
+                diagnostics: [diagnostic(
+                    code: "CATALOG_UTF8_INVALID",
+                    line: 1,
+                    scope: .document,
+                    message: "目录文件不是有效的 UTF-8 文本。",
+                    hint: "请使用 UTF-8 保存敏感信息.md。"
+                )]
+            )
+        }
+
+        switch format(text) {
+        case .managedV3:
+            do {
+                _ = try parseV3(text)
+                return CatalogValidationReport(status: .found, rawSHA256: rawSHA256)
+            } catch let error as SecretCatalogValidationError {
+                return CatalogValidationReport(
+                    status: .invalidCatalog,
+                    rawSHA256: rawSHA256,
+                    diagnostics: [diagnostic(for: error, text: text)]
+                )
+            } catch {
+                return CatalogValidationReport(
+                    status: .invalidCatalog,
+                    rawSHA256: rawSHA256,
+                    diagnostics: [diagnostic(
+                        code: "CATALOG_VALIDATION_FAILED",
+                        line: 1,
+                        scope: .document,
+                        message: "目录结构无法验证。",
+                        hint: "请检查 SVLT v3 marker、策略块和对象块。"
+                    )]
+                )
+            }
+        case .managedV2:
+            return CatalogValidationReport(
+                status: .integrityMissing,
+                rawSHA256: rawSHA256,
+                diagnostics: [diagnostic(
+                    code: "CATALOG_V2_REQUIRES_MIGRATION",
+                    line: 1,
+                    scope: .document,
+                    message: "这是旧版 Catalog v2 文件。",
+                    hint: "请在 SVLT App 中完成迁移。"
+                )]
+            )
+        case .legacy:
+            return CatalogValidationReport(
+                status: .legacyCatalogUnsupported,
+                rawSHA256: rawSHA256,
+                diagnostics: [diagnostic(
+                    code: "CATALOG_LEGACY_UNSUPPORTED",
+                    line: 1,
+                    scope: .document,
+                    message: "这是旧版敏感信息目录格式。",
+                    hint: "请在 SVLT App 中迁移到 managed v3。"
+                )]
+            )
+        case .unmanaged:
+            let hasReference = !MarkdownReferenceScanner.references(in: text).isEmpty
+            return CatalogValidationReport(
+                status: .legacyCatalogUnsupported,
+                rawSHA256: rawSHA256,
+                diagnostics: [diagnostic(
+                    code: hasReference ? "UNMANAGED_SECRET_REFERENCE" : "CATALOG_MARKER_MISSING",
+                    line: hasReference ? lineContaining("secret://", in: text) : firstContentLine(in: text),
+                    scope: hasReference ? .unmanaged : .document,
+                    message: hasReference
+                        ? "未托管区域不能出现敏感信息引用。"
+                        : "缺少 SVLT v3 Catalog marker。",
+                    hint: hasReference
+                        ? "请将该引用放入受 SVLT 管理的 Field 中。"
+                        : "请使用 `<!-- SVLT-CATALOG schema=\"3\" -->` 开头的文件。"
+                )]
+            )
+        }
+    }
+
+    private static func diagnostic(
+        code: String,
+        line: Int,
+        scope: CatalogDiagnosticScope,
+        message: String,
+        hint: String
+    ) -> CatalogValidationDiagnostic {
+        CatalogValidationDiagnostic(
+            code: code,
+            line: line,
+            column: 1,
+            scope: scope,
+            message: message,
+            hint: hint
+        )
+    }
+
+    private static func diagnostic(
+        for error: SecretCatalogValidationError,
+        text: String
+    ) -> CatalogValidationDiagnostic {
+        let mapping: (String, CatalogDiagnosticScope, String, String, String) = {
+            switch error {
+            case .invalidMarker:
+                ("CATALOG_MARKER_INVALID", .document, "Catalog marker 缺失或无效。", "文件第一行必须是 SVLT v3 marker。", "<!-- SVLT-CATALOG schema=\"3\" -->")
+            case .legacyDocument:
+                ("CATALOG_LEGACY_UNSUPPORTED", .document, "这是旧版敏感信息目录格式。", "请在 SVLT App 中迁移到 managed v3。", "使用当前 SVLT v3 schema。")
+            case .invalidPolicyBlock, .ambiguousLegacyPolicy:
+                ("POLICY_BLOCK_INVALID", .policy, "策略块缺失、重复或内容不匹配。", "请从当前版本的 SVLT App 重新生成策略块。", "检查 SVLT-POLICY-BEGIN 与 SVLT-POLICY-END。")
+            case .malformedJSON:
+                ("MARKER_JSON_INVALID", .document, "SVLT 对象 marker 不是有效 JSON。", "检查对应 marker 内的 JSON 语法和必填字段。", "保持 marker JSON 为单行有效对象。")
+            case .unknownSchema, .unsupportedSchemaVersion:
+                ("SCHEMA_UNSUPPORTED", .document, "对象使用了不受支持的 schema。", "请使用当前 SVLT v3 schema。", "不要手动升级或改写 schema 名称。")
+            case .invalidID:
+                ("OBJECT_ID_INVALID", .document, "对象 ID 格式无效。", "检查对象 marker 中的 ID。", "ID 必须是 SVLT 生成的 26 位不透明 ID。")
+            case .duplicateIndexID:
+                ("INDEX_ID_DUPLICATE", .index, "分组 ID 重复。", "为重复分组重新生成 ID。", "每个分组必须有唯一 ID。")
+            case .duplicateEntryID:
+                ("ENTRY_ID_DUPLICATE", .entry, "条目 ID 重复。", "为重复条目重新生成 ID。", "每个条目必须有唯一 ID。")
+            case .entryReferencesMissingIndex:
+                ("ENTRY_INDEX_MISSING", .entry, "条目所属分组不存在或位置不正确。", "把条目放入对应分组，或修正 indexId。", "检查 SVLT-ENTRY marker 与分组边界。")
+            case .invalidVisibleText:
+                ("VISIBLE_TEXT_INVALID", .document, "可见文本不符合 Catalog 约束。", "移除换行或不受支持的可见值。", "检查标题、标签和别名。")
+            case .invalidFieldValue:
+                ("FIELD_VALUE_INVALID", .field, "字段值与字段类型不匹配。", "检查 SVLT-FIELD 的 type 和字段正文。", "让正文值符合字段 type。")
+            case .duplicateFieldKey:
+                ("FIELD_KEY_DUPLICATE", .field, "同一条目中存在重复字段 key。", "合并或删除重复字段。", "每个条目的字段 key 必须唯一。")
+            case .valueAndSecretReference:
+                ("FIELD_VALUE_AND_REFERENCE", .field, "字段不能同时包含值和敏感信息引用。", "保留引用或普通值其中一种。", "检查 SVLT-FIELD 正文。")
+            case .secretFieldContainsValue, .secretFieldKeyMustBeSecret:
+                ("SECRET_FIELD_PLAINTEXT", .field, "敏感字段不能包含明文。", "使用 App 填写或替换密码，Markdown 只保存不透明引用。", "不要把密码、Token 或密钥写入 Markdown。")
+            case .nonSecretFieldContainsSecretReference, .secretReferenceInMetadata, .invalidSecretReference:
+                ("SECRET_REFERENCE_INVALID_LOCATION", .field, "敏感信息引用出现在不允许的位置或格式无效。", "只在合法的 secret Field 中使用有效引用。", "检查字段 type 和 secret:// 引用格式。")
+            case .invalidEndpoint:
+                ("ENDPOINT_INVALID", .entry, "服务地址字段无效。", "检查 endpoint 的协议、主机和端口。", "保持 endpoint 为合法 Catalog 结构。")
+            case .invalidHeading:
+                ("HEADING_INVALID", .document, "Markdown heading 与 Catalog 结构不匹配。", "检查分组使用 ##、条目使用 ###，并保持 marker 顺序。", "heading 必须位于对应 marker 内。")
+            case .missingIndexBlock:
+                ("INDEX_BLOCK_MISSING", .index, "分组 marker 或 heading 不完整。", "补齐分组的 marker 和 ## heading。", "每个 Index 必须有完整对象块。")
+            case .missingEntryBlock:
+                ("ENTRY_BLOCK_MISSING", .entry, "条目 marker 或 heading 不完整。", "补齐条目的 marker 和 ### heading。", "每个 Entry 必须有完整对象块。")
+            case .headingDoesNotMatchBlock:
+                ("HEADING_MARKER_MISMATCH", .entry, "heading 与对应 marker 的标题不一致。", "使 heading 与 marker 中的标题保持一致。", "检查对应的 ## 或 ### heading。")
+            case .unmanagedContent:
+                ("UNMANAGED_CONTENT_INVALID", .unmanaged, "未托管内容包含 Catalog 控制标记。", "移除伪造 marker，或将内容交由 SVLT App 管理。", "未托管区域不能注入 SVLT marker。")
+            case .referenceSetChanged:
+                ("REFERENCE_SET_CHANGED", .document, "文档引用集合与预期不一致。", "重新从当前 accepted state 生成修改。", "不要在写入窗口外改变引用集合。")
+            case .pendingExternalChange:
+                ("PENDING_EXTERNAL_CHANGE", .document, "存在尚未批准的外部语义修改。", "在 SVLT App 中查看差异并完成独立审批。", "等待外部变更审批。")
+            }
+        }()
+        return diagnostic(
+            code: mapping.0,
+            line: lineFor(error: error, in: text),
+            scope: mapping.1,
+            message: mapping.2,
+            hint: mapping.3
+        )
+    }
+
+    private static func lineFor(error: SecretCatalogValidationError, in text: String) -> Int {
+        switch error {
+        case .invalidPolicyBlock, .ambiguousLegacyPolicy:
+            return lineContaining("SVLT-POLICY", in: text)
+        case .secretFieldContainsValue, .secretFieldKeyMustBeSecret,
+             .valueAndSecretReference, .duplicateFieldKey, .invalidFieldValue,
+             .nonSecretFieldContainsSecretReference, .invalidSecretReference,
+             .secretReferenceInMetadata:
+            return lineContaining("SVLT-FIELD", in: text)
+        case .headingDoesNotMatchBlock:
+            return firstHeadingLine(in: text)
+        case .missingEntryBlock, .entryReferencesMissingIndex, .duplicateEntryID:
+            return lineContaining("SVLT-ENTRY", in: text)
+        case .missingIndexBlock, .duplicateIndexID:
+            return lineContaining("SVLT-INDEX", in: text)
+        case .unmanagedContent:
+            return firstContentLine(in: text)
+        default:
+            return firstContentLine(in: text)
+        }
+    }
+
+    private static func lineContaining(_ needle: String, in text: String) -> Int {
+        let lines = text.components(separatedBy: "\n")
+        return max(1, (lines.firstIndex { $0.contains(needle) } ?? 0) + 1)
+    }
+
+    private static func firstHeadingLine(in text: String) -> Int {
+        let lines = text.components(separatedBy: "\n")
+        return max(1, (lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#") } ?? 0) + 1)
+    }
+
+    private static func firstContentLine(in text: String) -> Int {
+        let lines = text.components(separatedBy: "\n")
+        return max(1, (lines.firstIndex { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? 0) + 1)
+    }
+
     public static func encode(
         _ document: SecretCatalogDocument,
         unmanagedMarkdown: String? = nil

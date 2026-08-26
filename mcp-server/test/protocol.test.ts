@@ -95,7 +95,17 @@ describe("IPC response schema", () => {
         }
       },
       { type: "catalogWriteResult", result: { revision: 2, entry: null } },
-      { type: "catalogValidation", catalogStatus: "FOUND", revision: 2 },
+      { type: "catalogValidation", catalogStatus: "FOUND", revision: 2, diagnostics: [] },
+      {
+        type: "catalogFilePreflight",
+        filePreflight: {
+          read: "READ_OK",
+          parentTempCreate: "PARENT_TEMP_CREATE_OK",
+          parentTempFsync: "PARENT_TEMP_FSYNC_OK",
+          parentRename: "PARENT_RENAME_OK",
+          parentFsync: "PARENT_FSYNC_OK"
+        }
+      },
       {
         type: "referenceMetadata",
         metadata: {

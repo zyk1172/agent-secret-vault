@@ -51,9 +51,6 @@ struct AgentSecretVaultApplication: App {
                 sensitiveScanRootURL: runtime.sensitiveScanRootURL,
                 sensitiveScanCandidates: runtime.sensitiveScanCandidates,
                 sensitiveScanRules: runtime.sensitiveScanRules,
-                restoreParagraph: { text in
-                    try await runtime.restoreParagraph(text)
-                },
                 refreshSavedReferences: {
                     await runtime.refreshSavedReferences()
                 },
@@ -84,6 +81,12 @@ struct AgentSecretVaultApplication: App {
                 repairSensitiveCatalog: {
                     await runtime.repairSensitiveCatalog()
                 },
+                recoveryPlan: {
+                    await runtime.catalogRecoveryPlan()
+                },
+                restoreRecovery: { plan in
+                    await runtime.catalogRestoreRecovery(plan)
+                },
                 createCatalogIndex: { title in
                     await runtime.createCatalogIndex(title: title)
                 },
@@ -92,6 +95,9 @@ struct AgentSecretVaultApplication: App {
                 },
                 commitCatalogEntryEdit: { entry, secretInputs in
                     await runtime.commitCatalogEntryEdit(entry: entry, secretInputs: secretInputs)
+                },
+                revealCatalogField: { entryID, key in
+                    try await runtime.revealCatalogField(entryID: entryID, key: key)
                 },
                 replaceCatalogSecret: { entryID, key, label, plaintext in
                     await runtime.replaceCatalogSecret(
@@ -169,30 +175,25 @@ struct AgentSecretVaultApplication: App {
                     }
                     .keyboardShortcut("1", modifiers: [.command])
 
-                    Button("段落解密") {
-                        navigateWorkbench(to: .paragraph)
-                    }
-                    .keyboardShortcut("2", modifiers: [.command])
-
                     Button("密文库") {
                         navigateWorkbench(to: .secrets)
                     }
-                    .keyboardShortcut("3", modifiers: [.command])
+                    .keyboardShortcut("2", modifiers: [.command])
 
                     Button("记录维护") {
                         navigateWorkbench(to: .records)
                     }
-                    .keyboardShortcut("4", modifiers: [.command])
+                    .keyboardShortcut("3", modifiers: [.command])
 
                     Button("智能体自动化") {
                         navigateWorkbench(to: .automation)
                     }
-                    .keyboardShortcut("5", modifiers: [.command])
+                    .keyboardShortcut("4", modifiers: [.command])
 
                     Button("安全边界") {
                         navigateWorkbench(to: .security)
                     }
-                    .keyboardShortcut("6", modifiers: [.command])
+                    .keyboardShortcut("5", modifiers: [.command])
                 }
             }
 
@@ -209,9 +210,6 @@ struct AgentSecretVaultApplication: App {
                 },
                 rescanSensitiveInformation: {
                     await runtime.scanSensitiveInformation()
-                },
-                restoreParagraph: { text in
-                    try await runtime.restoreParagraph(text)
                 },
                 refreshSavedReferences: {
                     await runtime.refreshSavedReferences()
@@ -655,17 +653,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    func restoreParagraph(_ text: String) async throws -> RestoredParagraph {
-        guard let agentClient else {
-            throw AgentSecretVaultRuntimeError.notStarted
-        }
-        let request = try ParagraphRestoreBuilder.build(from: text)
-        return try await agentClient.restoreReferences(
-            references: request.references,
-            context: request.context
-        )
-    }
-
     func refreshSavedReferences() async {
         guard !AgentServiceRegistration.shared.isExplicitlyDisabled else {
             savedReferences = []
@@ -1069,6 +1056,13 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
+    func revealCatalogField(entryID: String, key: String) async throws -> String {
+        guard let appControlClient else {
+            throw AgentSecretVaultRuntimeError.notStarted
+        }
+        return try await appControlClient.catalogRevealField(entryID: entryID, key: key)
+    }
+
     func replaceCatalogSecret(
         entryID: String,
         key: String,
@@ -1180,6 +1174,43 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             }
         } catch {
             sensitiveIndexError = "敏感信息目录修复失败或已取消"
+        }
+    }
+
+    func catalogRecoveryPlan() async -> CatalogRecoveryPlan? {
+        guard let appControlClient else {
+            sensitiveIndexError = "本机控制服务不可用，无法生成恢复预览"
+            return nil
+        }
+        do {
+            let plan = try await appControlClient.catalogRecoveryPlan()
+            if plan == nil {
+                sensitiveIndexError = "没有可用的已验证恢复快照"
+            }
+            return plan
+        } catch {
+            sensitiveIndexError = "无法生成恢复预览"
+            return nil
+        }
+    }
+
+    func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async -> Bool {
+        guard let appControlClient else {
+            sensitiveIndexError = "本机控制服务不可用，无法恢复目录"
+            return false
+        }
+        do {
+            let result = try await appControlClient.catalogRestoreRecovery(plan)
+            if result.status == .found {
+                await refreshSensitiveCatalog()
+                sensitiveIndexError = nil
+                return true
+            }
+            sensitiveIndexError = "敏感信息目录恢复未完成"
+            return false
+        } catch {
+            sensitiveIndexError = "敏感信息目录恢复失败、已取消或版本已变化"
+            return false
         }
     }
 

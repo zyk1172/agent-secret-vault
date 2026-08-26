@@ -4,6 +4,8 @@ import VaultCore
 public enum AppControlRequest: Codable, Equatable, Sendable {
     case catalogStatus
     case repairSensitiveCatalog
+    case catalogRecoveryPlan
+    case catalogRestoreRecovery(plan: CatalogRecoveryPlan)
     case catalogAdoptExternalV2
     case catalogAdoptExternalV3
     case catalogApproveExternalChange(
@@ -43,6 +45,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         plaintext: String,
         policy: SecretPolicy
     )
+    case catalogRevealField(entryID: String, key: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -66,11 +69,14 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case mutation
         case id
         case approved
+        case plan
     }
 
     private enum RequestType: String, Codable {
         case catalogStatus
         case repairSensitiveCatalog
+        case catalogRecoveryPlan
+        case catalogRestoreRecovery
         case catalogAdoptExternalV2
         case catalogAdoptExternalV3
         case catalogApproveExternalChange
@@ -84,6 +90,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case catalogApplyBatch
         case catalogBindExistingSecret
         case catalogSecureInput
+        case catalogRevealField
         case catalogWriteAccessRequest
         case respondToCatalogWriteAccessRequest
     }
@@ -95,6 +102,12 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             self = .catalogStatus
         case .repairSensitiveCatalog:
             self = .repairSensitiveCatalog
+        case .catalogRecoveryPlan:
+            self = .catalogRecoveryPlan
+        case .catalogRestoreRecovery:
+            self = .catalogRestoreRecovery(
+                plan: try container.decode(CatalogRecoveryPlan.self, forKey: .plan)
+            )
         case .catalogAdoptExternalV2:
             self = .catalogAdoptExternalV2
         case .catalogAdoptExternalV3:
@@ -164,6 +177,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
                 plaintext: try container.decode(String.self, forKey: .plaintext),
                 policy: try container.decode(SecretPolicy.self, forKey: .policy)
             )
+        case .catalogRevealField:
+            self = .catalogRevealField(
+                entryID: try container.decode(String.self, forKey: .entryID),
+                key: try container.decode(String.self, forKey: .key)
+            )
         }
     }
 
@@ -174,6 +192,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.catalogStatus, forKey: .type)
         case .repairSensitiveCatalog:
             try container.encode(RequestType.repairSensitiveCatalog, forKey: .type)
+        case .catalogRecoveryPlan:
+            try container.encode(RequestType.catalogRecoveryPlan, forKey: .type)
+        case let .catalogRestoreRecovery(plan):
+            try container.encode(RequestType.catalogRestoreRecovery, forKey: .type)
+            try container.encode(plan, forKey: .plan)
         case .catalogAdoptExternalV2:
             try container.encode(RequestType.catalogAdoptExternalV2, forKey: .type)
         case .catalogAdoptExternalV3:
@@ -234,16 +257,22 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             try container.encodeIfPresent(label, forKey: .label)
             try container.encode(plaintext, forKey: .plaintext)
             try container.encode(policy, forKey: .policy)
+        case let .catalogRevealField(entryID, key):
+            try container.encode(RequestType.catalogRevealField, forKey: .type)
+            try container.encode(entryID, forKey: .entryID)
+            try container.encode(key, forKey: .key)
         }
     }
 }
 
 public enum AppControlResponse: Codable, Equatable, Sendable {
     case catalogStatus(CatalogValidationResult)
+    case catalogRecoveryPlan(CatalogRecoveryPlan?)
     case catalogAgentWriteStatus(CatalogAgentWriteAuthorizationStatus)
     case catalogWriteAccessRequest(CatalogAgentWriteAccessRequest)
     case catalogWriteResult(CatalogWriteResult)
     case secretBound(reference: String, revision: UInt64)
+    case catalogFieldPlaintext(String)
     case operationCompleted
     case failure(code: String)
 
@@ -252,16 +281,20 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case status
         case reference
         case revision
+        case plaintext
+        case plan
         case result
         case code
     }
 
     private enum ResponseType: String, Codable {
         case catalogStatus
+        case catalogRecoveryPlan
         case catalogAgentWriteStatus
         case catalogWriteAccessRequest
         case catalogWriteResult
         case secretBound
+        case catalogFieldPlaintext
         case operationCompleted
         case failure
     }
@@ -271,6 +304,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         switch try container.decode(ResponseType.self, forKey: .type) {
         case .catalogStatus:
             self = .catalogStatus(try container.decode(CatalogValidationResult.self, forKey: .status))
+        case .catalogRecoveryPlan:
+            self = .catalogRecoveryPlan(try container.decodeIfPresent(CatalogRecoveryPlan.self, forKey: .plan))
         case .catalogAgentWriteStatus:
             self = .catalogAgentWriteStatus(try container.decode(CatalogAgentWriteAuthorizationStatus.self, forKey: .status))
         case .catalogWriteAccessRequest:
@@ -282,6 +317,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
                 reference: try container.decode(String.self, forKey: .reference),
                 revision: try container.decode(UInt64.self, forKey: .revision)
             )
+        case .catalogFieldPlaintext:
+            self = .catalogFieldPlaintext(try container.decode(String.self, forKey: .plaintext))
         case .operationCompleted:
             self = .operationCompleted
         case .failure:
@@ -295,6 +332,9 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case let .catalogStatus(status):
             try container.encode(ResponseType.catalogStatus, forKey: .type)
             try container.encode(status, forKey: .status)
+        case let .catalogRecoveryPlan(plan):
+            try container.encode(ResponseType.catalogRecoveryPlan, forKey: .type)
+            try container.encodeIfPresent(plan, forKey: .plan)
         case let .catalogAgentWriteStatus(status):
             try container.encode(ResponseType.catalogAgentWriteStatus, forKey: .type)
             try container.encode(status, forKey: .status)
@@ -308,6 +348,9 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
             try container.encode(ResponseType.secretBound, forKey: .type)
             try container.encode(reference, forKey: .reference)
             try container.encode(revision, forKey: .revision)
+        case let .catalogFieldPlaintext(plaintext):
+            try container.encode(ResponseType.catalogFieldPlaintext, forKey: .type)
+            try container.encode(plaintext, forKey: .plaintext)
         case .operationCompleted:
             try container.encode(ResponseType.operationCompleted, forKey: .type)
         case let .failure(code):
@@ -330,6 +373,8 @@ public struct AuthenticatedAppControlRequest: Codable, Equatable, Sendable {
 public protocol AppControlServicing: Sendable {
     func catalogStatus() async throws -> CatalogValidationResult
     func repairSensitiveCatalog() async throws -> CatalogValidationResult
+    func catalogRecoveryPlan() async throws -> CatalogRecoveryPlan?
+    func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async throws -> CatalogValidationResult
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult
     func adoptCatalogExternalV3() async throws -> CatalogValidationResult
     func approveCatalogExternalChange(
@@ -381,4 +426,5 @@ public protocol AppControlServicing: Sendable {
         plaintext: String,
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64)
+    func catalogRevealField(entryID: String, key: String) async throws -> String
 }

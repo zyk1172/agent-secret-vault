@@ -44,7 +44,7 @@ public struct SetupGuideView: View {
 
             HStack(alignment: .center, spacing: 12) {
                 Label(
-                    status.pluginConnected ? "插件已连接，可以直接右键加密。" : VaultWorkbenchCopy.disconnected.primaryAction,
+                    status.pluginConnected ? "Obsidian 插件已连接，负责格式校验。" : VaultWorkbenchCopy.disconnected.primaryAction,
                     systemImage: status.pluginConnected ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
                 )
                 .font(.callout.weight(.medium))

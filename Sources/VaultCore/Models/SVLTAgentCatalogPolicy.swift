@@ -111,10 +111,14 @@ public enum SVLTAgentCatalogPolicy {
     28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
     29. 不得把 SVLT 解密得到的明文写回敏感信息.md。
     30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
-    31. Agent 的安全目录修改需要用户批准的有限授权；Agent 只能申请，不能自行开启。
-    32. 有限 Agent 授权不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
-    33. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
-    34. 恢复功能只能恢复结构和 opaque 引用，不能生成或展开明文。
+    31. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次 operation-bound write request；Agent 不能自行开启权限。
+    32. 用户批准 Agent Catalog mutation 前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
+    33. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
+    34. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
+    35. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
+    36. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
+    37. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
+    38. 恢复功能只能恢复结构和 opaque 引用，不能生成或展开明文。
     """
 
     public static let documentPolicyDigest: String = SHA256.hash(data: Data(text.utf8))

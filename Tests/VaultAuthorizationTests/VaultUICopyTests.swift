@@ -11,16 +11,16 @@ import Testing
 
     #expect(steps.count == 4)
     #expect(steps.map(\.englishTitle) == [
-        "Select sensitive text",
-        "Encrypt into a reference",
-        "Let the agent use the reference",
-        "Reveal, send, or restore locally"
+        "Manage credentials in the catalog",
+        "Keep Markdown valid v3",
+        "Reveal by field",
+        "Approve agent mutations"
     ])
     #expect(steps.map(\.chineseTitle) == [
-        "选择敏感文本",
-        "加密为引用",
-        "让智能体使用引用",
-        "在本机查看、发送或还原"
+        "在目录中管理凭据",
+        "保持 v3 Markdown 合法",
+        "按字段查看密码",
+        "逐笔批准智能体修改"
     ])
     #expect(steps.map(\.chineseBody).joined().contains("Mac App") == false)
     #expect(steps.map(\.chineseBody).joined().contains("Agent ") == false)
@@ -34,12 +34,12 @@ import Testing
         .map { "\($0.chineseTitle) \($0.chineseBody)" }
         .joined(separator: "\n")
 
-    #expect(allEnglish.contains("Temporary reveal does not return decrypted values to the plugin."))
-    #expect(allEnglish.contains("Restore is explicit"))
+    #expect(allEnglish.contains("Field reveal shows plaintext only inside this app"))
+    #expect(allEnglish.contains("fresh device-owner authentication"))
     #expect(allEnglish.contains("same macOS user"))
     #expect(allEnglish.contains("administrator or root"))
-    #expect(allChinese.contains("临时解密不会把明文返回给插件。"))
-    #expect(allChinese.contains("还原是显式操作"))
+    #expect(allChinese.contains("密码字段解密后的明文只在本应用内显示"))
+    #expect(allChinese.contains("每次都需要本机身份认证"))
     #expect(allChinese.contains("同一 macOS 用户"))
     #expect(allChinese.contains("管理员或 root"))
 }

@@ -12,6 +12,15 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 4)
     }
 
+    func catalogRecoveryPlan() async throws -> CatalogRecoveryPlan? {
+        nil
+    }
+
+    func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async throws -> CatalogValidationResult {
+        _ = plan
+        return CatalogValidationResult(status: .found, revision: 5)
+    }
+
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         CatalogValidationResult(status: .found, revision: 1)
     }
@@ -101,6 +110,11 @@ private struct ControlService: AppControlServicing {
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64) {
         ("secret://0123456789ABCDEFGHJKMNPQRS", 4)
+    }
+
+    func catalogRevealField(entryID: String, key: String) async throws -> String {
+        _ = (entryID, key)
+        return "ASV_REVEAL_TEST_VALUE"
     }
 
     func catalogApplyBatch(

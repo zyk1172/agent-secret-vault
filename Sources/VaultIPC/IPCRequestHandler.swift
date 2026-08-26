@@ -48,6 +48,7 @@ public protocol WorkbenchServicing: Sendable {
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func validateCatalog() async throws -> CatalogValidationResult
+    func catalogFilePreflight() async throws -> CatalogFilePreflight
     func requestCatalogWriteAccess(
         source: CatalogAgentWriteRequestSource,
         reasonCategory: CatalogAgentWriteReasonCategory,
@@ -156,6 +157,10 @@ public extension WorkbenchServicing {
     }
 
     func validateCatalog() async throws -> CatalogValidationResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func catalogFilePreflight() async throws -> CatalogFilePreflight {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
@@ -270,8 +275,12 @@ public struct IPCRequestHandler: Sendable {
             return .catalogValidation(
                 status: result.status,
                 revision: result.revision,
+                rawSHA256: result.rawSHA256,
+                diagnostics: result.diagnostics,
                 filePreflight: result.filePreflight
             )
+        case .catalogFilePreflight:
+            return .catalogFilePreflight(try await service.catalogFilePreflight())
         case let .catalogRequestWriteAccess(request):
             try await service.requestCatalogWriteAccess(
                 source: request.source,

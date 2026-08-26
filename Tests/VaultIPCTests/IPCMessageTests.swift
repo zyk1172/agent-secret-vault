@@ -159,7 +159,13 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         )),
         .catalogDraft(CatalogDraft(draftID: testEntryID, baseRevision: 1, entry: sampleCatalogMatch().entry)),
         .catalogWriteResult(CatalogWriteResult(revision: 2, entry: sampleCatalogMatch().entry)),
-        .catalogValidation(status: .found, revision: 2, filePreflight: nil),
+        .catalogValidation(
+            status: .found,
+            revision: 2,
+            rawSHA256: nil,
+            diagnostics: [],
+            filePreflight: nil
+        ),
         .referenceMetadata(SecretReferenceMetadata(
             reference: "secret://0123456789ABCDEFGHJKMNPQRS",
             policy: .read,
