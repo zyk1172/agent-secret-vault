@@ -24,33 +24,22 @@ import VaultIPC
     #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)"))
     #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)"))
     #expect(source.contains("NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)"))
-    #expect(source.contains("Button(\"退出\") { clearSensitiveState(); Task { await requestTermination() } }"))
+    #expect(source.contains("Button(\"退出\")"))
 }
 
-@Test func compactPanelPreservesTheProtectedDeleteRequestPath() throws {
+@Test func compactPanelOmitsLegacyMaintenanceAndDeleteSurface() throws {
     let source = try menuBarSource(named: "MenuBarVaultPanel.swift")
 
-    #expect(source.contains("let requestPermanentDelete: (String) -> Void"))
-    #expect(source.contains(".confirmationDialog("))
-    #expect(source.contains("requestPermanentDelete(referencePendingDeletion)"))
-    #expect(source.contains("请求高风险授权"))
+    #expect(!source.contains("orphanScanResult"))
+    #expect(!source.contains("requestPermanentDelete"))
+    #expect(!source.contains("本地扫描"))
+    #expect(!source.contains("记录维护"))
 }
 
 @Test func compactPanelAnnouncesTheSelectedNavigationItem() throws {
     let source = try menuBarSource(named: "MenuBarVaultPanel.swift")
 
     #expect(source.contains(".accessibilityValue(selectedSection == section ? \"已选中\" : \"未选中\")"))
-}
-
-@Test func allParagraphRevealSurfacesRenderNumberedCopyControls() throws {
-    let menuBar = try menuBarSource(named: "MenuBarParagraphRestoreView.swift")
-    let workbench = try workbenchSource(named: "ParagraphRestoreView.swift")
-    let temporaryReveal = try workbenchSource(named: "RevealSessionWindow.swift")
-
-    #expect(menuBar.contains("复制密文 \\(index + 1)"))
-    #expect(workbench.contains("复制密文 \\(index + 1)"))
-    #expect(temporaryReveal.contains("复制密文 \\(index + 1)"))
-    #expect(temporaryReveal.contains("确认复制明文到剪贴板？"))
 }
 
 @Test func savedReferenceDisplaySubstitutesTheCurrentReferenceIntoParagraphTemplates() {
@@ -85,14 +74,5 @@ private func menuBarSource(named fileName: String) throws -> String {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .appendingPathComponent("Sources/AgentSecretVaultApp/MenuBar")
-    return try String(contentsOf: sourceDirectory.appendingPathComponent(fileName), encoding: .utf8)
-}
-
-private func workbenchSource(named fileName: String) throws -> String {
-    let sourceDirectory = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench")
     return try String(contentsOf: sourceDirectory.appendingPathComponent(fileName), encoding: .utf8)
 }

@@ -8,6 +8,20 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 3)
     }
 
+    func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult {
+        _ = expectedRawSHA256
+        return CatalogValidationResult(status: .found, revision: 4)
+    }
+
+    func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan? {
+        nil
+    }
+
+    func catalogRecentAuditEntries(limit: Int) async throws -> [CatalogSecurityAuditEntry] {
+        _ = limit
+        return []
+    }
+
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         CatalogValidationResult(status: .found, revision: 1)
     }
@@ -37,6 +51,16 @@ private struct ControlService: AppControlServicing {
     func catalogAgentWriteStatus() async -> CatalogAgentWriteAuthorizationStatus {
         CatalogAgentWriteAuthorizationStatus(mode: .disabled, expiresAt: nil)
     }
+
+    func pendingCatalogWriteAccessRequest(id _: UUID) async throws -> CatalogAgentWriteAccessRequest {
+        CatalogAgentWriteAccessRequest(
+            source: .codex,
+            reasonCategory: .knowledgeMaintenance,
+            duration: .singleUse
+        )
+    }
+
+    func respondToCatalogWriteAccessRequest(id _: UUID, approved _: Bool) async throws {}
 
     func catalogCreateIndex(
         title: String,
@@ -87,6 +111,11 @@ private struct ControlService: AppControlServicing {
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64) {
         ("secret://0123456789ABCDEFGHJKMNPQRS", 4)
+    }
+
+    func catalogRevealField(entryID: String, key: String) async throws -> String {
+        _ = (entryID, key)
+        return "ASV_REVEAL_TEST_VALUE"
     }
 
     func catalogApplyBatch(

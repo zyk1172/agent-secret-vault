@@ -9,6 +9,9 @@ public enum EncryptedAuditLogError: Error, Equatable, Sendable {
 }
 
 public struct EncryptedAuditLog: Sendable {
+    private static let legacyAuditEventAssociatedData = Data("AgentSecretVault.AuditEvent.v1".utf8)
+    private static let authenticatedAuditEventMetadataVersion = 2
+
     private let directoryURL: URL
     private let auditKeyProvider: (@Sendable () async throws -> SymmetricKey)?
     private let now: @Sendable () -> Date
@@ -63,6 +66,22 @@ public struct EncryptedAuditLog: Sendable {
         return try export(auditKey: auditKey)
     }
 
+    /// Returns only the bounded recent window used by the local App. Full
+    /// audit export remains unavailable on the App-control protocol.
+    public func recent(limit: Int = 100) async throws -> [AuditEvent] {
+        guard let auditKeyProvider else {
+            throw EncryptedAuditLogError.auditKeyUnavailable
+        }
+        let key = try await auditKeyProvider()
+        return try recent(limit: limit, auditKey: key)
+    }
+
+    public func recent(limit: Int = 100, masterKey: SymmetricKey) async throws -> [AuditEvent] {
+        try prepareDirectory()
+        let auditKey = try auditDataKey(masterKey: masterKey)
+        return try recent(limit: limit, auditKey: auditKey)
+    }
+
     public func prune(retentionDays: Int, masterKey: SymmetricKey) async throws {
         try prepareDirectory()
         let cutoff = now().addingTimeInterval(-Double(retentionDays) * 24 * 60 * 60)
@@ -79,14 +98,20 @@ public struct EncryptedAuditLog: Sendable {
     private func append(_ event: AuditEvent, auditKey: SymmetricKey) async throws {
         try prepareDirectory()
         let eventData = try encoder.encode(event)
+        let recordID = UUID().uuidString
+        let createdAt = now()
         let sealed = try AES.GCM.seal(
             eventData,
             using: auditKey,
-            authenticating: Data("AgentSecretVault.AuditEvent.v1".utf8)
+            authenticating: Self.authenticatedAuditEventAssociatedData(
+                id: recordID,
+                createdAt: createdAt
+            )
         )
         let record = EncryptedAuditEventRecord(
-            id: UUID().uuidString,
-            createdAt: now(),
+            id: recordID,
+            createdAt: createdAt,
+            metadataVersion: Self.authenticatedAuditEventMetadataVersion,
             ciphertext: sealed.ciphertext,
             nonce: sealed.nonce.data,
             tag: sealed.tag
@@ -106,6 +131,28 @@ public struct EncryptedAuditLog: Sendable {
             try open(record, using: auditKey)
         }
         return events.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private func recent(limit: Int, auditKey: SymmetricKey) throws -> [AuditEvent] {
+        let boundedLimit = min(max(limit, 1), 100)
+        let records = try eventRecords()
+        // Only v2 records have their routing metadata bound to the encrypted
+        // payload. A legacy record has no metadata version, so decrypt every
+        // record and sort by the authenticated event timestamp instead of
+        // trusting its mutable outer createdAt value.
+        let recentRecords: [(URL, EncryptedAuditEventRecord)]
+        if records.allSatisfy({ $0.1.metadataVersion == Self.authenticatedAuditEventMetadataVersion }) {
+            recentRecords = Array(records.suffix(boundedLimit).reversed())
+        } else {
+            let events = try records.map { _, record in
+                try open(record, using: auditKey)
+            }
+            return Array(events.sorted { $0.timestamp > $1.timestamp }.prefix(boundedLimit))
+        }
+        let events = try recentRecords.map { _, record in
+            try open(record, using: auditKey)
+        }
+        return events.sorted { $0.timestamp > $1.timestamp }
     }
 
     private func prepareDirectory() throws {
@@ -166,6 +213,18 @@ public struct EncryptedAuditLog: Sendable {
 
     private func open(_ record: EncryptedAuditEventRecord, using auditKey: SymmetricKey) throws -> AuditEvent {
         do {
+            let associatedData: Data
+            switch record.metadataVersion {
+            case 1:
+                associatedData = Self.legacyAuditEventAssociatedData
+            case Self.authenticatedAuditEventMetadataVersion:
+                associatedData = Self.authenticatedAuditEventAssociatedData(
+                    id: record.id,
+                    createdAt: record.createdAt
+                )
+            default:
+                throw EncryptedAuditLogError.integrityFailed
+            }
             let box = try AES.GCM.SealedBox(
                 nonce: AES.GCM.Nonce(data: record.nonce),
                 ciphertext: record.ciphertext,
@@ -174,7 +233,7 @@ public struct EncryptedAuditLog: Sendable {
             let data = try AES.GCM.open(
                 box,
                 using: auditKey,
-                authenticating: Data("AgentSecretVault.AuditEvent.v1".utf8)
+                authenticating: associatedData
             )
             return try decoder.decode(AuditEvent.self, from: data)
         } catch {
@@ -207,6 +266,14 @@ public struct EncryptedAuditLog: Sendable {
         }
         return Data(bytes)
     }
+
+    private static func authenticatedAuditEventAssociatedData(id: String, createdAt: Date) -> Data {
+        var data = Data("AgentSecretVault.AuditEvent.v2\n".utf8)
+        data.append(contentsOf: id.utf8)
+        data.append(0)
+        data.append(contentsOf: createdAt.timeIntervalSince1970.description.utf8)
+        return data
+    }
 }
 
 private struct WrappedAuditDataKey: Codable, Sendable {
@@ -218,9 +285,47 @@ private struct WrappedAuditDataKey: Codable, Sendable {
 private struct EncryptedAuditEventRecord: Codable, Sendable {
     let id: String
     let createdAt: Date
+    let metadataVersion: Int
     let ciphertext: Data
     let nonce: Data
     let tag: Data
+
+    init(
+        id: String,
+        createdAt: Date,
+        metadataVersion: Int = 2,
+        ciphertext: Data,
+        nonce: Data,
+        tag: Data
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.metadataVersion = metadataVersion
+        self.ciphertext = ciphertext
+        self.nonce = nonce
+        self.tag = tag
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case createdAt
+        case metadataVersion
+        case ciphertext
+        case nonce
+        case tag
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        // Records written before metadata binding have no version field and
+        // remain readable with the legacy event associated data.
+        metadataVersion = try container.decodeIfPresent(Int.self, forKey: .metadataVersion) ?? 1
+        ciphertext = try container.decode(Data.self, forKey: .ciphertext)
+        nonce = try container.decode(Data.self, forKey: .nonce)
+        tag = try container.decode(Data.self, forKey: .tag)
+    }
 }
 
 private extension AES.GCM.Nonce {

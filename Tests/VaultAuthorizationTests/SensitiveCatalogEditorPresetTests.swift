@@ -14,7 +14,7 @@ import Testing
     #expect(custom?.makeInitialField().type == .text)
 }
 
-@Test func existingEntryEditExpandsItsDisclosureGroup() throws {
+@Test func existingEntryEditOpensDetailAndKeepsEditingSeparate() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -22,12 +22,15 @@ import Testing
         .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-    #expect(source.contains("DisclosureGroup(isExpanded: $expanded)"))
-    #expect(source.contains("expanded = true"))
+    #expect(source.contains("showingDetails = true"))
+    #expect(source.contains("entryDetails"))
     #expect(source.contains("commitEntryEdit"))
-    #expect(source.contains("TextField(\"输入密码\""))
+    #expect(source.contains("revealCatalogField"))
+    #expect(source.contains("\"解密\""))
     #expect(source.contains("pendingSecretInputs.removeAll()"))
-    #expect(!source.contains("填写密码"))
+    #expect(source.contains("填写密码"))
+    #expect(source.contains("minHeight: 132"))
+    #expect(!source.contains("DisclosureGroup(isExpanded: $expanded)"))
 }
 
 @Test func catalogEditorUsesExplicitSelectionModesAndSafeDeleteConfirmation() throws {
@@ -40,7 +43,9 @@ import Testing
 
     #expect(source.contains("isSelectingIndexes"))
     #expect(source.contains("isSelectingEntries"))
-    #expect(source.contains(".aspectRatio(1.618"))
+    #expect(!source.contains(".aspectRatio(1.618"))
+    #expect(source.contains(".flexible(minimum: 0, maximum: .infinity)"))
+    #expect(source.contains("minHeight: 120"))
     #expect(source.contains(".alert(item: $pendingIndexDeletion)"))
     #expect(source.contains(".alert(item: $pendingEntryDeletion)"))
     #expect(source.contains("frame(maxHeight: 520)"))

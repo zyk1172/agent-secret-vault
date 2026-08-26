@@ -12,6 +12,7 @@ import {
   AgentRiskAssessment,
   CatalogCreateEntryRequest,
   CatalogBatchMutation,
+  CatalogFilePreflight,
   CatalogDraft,
   CatalogDraftRequest,
   CatalogMetadataPatch,
@@ -44,8 +45,8 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 5. 同一条目不得出现重复 field key。
 6. 新建条目默认只建立一个实际需要的字段，不得为了“完整”自动生成一堆空字段。
 7. 字段不够时再增加。
-8. 可以使用 App、MCP、Obsidian、编辑器、脚本或其他工具修改，不限制写入渠道。
-9. 无论使用什么方式，都必须产生符合 SVLT v3 的结构。
+8. SVLT 正式支持三种写入路径：App 受控写入、Agent 经 MCP 写入、Obsidian/编辑器/脚本直接修改文件。
+9. 无论哪条路径，都必须产生符合 SVLT v3 的结构；直接写文件不会获得更高权限。
 10. 修改时采用最小修改原则，禁止为了新增一条记录重排整个文件。
 11. 必须保留用户原有 Markdown、双链、备注、空行以及非目标区域内容。
 12. [[双链]] 属于合法 Markdown 内容，禁止删除或展开成普通文本。
@@ -66,7 +67,15 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 27. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
 28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
 29. 不得把 SVLT 解密得到的明文写回敏感信息.md。
-30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。`;
+30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
+31. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次 operation-bound write request；Agent 不能自行开启权限。
+32. 用户批准 Agent Catalog mutation 前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
+33. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
+34. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
+35. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
+36. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
+37. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
+38. 格式修复只能调整格式，不能改变结构或 opaque 引用，不能生成或展开明文。`;
 
 export interface VaultIpcClient {
   request(request: IpcRequest): Promise<IpcResponse>;
@@ -246,7 +255,23 @@ const CatalogDraftOutput = z
 
 const CatalogValidationOutput = z
   .union([
-    z.object({ status: z.string().min(1), revision: z.number().int().nonnegative().nullable().optional() }).strict(),
+    z.object({
+      status: z.string().min(1),
+      revision: z.number().int().nonnegative().nullable().optional(),
+      rawSHA256: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
+      diagnostics: z.array(z.object({
+        id: z.string().min(1),
+        severity: z.enum(["error", "warning"]),
+        code: z.string().min(1),
+        line: z.number().int().positive(),
+        column: z.number().int().positive().nullable().optional(),
+        endLine: z.number().int().positive().nullable().optional(),
+        endColumn: z.number().int().positive().nullable().optional(),
+        scope: z.enum(["document", "policy", "index", "entry", "field", "unmanaged"]),
+        message: z.string().min(1),
+        hint: z.string().nullable().optional()
+      }).strict()).default([])
+    }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Catalog validation status; it never returns document content.");
@@ -1013,10 +1038,34 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
         EmptyInput.parse(input);
         const response = await client.request({ type: "catalogValidate" });
         if (response.type === "catalogValidation") {
-          return structuredResult({
+          const result: {
+            status: string;
+            revision: number | null;
+            rawSHA256?: string | null;
+            diagnostics?: typeof response.diagnostics;
+          } = {
             status: response.catalogStatus,
-            revision: response.revision ?? null
-          });
+            revision: response.revision ?? null,
+            rawSHA256: response.rawSHA256 ?? null,
+            diagnostics: response.diagnostics ?? []
+          };
+          return structuredResult(result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_file_preflight",
+      title: "Probe Catalog File Access",
+      description:
+        "Runs an explicit, non-destructive parent-directory write probe for the selected catalog. It is intentionally separate from validation and should be used only to diagnose write failures.",
+      inputSchema: EmptyInput,
+      outputSchema: CatalogFilePreflight,
+      async handler(input) {
+        EmptyInput.parse(input);
+        const response = await client.request({ type: "catalogFilePreflight" });
+        if (response.type === "catalogFilePreflight") {
+          return structuredResult(response.filePreflight);
         }
         return structuredResult(statusOnly(response));
       }

@@ -9,12 +9,12 @@ import Foundation
     #expect(copy.status == "Obsidian 插件未连接")
 }
 
-@Test func workbenchCopyDistinguishesTemporaryRevealFromExplicitRestore() {
+@Test func workbenchCopyDescribesFieldLevelRevealAfterDeviceAuthentication() {
     let boundary = VaultWorkbenchCopy.securityBoundary
-    #expect(boundary.contains("临时解密"))
-    #expect(boundary.contains("不会把明文返回给插件或智能体"))
-    #expect(boundary.contains("还原写回 Obsidian 是显式操作"))
-    #expect(!boundary.contains("Temporary reveal"))
+    #expect(boundary.contains("已加密"))
+    #expect(boundary.contains("解密"))
+    #expect(boundary.contains("本机授权"))
+    #expect(!boundary.contains("段落"))
 }
 
 @Test func workbenchCopyProvidesExternalDocumentationLink() {
@@ -38,7 +38,8 @@ import Foundation
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("## 表示分组，### 表示条目"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("secret_catalog_validate"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("SVLT v3"))
-    #expect(VaultWorkbenchCopy.catalogPolicy.contains("可以使用 App、MCP、Obsidian"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("三种写入路径"))
+    #expect(VaultWorkbenchCopy.catalogPolicy.contains("Agent 不能自行开启权限"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("policy block"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("SVLT 是 opt-in"))
     #expect(VaultWorkbenchCopy.catalogPolicy.contains("USER_EXPLICIT_PLAINTEXT"))
@@ -47,6 +48,10 @@ import Foundation
     #expect(VaultWorkbenchCopy.catalogSchema.contains("empty placeholder or opaque secretRef"))
     #expect(!VaultWorkbenchCopy.catalogPolicy.contains("ASV_CANARY"))
     #expect(!VaultWorkbenchCopy.catalogSchema.contains("secret://012345"))
+}
+
+@Test func workbenchHidesLocalScanFromNormalNavigation() {
+    #expect(VaultWorkbenchSection.allCases.map(\.rawValue) == ["overview", "secrets", "automation", "security"])
 }
 
 @Test func primaryWorkbenchCopyAvoidsBilingualSeparators() {
@@ -68,13 +73,10 @@ import Foundation
 
     #expect(titles == [
         "控制台",
-        "段落解密",
         "敏感信息",
-        "本地扫描",
         "智能体自动化",
         "安全边界"
     ])
-    #expect(VaultWorkbenchSection.paragraph.subtitle.contains("一次解密"))
     #expect(VaultWorkbenchSection.secrets.subtitle.contains("分组目录"))
     #expect(VaultWorkbenchSection.allCases.allSatisfy { !$0.systemImage.isEmpty })
 }
@@ -88,17 +90,25 @@ import Foundation
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     #expect(source.contains("SensitiveIndexLibraryCard("))
-    #expect(source.contains("sensitiveIndexEntries"))
-    #expect(source.contains("独立加密载荷"))
-    #expect(source.contains("复制引用"))
-    #expect(source.contains("此文件是加密记录唯一来源"))
+    #expect(!source.contains("sensitiveIndexEntries"))
+    #expect(source.contains("独立加密记录"))
+    #expect(source.contains("复制可用段落"))
+    #expect(source.contains("尚未设置敏感信息目录"))
+    #expect(source.contains("SVLT 使用合法的 Obsidian Markdown 管理账号、密码和其他敏感信息。"))
     #expect(source.contains("LazyVGrid"))
     #expect(source.contains("SensitiveCatalogGroupSheet"))
     #expect(source.contains("接纳外部 v3 文件"))
     #expect(source.contains("验证并接纳"))
-    #expect(source.contains("智能体目录编辑"))
-    #expect(source.contains("允许普通目录修改"))
-    #expect(source.contains("密码绑定、替换和删除仍需本机批准"))
+    #expect(source.contains("CatalogFormatCheckCard("))
+    #expect(source.contains("检查格式"))
+    #expect(source.contains("修复格式"))
+    #expect(source.contains("查看敏感信息模板"))
+    #expect(!source.contains("LocalSensitiveScanCard"))
+    #expect(!source.contains("记录维护"))
+    #expect(!source.contains("恢复到版本"))
+    #expect(source.contains("revealCatalogField"))
+    #expect(source.contains("GridItem(.flexible(minimum: 0, maximum: .infinity)"))
+    #expect(!source.contains("允许普通目录修改"))
     #expect(!source.contains("SensitiveCatalogPolicyCard"))
 }
 

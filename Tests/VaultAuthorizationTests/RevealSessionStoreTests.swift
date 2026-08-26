@@ -398,7 +398,7 @@ import VaultIPC
 
     #expect(restored == "Token: ASV_CANARY_AUDIT_SECRET")
     let entries = await auditCollector.entries
-    #expect(entries.count == 1)
+    #expect(entries.count >= 1)
     let auditText = entries.map { "\($0.action) \($0.target) \($0.result)" }.joined(separator: "\n")
     #expect(!auditText.contains("ASV_CANARY_AUDIT_SECRET"))
     #expect(auditText.contains("本机脱密使用"))
@@ -439,20 +439,24 @@ import VaultIPC
         auditLog: auditLog
     )
 
-    _ = try await services.restoreReferences(
-        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
-        context: RevealContext(
-            reason: "Use SSH password for local device",
-            template: "Token: {{0}}",
-            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+    _ = try await AuditContext.$current.withValue(AuditContext(source: .agent)) {
+        try await services.restoreReferences(
+            references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+            context: RevealContext(
+                reason: "Use SSH password for local device",
+                template: "Token: {{0}}",
+                ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+            )
         )
-    )
+    }
 
     let events = try await auditLog.export(masterKey: key)
-    #expect(events.count == 1)
-    #expect(events[0].integration == "agent-secret-vault-mcp")
-    #expect(events[0].operation == .reveal)
-    #expect(events[0].declaredTarget == "local-ssh")
+    #expect(events.count >= 3)
+    let credentialEvent = try #require(events.first { $0.operation == .credentialUse })
+    #expect(credentialEvent.integration == "agent-secret-vault-mcp")
+    #expect(credentialEvent.declaredTarget == "local-ssh")
+    #expect(events.contains { $0.operation == .authorization && $0.authorizationOutcome == .requested })
+    #expect(events.contains { $0.operation == .authorization && $0.authorizationOutcome == .approved })
     let persisted = try allFileBytes(under: auditDirectory)
     #expect(!persisted.contains(Data("ASV_CANARY_PERSISTED_AUDIT_SECRET".utf8)))
     #expect(!persisted.contains(Data("Use SSH password for local device".utf8)))

@@ -24,18 +24,18 @@
 8. 回到 Obsidian，确认原有空行、注释、callout、WikiLink 和未受管 Markdown 仍保持原格式；再次保存并确认没有重复插入 marker 或 policy block。
 9. 在 Obsidian 的链接面板或反向链接视图中确认 WikiLink/backlink 正常。
 10. 在测试受管字段中把已有测试 secret 引用从一个合法 `secret://` 引用替换成另一个引用，保存后确认 App 出现 pending external change，并且未经本机批准不会接纳。
-11. 在 v3 Catalog 中选中包含 secret 引用的文本执行“还原选中文本”，确认操作被拒绝，明文不会写入 `敏感信息.md`。
-12. 对包含 secret 引用的当前段落执行“还原当前段落”，确认同样被拒绝，Markdown 不发生明文写回。
-13. 使用“Reveal”查看测试 secret，确认明文只在 App 的本地安全窗口中显示；关闭窗口后确认 Markdown、Catalog 搜索结果、Audit 和日志中没有明文。
+11. 确认 Obsidian 插件命令只有“验证 SVLT 敏感信息目录”和“查看 SVLT 目录诊断”，不再提供加密、临时解密或还原命令。
+12. 制造一个格式错误（例如 heading 与 marker 标题不一致），确认插件状态栏显示问题数量、Notice 给出首个问题行号，诊断面板可以跳转到对应行；修复后错误自动消失。
+13. 在 App 的具体密码字段点击“解密”，确认需要本机身份认证，明文只在 App 内短暂显示；关闭详情或让 App 进入后台后明文立即清除，且 Markdown、Catalog 搜索结果、Audit 和日志中没有明文。
 14. 在 Obsidian 中将 `敏感信息.md` 重命名或移动到同一 Vault 的另一目录，重新打开文件并让 SVLT 校验；确认合法的、唯一匹配的已认证 sidecar 可以被安全重新绑定，且 Catalog 不要求无条件重新创建业务数据。若匹配不唯一，预期是 fail closed，而不是猜测绑定。
 15. 退出并重新启动 SVLT App，确认文档、revision、secret 引用和完整性状态保持正确。
 16. 退出并重新启动 Obsidian，重新打开文件并重复一次普通字段读取、WikiLink 检查和 Catalog validation，确认重启后工作流仍然成立。
 
 ## 通过标准
 
-- 普通 Markdown 与 WikiLink 被保留；没有整文件 canonicalize 或无关重排。
+- 普通 Markdown 与 WikiLink 被保留；没有整文件 canonicalize 或无关重排；Obsidian 插件是只读校验器，不修改文件。
 - 普通字段变化可以自动刷新；高风险 secret 引用变化必须进入 pending/本机批准路径。
-- Restore selection/paragraph 不会把任何 SVLT-derived plaintext 写回受管 v3 文件。
+- 插件不提供加密、解密或还原命令；字段解密只发生在 App 内。
 - Reveal 只显示在 App 安全窗口，明文不进入 Markdown、搜索返回、Audit、日志或持久化测试产物。
 - App 和 Obsidian 重启后 accepted state、revision、sidecar 和 Catalog 语义一致。
 - rename/move 只在 exactly-one authenticated semantic match 时自动重新绑定；旧 path sidecar 的保留和歧义时的人工恢复属于当前保守策略。

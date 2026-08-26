@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Obsidian-native, lossless Markdown codec for Catalog v3.
 ///
@@ -6,6 +7,7 @@ import Foundation
 /// managed ranges, allowing a writer to patch one object without reformatting
 /// the rest of the file.
 public enum SensitiveCatalogDocumentCodec {
+    private static let parseFailureLogger = Logger(subsystem: "AgentSecretVault", category: "CatalogParse")
     public static let marker = "<!-- SVLT-CATALOG schema=\"3\" -->"
     public static let v3Marker = marker
     public static let v2Marker = "<!-- SVLT-MANAGED-CATALOG schema=\"2\" -->"
@@ -50,11 +52,302 @@ public enum SensitiveCatalogDocumentCodec {
 
     public static func decode(_ text: String) throws -> SecretCatalogDocument {
         switch format(text) {
-        case .managedV3: return try parseV3(text).document
+        case .managedV3:
+            do { return try parseV3(text).document }
+            catch let error as SecretCatalogValidationError {
+                parseFailureLogger.error("SVLT Catalog parse failure: reason=\(String(describing: error), privacy: .public)")
+                throw error
+            }
         case .managedV2: return try decodeV2(text)
         case .legacy: throw SecretCatalogValidationError.legacyDocument
         case .unmanaged: throw SecretCatalogValidationError.invalidMarker
         }
+    }
+
+    /// Validates a Catalog without touching the filesystem. The returned
+    /// diagnostics are intentionally source-safe: only stable codes,
+    /// locations, and remediation text leave the Core parser.
+    public static func validateDetailed(_ data: Data) -> CatalogValidationReport {
+        let rawSHA256 = CatalogSemanticDigest.rawSHA256(data)
+        guard let text = String(data: data, encoding: .utf8) else {
+            return CatalogValidationReport(
+                status: .invalidCatalog,
+                rawSHA256: rawSHA256,
+                diagnostics: [diagnostic(
+                    code: "CATALOG_UTF8_INVALID",
+                    line: 1,
+                    scope: .document,
+                    message: "目录文件不是有效的 UTF-8 文本。",
+                    hint: "请使用 UTF-8 保存敏感信息.md。"
+                )]
+            )
+        }
+
+        switch format(text) {
+        case .managedV3:
+            let sourceData = Data(text.utf8)
+            let sourceLines = splitLines(sourceData)
+            let trace = ParseTrace()
+            do {
+                _ = try parseV3(text, trace: trace)
+                return CatalogValidationReport(status: .found, rawSHA256: rawSHA256)
+            } catch let error as SecretCatalogValidationError {
+                return CatalogValidationReport(
+                    status: .invalidCatalog,
+                    rawSHA256: rawSHA256,
+                    diagnostics: [diagnostic(for: error, text: text, data: sourceData, lines: sourceLines, trace: trace)]
+                )
+            } catch {
+                return CatalogValidationReport(
+                    status: .invalidCatalog,
+                    rawSHA256: rawSHA256,
+                    diagnostics: [diagnostic(
+                        code: "CATALOG_VALIDATION_FAILED",
+                        line: 1,
+                        scope: .document,
+                        message: "目录结构无法验证。",
+                        hint: "请检查 SVLT v3 marker、策略块和对象块。"
+                    )]
+                )
+            }
+        case .managedV2:
+            return CatalogValidationReport(
+                status: .integrityMissing,
+                rawSHA256: rawSHA256,
+                diagnostics: [diagnostic(
+                    code: "CATALOG_V2_REQUIRES_MIGRATION",
+                    line: 1,
+                    scope: .document,
+                    message: "这是旧版 Catalog v2 文件。",
+                    hint: "请在 SVLT App 中完成迁移。"
+                )]
+            )
+        case .legacy:
+            return CatalogValidationReport(
+                status: .legacyCatalogUnsupported,
+                rawSHA256: rawSHA256,
+                diagnostics: [diagnostic(
+                    code: "CATALOG_LEGACY_UNSUPPORTED",
+                    line: 1,
+                    scope: .document,
+                    message: "这是旧版敏感信息目录格式。",
+                    hint: "请在 SVLT App 中迁移到 managed v3。"
+                )]
+            )
+        case .unmanaged:
+            let unmanagedData = Data(text.utf8)
+            let unmanagedLines = splitLines(unmanagedData)
+            let hasReference = !MarkdownReferenceScanner.references(in: text).isEmpty
+            let locationRange: Range<Int>? = hasReference
+                ? unmanagedLines.first(where: { !MarkdownReferenceScanner.references(in: $0.text).isEmpty }).map {
+                    $0.start..<max($0.contentEnd, $0.end)
+                }
+                : unmanagedLines.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }).map {
+                    $0.start..<max($0.contentEnd, $0.end)
+                }
+            let span = locationRange.map { sourceSpan(for: $0, data: unmanagedData, lines: unmanagedLines) }
+            return CatalogValidationReport(
+                status: .legacyCatalogUnsupported,
+                rawSHA256: rawSHA256,
+                diagnostics: [CatalogValidationDiagnostic(
+                    code: hasReference ? "UNMANAGED_SECRET_REFERENCE" : "CATALOG_MARKER_MISSING",
+                    line: span?.startLine ?? 1,
+                    column: span?.startColumn ?? 1,
+                    endLine: span?.endLine,
+                    endColumn: span?.endColumn,
+                    scope: hasReference ? .unmanaged : .document,
+                    message: hasReference
+                        ? "未托管区域不能出现敏感信息引用。"
+                        : "缺少 SVLT v3 Catalog marker。",
+                    hint: hasReference
+                        ? "请将该引用放入受 SVLT 管理的 Field 中。"
+                        : "请使用 `<!-- SVLT-CATALOG schema=\"3\" -->` 开头的文件。"
+                )]
+            )
+        }
+    }
+
+    private static func diagnostic(
+        code: String,
+        line: Int,
+        scope: CatalogDiagnosticScope,
+        message: String,
+        hint: String
+    ) -> CatalogValidationDiagnostic {
+        CatalogValidationDiagnostic(
+            code: code,
+            line: line,
+            column: 1,
+            scope: scope,
+            message: message,
+            hint: hint
+        )
+    }
+
+    private static func diagnostic(
+        for error: SecretCatalogValidationError,
+        text: String,
+        data: Data,
+        lines: [Line],
+        trace: ParseTrace
+    ) -> CatalogValidationDiagnostic {
+        let mapping: (String, CatalogDiagnosticScope, String, String, String) = {
+            switch error {
+            case .invalidMarker:
+                ("CATALOG_MARKER_INVALID", .document, "Catalog marker 缺失或无效。", "文件第一行必须是 SVLT v3 marker。", "<!-- SVLT-CATALOG schema=\"3\" -->")
+            case .legacyDocument:
+                ("CATALOG_LEGACY_UNSUPPORTED", .document, "这是旧版敏感信息目录格式。", "请在 SVLT App 中迁移到 managed v3。", "使用当前 SVLT v3 schema。")
+            case .invalidPolicyBlock, .ambiguousLegacyPolicy:
+                ("POLICY_BLOCK_INVALID", .policy, "策略块缺失、重复或内容不匹配。", "请从当前版本的 SVLT App 重新生成策略块。", "检查 SVLT-POLICY-BEGIN 与 SVLT-POLICY-END。")
+            case .malformedJSON:
+                ("MARKER_JSON_INVALID", .document, "SVLT 对象 marker 不是有效 JSON。", "检查对应 marker 内的 JSON 语法和必填字段。", "保持 marker JSON 为单行有效对象。")
+            case .unknownSchema, .unsupportedSchemaVersion:
+                ("SCHEMA_UNSUPPORTED", .document, "对象使用了不受支持的 schema。", "请使用当前 SVLT v3 schema。", "不要手动升级或改写 schema 名称。")
+            case .invalidID:
+                ("OBJECT_ID_INVALID", .document, "对象 ID 格式无效。", "检查对象 marker 中的 ID。", "ID 必须是 SVLT 生成的 26 位不透明 ID。")
+            case .duplicateIndexID:
+                ("INDEX_ID_DUPLICATE", .index, "分组 ID 重复。", "为重复分组重新生成 ID。", "每个分组必须有唯一 ID。")
+            case .duplicateEntryID:
+                ("ENTRY_ID_DUPLICATE", .entry, "条目 ID 重复。", "为重复条目重新生成 ID。", "每个条目必须有唯一 ID。")
+            case .entryReferencesMissingIndex:
+                ("ENTRY_INDEX_MISSING", .entry, "条目所属分组不存在或位置不正确。", "把条目放入对应分组，或修正 indexId。", "检查 SVLT-ENTRY marker 与分组边界。")
+            case .invalidVisibleText:
+                ("VISIBLE_TEXT_INVALID", .document, "可见文本不符合 Catalog 约束。", "移除换行或不受支持的可见值。", "检查标题、标签和别名。")
+            case .invalidFieldValue:
+                ("FIELD_VALUE_INVALID", .field, "字段值与字段类型不匹配。", "检查 SVLT-FIELD 的 type 和字段正文。", "让正文值符合字段 type。")
+            case .duplicateFieldKey:
+                ("FIELD_KEY_DUPLICATE", .field, "同一条目中存在重复字段 key。", "合并或删除重复字段。", "每个条目的字段 key 必须唯一。")
+            case .valueAndSecretReference:
+                ("FIELD_VALUE_AND_REFERENCE", .field, "字段不能同时包含值和敏感信息引用。", "保留引用或普通值其中一种。", "检查 SVLT-FIELD 正文。")
+            case .secretFieldContainsValue, .secretFieldKeyMustBeSecret:
+                ("SECRET_FIELD_PLAINTEXT", .field, "敏感字段不能包含明文。", "使用 App 填写或替换密码，Markdown 只保存不透明引用。", "不要把密码、Token 或密钥写入 Markdown。")
+            case .nonSecretFieldContainsSecretReference, .secretReferenceInMetadata, .invalidSecretReference:
+                ("SECRET_REFERENCE_INVALID_LOCATION", .field, "敏感信息引用出现在不允许的位置或格式无效。", "只在合法的 secret Field 中使用有效引用。", "检查字段 type 和 secret:// 引用格式。")
+            case .invalidEndpoint:
+                ("ENDPOINT_INVALID", .entry, "服务地址字段无效。", "检查 endpoint 的协议、主机和端口。", "保持 endpoint 为合法 Catalog 结构。")
+            case .invalidHeading:
+                ("HEADING_INVALID", .document, "Markdown heading 与 Catalog 结构不匹配。", "检查分组使用 ##、条目使用 ###，并保持 marker 顺序。", "heading 必须位于对应 marker 内。")
+            case .missingIndexBlock:
+                ("INDEX_BLOCK_MISSING", .index, "分组 marker 或 heading 不完整。", "补齐分组的 marker 和 ## heading。", "每个 Index 必须有完整对象块。")
+            case .missingEntryBlock:
+                ("ENTRY_BLOCK_MISSING", .entry, "条目 marker 或 heading 不完整。", "补齐条目的 marker 和 ### heading。", "每个 Entry 必须有完整对象块。")
+            case .headingDoesNotMatchBlock:
+                ("HEADING_MARKER_MISMATCH", .entry, "heading 与对应 marker 的标题不一致。", "使 heading 与 marker 中的标题保持一致。", "检查对应的 ## 或 ### heading。")
+            case .unmanagedContent:
+                ("UNMANAGED_CONTENT_INVALID", .unmanaged, "未托管内容包含 Catalog 控制标记。", "移除伪造 marker，或将内容交由 SVLT App 管理。", "未托管区域不能注入 SVLT marker。")
+            case .referenceSetChanged:
+                ("REFERENCE_SET_CHANGED", .document, "文档引用集合与预期不一致。", "重新从当前 accepted state 生成修改。", "不要在写入窗口外改变引用集合。")
+            case .pendingExternalChange:
+                ("PENDING_EXTERNAL_CHANGE", .document, "存在尚未批准的外部语义修改。", "在 SVLT App 中查看差异并完成独立审批。", "等待外部变更审批。")
+            }
+        }()
+        let range = sourceRange(for: error, lines: lines, trace: trace)
+        let span = range.map { sourceSpan(for: $0, data: data, lines: lines) }
+        return CatalogValidationDiagnostic(
+            code: mapping.0,
+            line: span?.startLine ?? 1,
+            column: span?.startColumn ?? 1,
+            endLine: span?.endLine,
+            endColumn: span?.endColumn,
+            scope: mapping.1,
+            message: mapping.2,
+            hint: mapping.3
+        )
+    }
+
+    private static func sourceRange(
+        for error: SecretCatalogValidationError,
+        lines: [Line],
+        trace: ParseTrace
+    ) -> Range<Int>? {
+        switch error {
+        case .invalidPolicyBlock, .ambiguousLegacyPolicy:
+            guard let begin = lines.firstIndex(where: {
+                $0.text.trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyBeginMarker
+            }), let end = lines.firstIndex(where: {
+                $0.text.trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyEndMarker
+            }), begin < end else {
+                return trace.currentLineRange
+            }
+            return lines[begin].start..<lines[end].contentEnd
+        case .duplicateFieldKey:
+            return trace.fieldMarkerRange ?? trace.contextSpan
+        case .duplicateEntryID:
+            return trace.lastMarkerAttempt
+                ?? trace.entryMarkerRange
+                ?? trace.lastClosedEntryMarkerRange
+                ?? trace.contextSpan
+        case .duplicateIndexID:
+            return trace.lastClosedIndexMarkerRange
+                ?? trace.lastMarkerAttempt
+                ?? trace.indexMarkerRange
+                ?? trace.contextSpan
+        case .secretFieldContainsValue, .secretFieldKeyMustBeSecret,
+             .valueAndSecretReference, .invalidFieldValue,
+             .nonSecretFieldContainsSecretReference, .invalidSecretReference:
+            return trace.fieldBodyRange ?? trace.fieldMarkerRange ?? trace.contextSpan
+        case .secretReferenceInMetadata, .invalidHeading, .unmanagedContent:
+            return trace.currentLineRange ?? trace.contextSpan
+        case .invalidEndpoint, .invalidVisibleText:
+            return trace.entryHeadingRange
+                ?? trace.entryMarkerRange
+                ?? trace.indexHeadingRange
+                ?? trace.indexMarkerRange
+                ?? trace.contextSpan
+        case .missingEntryBlock:
+            return trace.entryMarkerRange
+                ?? trace.lastMarkerAttempt
+                ?? trace.currentLineRange
+                ?? trace.contextSpan
+        case .entryReferencesMissingIndex:
+            return trace.lastClosedEntryMarkerRange ?? trace.contextSpan
+        case .missingIndexBlock:
+            return trace.indexMarkerRange
+                ?? trace.lastMarkerAttempt
+                ?? trace.currentLineRange
+                ?? trace.contextSpan
+        case .malformedJSON, .unknownSchema, .unsupportedSchemaVersion, .invalidID:
+            return trace.lastMarkerAttempt ?? trace.contextSpan
+        case .headingDoesNotMatchBlock:
+            return trace.entryHeadingRange
+                ?? trace.entryMarkerRange
+                ?? trace.currentLineRange
+                ?? trace.contextSpan
+        case .invalidMarker, .legacyDocument, .referenceSetChanged, .pendingExternalChange:
+            return lines.first.map { $0.start..<max($0.contentEnd, $0.end) }
+        }
+    }
+
+    private static func sourceSpan(for range: Range<Int>, data: Data, lines: [Line]) -> CatalogSourceSpan {
+        let start = sourceLocation(offset: range.lowerBound, data: data, lines: lines)
+        let endOffset = max(range.lowerBound + 1, range.upperBound)
+        let end = sourceLocation(offset: endOffset, data: data, lines: lines, preferPreviousBoundary: true)
+        return CatalogSourceSpan(startLine: start.line, startColumn: start.column, endLine: end.line, endColumn: end.column)
+    }
+
+    private static func sourceLocation(
+        offset: Int,
+        data: Data,
+        lines: [Line],
+        preferPreviousBoundary: Bool = false
+    ) -> (line: Int, column: Int) {
+        guard !lines.isEmpty else { return (1, 1) }
+        let clamped = min(max(offset, 0), data.count)
+        let index: Int
+        if preferPreviousBoundary,
+           let boundary = lines.firstIndex(where: { $0.start == clamped }),
+           boundary > 0 {
+            index = boundary - 1
+        } else {
+            index = lines.lastIndex(where: { $0.start <= clamped }) ?? 0
+        }
+        let line = lines[index]
+        let prefixEnd = preferPreviousBoundary && line.end <= clamped
+            ? line.contentEnd
+            : min(max(clamped, line.start), line.contentEnd)
+        let bytes = [UInt8](data)
+        let columnText = String(decoding: bytes[line.start..<prefixEnd], as: UTF8.self)
+        return (index + 1, columnText.count + 1)
     }
 
     public static func encode(
@@ -64,16 +357,19 @@ public enum SensitiveCatalogDocumentCodec {
         try document.validate()
         var lines = [v3Marker, "# \(rootTitle)", ""]
         lines.append(contentsOf: SVLTAgentCatalogPolicy.documentPolicyBlock.components(separatedBy: "\n"))
-        lines.append("")
+        var hasUnmanagedContent = false
         if let unmanagedMarkdown {
             let normalized = try validatedUnmanagedMarkdown(unmanagedMarkdown)
             if !normalized.isEmpty {
+                lines.append("")
                 lines.append(contentsOf: normalized.components(separatedBy: "\n"))
                 lines.append("")
+                hasUnmanagedContent = true
             }
         }
         for (offset, index) in document.indexes.enumerated() {
             if offset > 0 { lines.append("") }
+            if offset == 0 && !hasUnmanagedContent { lines.append("") }
             lines.append(contentsOf: renderIndex(index, entries: document.entries.filter { $0.indexId == index.id }))
         }
         return lines.joined(separator: "\n") + "\n"
@@ -84,6 +380,134 @@ public enum SensitiveCatalogDocumentCodec {
         unmanagedMarkdown: String? = nil
     ) throws -> Data {
         Data(try encode(document, unmanagedMarkdown: unmanagedMarkdown).utf8)
+    }
+
+    /// Builds a source-safe plan for formatting-only repair. The parser first
+    /// tries a narrowly tolerant policy-block normalization, then canonicalizes
+    /// only managed marker/heading lines and line endings. It never renders the
+    /// whole document, so unmanaged Markdown and semantic ordering remain
+    /// untouched.
+    public static func formatRepairPlan(_ data: Data) -> CatalogFormatRepairPlan? {
+        let rawSHA256 = CatalogSemanticDigest.rawSHA256(data)
+        let strict = validateDetailed(data)
+        guard let text = String(data: data, encoding: .utf8) else {
+            return CatalogFormatRepairPlan(
+                currentRawSHA256: rawSHA256,
+                diagnostics: strict.diagnostics,
+                unrepairableDiagnostics: strict.diagnostics
+            )
+        }
+
+        let policyCandidate = policyFormattingCandidate(text)
+        guard let candidateText = policyCandidate.text,
+              let candidateData = candidateText.data(using: .utf8),
+              let parsed = try? parseV3(candidateText)
+        else {
+            let diagnostics = strict.diagnostics.isEmpty
+                ? [CatalogValidationDiagnostic(
+                    code: "CATALOG_FORMAT_UNSAFE",
+                    line: 1,
+                    column: 1,
+                    scope: .document,
+                    message: "目录格式无法安全修复。",
+                    hint: "请在 SVLT App 中查看精确诊断，不要自动覆盖当前文件。"
+                )]
+                : strict.diagnostics
+            return CatalogFormatRepairPlan(
+                currentRawSHA256: rawSHA256,
+                diagnostics: diagnostics,
+                unrepairableDiagnostics: diagnostics,
+                semanticSHA256: nil
+            )
+        }
+
+        let candidateFormattedData = canonicalFormattingData(candidateData, parsed: parsed)
+        var diagnostics = strict.diagnostics
+        var repairableDiagnostics: [CatalogValidationDiagnostic] = []
+        var unrepairableDiagnostics: [CatalogValidationDiagnostic] = []
+
+        if strict.status != .found {
+            let policyDiagnostics = diagnostics.filter { $0.code == "POLICY_BLOCK_INVALID" }
+            let otherDiagnostics = diagnostics.filter { $0.code != "POLICY_BLOCK_INVALID" }
+            if policyCandidate.changed && !policyDiagnostics.isEmpty {
+                repairableDiagnostics.append(contentsOf: policyDiagnostics)
+            }
+            unrepairableDiagnostics.append(contentsOf: otherDiagnostics)
+            if !policyCandidate.changed {
+                unrepairableDiagnostics.append(contentsOf: policyDiagnostics)
+            }
+        }
+
+        if candidateFormattedData != data {
+            let location = firstDifferenceLocation(
+                original: text,
+                candidate: String(data: candidateFormattedData, encoding: .utf8) ?? candidateText
+            )
+            let formatDiagnostic = CatalogValidationDiagnostic(
+                code: policyCandidate.changed ? "FORMAT_POLICY_BLOCK" : "FORMAT_CANONICAL_LAYOUT",
+                line: location.line,
+                column: location.column,
+                scope: policyCandidate.changed ? .policy : .document,
+                message: policyCandidate.changed
+                    ? "策略块存在可安全修复的格式差异。"
+                    : "目录存在可安全修复的格式差异。",
+                hint: "只修复换行、策略块、marker 和结构 heading，不改变目录语义。"
+            )
+            if !repairableDiagnostics.contains(formatDiagnostic),
+               !unrepairableDiagnostics.contains(formatDiagnostic) {
+                repairableDiagnostics.append(formatDiagnostic)
+                diagnostics.append(formatDiagnostic)
+            }
+        }
+
+        let proposedRawSHA256 = candidateFormattedData == data
+            ? nil
+            : CatalogSemanticDigest.rawSHA256(candidateFormattedData)
+        let semanticSHA256 = CatalogSemanticDigest.sha256(parsed.document)
+        if repairableDiagnostics.isEmpty && unrepairableDiagnostics.isEmpty,
+           candidateFormattedData != data {
+            let fallback = diagnostics.last ?? CatalogValidationDiagnostic(
+                code: "FORMAT_CANONICAL_LAYOUT",
+                line: 1,
+                scope: .document,
+                message: "目录存在可安全修复的格式差异。",
+                hint: "只修复格式，不改变目录语义。"
+            )
+            repairableDiagnostics = [fallback]
+        }
+
+        return CatalogFormatRepairPlan(
+            currentRawSHA256: rawSHA256,
+            diagnostics: diagnostics,
+            repairableDiagnostics: repairableDiagnostics,
+            unrepairableDiagnostics: unrepairableDiagnostics,
+            proposedRawSHA256: proposedRawSHA256,
+            semanticSHA256: semanticSHA256
+        )
+    }
+
+    /// Recomputes the same candidate represented by `formatRepairPlan`.
+    /// Callers must still compare the current raw hash while holding their
+    /// own storage lock before committing the returned bytes.
+    public static func applyingFormatRepair(to data: Data) throws -> Data {
+        guard let plan = formatRepairPlan(data), plan.canRepair else {
+            throw SecretCatalogValidationError.referenceSetChanged
+        }
+        let text = try utf8(data)
+        let policyCandidate = policyFormattingCandidate(text)
+        guard let candidateText = policyCandidate.text,
+              let candidateData = candidateText.data(using: .utf8),
+              let parsed = try? parseV3(candidateText)
+        else {
+            throw SecretCatalogValidationError.referenceSetChanged
+        }
+        let result = canonicalFormattingData(candidateData, parsed: parsed)
+        guard CatalogSemanticDigest.rawSHA256(result) == plan.proposedRawSHA256,
+              try parseV3(try utf8(result)).document == parsed.document
+        else {
+            throw SecretCatalogValidationError.referenceSetChanged
+        }
+        return result
     }
 
     /// Remove the two-entry policy catalog that was emitted by the v2 App.
@@ -190,7 +614,8 @@ public enum SensitiveCatalogDocumentCodec {
         for index in new.indexes where oldIndexes[index.id] == nil {
             newIndexesOnDisk.insert(index.id)
             let at = indexInsertOffset(index.id, new.indexes, parsed.source, data.count)
-            let rendered = renderIndex(index, entries: new.entries.filter { $0.indexId == index.id }).joined(separator: "\n") + "\n"
+            let boundary = at == 0 || data[at - 1] == 0x0A ? "" : "\n"
+            let rendered = boundary + renderIndex(index, entries: new.entries.filter { $0.indexId == index.id }).joined(separator: "\n") + "\n"
             patch(&patches, at..<at, Data(rendered.utf8), order: new.indexes.firstIndex { $0.id == index.id } ?? 0)
         }
         for id in Set(oldIndexes.keys).intersection(newIndexes.keys) {
@@ -272,17 +697,145 @@ public enum SensitiveCatalogDocumentCodec {
 }
 
 private extension SensitiveCatalogDocumentCodec {
+    struct PolicyFormattingCandidate {
+        let text: String?
+        let changed: Bool
+    }
+
+    static func policyFormattingCandidate(_ text: String) -> PolicyFormattingCandidate {
+        let normalized = normalizeNewlines(text)
+        var lines = normalized.components(separatedBy: "\n")
+        let knownPolicyBlocks = [SVLTAgentCatalogPolicy.documentPolicyBlock]
+            + SVLTAgentCatalogPolicy.legacyDocumentPolicyBlocks
+        let knownBeginMarkers = Set(knownPolicyBlocks.compactMap { policyBeginMarker($0) })
+        let begin = lines.indices.filter {
+            knownBeginMarkers.contains(lines[$0].trimmingCharacters(in: .whitespaces))
+        }
+        let end = lines.indices.filter {
+            lines[$0].trimmingCharacters(in: .whitespaces) == SVLTAgentCatalogPolicy.documentPolicyEndMarker
+        }
+        let canonicalLines = SVLTAgentCatalogPolicy.documentPolicyBlock.components(separatedBy: "\n")
+
+        if begin.count == 1, end.count == 1, let beginIndex = begin.first, let endIndex = end.first, beginIndex < endIndex {
+            let observed = Array(lines[beginIndex...endIndex])
+            let recognizedBlock = knownPolicyBlocks.first { candidate in
+                let candidateLines = candidate.components(separatedBy: "\n")
+                return observed.count == candidateLines.count && zip(observed, candidateLines).allSatisfy {
+                    $0.0.trimmingCharacters(in: .whitespaces) == $0.1.trimmingCharacters(in: .whitespaces)
+                }
+            }
+            guard recognizedBlock != nil else {
+                return PolicyFormattingCandidate(text: normalized, changed: normalized != text)
+            }
+            guard observed != canonicalLines else {
+                return PolicyFormattingCandidate(text: normalized, changed: normalized != text)
+            }
+            lines.replaceSubrange(beginIndex...endIndex, with: canonicalLines)
+            return PolicyFormattingCandidate(text: lines.joined(separator: "\n"), changed: true)
+        }
+
+        // A completely missing policy block is repairable only when the file
+        // still has the unique managed marker and root heading. Any partial or
+        // repeated marker is ambiguous and must fail closed.
+        guard begin.isEmpty, end.isEmpty,
+              lines.first == marker,
+              lines.enumerated().filter({ offset, line in
+                  offset > 0 && line.trimmingCharacters(in: .whitespaces) == "# \(rootTitle)"
+              }).count == 1,
+              let rootIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "# \(rootTitle)" })
+        else {
+            return PolicyFormattingCandidate(text: normalized, changed: normalized != text)
+        }
+        lines.insert(contentsOf: canonicalLines + [""], at: rootIndex + 1)
+        return PolicyFormattingCandidate(text: lines.joined(separator: "\n"), changed: true)
+    }
+
+    static func policyBeginMarker(_ block: String) -> String? {
+        block.components(separatedBy: "\n").first
+    }
+
+    static func canonicalFormattingData(_ data: Data, parsed: Parsed) -> Data {
+        let document = parsed.document
+        let indexes = Dictionary(uniqueKeysWithValues: document.indexes.map { ($0.id, $0) })
+        let entries = Dictionary(uniqueKeysWithValues: document.entries.map { ($0.id, $0) })
+        var patches: [Patch] = []
+
+        for (id, source) in parsed.source.indexes {
+            guard let index = indexes[id] else { continue }
+            patch(&patches, source.markerRange, Data(renderIndexMarker(index).utf8))
+            patch(&patches, source.headingRange, Data("## \(index.title)".utf8))
+        }
+        for (id, source) in parsed.source.entries {
+            guard let entry = entries[id] else { continue }
+            patch(&patches, source.markerRange, Data(renderEntryMarker(entry).utf8))
+            patch(&patches, source.headingRange, Data("### \(entry.title)".utf8))
+            for field in entry.fields {
+                guard let fieldSource = parsed.source.fields[FieldKey(id: id, key: field.key)] else { continue }
+                patch(&patches, fieldSource.markerRange, Data(renderFieldMarker(field).utf8))
+            }
+        }
+        return apply(data, patches)
+    }
+
+    static func firstDifferenceLocation(original: String, candidate: String) -> (line: Int, column: Int) {
+        let originalCharacters = Array(original)
+        let candidateCharacters = Array(candidate)
+        let sharedCount = min(originalCharacters.count, candidateCharacters.count)
+        var offset = 0
+        while offset < sharedCount, originalCharacters[offset] == candidateCharacters[offset] {
+            offset += 1
+        }
+
+        let prefix = String(originalCharacters.prefix(offset))
+        let line = prefix.reduce(into: 1) { line, character in
+            if character == "\n" { line += 1 }
+        }
+        let column = prefix.reversed().prefix { $0 != "\n" }.count + 1
+        return (line, column)
+    }
+
     struct Line {
         let text: String
         let start: Int
         let contentEnd: Int
         let end: Int
     }
-    struct IndexSource { let markerRange: Range<Int>; let headingRange: Range<Int>; let blockRange: Range<Int>; let closeStart: Int }
-    struct EntrySource { let markerRange: Range<Int>; let headingRange: Range<Int>; let notesRange: Range<Int>; let blockRange: Range<Int>; let closeStart: Int }
+    struct IndexSource {
+        let markerRange: Range<Int>
+        let headingRange: Range<Int>
+        let blockRange: Range<Int>
+        let markerSpan: CatalogSourceSpan
+        let headingSpan: CatalogSourceSpan
+        let blockSpan: CatalogSourceSpan
+        let closeStart: Int
+    }
+    struct EntrySource {
+        let markerRange: Range<Int>
+        let headingRange: Range<Int>
+        let notesRange: Range<Int>
+        let blockRange: Range<Int>
+        let markerSpan: CatalogSourceSpan
+        let headingSpan: CatalogSourceSpan
+        let notesSpan: CatalogSourceSpan
+        let blockSpan: CatalogSourceSpan
+        let closeStart: Int
+    }
     struct FieldKey: Hashable { let id: String; let key: String }
-    struct FieldSource { let markerRange: Range<Int>; let bodyRange: Range<Int>; let blockRange: Range<Int> }
-    struct Source { var indexes: [String: IndexSource] = [:]; var entries: [String: EntrySource] = [:]; var fields: [FieldKey: FieldSource] = [:] }
+    struct FieldSource {
+        let markerRange: Range<Int>
+        let bodyRange: Range<Int>
+        let blockRange: Range<Int>
+        let markerSpan: CatalogSourceSpan
+        let bodySpan: CatalogSourceSpan
+        let blockSpan: CatalogSourceSpan
+    }
+    struct Source {
+        var policySpan: CatalogSourceSpan?
+        var indexes: [String: IndexSource] = [:]
+        var entries: [String: EntrySource] = [:]
+        var fields: [FieldKey: FieldSource] = [:]
+        var unmanagedSpans: [CatalogSourceSpan] = []
+    }
     struct Parsed { let document: SecretCatalogDocument; let source: Source }
     struct Patch { let start: Int; let end: Int; let data: Data; let order: Int }
     struct IndexState {
@@ -297,7 +850,36 @@ private extension SensitiveCatalogDocumentCodec {
         let id: String; let key: String; let label: String; let type: SecretCatalogFieldType; let agentVisible: Bool; let searchable: Bool; let markerRange: Range<Int>; let lineEnd: Int
     }
 
-    static func parseV3(_ text: String) throws -> Parsed {
+    /// Records structural context while `parseV3` advances. Because it is a
+    /// reference type, `validateDetailed` can inspect it after a throw and
+    /// derive an exact source span for the failure point instead of guessing
+    /// with post-hoc full-text scans.
+    final class ParseTrace {
+        var currentLineRange: Range<Int>?
+        /// Marker whose JSON is currently being parsed.
+        var lastMarkerAttempt: Range<Int>?
+        var indexMarkerRange: Range<Int>?
+        var indexHeadingRange: Range<Int>?
+        var entryMarkerRange: Range<Int>?
+        var entryHeadingRange: Range<Int>?
+        var fieldMarkerRange: Range<Int>?
+        var fieldBodyRange: Range<Int>?
+        var lastClosedEntryMarkerRange: Range<Int>?
+        var lastClosedIndexMarkerRange: Range<Int>?
+
+        var contextSpan: Range<Int>? {
+            fieldBodyRange
+                ?? fieldMarkerRange
+                ?? lastMarkerAttempt
+                ?? entryHeadingRange
+                ?? entryMarkerRange
+                ?? indexHeadingRange
+                ?? indexMarkerRange
+                ?? currentLineRange
+        }
+    }
+
+    static func parseV3(_ text: String, trace: ParseTrace? = nil) throws -> Parsed {
         try validatePolicyBlock(text)
         let data = Data(text.utf8)
         let lines = splitLines(data)
@@ -309,28 +891,51 @@ private extension SensitiveCatalogDocumentCodec {
         var entry: EntryState?
         var field: FieldState?
         var policy = false
+        var policyStart: Int?
         var root = false
 
         for line in lines.dropFirst() {
             let trimmed = line.text.trimmingCharacters(in: .whitespaces)
+            trace?.currentLineRange = line.start..<line.end
             if trimmed == SVLTAgentCatalogPolicy.documentPolicyBeginMarker {
                 guard !policy, index == nil, entry == nil, field == nil else { throw SecretCatalogValidationError.invalidHeading }
                 policy = true
+                policyStart = line.start
                 continue
             }
             if policy {
-                if trimmed == "<!-- SVLT-POLICY-END -->" { policy = false }
+                if trimmed == "<!-- SVLT-POLICY-END -->" {
+                    if let policyStart {
+                        source.policySpan = sourceSpan(
+                            for: policyStart..<line.contentEnd,
+                            data: data,
+                            lines: lines
+                        )
+                    }
+                    policy = false
+                    policyStart = nil
+                }
                 continue
             }
             if let current = field {
                 if trimmed == "<!-- /SVLT-FIELD -->" {
                     let bodyRange = current.lineEnd..<line.start
+                    trace?.fieldBodyRange = bodyRange
                     let parsed = try parseField(body: sliceText(data, range: bodyRange), state: current)
                     guard var currentEntry = entry, currentEntry.fieldKeys.insert(current.key).inserted else { throw SecretCatalogValidationError.duplicateFieldKey }
                     currentEntry.fields.append(parsed)
                     entry = currentEntry
-                    source.fields[FieldKey(id: current.id, key: current.key)] = FieldSource(markerRange: current.markerRange, bodyRange: bodyRange, blockRange: current.markerRange.lowerBound..<line.end)
+                    source.fields[FieldKey(id: current.id, key: current.key)] = FieldSource(
+                        markerRange: current.markerRange,
+                        bodyRange: bodyRange,
+                        blockRange: current.markerRange.lowerBound..<line.end,
+                        markerSpan: sourceSpan(for: current.markerRange, data: data, lines: lines),
+                        bodySpan: sourceSpan(for: bodyRange, data: data, lines: lines),
+                        blockSpan: sourceSpan(for: current.markerRange.lowerBound..<line.end, data: data, lines: lines)
+                    )
                     field = nil
+                    trace?.fieldBodyRange = nil
+                    trace?.fieldMarkerRange = nil
                 } else if trimmed.contains("<!-- SVLT-") || trimmed.contains("<!-- /SVLT-") {
                     // Field bodies are data, not a second marker language.
                     // Reject an injected SVLT token before it can be retained
@@ -371,7 +976,11 @@ private extension SensitiveCatalogDocumentCodec {
                 guard var currentEntry = entry, currentEntry.title != nil else { throw SecretCatalogValidationError.missingEntryBlock }
                 if currentEntry.notesEnd == nil { currentEntry.notesEnd = line.start }
                 entry = currentEntry
+                trace?.lastMarkerAttempt = raw.range
                 let value = try fieldMarker(raw.json)
+                trace?.lastMarkerAttempt = nil
+                trace?.fieldMarkerRange = raw.range
+                trace?.fieldBodyRange = nil
                 field = FieldState(id: currentEntry.id, key: value.key, label: value.label, type: value.type, agentVisible: value.agentVisible, searchable: value.searchable, markerRange: raw.range, lineEnd: line.end)
                 continue
             }
@@ -383,8 +992,21 @@ private extension SensitiveCatalogDocumentCodec {
                 guard currentIndex.entryIDs.contains(value.id) else { throw SecretCatalogValidationError.duplicateEntryID }
                 currentIndex.entries.append(value)
                 index = currentIndex
-                source.entries[value.id] = EntrySource(markerRange: current.markerRange, headingRange: heading, notesRange: noteRange, blockRange: current.markerRange.lowerBound..<line.end, closeStart: line.start)
+                source.entries[value.id] = EntrySource(
+                    markerRange: current.markerRange,
+                    headingRange: heading,
+                    notesRange: noteRange,
+                    blockRange: current.markerRange.lowerBound..<line.end,
+                    markerSpan: sourceSpan(for: current.markerRange, data: data, lines: lines),
+                    headingSpan: sourceSpan(for: heading, data: data, lines: lines),
+                    notesSpan: sourceSpan(for: noteRange, data: data, lines: lines),
+                    blockSpan: sourceSpan(for: current.markerRange.lowerBound..<line.end, data: data, lines: lines),
+                    closeStart: line.start
+                )
                 entry = nil
+                trace?.lastClosedEntryMarkerRange = current.markerRange
+                trace?.entryMarkerRange = nil
+                trace?.entryHeadingRange = nil
                 continue
             }
             if trimmed == "<!-- /SVLT-INDEX -->" {
@@ -393,20 +1015,39 @@ private extension SensitiveCatalogDocumentCodec {
                 try value.validateStandalone()
                 indexes.append(value)
                 allEntries.append(contentsOf: current.entries)
-                source.indexes[value.id] = IndexSource(markerRange: current.markerRange, headingRange: heading, blockRange: current.markerRange.lowerBound..<line.end, closeStart: line.start)
+                source.indexes[value.id] = IndexSource(
+                    markerRange: current.markerRange,
+                    headingRange: heading,
+                    blockRange: current.markerRange.lowerBound..<line.end,
+                    markerSpan: sourceSpan(for: current.markerRange, data: data, lines: lines),
+                    headingSpan: sourceSpan(for: heading, data: data, lines: lines),
+                    blockSpan: sourceSpan(for: current.markerRange.lowerBound..<line.end, data: data, lines: lines),
+                    closeStart: line.start
+                )
                 index = nil
+                trace?.lastClosedIndexMarkerRange = current.markerRange
+                trace?.indexMarkerRange = nil
+                trace?.indexHeadingRange = nil
                 continue
             }
             if let raw = marker(trimmed, prefix: "<!-- SVLT-INDEX ", line: line) {
                 guard index == nil, entry == nil else { throw SecretCatalogValidationError.invalidHeading }
+                trace?.lastMarkerAttempt = raw.range
                 let value = try indexMarker(raw.json)
+                trace?.lastMarkerAttempt = nil
+                trace?.indexMarkerRange = raw.range
+                trace?.indexHeadingRange = nil
                 index = IndexState(id: value.id, aliases: value.aliases, tags: value.tags, markerRange: raw.range)
                 continue
             }
             if let raw = marker(trimmed, prefix: "<!-- SVLT-ENTRY ", line: line) {
                 guard var currentIndex = index, entry == nil, currentIndex.title != nil else { throw SecretCatalogValidationError.missingIndexBlock }
+                trace?.lastMarkerAttempt = raw.range
                 let value = try entryMarker(raw.json)
                 guard currentIndex.entryIDs.insert(value.id).inserted else { throw SecretCatalogValidationError.duplicateEntryID }
+                trace?.lastMarkerAttempt = nil
+                trace?.entryMarkerRange = raw.range
+                trace?.entryHeadingRange = nil
                 index = currentIndex
                 entry = EntryState(id: value.id, type: value.type, aliases: value.aliases, endpoints: value.endpoints, tags: value.tags, indexID: currentIndex.id, markerRange: raw.range)
                 continue
@@ -418,13 +1059,21 @@ private extension SensitiveCatalogDocumentCodec {
                     root = true
                 case 2:
                     guard root else { throw SecretCatalogValidationError.invalidHeading }
-                    guard var currentIndex = index, entry == nil else { continue }
+                    if let currentEntry = entry {
+                        // A level-2 heading is ordinary prose only after the
+                        // Entry has received its required ### heading. Before
+                        // that point it is the exact malformed heading span.
+                        guard currentEntry.title != nil else { throw SecretCatalogValidationError.invalidHeading }
+                        continue
+                    }
+                    guard var currentIndex = index else { continue }
                     // Once a group heading has been consumed, later ##
                     // headings are ordinary user Markdown inside that
                     // marker-bounded group and remain part of its source map.
                     guard currentIndex.title == nil else { continue }
                     currentIndex.title = heading.title
                     currentIndex.headingRange = line.start..<line.contentEnd
+                    trace?.indexHeadingRange = line.start..<line.contentEnd
                     index = currentIndex
                 case 3:
                     guard root else { throw SecretCatalogValidationError.invalidHeading }
@@ -435,11 +1084,15 @@ private extension SensitiveCatalogDocumentCodec {
                     currentEntry.title = heading.title
                     currentEntry.headingRange = line.start..<line.contentEnd
                     currentEntry.bodyStart = line.end
+                    trace?.entryHeadingRange = line.start..<line.contentEnd
                     entry = currentEntry
                 default:
                     continue
                 }
                 continue
+            }
+            if root, !trimmed.isEmpty, index == nil, entry == nil {
+                source.unmanagedSpans.append(sourceSpan(for: line.start..<line.contentEnd, data: data, lines: lines))
             }
             if entry == nil && index == nil && !root && !trimmed.isEmpty { throw SecretCatalogValidationError.invalidHeading }
         }

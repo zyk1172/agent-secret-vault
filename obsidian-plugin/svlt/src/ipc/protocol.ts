@@ -1,7 +1,5 @@
 import { z } from "zod";
 
-export const SecretReference = z.string().regex(/^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/);
-export const SecretPolicy = z.enum(["credential", "externalSend", "read"]);
 export const CapabilityToken = z.string().min(1);
 export const CatalogValidationStatus = z.enum([
   "FOUND",
@@ -15,39 +13,9 @@ export const CatalogValidationStatus = z.enum([
   "CATALOG_INVALID"
 ]);
 
-export const RevealContext = z.object({
-  reason: z.string().min(1),
-  template: z.string().min(1),
-  ranges: z.array(z.object({
-    index: z.number().int().nonnegative(),
-    placeholder: z.string().min(1)
-  }).strict()),
-  destination: z.string().min(1).optional()
-}).strict();
-
 export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("workbenchStatus") }).strict(),
-  z.object({ type: z.literal("catalogValidate") }).strict(),
-  z.object({
-    type: z.literal("encryptText"),
-    plaintext: z.string().min(1),
-    label: z.string().nullable(),
-    policy: SecretPolicy
-  }).strict(),
-  z.object({
-    type: z.literal("revealReferences"),
-    references: z.array(SecretReference).min(1),
-    context: RevealContext
-  }).strict(),
-  z.object({
-    type: z.literal("restoreReferences"),
-    references: z.array(SecretReference).min(1),
-    context: RevealContext
-  }).strict(),
-  z.object({
-    type: z.literal("scanOrphans"),
-    markdownReferences: z.array(SecretReference)
-  }).strict()
+  z.object({ type: z.literal("catalogValidate") }).strict()
 ]);
 
 export const AuthenticatedIpcRequest = z.object({
@@ -62,27 +30,33 @@ export const WorkbenchStatus = z.object({
   pluginConnected: z.boolean()
 }).strict();
 
-export const OrphanScanResult = z.object({
-  missingRecords: z.array(SecretReference),
-  unreferencedRecords: z.array(SecretReference)
+export const CatalogDiagnosticSeverity = z.enum(["error", "warning"]);
+export const CatalogDiagnosticScope = z.enum(["document", "policy", "index", "entry", "field", "unmanaged"]);
+export const CatalogValidationDiagnostic = z.object({
+  id: z.string().min(1),
+  severity: CatalogDiagnosticSeverity,
+  code: z.string().min(1),
+  line: z.number().int().min(1),
+  column: z.number().int().min(1).nullable().optional(),
+  endLine: z.number().int().min(1).nullable().optional(),
+  endColumn: z.number().int().min(1).nullable().optional(),
+  scope: CatalogDiagnosticScope,
+  message: z.string().min(1),
+  hint: z.string().min(1).nullable().optional()
 }).strict();
+export type CatalogValidationDiagnostic = z.infer<typeof CatalogValidationDiagnostic>;
 
 export const IpcResponse = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("workbenchStatus"),
     status: WorkbenchStatus
   }).strict(),
-  z.object({ type: z.literal("created"), reference: SecretReference }).strict(),
-  z.object({ type: z.literal("revealSessionOpened"), sessionID: z.string().min(1) }).strict(),
-  z.object({ type: z.literal("restoredText"), text: z.string() }).strict(),
-  z.object({
-    type: z.literal("orphanScan"),
-    result: OrphanScanResult
-  }).strict(),
   z.object({
     type: z.literal("catalogValidation"),
     catalogStatus: CatalogValidationStatus,
-    revision: z.number().int().nonnegative().nullable().optional()
+    revision: z.number().int().nonnegative().nullable().optional(),
+    rawSHA256: z.string().min(1).nullable().optional(),
+    diagnostics: z.array(CatalogValidationDiagnostic).default([])
   }).strict(),
   z.object({ type: z.literal("failure"), code: z.string().min(1) }).strict()
 ]);

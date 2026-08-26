@@ -97,13 +97,56 @@ describe("LocalVaultClient", () => {
     });
   });
 
-  it("parses the catalog validation status without accepting catalog content", async () => {
+  it("parses catalog diagnostics without accepting catalog content", async () => {
     const socketPath = await createSocketServer((socket) => {
       socket.on("data", () => {
         socket.write(encodeFrame({
           type: "catalogValidation",
+          catalogStatus: "CATALOG_INVALID",
+          revision: 4,
+          diagnostics: [{
+            id: "FIELD_KEY_DUPLICATE:9:1",
+            severity: "error",
+            code: "FIELD_KEY_DUPLICATE",
+            line: 9,
+            column: 1,
+            scope: "field",
+            message: "同一条目中存在重复字段 key。",
+            hint: "每个条目的字段 key 必须唯一。"
+          }]
+        }));
+      });
+    });
+
+    const client = new LocalVaultClient(socketPath, { netModule: net, fsModule });
+
+    await expect(client.request({ type: "catalogValidate" })).resolves.toEqual({
+      type: "catalogValidation",
+      catalogStatus: "CATALOG_INVALID",
+      revision: 4,
+      diagnostics: [{
+        id: "FIELD_KEY_DUPLICATE:9:1",
+        severity: "error",
+        code: "FIELD_KEY_DUPLICATE",
+        line: 9,
+        column: 1,
+        scope: "field",
+        message: "同一条目中存在重复字段 key。",
+        hint: "每个条目的字段 key 必须唯一。"
+      }]
+    });
+  });
+
+  it("sends an exact framed catalogValidate request", async () => {
+    let receivedRequest: unknown;
+    const socketPath = await createSocketServer((socket) => {
+      socket.on("data", (chunk) => {
+        const length = chunk.readUInt32BE(0);
+        receivedRequest = JSON.parse(chunk.subarray(4, 4 + length).toString("utf8"));
+        socket.write(encodeFrame({
+          type: "catalogValidation",
           catalogStatus: "FOUND",
-          revision: 4
+          revision: 2
         }));
       });
     });
@@ -113,43 +156,12 @@ describe("LocalVaultClient", () => {
     await expect(client.request({ type: "catalogValidate" })).resolves.toEqual({
       type: "catalogValidation",
       catalogStatus: "FOUND",
-      revision: 4
+      revision: 2,
+      diagnostics: []
     });
-  });
-
-  it("sends an exact framed IPC request body", async () => {
-    let receivedRequest: unknown;
-    const socketPath = await createSocketServer((socket) => {
-      socket.on("data", (chunk) => {
-        const length = chunk.readUInt32BE(0);
-        receivedRequest = JSON.parse(chunk.subarray(4, 4 + length).toString("utf8"));
-        socket.write(encodeFrame({
-          type: "created",
-          reference: "secret://0123456789ABCDEFGHJKMNPQRS"
-        }));
-      });
-    });
-
-    const client = new LocalVaultClient(socketPath, { netModule: net, fsModule });
-
-    await expect(client.request({
-      type: "encryptText",
-      plaintext: "ASV_CANARY_PLUGIN",
-      label: null,
-      policy: "credential"
-    })).resolves.toEqual({
-      type: "created",
-      reference: "secret://0123456789ABCDEFGHJKMNPQRS"
-    });
-
     expect(receivedRequest).toEqual({
       capabilityToken: "test-capability-token",
-      request: {
-        type: "encryptText",
-        plaintext: "ASV_CANARY_PLUGIN",
-        label: null,
-        policy: "credential"
-      }
+      request: { type: "catalogValidate" }
     });
   });
 

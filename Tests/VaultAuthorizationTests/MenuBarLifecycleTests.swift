@@ -59,14 +59,14 @@ import Testing
     #expect(AgentServiceStatus.disabled.displayName == "已停用")
 }
 
-@Test func menuBarProtectedDeleteRequestDeletesTheRecord() throws {
+@Test func menuBarOmitsLegacyRecordMaintenanceActions() throws {
     let source = try appSource()
 
-    #expect(source.contains("runtime.deleteRecord(reference)"))
-    #expect(source.contains("func deleteRecord(_ reference: String) async"))
-    #expect(source.contains("agentClient.deleteRecord(reference)"))
-    #expect(!source.contains("runtime.requestPermanentDeleteAuthorization()"))
-    #expect(!source.contains("func requestPermanentDeleteAuthorization() async"))
+    #expect(!source.contains("runtime.deleteRecord(reference)"))
+    #expect(!source.contains("func deleteRecord(_ reference: String) async"))
+    #expect(!source.contains("requestPermanentDeleteAuthorization"))
+    #expect(!source.contains("orphanScanResult"))
+    #expect(!source.contains("敏感扫描"))
 }
 
 @Test @MainActor func lifecycleMonitorHandlesEachSecurityBoundaryOnce() async {

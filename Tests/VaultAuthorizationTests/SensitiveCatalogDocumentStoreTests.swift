@@ -76,6 +76,145 @@ private func writeManagedV2WithLegacySidecar(
     return (v2, sidecarData)
 }
 
+@Test func catalogStoreCreatesAnEmptyAcceptedV3TemplateWithoutFakeData() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let snapshot = try await store.createEmptyCatalog()
+    #expect(snapshot.revision == 1)
+    #expect(snapshot.integrity == .verified)
+    #expect(snapshot.document.indexes.isEmpty)
+    #expect(snapshot.document.entries.isEmpty)
+    #expect(FileManager.default.fileExists(atPath: fixture.document.path))
+    #expect(FileManager.default.fileExists(atPath: fixture.integrity.path))
+
+    let raw = try Data(contentsOf: fixture.document)
+    let markdown = try #require(String(data: raw, encoding: .utf8))
+    let report = SensitiveCatalogDocumentCodec.validateDetailed(raw)
+    #expect(report.status == .found)
+    #expect(markdown.hasPrefix(SensitiveCatalogDocumentCodec.marker))
+    #expect(markdown.contains(SVLTAgentCatalogPolicy.documentPolicyBlock))
+    // The canonical policy explains the `secret://` syntax; the empty
+    // template must not contain an actual opaque reference or example data.
+    #expect(MarkdownReferenceScanner.references(in: markdown).isEmpty)
+    #expect(!markdown.contains("示例密码"))
+    #expect(!markdown.contains("SVLT-INDEX"))
+    #expect(!markdown.contains("SVLT-ENTRY"))
+
+    let reopened = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let verified = try await reopened.snapshot()
+    #expect(verified.integrity == .verified)
+    #expect(verified.revision == 1)
+    #expect(verified.document.indexes.count == 0)
+    #expect(verified.document.entries.count == 0)
+    let recoveryFiles = FileManager.default.subpaths(atPath: fixture.root.path) ?? []
+    #expect(!recoveryFiles.contains { $0.hasSuffix("recovery-journal.json") })
+    #expect(!recoveryFiles.contains { $0.hasSuffix(".tmp") })
+}
+
+@Test func catalogStoreNeverOverwritesAnExistingTemplateTarget() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let original = Data("普通 Markdown，不是 Catalog\n".utf8)
+    try original.write(to: fixture.document)
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.invalidOperation) {
+        _ = try await store.createEmptyCatalog()
+    }
+    #expect(try Data(contentsOf: fixture.document) == original)
+    #expect(!FileManager.default.fileExists(atPath: fixture.integrity.path))
+}
+
+@Test func catalogStoreRollsBackNormalMutationWhenIntegrityCommitFails() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let setup = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    _ = try await setup.canonicalWrite(SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "原始")]))
+    let originalDocument = try Data(contentsOf: fixture.document)
+    let originalIntegrity = try Data(contentsOf: fixture.integrity)
+
+    let failing = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore,
+        atomicWriteFaultInjector: FailOnceCatalogIntegrityWrite()
+    )
+    await #expect(throws: SensitiveCatalogDocumentStoreError.writeFailed) {
+        _ = try await failing.createIndex(title: "不会留下")
+    }
+    #expect(try Data(contentsOf: fixture.document) == originalDocument)
+    #expect(try Data(contentsOf: fixture.integrity) == originalIntegrity)
+    let files = FileManager.default.subpaths(atPath: fixture.root.path) ?? []
+    #expect(!files.contains { $0.hasSuffix("recovery-journal.json") })
+
+    let reopened = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let snapshot = try await reopened.snapshot()
+    #expect(snapshot.revision == 1)
+    #expect(snapshot.document.indexes.map(\.title) == ["原始"])
+}
+
+@Test func catalogStoreNeverOverwritesAnExistingManagedV3TemplateTarget() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let existing = try await store.createEmptyCatalog()
+    let originalDocument = try Data(contentsOf: fixture.document)
+    let originalIntegrity = try Data(contentsOf: fixture.integrity)
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.invalidOperation) {
+        _ = try await store.createEmptyCatalog()
+    }
+    #expect(existing.revision == 1)
+    #expect(try Data(contentsOf: fixture.document) == originalDocument)
+    #expect(try Data(contentsOf: fixture.integrity) == originalIntegrity)
+}
+
+@Test func catalogStoreTemplateCreationRollsBackBothFilesOnIntegrityFailure() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore,
+        atomicWriteFaultInjector: FailOnceCatalogIntegrityWrite()
+    )
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.writeFailed) {
+        _ = try await store.createEmptyCatalog()
+    }
+    #expect(!FileManager.default.fileExists(atPath: fixture.document.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.integrity.path))
+    let files = FileManager.default.subpaths(atPath: fixture.root.path) ?? []
+    #expect(!files.contains { $0.hasSuffix("recovery-journal.json") })
+    #expect(!files.contains { $0.hasSuffix(".tmp") })
+}
+
 @Test func catalogStoreWritesCanonicalDocumentAndIntegritySidecar() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -115,6 +254,171 @@ private func writeManagedV2WithLegacySidecar(
     #expect(markdown.contains(SensitiveCatalogDocumentCodec.marker))
     #expect(markdown.contains(storeSecretReference))
     #expect(!markdown.contains("password-plaintext-canary"))
+}
+
+@Test func catalogStoreRepairsLineEndingFormatWithoutChangingAcceptedSemantics() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let index = SecretCatalogIndex(id: storeIndexID, title: "QNAP")
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: storeIndexID,
+        title: "管理后台",
+        aliases: ["NAS"],
+        fields: [
+            SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("admin")),
+            SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)
+        ],
+        notes: "保留业务备注",
+        tags: ["production"]
+    )
+    let accepted = try await store.canonicalWrite(
+        SecretCatalogDocument(indexes: [index], entries: [entry])
+    )
+    let canonicalRaw = try Data(contentsOf: fixture.document)
+    let canonicalText = try #require(String(data: canonicalRaw, encoding: .utf8))
+    let damagedRaw = Data(canonicalText.replacingOccurrences(of: "\n", with: "\r\n").utf8)
+    try damagedRaw.write(to: fixture.document, options: [.atomic])
+
+    let plan = try #require(try await store.formatRepairPlan())
+    #expect(plan.currentRawSHA256 == CatalogSemanticDigest.rawSHA256(damagedRaw))
+    #expect(plan.currentRawSHA256 != CatalogSemanticDigest.rawSHA256(canonicalRaw))
+    #expect(plan.diagnostics.contains { $0.code.hasPrefix("FORMAT_") })
+    #expect(plan.canRepair)
+    #expect(plan.semanticSHA256 == CatalogSemanticDigest.sha256(accepted.document))
+    #expect(plan.diagnostics.allSatisfy { $0.line >= 1 && $0.column != nil })
+
+    let repaired = try await store.repairFormat(expectedRawSHA256: plan.currentRawSHA256)
+    #expect(repaired.revision == accepted.revision)
+    #expect(repaired.document == accepted.document)
+    #expect(repaired.document.entries.flatMap { $0.fields }.compactMap(\.secretRef) == [storeSecretReference])
+    #expect(try Data(contentsOf: fixture.document) == canonicalRaw)
+    #expect(try await store.snapshot().integrity == .verified)
+}
+
+@Test func catalogStoreRepairsKnownPreviousPolicyBlockWithoutChangingAcceptedSemantics() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let index = SecretCatalogIndex(id: storeIndexID, title: "QNAP")
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: storeIndexID,
+        title: "管理后台",
+        fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)]
+    )
+    let accepted = try await store.canonicalWrite(
+        SecretCatalogDocument(indexes: [index], entries: [entry])
+    )
+    let canonical = try String(contentsOf: fixture.document, encoding: .utf8)
+    let legacy = canonical.replacingOccurrences(
+        of: SVLTAgentCatalogPolicy.documentPolicyBlock,
+        with: SVLTAgentCatalogPolicy.legacyDocumentPolicyBlock
+    )
+    try Data(legacy.utf8).write(to: fixture.document, options: [.atomic])
+
+    let plan = try #require(try await store.formatRepairPlan())
+    #expect(plan.canRepair)
+    #expect(plan.repairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+    #expect(plan.semanticSHA256 == CatalogSemanticDigest.sha256(accepted.document))
+
+    let repaired = try await store.repairFormat(expectedRawSHA256: plan.currentRawSHA256)
+    #expect(repaired.revision == accepted.revision)
+    #expect(repaired.document == accepted.document)
+    #expect(try String(contentsOf: fixture.document, encoding: .utf8) == canonical)
+    #expect(try await store.snapshot().integrity == .verified)
+}
+
+@Test func catalogStoreRejectsFormatRepairWhenCurrentRawChangesAfterPlanning() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    _ = try await store.canonicalWrite(
+        SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")])
+    )
+    let raw = try Data(contentsOf: fixture.document)
+    let text = try #require(String(data: raw, encoding: .utf8))
+    let damagedRaw = Data(text.replacingOccurrences(of: "\n", with: "\r\n").utf8)
+    try damagedRaw.write(to: fixture.document, options: [.atomic])
+    let plan = try #require(try await store.formatRepairPlan())
+
+    let concurrentRaw = Data(text.replacingOccurrences(of: "\n", with: "\n\n").utf8)
+    try concurrentRaw.write(to: fixture.document, options: [.atomic])
+    await #expect(throws: SensitiveCatalogDocumentStoreError.formatRepairConflict) {
+        _ = try await store.repairFormat(expectedRawSHA256: plan.currentRawSHA256)
+    }
+    #expect(try Data(contentsOf: fixture.document) == concurrentRaw)
+}
+
+@Test func catalogStoreCreatesEntryWithNotesAndNoFields() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let first = try await store.createIndex(title: "QNAP")
+    let indexID = try #require(first.document.indexes.first?.id)
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: indexID,
+        title: "MCP 回归条目",
+        endpoints: [CatalogEndpoint(type: "http", host: "192.168.2.240", port: 8080)],
+        notes: "MCP write-path regression metadata",
+        tags: ["svlt-regression"]
+    )
+
+    let result = try await store.createEntry(entry, expectedRevision: first.revision)
+    #expect(result.revision == first.revision + 1)
+    #expect(result.document.entries == [entry])
+}
+
+@Test func catalogStoreCreatesEntryInTheTargetIndexBeforeLaterIndexEntries() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+
+    let first = try await store.createIndex(title: "前面的分组")
+    let second = try await store.createIndex(title: "后面的分组", expectedRevision: first.revision)
+    let laterEntry = SecretCatalogEntry(
+        id: storeSecondEntryID,
+        indexId: try #require(second.document.indexes.last?.id),
+        title: "后面的已有条目"
+    )
+    let seeded = try await store.createEntry(laterEntry, expectedRevision: second.revision)
+    let earlierEntry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: try #require(first.document.indexes.first?.id),
+        title: "前面的新条目"
+    )
+
+    let result = try await store.createEntry(earlierEntry, expectedRevision: seeded.revision)
+    #expect(result.document.entries.map(\.id) == [storeEntryID, storeSecondEntryID])
+    #expect(result.revision == seeded.revision + 1)
+
+    let parsed = try SensitiveCatalogDocumentCodec.decode(
+        String(contentsOf: fixture.document, encoding: .utf8)
+    )
+    #expect(parsed == result.document)
 }
 
 @Test func catalogStoreScopesDefaultIntegrityPerDocumentAndIgnoresAStaleLegacySidecar() async throws {
@@ -536,7 +840,7 @@ private func writeManagedV2WithLegacySidecar(
     #expect(snapshot.document.indexes.count == 2)
 }
 
-@Test func catalogStoreRejectsUnsupportedLegacyDocumentAndCanBackupItWithoutChangingIt() async throws {
+@Test func catalogStoreRejectsUnsupportedLegacyDocumentWithoutChangingIt() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let legacy = """
@@ -558,8 +862,6 @@ private func writeManagedV2WithLegacySidecar(
     } catch {
         #expect(error as? SensitiveCatalogDocumentStoreError == .legacyCatalogUnsupported)
     }
-    let backup = try await store.backupCurrentDocument()
-    #expect(backup?.lastPathComponent.contains("敏感信息.md.bak-") == true)
     #expect(try String(contentsOf: fixture.document, encoding: .utf8) == legacy)
 }
 

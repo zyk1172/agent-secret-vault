@@ -333,6 +333,69 @@ public struct SecretCatalogDocument: Codable, Equatable, Sendable {
         self.entries = entries
     }
 
+    /// Inserts an entry in the same order in which the Markdown codec parses
+    /// entries: all entries belonging to an index stay together, and a new
+    /// entry is appended within its target index.  Keeping this invariant in
+    /// the semantic document is required by the lossless minimal-patch
+    /// verifier; appending to the flattened array would place an entry after
+    /// later indexes even though the source patch inserts it in its target
+    /// index block.
+    public func insertingEntryInSourceOrder(_ entry: SecretCatalogEntry) throws -> SecretCatalogDocument {
+        guard let targetIndexPosition = indexes.firstIndex(where: { $0.id == entry.indexId }) else {
+            throw SecretCatalogValidationError.entryReferencesMissingIndex
+        }
+        guard !entries.contains(where: { $0.id == entry.id }) else {
+            throw SecretCatalogValidationError.duplicateEntryID
+        }
+
+        let insertionOffset = entries.firstIndex { candidate in
+            guard let candidateIndexPosition = indexes.firstIndex(where: { $0.id == candidate.indexId }) else {
+                return false
+            }
+            return candidateIndexPosition > targetIndexPosition
+        } ?? entries.count
+
+        var orderedEntries = entries
+        orderedEntries.insert(entry, at: insertionOffset)
+        return SecretCatalogDocument(
+            schemaVersion: schemaVersion,
+            indexes: indexes,
+            entries: orderedEntries
+        )
+    }
+
+    /// Moves an entry to the end of its destination index while preserving
+    /// the source order invariant used by the Markdown codec.
+    public func movingEntryInSourceOrder(id: String, toIndexID: String) throws -> SecretCatalogDocument {
+        guard indexes.contains(where: { $0.id == toIndexID }),
+              let sourceOffset = entries.firstIndex(where: { $0.id == id }) else {
+            throw SecretCatalogValidationError.invalidID
+        }
+
+        let oldEntry = entries[sourceOffset]
+        guard oldEntry.indexId != toIndexID else { return self }
+
+        var remainingEntries = entries
+        remainingEntries.remove(at: sourceOffset)
+        let movedEntry = SecretCatalogEntry(
+            id: oldEntry.id,
+            indexId: toIndexID,
+            title: oldEntry.title,
+            type: oldEntry.type,
+            aliases: oldEntry.aliases,
+            endpoints: oldEntry.endpoints,
+            fields: oldEntry.fields,
+            notes: oldEntry.notes,
+            tags: oldEntry.tags,
+            schema: oldEntry.schema
+        )
+        return try SecretCatalogDocument(
+            schemaVersion: schemaVersion,
+            indexes: indexes,
+            entries: remainingEntries
+        ).insertingEntryInSourceOrder(movedEntry)
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion
         case indexes
@@ -438,7 +501,11 @@ public enum SecretCatalogOpaqueID {
     private static let allowedCharacters = Set(alphabet)
 
     public static func generate() throws -> String {
-        let bytes = try RandomBytes.generate(count: length)
+        // Catalog IDs are non-secret handles. arc4random_buf keeps generation
+        // available in the launchd Agent process without invoking the higher
+        // level Security API while retaining the same opaque ID alphabet.
+        var bytes = [UInt8](repeating: 0, count: length)
+        arc4random_buf(&bytes, length)
         return String(bytes.map { alphabet[Int($0) % alphabet.count] })
     }
 

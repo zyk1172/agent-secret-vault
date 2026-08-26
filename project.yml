@@ -59,6 +59,7 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/VaultService/SVLTPosixFileReader.h
     sources:
       - Sources/VaultService
     dependencies:
@@ -91,6 +92,9 @@ targets:
       - path: Sources/AgentSecretVaultApp
         excludes:
           - AgentSecretVaultApp.swift
+      - path: Resources/Templates
+        buildPhase: resources
+        type: folder
     dependencies:
       - target: VaultCore
       - target: VaultAuthorization
@@ -130,6 +134,9 @@ targets:
     sources:
       - Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift
       - AppAssets/Assets.xcassets
+      - path: Resources/Templates
+        buildPhase: resources
+        type: folder
       - path: Config/com.agent-secret-vault.SVLT.agent.plist
         buildPhase:
           copyFiles:

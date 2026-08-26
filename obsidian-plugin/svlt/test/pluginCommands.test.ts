@@ -3,64 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const obsidianMock = vi.hoisted(() => ({
   registeredCommands: [] as Array<{ id: string; name: string; callback?: () => void; editorCallback?: (editor: unknown) => void }>,
   registeredEvents: [] as unknown[],
+  vaultEvents: [] as Array<{ name: string; callback: (...args: unknown[]) => void }>,
   workspaceEvents: [] as Array<{ name: string; callback: (...args: unknown[]) => void }>,
-  supportsSubmenu: true,
-  menuItems: [] as Array<{ title?: string; icon?: string; onClick?: (event?: unknown) => void }>,
-  submenuItems: [] as Array<{ title?: string; icon?: string; onClick?: (event?: unknown) => void }>,
-  shownMenus: [] as Array<{ x: number; y: number }>,
-  shownMouseEvents: [] as unknown[],
-  useNativeMenuCalls: [] as boolean[],
   notices: [] as string[],
-  statusItems: [] as HTMLElement[]
+  statusItems: [] as HTMLElement[],
+  savedData: undefined as unknown
 }));
 
 vi.mock("obsidian", () => ({
-  Menu: class MenuTestDouble {
-    constructor(private readonly targetItems = obsidianMock.menuItems) {}
-
-    addItem(callback: (item: {
-      setTitle: (title: string) => unknown;
-      setIcon: (icon: string) => unknown;
-      setSubmenu?: () => unknown;
-      onClick: (handler: (event?: unknown) => void) => unknown;
-    }) => void): void {
-      const item: { title?: string; icon?: string; onClick?: (event?: unknown) => void } = {};
-      const fluentItem = {
-        setTitle: (title: string) => {
-          item.title = title;
-          return fluentItem;
-        },
-        setIcon: (icon: string) => {
-          item.icon = icon;
-          return fluentItem;
-        },
-        onClick: (handler: () => void) => {
-          item.onClick = handler;
-          return fluentItem;
-        }
-      };
-      if (obsidianMock.supportsSubmenu) {
-        (fluentItem as typeof fluentItem & { setSubmenu: () => MenuTestDouble }).setSubmenu = () => new MenuTestDouble(obsidianMock.submenuItems);
-      }
-      callback(fluentItem);
-      this.targetItems.push(item);
-    }
-
-    addSeparator(): void {}
-
-    setUseNativeMenu(useNativeMenu: boolean): this {
-      obsidianMock.useNativeMenuCalls.push(useNativeMenu);
-      return this;
-    }
-
-    showAtPosition(position: { x: number; y: number }): void {
-      obsidianMock.shownMenus.push(position);
-    }
-
-    showAtMouseEvent(event: unknown): void {
-      obsidianMock.shownMouseEvents.push(event);
-    }
-  },
   Notice: class NoticeTestDouble {
     constructor(message: string) {
       obsidianMock.notices.push(message);
@@ -82,7 +32,7 @@ vi.mock("obsidian", () => ({
     }
 
     addStatusBarItem(): HTMLElement {
-      const element = { textContent: "" } as HTMLElement;
+      const element = { textContent: "", setAttribute: vi.fn() } as unknown as HTMLElement;
       obsidianMock.statusItems.push(element);
       return element;
     }
@@ -95,86 +45,183 @@ vi.mock("obsidian", () => ({
     registerEvent(eventRef: unknown): void {
       obsidianMock.registeredEvents.push(eventRef);
     }
+
+    register(callback: () => void): void {
+      obsidianMock.registeredEvents.push(callback);
+    }
+
+    async loadData(): Promise<unknown> {
+      return obsidianMock.savedData;
+    }
+
+    async saveData(data: unknown): Promise<void> {
+      obsidianMock.savedData = data;
+    }
   }
 }));
 
-import AgentSecretVaultPlugin, { commandDefinitions } from "../src/main";
+import AgentSecretVaultPlugin, { commandDefinitions, shouldWatchCatalogFile } from "../src/main";
 
-function makeApp() {
+function makeApp(options: {
+  activeFile?: unknown;
+  markdownFiles?: unknown[];
+  fileContents?: Record<string, string>;
+} = {}) {
+  const fileContents = options.fileContents ?? {};
   return {
+    vault: {
+      on: (name: string, callback: (...args: unknown[]) => void) => {
+        const eventRef = { name, callback };
+        obsidianMock.vaultEvents.push(eventRef);
+        return eventRef;
+      },
+      getMarkdownFiles: () => options.markdownFiles ?? [],
+      cachedRead: async (file: { path: string }) => fileContents[file.path] ?? ""
+    },
     workspace: {
       on: (name: string, callback: (...args: unknown[]) => void) => {
         const eventRef = { name, callback };
         obsidianMock.workspaceEvents.push(eventRef);
         return eventRef;
-      }
+      },
+      getActiveFile: () => options.activeFile ?? null,
+      getLeaf: () => ({ openFile: async () => undefined, view: null })
     }
   };
+}
+
+function makePlugin(
+  clientResponse: unknown = { type: "failure", code: "APP_UNAVAILABLE" },
+  appOptions: Parameters<typeof makeApp>[0] = {}
+) {
+  const plugin = new AgentSecretVaultPlugin(makeApp(appOptions) as never, {} as never) as unknown as {
+    createVaultClient: () => unknown;
+    onload: () => Promise<void>;
+  };
+  plugin.createVaultClient = () => ({
+    request: async () => clientResponse
+  });
+  return plugin;
 }
 
 describe("plugin commands", () => {
   beforeEach(() => {
     obsidianMock.registeredCommands = [];
     obsidianMock.registeredEvents = [];
+    obsidianMock.vaultEvents = [];
     obsidianMock.workspaceEvents = [];
-    obsidianMock.supportsSubmenu = true;
-    obsidianMock.menuItems = [];
-    obsidianMock.submenuItems = [];
-    obsidianMock.shownMenus = [];
-    obsidianMock.shownMouseEvents = [];
-    obsidianMock.useNativeMenuCalls = [];
     obsidianMock.notices = [];
     obsidianMock.statusItems = [];
+    obsidianMock.savedData = undefined;
   });
 
-  it("registers core workbench commands", () => {
+  it("registers validator-only commands", () => {
     expect(commandDefinitions.map((command) => command.id)).toEqual([
-      "encrypt-selection",
-      "reveal-selection",
-      "reveal-current-paragraph",
-      "restore-selection",
-      "restore-current-paragraph",
-      "validate-catalog"
+      "validate-catalog",
+      "show-catalog-diagnostics"
     ]);
   });
 
   it("uses Chinese command names in the command palette", () => {
     expect(commandDefinitions.map((command) => command.name)).toEqual([
-      "加密选中文本",
-      "在 SVLT 中临时解密选中文本",
-      "在 SVLT 中临时解密当前段落",
-      "还原选中文本中的密文引用",
-      "还原当前段落中的密文引用",
-      "验证 SVLT 敏感信息目录"
+      "验证 SVLT 敏感信息目录",
+      "查看 SVLT 目录诊断"
     ]);
   });
 
-  it("shows a visible not-connected notice for placeholder commands", async () => {
-    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never);
+  it("keeps watching a catalog after its marker is deleted", () => {
+    expect(shouldWatchCatalogFile("managedV3", false)).toBe(true);
+    expect(shouldWatchCatalogFile("unmanaged", true)).toBe(true);
+    expect(shouldWatchCatalogFile("unmanaged", false)).toBe(false);
+  });
+
+  it("accepts only vault-relative tracked catalog paths", async () => {
+    const { isSafeTrackedCatalogPath } = await import("../src/main");
+    expect(isSafeTrackedCatalogPath("敏感信息.md")).toBe(true);
+    expect(isSafeTrackedCatalogPath("folder/敏感信息.md")).toBe(true);
+    expect(isSafeTrackedCatalogPath("/Users/example/敏感信息.md")).toBe(false);
+    expect(isSafeTrackedCatalogPath("../敏感信息.md")).toBe(false);
+    expect(isSafeTrackedCatalogPath("folder\\敏感信息.md")).toBe(false);
+  });
+
+  it("validates a tracked Catalog after a cold-start marker deletion", async () => {
+    vi.useFakeTimers();
+    try {
+      const file = { path: "敏感信息.md", extension: "md" };
+      obsidianMock.savedData = { managedCatalogPath: "敏感信息.md" };
+      const plugin = makePlugin({
+        type: "catalogValidation",
+        catalogStatus: "CATALOG_INVALID",
+        diagnostics: [{
+          id: "CATALOG_MARKER_MISSING:1:1",
+          severity: "error",
+          code: "CATALOG_MARKER_MISSING",
+          line: 1,
+          column: 1,
+          scope: "document",
+          message: "Catalog marker 缺失。",
+          hint: "补齐第一行 marker。"
+        }]
+      }, {
+        markdownFiles: [file],
+        fileContents: { "敏感信息.md": "# 已删除 marker" }
+      });
+      await plugin.onload();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(obsidianMock.notices).toContain("SVLT：敏感信息目录有 1 个格式问题，第一个位于 第 1 行、第 1 列。");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("updates the persisted tracked path after a Catalog rename", async () => {
+    obsidianMock.savedData = { managedCatalogPath: "敏感信息.md" };
+    const plugin = makePlugin({
+      type: "workbenchStatus",
+      status: {
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: null,
+        pluginConnected: true
+      }
+    });
+    await plugin.onload();
+
+    const rename = obsidianMock.vaultEvents.find((event) => event.name === "rename");
+    await rename?.callback({ path: "archive/敏感信息.md", extension: "md" }, "敏感信息.md");
+    expect(obsidianMock.savedData).toEqual({ managedCatalogPath: "archive/敏感信息.md" });
+  });
+
+  it("registers commands and all catalog lifecycle watchers on load", async () => {
+    const plugin = makePlugin({
+      type: "workbenchStatus",
+      status: {
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: null,
+        pluginConnected: true
+      }
+    });
 
     await plugin.onload();
-    obsidianMock.registeredCommands[0].callback?.();
 
-    expect(obsidianMock.notices).toEqual([
-      "SVLT：加密选中文本 暂不可用，请先连接本机服务。"
+    expect(obsidianMock.registeredCommands.map((command) => command.id)).toEqual([
+      "validate-catalog",
+      "show-catalog-diagnostics"
     ]);
+    expect(obsidianMock.vaultEvents.map((event) => event.name)).toEqual(["modify", "rename", "delete"]);
+    expect(obsidianMock.workspaceEvents.map((event) => event.name)).toEqual(["file-open", "active-leaf-change"]);
   });
 
   it("updates the status bar from live workbench status", async () => {
-    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never) as unknown as {
-      createVaultClient: () => unknown;
-      onload: () => Promise<void>;
-    };
-    plugin.createVaultClient = () => ({
-      request: async () => ({
-        type: "workbenchStatus",
-        status: {
-          locked: false,
-          ipcAvailable: true,
-          activeKnowledgeBaseRoot: null,
-          pluginConnected: true
-        }
-      })
+    const plugin = makePlugin({
+      type: "workbenchStatus",
+      status: {
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: null,
+        pluginConnected: true
+      }
     });
 
     await plugin.onload();
@@ -182,70 +229,52 @@ describe("plugin commands", () => {
     expect(obsidianMock.statusItems[0]?.textContent).toBe("ASV: connected, unlocked");
   });
 
-  it("adds a second-level SVLT menu to the Obsidian right-click menu", async () => {
-    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never);
+  it("shows a failure notice when the app is unavailable", async () => {
+    const plugin = makePlugin();
 
     await plugin.onload();
-    obsidianMock.workspaceEvents.find((event) => event.name === "editor-menu")?.callback(new (await import("obsidian")).Menu(), {} as never);
+    await obsidianMock.registeredCommands.find((command) => command.id === "validate-catalog")?.callback?.();
 
-    expect(obsidianMock.menuItems.map((item) => item.title)).toEqual(["SVLT"]);
-    expect(obsidianMock.registeredEvents).toHaveLength(1);
-
-    expect(obsidianMock.shownMenus).toEqual([]);
-    expect(obsidianMock.submenuItems.map((item) => item.title)).toEqual([
-      "加密选中文本",
-      "临时解密选中文本",
-      "还原选中文本"
+    expect(obsidianMock.notices).toEqual([
+      "SVLT：敏感信息目录验证失败（APP_UNAVAILABLE）。"
     ]);
   });
 
-  it("keeps one top-level menu item when native submenu is unavailable", async () => {
-    obsidianMock.supportsSubmenu = false;
-    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never);
-
-    await plugin.onload();
-    obsidianMock.workspaceEvents.find((event) => event.name === "editor-menu")?.callback(new (await import("obsidian")).Menu(), {} as never);
-
-    expect(obsidianMock.menuItems.map((item) => item.title)).toEqual(["SVLT"]);
-    expect(obsidianMock.submenuItems).toEqual([]);
-
-    const clickEvent = { clientX: 42, clientY: 24 };
-    obsidianMock.menuItems[0].onClick?.(clickEvent);
-
-    expect(obsidianMock.useNativeMenuCalls).toEqual([false]);
-    expect(obsidianMock.shownMouseEvents).toEqual([clickEvent]);
-    expect(obsidianMock.menuItems.map((item) => item.title)).toEqual([
-      "SVLT",
-      "加密选中文本",
-      "临时解密选中文本",
-      "还原选中文本"
-    ]);
-  });
-
-  it("uses credential encryption from the simplified editor menu", async () => {
-    const editor = {
-      getSelection: () => "sensitive-value",
-      getCursor: (which?: "from" | "to") => ({ line: 0, ch: which === "to" ? 15 : 0 }),
-      posToOffset: (position: { ch: number }) => position.ch,
-      getValue: () => "sensitive-value",
-      getRange: () => "sensitive-value",
-      replaceRange: () => undefined
-    };
-    const requests: unknown[] = [];
-    const plugin = new AgentSecretVaultPlugin(makeApp() as never, {} as never) as unknown as {
-      createVaultClient: () => unknown;
-      onload: () => Promise<void>;
-    };
-    plugin.createVaultClient = () => ({
-      request: async (request: unknown) => {
-        requests.push(request);
-        return { type: "created", reference: "secret://0123456789ABCDEFGHJKMNPQRS" };
-      }
+  it("reports diagnostics count and first location", async () => {
+    const plugin = makePlugin({
+      type: "catalogValidation",
+      catalogStatus: "CATALOG_INVALID",
+      revision: 3,
+      diagnostics: [
+        {
+          id: "HEADING_MARKER_MISMATCH:7:1",
+          severity: "error",
+          code: "HEADING_MARKER_MISMATCH",
+          line: 7,
+          column: 1,
+          scope: "entry",
+          message: "heading 与 marker 标题不一致",
+          hint: "使 heading 与 marker 中的标题保持一致"
+        },
+        {
+          id: "FIELD_KEY_DUPLICATE:9:1",
+          severity: "error",
+          code: "FIELD_KEY_DUPLICATE",
+          line: 9,
+          column: 1,
+          scope: "field",
+          message: "同一条目中存在重复字段 key。",
+          hint: "每个条目的字段 key 必须唯一。"
+        }
+      ]
     });
-    await plugin.onload();
-    obsidianMock.workspaceEvents.find((event) => event.name === "editor-menu")?.callback(new (await import("obsidian")).Menu(), editor);
-    await obsidianMock.submenuItems[0]?.onClick?.();
 
-    expect(requests).toContainEqual(expect.objectContaining({ type: "encryptText", policy: "credential" }));
+    await plugin.onload();
+    await obsidianMock.registeredCommands.find((command) => command.id === "validate-catalog")?.callback?.();
+
+    expect(obsidianMock.notices).toEqual([
+      "SVLT：敏感信息目录有 2 个格式问题，第一个位于 第 7 行、第 1 列。"
+    ]);
+    expect(obsidianMock.statusItems[0]?.textContent).toContain("2 个问题");
   });
 });

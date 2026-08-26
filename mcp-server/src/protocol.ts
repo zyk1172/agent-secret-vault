@@ -267,6 +267,59 @@ export const CatalogWriteResult = z.object({
 }).strict();
 export type CatalogWriteResult = z.infer<typeof CatalogWriteResult>;
 
+export const CatalogFilePreflight = z.object({
+  read: z.string().min(1).max(128),
+  parentTempCreate: z.string().min(1).max(128),
+  parentTempFsync: z.string().min(1).max(128),
+  parentRename: z.string().min(1).max(128),
+  parentFsync: z.string().min(1).max(128)
+}).strict();
+export type CatalogFilePreflight = z.infer<typeof CatalogFilePreflight>;
+
+export const CatalogAgentWriteIntent = z.object({
+  requestID: z.string().uuid().nullable().optional(),
+  operation: z.enum([
+    "createIndex",
+    "createEntry",
+    "patchMetadata",
+    "commitDraft",
+    "addSecretPlaceholder",
+    "batchMutation"
+  ]),
+  indexID: z.string().nullable().optional(),
+  entryID: z.string().nullable().optional(),
+  fieldKey: z.string().nullable().optional(),
+  acceptedRevision: z.number().int().nonnegative(),
+  candidateSemanticSHA256: z.string().regex(/^[0-9a-f]{64}$/)
+}).strict();
+export type CatalogAgentWriteIntent = z.infer<typeof CatalogAgentWriteIntent>;
+
+export const CatalogAgentWriteAccessRequest = z.object({
+  id: z.string().uuid(),
+  source: z.enum(["codex", "claude", "openclaw", "mcp-client"]),
+  reasonCategory: z.enum(["knowledge-maintenance", "catalog-repair", "bulk-import", "other"]),
+  duration: z.enum(["single-use", "10-minutes", "30-minutes"]),
+  createdAt: z.string().datetime(),
+  intent: CatalogAgentWriteIntent.nullable().optional(),
+  expiresAt: z.string().datetime().nullable().optional(),
+  verifiedSource: z.string().nullable().optional()
+}).strict();
+export type CatalogAgentWriteAccessRequest = z.infer<typeof CatalogAgentWriteAccessRequest>;
+
+export const CatalogValidationDiagnostic = z.object({
+  id: z.string().min(1),
+  severity: z.enum(["error", "warning"]),
+  code: z.string().min(1),
+  line: z.number().int().positive(),
+  column: z.number().int().positive().nullable().optional(),
+  endLine: z.number().int().positive().nullable().optional(),
+  endColumn: z.number().int().positive().nullable().optional(),
+  scope: z.enum(["document", "policy", "index", "entry", "field", "unmanaged"]),
+  message: z.string().min(1),
+  hint: z.string().nullable().optional()
+}).strict();
+export type CatalogValidationDiagnostic = z.infer<typeof CatalogValidationDiagnostic>;
+
 export const CatalogValidationResult = z.object({
   status: z.enum([
     "FOUND",
@@ -279,7 +332,10 @@ export const CatalogValidationResult = z.object({
     "PENDING_EXTERNAL_CHANGE",
     "CATALOG_INVALID"
   ]),
-  revision: z.number().int().nonnegative().nullable().optional()
+  revision: z.number().int().nonnegative().nullable().optional(),
+  rawSHA256: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
+  diagnostics: z.array(CatalogValidationDiagnostic).default([]),
+  filePreflight: CatalogFilePreflight.nullable().optional()
 }).strict();
 export type CatalogValidationResult = z.infer<typeof CatalogValidationResult>;
 
@@ -514,6 +570,8 @@ export const IpcRequest = z.discriminatedUnion("type", [
     })
     .strict(),
   z.object({ type: z.literal("catalogValidate") }).strict(),
+  z.object({ type: z.literal("catalogFilePreflight") }).strict(),
+  z.object({ type: z.literal("catalogRequestWriteAccess"), request: CatalogAgentWriteAccessRequest }).strict(),
   z
     .object({
       type: z.literal("inspectReference"),
@@ -631,7 +689,16 @@ export const IpcResponse = z.discriminatedUnion("type", [
     .object({
       type: z.literal("catalogValidation"),
       catalogStatus: z.enum(["FOUND", "NOT_FOUND", "INVALID_QUERY", "CATALOG_UNAVAILABLE", "LEGACY_CATALOG_UNSUPPORTED", "INTEGRITY_MISSING", "EXTERNAL_CATALOG_MODIFICATION", "PENDING_EXTERNAL_CHANGE", "CATALOG_INVALID"]),
-      revision: z.number().int().nonnegative().nullable().optional()
+      revision: z.number().int().nonnegative().nullable().optional(),
+      rawSHA256: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
+      diagnostics: z.array(CatalogValidationDiagnostic).default([]),
+      filePreflight: CatalogFilePreflight.optional()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("catalogFilePreflight"),
+      filePreflight: CatalogFilePreflight
     })
     .strict(),
   z
@@ -661,6 +728,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
       output: SecretOperationOutput
     })
     .strict(),
+  z.object({ type: z.literal("operationCompleted") }).strict(),
   z
     .object({
       type: z.literal("failure"),

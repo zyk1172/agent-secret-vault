@@ -6,7 +6,10 @@ import VaultCore
 /// different token and has no API for MCP clients to call through.
 public actor AppControlIPCClient {
     private static let connectTimeoutMilliseconds: Int32 = 2_000
-    private static let ioTimeoutSeconds: Int32 = 3
+    // App-control approvals wait for device-owner authentication. Keep this
+    // above the Agent's 30-second authorization window; the ordinary MCP IPC
+    // client intentionally keeps its shorter timeout.
+    private static let ioTimeoutSeconds: Int32 = 40
 
     private let configuration: UnixSocketServerConfiguration
 
@@ -22,6 +25,24 @@ public actor AppControlIPCClient {
         let response = try await send(.catalogStatus)
         guard case let .catalogStatus(status) = response else { throw unexpected(response) }
         return status
+    }
+
+    public func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan? {
+        let response = try await send(.catalogFormatRepairPlan)
+        guard case let .catalogFormatRepairPlan(plan) = response else { throw unexpected(response) }
+        return plan
+    }
+
+    public func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult {
+        let response = try await send(.catalogRepairFormat(expectedRawSHA256: expectedRawSHA256))
+        guard case let .catalogStatus(status) = response else { throw unexpected(response) }
+        return status
+    }
+
+    public func catalogRecentAuditEntries(limit: Int = 100) async throws -> [CatalogSecurityAuditEntry] {
+        let response = try await send(.catalogRecentAuditEntries(limit: limit))
+        guard case let .catalogRecentAuditEntries(entries) = response else { throw unexpected(response) }
+        return entries
     }
 
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
@@ -68,6 +89,17 @@ public actor AppControlIPCClient {
         let response = try await send(.catalogAgentWriteStatus)
         guard case let .catalogAgentWriteStatus(status) = response else { throw unexpected(response) }
         return status
+    }
+
+    public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {
+        let response = try await send(.catalogWriteAccessRequest(id: id))
+        guard case let .catalogWriteAccessRequest(request) = response else { throw unexpected(response) }
+        return request
+    }
+
+    public func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async throws {
+        let response = try await send(.respondToCatalogWriteAccessRequest(id: id, approved: approved))
+        guard case .operationCompleted = response else { throw unexpected(response) }
     }
 
     public func catalogCreateIndex(
@@ -163,6 +195,14 @@ public actor AppControlIPCClient {
             throw unexpected(response)
         }
         return (reference, revision)
+    }
+
+    public func catalogRevealField(entryID: String, key: String) async throws -> String {
+        let response = try await send(.catalogRevealField(entryID: entryID, key: key))
+        guard case let .catalogFieldPlaintext(plaintext) = response else {
+            throw unexpected(response)
+        }
+        return plaintext
     }
 
     public func send(_ request: AppControlRequest) async throws -> AppControlResponse {

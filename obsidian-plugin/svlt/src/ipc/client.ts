@@ -1,10 +1,9 @@
-import type { AuthenticatedIpcRequest, IpcRequest, IpcResponse } from "./protocol";
+import type { AuthenticatedIpcRequest, CatalogValidationDiagnostic, IpcRequest, IpcResponse } from "./protocol";
 
 const MAX_FRAME_BYTES = 1_048_576;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
 const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
-const SECRET_REFERENCE_PATTERN = /^secret:\/\/[0-9A-HJKMNP-TV-Z]{26}$/;
 
 type NetModule = Pick<typeof import("node:net"), "createConnection">;
 type NetSocket = import("node:net").Socket;
@@ -58,20 +57,8 @@ function parseIpcResponse(json: string): IpcResponse {
     throw new Error("Unexpected IPC response.");
   }
 
-  if (parsed.type === "created" && isSecretReference(parsed.reference)) {
-    return { type: "created", reference: parsed.reference };
-  }
-
   if (parsed.type === "failure" && typeof parsed.code === "string" && parsed.code.length > 0) {
     return { type: "failure", code: parsed.code };
-  }
-
-  if (parsed.type === "revealSessionOpened" && typeof parsed.sessionID === "string" && parsed.sessionID.length > 0) {
-    return { type: "revealSessionOpened", sessionID: parsed.sessionID };
-  }
-
-  if (parsed.type === "restoredText" && typeof parsed.text === "string") {
-    return { type: "restoredText", text: parsed.text };
   }
 
   if (parsed.type === "workbenchStatus" && isRecord(parsed.status)) {
@@ -110,24 +97,17 @@ function parseIpcResponse(json: string): IpcResponse {
     ].includes(parsed.catalogStatus) &&
     (parsed.revision === undefined || parsed.revision === null || isNonNegativeInteger(parsed.revision))
   ) {
+    const rawSHA256 = parsed.rawSHA256 === undefined || parsed.rawSHA256 === null || typeof parsed.rawSHA256 === "string"
+      ? parsed.rawSHA256
+      : undefined;
+    const diagnostics = isCatalogValidationDiagnosticArray(parsed.diagnostics) ? parsed.diagnostics : [];
     return {
       type: "catalogValidation",
       catalogStatus: parsed.catalogStatus as "FOUND" | "NOT_FOUND" | "INVALID_QUERY" | "CATALOG_UNAVAILABLE" | "LEGACY_CATALOG_UNSUPPORTED" | "INTEGRITY_MISSING" | "EXTERNAL_CATALOG_MODIFICATION" | "PENDING_EXTERNAL_CHANGE" | "CATALOG_INVALID",
-      ...(parsed.revision === undefined ? {} : { revision: parsed.revision as number | null })
+      ...(parsed.revision === undefined ? {} : { revision: parsed.revision as number | null }),
+      ...(rawSHA256 === undefined ? {} : { rawSHA256 }),
+      diagnostics
     };
-  }
-
-  if (parsed.type === "orphanScan" && isRecord(parsed.result)) {
-    const result = parsed.result;
-    if (isSecretReferenceArray(result.missingRecords) && isSecretReferenceArray(result.unreferencedRecords)) {
-      return {
-        type: "orphanScan",
-        result: {
-          missingRecords: result.missingRecords,
-          unreferencedRecords: result.unreferencedRecords
-        }
-      };
-    }
   }
 
   throw new Error("Unexpected IPC response.");
@@ -137,16 +117,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isSecretReference(value: unknown): value is string {
-  return typeof value === "string" && SECRET_REFERENCE_PATTERN.test(value);
-}
-
-function isSecretReferenceArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(isSecretReference);
-}
-
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isCatalogValidationDiagnosticArray(value: unknown): value is CatalogValidationDiagnostic[] {
+  return Array.isArray(value) && value.every((item) => {
+    if (!isRecord(item)) return false;
+    return typeof item.id === "string"
+      && (item.severity === "error" || item.severity === "warning")
+      && typeof item.code === "string"
+      && isPositiveInteger(item.line)
+      && (item.column === undefined || item.column === null || isPositiveInteger(item.column))
+      && (item.endLine === undefined || item.endLine === null || isPositiveInteger(item.endLine))
+      && (item.endColumn === undefined || item.endColumn === null || isPositiveInteger(item.endColumn))
+      && ["document", "policy", "index", "entry", "field", "unmanaged"].includes(String(item.scope))
+      && typeof item.message === "string"
+      && (item.hint === undefined || item.hint === null || typeof item.hint === "string");
+  });
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
 export class LocalVaultClient {

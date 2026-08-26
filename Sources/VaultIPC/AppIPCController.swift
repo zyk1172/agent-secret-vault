@@ -228,12 +228,18 @@ public final class AppIPCController: @unchecked Sendable {
                 code = "CATALOG_AGENT_WRITE_NOT_ALLOWED"
             case .revisionConflict:
                 code = "CATALOG_REVISION_CONFLICT"
+            case .formatRepairConflict:
+                code = "FORMAT_REPAIR_CONFLICT"
             case .invalidOperation:
                 code = "CATALOG_INVALID_OPERATION"
             case .approvalRequired:
                 code = "CATALOG_APPROVAL_REQUIRED"
+            case .writeFailed:
+                code = "CATALOG_WRITE_FAILED"
             case .cleanupRequired:
                 code = "CATALOG_CLEANUP_REQUIRED"
+            case .agentWriteApprovalUnavailable:
+                code = "CATALOG_AGENT_WRITE_APPROVAL_UNAVAILABLE"
             }
             Self.log(code: code)
             return try IPCFrameCodec.encode(IPCResponse.failure(code: code))

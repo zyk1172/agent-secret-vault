@@ -48,6 +48,13 @@ public protocol WorkbenchServicing: Sendable {
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
     func validateCatalog() async throws -> CatalogValidationResult
+    func catalogFilePreflight() async throws -> CatalogFilePreflight
+    func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID]
+    func requestCatalogWriteAccess(
+        source: CatalogAgentWriteRequestSource,
+        reasonCategory: CatalogAgentWriteReasonCategory,
+        duration: CatalogAgentWriteAccessDuration
+    ) async throws
     func pendingRevealSessionIDs() async throws -> [String]
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
     func encryptText(
@@ -154,6 +161,22 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
+    func catalogFilePreflight() async throws -> CatalogFilePreflight {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
+        []
+    }
+
+    func requestCatalogWriteAccess(
+        source _: CatalogAgentWriteRequestSource,
+        reasonCategory _: CatalogAgentWriteReasonCategory,
+        duration _: CatalogAgentWriteAccessDuration
+    ) async throws {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
     func encryptText(
         _ plaintext: String,
         label: String?,
@@ -196,7 +219,14 @@ public struct IPCRequestHandler: Sendable {
     }
 
     public func handle(_ request: IPCRequest) async throws -> IPCResponse {
-        await service.recordPluginActivity()
+        let context = AuditContext(source: .agent)
+        return try await AuditContext.$current.withValue(context) {
+            await service.recordPluginActivity()
+            return try await handleInContext(request)
+        }
+    }
+
+    private func handleInContext(_ request: IPCRequest) async throws -> IPCResponse {
         switch request {
         case .status:
             return .status(locked: await service.status().locked)
@@ -254,7 +284,26 @@ public struct IPCRequestHandler: Sendable {
             ))
         case .catalogValidate:
             let result = try await service.validateCatalog()
-            return .catalogValidation(status: result.status, revision: result.revision)
+            return .catalogValidation(
+                status: result.status,
+                revision: result.revision,
+                rawSHA256: result.rawSHA256,
+                diagnostics: result.diagnostics,
+                filePreflight: result.filePreflight
+            )
+        case .catalogFilePreflight:
+            return .catalogFilePreflight(try await service.catalogFilePreflight())
+        case .catalogPendingWriteAccessRequestIDs:
+            return .catalogPendingWriteAccessRequestIDs(
+                try await service.pendingCatalogWriteAccessRequestIDs()
+            )
+        case let .catalogRequestWriteAccess(request):
+            try await service.requestCatalogWriteAccess(
+                source: request.source,
+                reasonCategory: request.reasonCategory,
+                duration: request.duration
+            )
+            return .operationCompleted
         case .pendingRevealSessions:
             return .revealSessionIDs(try await service.pendingRevealSessionIDs())
         case let .inspectReference(reference):
