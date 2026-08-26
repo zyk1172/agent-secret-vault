@@ -1139,3 +1139,50 @@ private func writeManagedV2WithLegacySidecar(
     ).count
     #expect(emergencyCount >= 1)
 }
+
+@Test func catalogStoreRollsBackRecoveryWhenIntegrityCommitFails() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let setup = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let first = SecretCatalogDocument(indexes: [SecretCatalogIndex(id: storeIndexID, title: "QNAP")])
+    _ = try await setup.canonicalWrite(first)
+    let second = SecretCatalogDocument(
+        indexes: first.indexes + [SecretCatalogIndex(id: storeSecondIndexID, title: "临时恢复测试")],
+        entries: first.entries
+    )
+    _ = try await setup.canonicalWrite(second)
+
+    let originalDocument = try Data(contentsOf: fixture.document)
+    let originalIntegrity = try Data(contentsOf: fixture.integrity)
+
+    let failing = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore,
+        atomicWriteFaultInjector: FailOnceCatalogIntegrityWrite()
+    )
+    let plan = try #require(try await failing.recoveryPlan())
+
+    await #expect(throws: SensitiveCatalogDocumentStoreError.writeFailed) {
+        _ = try await failing.restoreRecoverySnapshot(plan)
+    }
+
+    #expect(try Data(contentsOf: fixture.document) == originalDocument)
+    #expect(try Data(contentsOf: fixture.integrity) == originalIntegrity)
+    let journalFiles = FileManager.default.subpaths(atPath: fixture.root.path)?
+        .filter { $0.contains("recovery-journal.json") } ?? []
+    #expect(journalFiles.isEmpty)
+
+    let retry = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let restored = try await retry.restoreLatestRecoverySnapshot()
+    #expect(restored.revision == 3)
+    #expect(restored.document.indexes.map(\.title) == ["QNAP", "临时恢复测试"])
+}

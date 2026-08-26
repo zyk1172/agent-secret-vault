@@ -235,22 +235,142 @@ public enum SensitiveCatalogDocumentCodec {
         switch error {
         case .invalidPolicyBlock, .ambiguousLegacyPolicy:
             return lineContaining("SVLT-POLICY", in: text)
+        case .duplicateFieldKey:
+            return duplicateMarkerLine(
+                prefix: "SVLT-FIELD",
+                parse: { (try? fieldMarker($0))?.key },
+                in: text
+            ) ?? lineContaining("SVLT-FIELD", in: text)
+        case .duplicateEntryID:
+            return duplicateMarkerLine(
+                prefix: "SVLT-ENTRY",
+                parse: { (try? entryMarker($0))?.id },
+                in: text
+            ) ?? lineContaining("SVLT-ENTRY", in: text)
+        case .duplicateIndexID:
+            return duplicateMarkerLine(
+                prefix: "SVLT-INDEX",
+                parse: { (try? indexMarker($0))?.id },
+                in: text
+            ) ?? lineContaining("SVLT-INDEX", in: text)
         case .secretFieldContainsValue, .secretFieldKeyMustBeSecret,
-             .valueAndSecretReference, .duplicateFieldKey, .invalidFieldValue,
+             .valueAndSecretReference, .invalidFieldValue,
              .nonSecretFieldContainsSecretReference, .invalidSecretReference,
              .secretReferenceInMetadata:
-            return lineContaining("SVLT-FIELD", in: text)
+            return fieldBodyLine(in: text) ?? lineContaining("SVLT-FIELD", in: text)
         case .headingDoesNotMatchBlock:
-            return firstHeadingLine(in: text)
-        case .missingEntryBlock, .entryReferencesMissingIndex, .duplicateEntryID:
+            return entryHeadingLine(in: text) ?? firstHeadingLine(in: text)
+        case .missingEntryBlock, .entryReferencesMissingIndex:
             return lineContaining("SVLT-ENTRY", in: text)
-        case .missingIndexBlock, .duplicateIndexID:
+        case .missingIndexBlock:
             return lineContaining("SVLT-INDEX", in: text)
+        case .malformedJSON:
+            return malformedMarkerLine(in: text) ?? firstContentLine(in: text)
         case .unmanagedContent:
-            return firstContentLine(in: text)
+            return forgedMarkerLine(in: text) ?? firstContentLine(in: text)
         default:
             return firstContentLine(in: text)
         }
+    }
+
+    private static func duplicateMarkerLine(
+        prefix: String,
+        parse: (String) -> String?,
+        in text: String
+    ) -> Int? {
+        let lines = text.components(separatedBy: "\n")
+        var seen: [String: Int] = [:]
+        var currentEntryID: String?
+        let markerPrefix = "<!-- \(prefix) "
+
+        for (offset, rawLine) in lines.enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if prefix == "SVLT-FIELD" {
+                if line.hasPrefix("<!-- SVLT-ENTRY "), line.hasSuffix(" -->") {
+                    let json = String(line.dropFirst("<!-- SVLT-ENTRY ".count).dropLast(" -->".count))
+                    currentEntryID = (try? entryMarker(json))?.id
+                } else if line == "<!-- /SVLT-ENTRY -->" {
+                    currentEntryID = nil
+                }
+            }
+            guard line.hasPrefix(markerPrefix), line.hasSuffix(" -->") else { continue }
+            let json = String(line.dropFirst(markerPrefix.count).dropLast(" -->".count))
+            guard let key = parse(json) else { continue }
+            let bucket = prefix == "SVLT-FIELD" ? "\(currentEntryID ?? ""):\(key)" : key
+            if seen[bucket] != nil {
+                return offset + 1
+            }
+            seen[bucket] = offset
+        }
+        return nil
+    }
+
+    private static func fieldBodyLine(in text: String) -> Int? {
+        let lines = text.components(separatedBy: "\n")
+        for offset in lines.indices {
+            let line = lines[offset].trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("<!-- SVLT-FIELD "), line.hasSuffix(" -->") else { continue }
+            let limit = min(offset + 8, lines.count)
+            for bodyOffset in (offset + 1)..<limit {
+                let body = lines[bodyOffset].trimmingCharacters(in: .whitespaces)
+                if body.isEmpty || body == "<!-- /SVLT-FIELD -->" { break }
+                return bodyOffset + 1
+            }
+        }
+        return nil
+    }
+
+    private static func entryHeadingLine(in text: String) -> Int? {
+        let lines = text.components(separatedBy: "\n")
+        var expectingEntryHeading = false
+        for (offset, rawLine) in lines.enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("<!-- SVLT-ENTRY "), line.hasSuffix(" -->") {
+                expectingEntryHeading = true
+                continue
+            }
+            if expectingEntryHeading {
+                if line.hasPrefix("### ") { return offset + 1 }
+                if !line.isEmpty, line != "<!-- /SVLT-ENTRY -->" { return offset + 1 }
+            }
+        }
+        return nil
+    }
+
+    private static func malformedMarkerLine(in text: String) -> Int? {
+        let lines = text.components(separatedBy: "\n")
+        for (offset, rawLine) in lines.enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            for prefix in ["SVLT-INDEX", "SVLT-ENTRY", "SVLT-FIELD"] {
+                let markerPrefix = "<!-- \(prefix) "
+                guard line.hasPrefix(markerPrefix), line.hasSuffix(" -->") else { continue }
+                let json = String(line.dropFirst(markerPrefix.count).dropLast(" -->".count))
+                let valid: Bool
+                switch prefix {
+                case "SVLT-INDEX": valid = (try? indexMarker(json)) != nil
+                case "SVLT-ENTRY": valid = (try? entryMarker(json)) != nil
+                default: valid = (try? fieldMarker(json)) != nil
+                }
+                if !valid { return offset + 1 }
+            }
+        }
+        return nil
+    }
+
+    private static func forgedMarkerLine(in text: String) -> Int? {
+        let lines = text.components(separatedBy: "\n")
+        for (offset, rawLine) in lines.enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard line.contains("<!-- SVLT-") || line.contains("<!-- /SVLT-") else { continue }
+            let known = line == "<!-- /SVLT-INDEX -->"
+                || line == "<!-- /SVLT-ENTRY -->"
+                || line == "<!-- /SVLT-FIELD -->"
+                || (line.hasPrefix("<!-- SVLT-INDEX ") && line.hasSuffix(" -->"))
+                || (line.hasPrefix("<!-- SVLT-ENTRY ") && line.hasSuffix(" -->"))
+                || (line.hasPrefix("<!-- SVLT-FIELD ") && line.hasSuffix(" -->"))
+            if !known { return offset + 1 }
+        }
+        return nil
     }
 
     private static func lineContaining(_ needle: String, in text: String) -> Int {

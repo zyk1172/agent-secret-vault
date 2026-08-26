@@ -50,7 +50,7 @@ vi.mock("obsidian", () => ({
   }
 }));
 
-import AgentSecretVaultPlugin, { commandDefinitions } from "../src/main";
+import AgentSecretVaultPlugin, { commandDefinitions, shouldWatchCatalogFile } from "../src/main";
 
 function makeApp() {
   return {
@@ -100,6 +100,12 @@ describe("plugin commands", () => {
       "验证 SVLT 敏感信息目录",
       "查看 SVLT 目录诊断"
     ]);
+  });
+
+  it("keeps watching a catalog after its marker is deleted", () => {
+    expect(shouldWatchCatalogFile("managedV3", false)).toBe(true);
+    expect(shouldWatchCatalogFile("unmanaged", true)).toBe(true);
+    expect(shouldWatchCatalogFile("unmanaged", false)).toBe(false);
   });
 
   it("registers commands and a modify watcher on load", async () => {

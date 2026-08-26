@@ -21,7 +21,8 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var main_exports = {};
 __export(main_exports, {
   commandDefinitions: () => commandDefinitions,
-  default: () => AgentSecretVaultPlugin
+  default: () => AgentSecretVaultPlugin,
+  shouldWatchCatalogFile: () => shouldWatchCatalogFile
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
@@ -270,6 +271,9 @@ var commandDefinitions = [
   { id: "validate-catalog", name: "\u9A8C\u8BC1 SVLT \u654F\u611F\u4FE1\u606F\u76EE\u5F55" },
   { id: "show-catalog-diagnostics", name: "\u67E5\u770B SVLT \u76EE\u5F55\u8BCA\u65AD" }
 ];
+function shouldWatchCatalogFile(classified, isTracked) {
+  return isTracked || classified.startsWith("managed");
+}
 var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   catalogValidationTimer;
   statusBar;
@@ -314,8 +318,10 @@ var AgentSecretVaultPlugin = class extends import_obsidian.Plugin {
   async validateModifiedCatalog(file) {
     try {
       const text = await this.app.vault.cachedRead(file);
-      if (!classifyCatalogText(text).startsWith("managed")) return;
-      this.activeCatalogFile = file;
+      const classified = classifyCatalogText(text);
+      const isTracked = this.activeCatalogFile?.path === file.path;
+      if (!shouldWatchCatalogFile(classified, isTracked)) return;
+      if (classified.startsWith("managed")) this.activeCatalogFile = file;
       this.scheduleCatalogValidation();
     } catch {
     }

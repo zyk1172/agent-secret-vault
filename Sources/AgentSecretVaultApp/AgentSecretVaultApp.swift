@@ -278,6 +278,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private let uiRevealSessionStore = RevealSessionStore(defaultTTLSeconds: 60)
     private var uiRequestObserver: NSObjectProtocol?
     private var writeAccessObserver: NSObjectProtocol?
+    private var applicationActivationObserver: NSObjectProtocol?
     private var presentedAgentSessionIDs: Set<String> = []
     private var sensitiveIndexStore: SensitiveInformationDocumentStore?
     private var sensitiveCatalogStore: SensitiveCatalogDocumentStore?
@@ -305,6 +306,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             }
             startUIRequestObserver()
             startWriteAccessObserver()
+            startApplicationActivationObserver()
             sensitiveIndexStore = try makeSensitiveIndexStore()
             sensitiveCatalogStore = try makeSensitiveCatalogStore()
             guard let sensitiveIndexStore else {
@@ -330,6 +332,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
             await refreshSensitiveIndex()
             await refreshSensitiveCatalog()
+            await refreshPendingCatalogWriteAccessRequests()
             started = true
 
             if !(await connectToAgent(client)) {
@@ -379,6 +382,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 agentServiceStatus = .running
                 await refreshSavedReferences()
                 await refreshSensitiveIndex()
+                await refreshPendingCatalogWriteAccessRequests()
                 await presentPendingRevealSessions()
                 return true
             } catch {
@@ -546,6 +550,10 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             DistributedNotificationCenter.default().removeObserver(writeAccessObserver)
             self.writeAccessObserver = nil
         }
+        if let applicationActivationObserver {
+            NotificationCenter.default.removeObserver(applicationActivationObserver)
+            self.applicationActivationObserver = nil
+        }
         RevealSessionLifecycle.clearAll()
         await uiRevealSessionStore.clearAll()
         presentedAgentSessionIDs.removeAll()
@@ -590,6 +598,30 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             else { return }
             Task { @MainActor [weak self] in
                 await self?.loadPendingWriteAccessRequest(id: id)
+            }
+        }
+    }
+
+    private func startApplicationActivationObserver() {
+        guard applicationActivationObserver == nil else { return }
+        applicationActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.refreshPendingCatalogWriteAccessRequests()
+            }
+        }
+    }
+
+    private func refreshPendingCatalogWriteAccessRequests() async {
+        guard let agentClient else { return }
+        let requestIDs = (try? await agentClient.pendingCatalogWriteAccessRequestIDs()) ?? []
+        for requestID in requestIDs {
+            await loadPendingWriteAccessRequest(id: requestID)
+            if pendingWriteAccessRequest != nil {
+                return
             }
         }
     }

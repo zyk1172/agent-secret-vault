@@ -110,6 +110,38 @@ private func qnapDocument() -> SecretCatalogDocument {
     }
 }
 
+@Test func detailedValidationReportsTheSecondDuplicateFieldMarkerLine() throws {
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: v2IndexID, title: "QNAP")],
+        entries: [SecretCatalogEntry(
+            id: v2EntryID,
+            indexId: v2IndexID,
+            title: "QNAP 登录",
+            fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)]
+        )]
+    )
+    var text = try SensitiveCatalogDocumentCodec.encode(document)
+    let duplicateField = """
+    <!-- SVLT-FIELD {"key":"password","label":"密码","type":"secret","agentVisible":true,"searchable":true} -->
+    - 密码：
+    <!-- /SVLT-FIELD -->
+    """
+    text = text.replacingOccurrences(
+        of: "<!-- /SVLT-ENTRY -->",
+        with: duplicateField + "\n<!-- /SVLT-ENTRY -->"
+    )
+
+    let report = SensitiveCatalogDocumentCodec.validateDetailed(Data(text.utf8))
+    let diagnostic = try #require(report.diagnostics.first)
+    let lines = text.components(separatedBy: "\n")
+    let fieldMarkerLines = lines.enumerated().filter {
+        $0.element.trimmingCharacters(in: .whitespaces).hasPrefix("<!-- SVLT-FIELD ")
+    }
+    let secondDuplicateMarker = try #require(fieldMarkerLines.dropFirst().first)
+    #expect(diagnostic.code == "FIELD_KEY_DUPLICATE")
+    #expect(diagnostic.line == secondDuplicateMarker.offset + 1)
+}
+
 @Test func catalogV2IsInputOnlyAndDecodesToTheSameSemanticDocument() throws {
     let document = qnapDocument()
     let rendered = try SensitiveCatalogDocumentCodec.encodeV2(document)

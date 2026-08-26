@@ -200,6 +200,14 @@ public actor VaultIPCClient {
         )
     }
 
+    public func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
+        let response = try await send(.catalogPendingWriteAccessRequestIDs)
+        guard case let .catalogPendingWriteAccessRequestIDs(requestIDs) = response else {
+            throw unexpected(response)
+        }
+        return requestIDs
+    }
+
     public func requestCatalogWriteAccess(_ request: CatalogAgentWriteAccessRequest) async throws {
         let response = try await send(.catalogRequestWriteAccess(request))
         guard case .operationCompleted = response else {

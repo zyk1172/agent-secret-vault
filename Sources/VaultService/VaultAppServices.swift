@@ -1009,7 +1009,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func catalogRestoreRecovery(_ plan: CatalogRecoveryPlan) async throws -> CatalogValidationResult {
         let store = try await selectedCatalogStoreForApp()
         try await store.validateRecoveryReferences(for: plan)
-        if plan.currentState == .parseable, let diff = plan.semanticDiff {
+        if let diff = plan.semanticDiff {
             try await authorizeCatalogDiff(
                 diff,
                 transport: .directManagedFileWrite,
@@ -1232,6 +1232,18 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
         return request
+    }
+
+    /// App cold-start/foreground discovery. The DistributedNotification path
+    /// is only a live accelerator; pending requests remain authoritative in
+    /// the Agent until they expire, are denied, or are consumed.
+    public func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
+        pendingWriteAccessRequests.keys
+            .filter { writeAccessStates[$0] == .pending || writeAccessStates[$0] == .authenticating }
+            .sorted { lhs, rhs in
+                (pendingWriteAccessRequests[lhs]?.createdAt ?? "") <
+                    (pendingWriteAccessRequests[rhs]?.createdAt ?? "")
+            }
     }
 
     public func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async throws {

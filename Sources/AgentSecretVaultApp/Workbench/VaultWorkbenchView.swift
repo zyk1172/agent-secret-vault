@@ -1786,6 +1786,7 @@ private struct SensitiveCatalogEntryRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

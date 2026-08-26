@@ -82,6 +82,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             expectedRevision: 1
         ),
         .catalogValidate,
+        .catalogPendingWriteAccessRequestIDs,
         .pendingRevealSessions,
         .inspectReference(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
         .deleteRecord(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
@@ -166,6 +167,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             diagnostics: [],
             filePreflight: nil
         ),
+        .catalogPendingWriteAccessRequestIDs([UUID()]),
         .referenceMetadata(SecretReferenceMetadata(
             reference: "secret://0123456789ABCDEFGHJKMNPQRS",
             policy: .read,

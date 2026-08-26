@@ -18,6 +18,10 @@ export const commandDefinitions = [
   { id: "show-catalog-diagnostics", name: "查看 SVLT 目录诊断" }
 ] as const;
 
+export function shouldWatchCatalogFile(classified: string, isTracked: boolean): boolean {
+  return isTracked || classified.startsWith("managed");
+}
+
 type ValidationResult = Extract<Awaited<ReturnType<LocalVaultClient["request"]>>, { type: "catalogValidation" }>;
 
 export default class AgentSecretVaultPlugin extends Plugin {
@@ -76,8 +80,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const text = await this.app.vault.cachedRead(file);
       // A marker-bearing file is enough to trigger the Core validator. The
       // Core, not this classifier, decides whether it is actually valid.
-      if (!classifyCatalogText(text).startsWith("managed")) return;
-      this.activeCatalogFile = file;
+      const classified = classifyCatalogText(text);
+      const isTracked = this.activeCatalogFile?.path === file.path;
+      if (!shouldWatchCatalogFile(classified, isTracked)) return;
+      if (classified.startsWith("managed")) this.activeCatalogFile = file;
       this.scheduleCatalogValidation();
     } catch {
       // The explicit command remains available; watcher failures are silent.

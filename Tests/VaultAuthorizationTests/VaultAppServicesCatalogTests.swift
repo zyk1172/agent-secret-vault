@@ -81,6 +81,103 @@ private struct CatalogTextEncryptor: TextEncrypting {
     #expect(await service.catalogAgentWriteStatus().mode == .disabled)
 }
 
+@Test func appCanDiscoverPendingAgentWriteRequestsAfterColdStart() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let captured = RequestCapture()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: CatalogApprovalRecorder(),
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier(present: { request in
+            Task { await captured.set(request) }
+        })
+    )
+
+    let task = Task {
+        try await service.createCatalogEntry(CatalogDraftRequest(
+            indexID: serviceIndexID,
+            title: "冷启动待授权"
+        ))
+    }
+    let request = try await awaitAgentWriteRequest(captured)
+
+    let pendingIDs = try await service.pendingCatalogWriteAccessRequestIDs()
+    #expect(pendingIDs.contains(request.id))
+    #expect(try await service.pendingCatalogWriteAccessRequest(id: request.id).id == request.id)
+
+    try await service.respondToCatalogWriteAccessRequest(id: request.id, approved: true)
+    _ = try await task.value
+    #expect(try await service.pendingCatalogWriteAccessRequestIDs().isEmpty)
+}
+
+@Test func recoveryWithSemanticDiffAlwaysGoesThroughCatalogPolicy() async throws {
+    let recordStore = CatalogMetadataRecordStore(records: [
+        catalogMetadataRecord(id: String(servicePasswordRef.dropFirst("secret://".count)), label: "旧密码"),
+        catalogMetadataRecord(id: String(servicePrivateKeyRef.dropFirst("secret://".count)), label: "新密码")
+    ])
+    let fixture = try await CatalogFixture(secretReferenceExists: { reference in
+        guard let id = try? SecretReference(reference).id else { return false }
+        return (try? await recordStore.latest(id: id)) != nil
+    })
+    defer { fixture.cleanup() }
+    let approver = CatalogApprovalRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+
+    let initial = try await fixture.store.snapshot()
+    let baseEntry = try #require(initial.document.entries.first)
+
+    func boundEntry(_ reference: String) -> SecretCatalogEntry {
+        SecretCatalogEntry(
+            id: baseEntry.id,
+            indexId: baseEntry.indexId,
+            title: baseEntry.title,
+            type: baseEntry.type,
+            aliases: baseEntry.aliases,
+            endpoints: baseEntry.endpoints,
+            fields: baseEntry.fields.map { field in
+                guard field.type.isSecret else { return field }
+                return SecretCatalogFieldValue(
+                    key: field.key,
+                    label: field.label,
+                    type: field.type,
+                    agentVisible: field.agentVisible,
+                    searchable: field.searchable,
+                    secretRef: reference
+                )
+            },
+            notes: baseEntry.notes,
+            tags: baseEntry.tags,
+            schema: baseEntry.schema
+        )
+    }
+
+    _ = try await fixture.store.updateEntry(boundEntry(servicePasswordRef), expectedRevision: initial.revision)
+    _ = try await fixture.store.updateEntry(boundEntry(servicePrivateKeyRef), expectedRevision: 2)
+    let snapshots = try await fixture.store.listRecoverySnapshots()
+    let older = try #require(snapshots.first { $0.revision == 2 })
+    let plan = try #require(try await fixture.store.recoveryPlan(snapshotID: older.id))
+
+    #expect(plan.currentState == .accepted)
+    #expect(plan.semanticDiff?.touchesExistingSecret == true)
+
+    let result = try await service.catalogRestoreRecovery(plan)
+    #expect(result.status == .found)
+    #expect(await approver.count == 2)
+    #expect(try await fixture.store.snapshot().revision == 4)
+}
+
 private struct CatalogMultiSecretEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         let reference = plaintext == "password-canary" ? servicePasswordRef : servicePrivateKeyRef
@@ -263,7 +360,9 @@ private struct CatalogFixture {
     let store: SensitiveCatalogDocumentStore
     let agentAuthorization: CatalogAgentWriteAuthorization
 
-    init() async throws {
+    init(
+        secretReferenceExists: (@Sendable (String) async -> Bool)? = nil
+    ) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("svlt-service-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         documentURL = root.appendingPathComponent("敏感信息.md")
@@ -271,7 +370,8 @@ private struct CatalogFixture {
         store = SensitiveCatalogDocumentStore(
             documentURL: documentURL,
             integrityURL: root.appendingPathComponent("catalog-integrity.json"),
-            keyStore: try FixedCatalogIntegrityKeyStore(key: Data(repeating: 7, count: 32))
+            keyStore: try FixedCatalogIntegrityKeyStore(key: Data(repeating: 7, count: 32)),
+            secretReferenceExists: secretReferenceExists
         )
         try await store.selectDocument(at: documentURL)
         _ = try await store.canonicalWrite(serviceDocument())

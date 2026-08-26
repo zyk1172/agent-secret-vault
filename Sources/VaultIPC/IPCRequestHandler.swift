@@ -49,6 +49,7 @@ public protocol WorkbenchServicing: Sendable {
     ) async throws -> CatalogWriteResult
     func validateCatalog() async throws -> CatalogValidationResult
     func catalogFilePreflight() async throws -> CatalogFilePreflight
+    func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID]
     func requestCatalogWriteAccess(
         source: CatalogAgentWriteRequestSource,
         reasonCategory: CatalogAgentWriteReasonCategory,
@@ -162,6 +163,10 @@ public extension WorkbenchServicing {
 
     func catalogFilePreflight() async throws -> CatalogFilePreflight {
         throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
+        []
     }
 
     func requestCatalogWriteAccess(
@@ -281,6 +286,10 @@ public struct IPCRequestHandler: Sendable {
             )
         case .catalogFilePreflight:
             return .catalogFilePreflight(try await service.catalogFilePreflight())
+        case .catalogPendingWriteAccessRequestIDs:
+            return .catalogPendingWriteAccessRequestIDs(
+                try await service.pendingCatalogWriteAccessRequestIDs()
+            )
         case let .catalogRequestWriteAccess(request):
             try await service.requestCatalogWriteAccess(
                 source: request.source,

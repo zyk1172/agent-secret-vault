@@ -29,6 +29,7 @@ import Testing
     #expect(source.contains("\"解密\""))
     #expect(source.contains("pendingSecretInputs.removeAll()"))
     #expect(source.contains("填写密码"))
+    #expect(source.contains("minHeight: 132"))
     #expect(!source.contains("DisclosureGroup(isExpanded: $expanded)"))
 }
 
