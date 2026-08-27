@@ -28,6 +28,14 @@ private struct ControlService: AppControlServicing {
         throw AppControlRequestHandlerError.unsupportedRequest
     }
 
+    func submitCatalogSecureInput(
+        id: UUID,
+        submission: CatalogSecureInputSubmission
+    ) async throws -> CatalogSecureInputStatus {
+        _ = submission
+        return CatalogSecureInputStatus(requestID: id, status: .completed, revision: 4)
+    }
+
     func beginCatalogSecureInputCommit(id _: UUID) async throws -> CatalogAgentSecureInputRequest {
         throw AppControlRequestHandlerError.unsupportedRequest
     }
@@ -166,6 +174,27 @@ private struct ControlService: AppControlServicing {
         from: JSONEncoder().encode(bindRequest)
     )
     #expect(decodedBindRequest == bindRequest)
+
+    let secureInputRequestID = UUID()
+    let secureInputRequest = AppControlRequest.catalogSubmitSecureInput(
+        id: secureInputRequestID,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: ["0123456789ABCDEFGHJKMNPQRT:password"],
+            plaintextByFieldKey: ["password": "ASV_SECURE_INPUT_CANARY"]
+        )
+    )
+    let decodedSecureInputRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(secureInputRequest)
+    )
+    #expect(decodedSecureInputRequest == secureInputRequest)
+
+    let secureInputResponse = await AppControlRequestHandler(service: ControlService()).handle(secureInputRequest)
+    #expect(secureInputResponse == .catalogSecureInputStatus(
+        CatalogSecureInputStatus(requestID: secureInputRequestID, status: .completed, revision: 4)
+    ))
+    let encodedSecureInputResponse = String(decoding: try JSONEncoder().encode(secureInputResponse), as: UTF8.self)
+    #expect(!encodedSecureInputResponse.contains("ASV_SECURE_INPUT_CANARY"))
 
     let commitRequest = AppControlRequest.catalogCommitEntryEdit(
         entry: SecretCatalogEntry(

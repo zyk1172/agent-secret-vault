@@ -17,6 +17,10 @@ private let validRecordID = "01JABCDEF0123456789ABCDEFG"
         .appendingPathComponent(validRecordID)
         .appendingPathComponent("00000001.json")
     #expect(FileManager.default.fileExists(atPath: expectedURL.path))
+    #expect(try permissions(of: baseDirectory.appendingPathComponent(".agent-secret-vault")) == 0o700)
+    #expect(try permissions(of: baseDirectory.appendingPathComponent(".agent-secret-vault/records")) == 0o700)
+    #expect(try permissions(of: expectedURL.deletingLastPathComponent()) == 0o700)
+    #expect(try permissions(of: expectedURL) == 0o600)
     #expect(try await store.versions(id: validRecordID) == [1])
 }
 
@@ -99,6 +103,11 @@ private func versionURL(baseDirectory: URL, version: Int) -> URL {
         .appendingPathComponent("records")
         .appendingPathComponent(validRecordID)
         .appendingPathComponent(String(format: "%08d.json", version))
+}
+
+private func permissions(of url: URL) throws -> Int {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
 }
 
 private func makeRecord(

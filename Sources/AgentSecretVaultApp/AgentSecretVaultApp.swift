@@ -39,9 +39,6 @@ struct AgentSecretVaultApplication: App {
                 auditEntries: runtime.auditEntries,
                 auditError: runtime.auditError,
                 secureInputRequest: runtime.secureInputRequest,
-                beginSecureInputCommit: { id in
-                    await runtime.beginSecureInputCommit(id: id)
-                },
                 submitSecureInput: { request, selectedTargets, values in
                     await runtime.submitSecureInput(
                         request: request,
@@ -118,22 +115,37 @@ struct AgentSecretVaultApplication: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                     secureViewerModel.handleFocusChanged(isFocused: false)
-                    Task { await runtime.clearRevealSessions() }
+                    Task {
+                        await runtime.cancelAllSecureInputRequests()
+                        await runtime.clearRevealSessions()
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    Task { await runtime.clearRevealSessions() }
+                    Task {
+                        await runtime.cancelAllSecureInputRequests()
+                        await runtime.clearRevealSessions()
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.willSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
-                    Task { await runtime.clearRevealSessions() }
+                    Task {
+                        await runtime.cancelAllSecureInputRequests()
+                        await runtime.clearRevealSessions()
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
                     secureViewerModel.handleLockNotification()
-                    Task { await runtime.clearRevealSessions() }
+                    Task {
+                        await runtime.cancelAllSecureInputRequests()
+                        await runtime.clearRevealSessions()
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    Task { await runtime.clearRevealSessions() }
+                    Task {
+                        await runtime.cancelAllSecureInputRequests()
+                        await runtime.clearRevealSessions()
+                    }
                 }
         }
             .commands {
@@ -496,6 +508,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     func lockVault() async {
         try? await agentClient?.lock()
+        await cancelAllSecureInputRequests()
         await clearRevealSessions()
     }
 
@@ -521,6 +534,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             self.applicationActivationObserver = nil
         }
         RevealSessionLifecycle.clearAll()
+        await cancelAllSecureInputRequests()
         await uiRevealSessionStore.clearAll()
         presentedAgentSessionIDs.removeAll()
         // Clear only UI reveal sessions in the independent Agent; this is
@@ -622,7 +636,15 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             return
         }
         do {
-            secureInputRequest = try await appControlClient.catalogSecureInputRequest(id: id)
+            let request = try await appControlClient.catalogSecureInputRequest(id: id)
+            // Lifecycle cancellation can re-enter this MainActor while the
+            // AppControl fetch is suspended. Do not resurrect a Sheet for an
+            // ID that was removed from the presented set in that window.
+            guard presentedSecureInputIDs.contains(id) else {
+                try? await appControlClient.cancelCatalogSecureInput(id: id)
+                return
+            }
+            secureInputRequest = request
         } catch {
             presentedSecureInputIDs.remove(id)
             await presentNextSecureInputRequest()
@@ -706,66 +728,29 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         scheduleNextPendingCatalogWriteAccessRefresh()
     }
 
-    func beginSecureInputCommit(id: UUID) async -> CatalogAgentSecureInputRequest? {
-        guard let appControlClient else { return nil }
-        return try? await appControlClient.beginCatalogSecureInputCommit(id: id)
-    }
-
     func submitSecureInput(
         request: CatalogAgentSecureInputRequest,
         selectedTargets: [CatalogSecureInputTarget],
         values: [String: String]
     ) async {
-        guard let appControlClient,
-              let snapshot = sensitiveCatalogSnapshot,
-              var entry = snapshot.document.entries.first(where: { $0.id == request.entryID })
-        else {
+        guard let appControlClient else {
             await cancelSecureInput(id: request.id)
             return
         }
-
-        let selectedKeys = Set(selectedTargets.map(\.fieldKey))
-        entry = SecretCatalogEntry(
-            id: entry.id,
-            indexId: entry.indexId,
-            title: entry.title,
-            type: entry.type,
-            aliases: entry.aliases,
-            endpoints: entry.endpoints,
-            fields: entry.fields.map { field in
-                guard selectedKeys.contains(field.key) else { return field }
-                let target = selectedTargets.first { $0.fieldKey == field.key }
-                if target?.mode == .convertToSecret {
-                    return SecretCatalogFieldValue(
-                        key: field.key,
-                        label: field.label,
-                        type: .secret,
-                        agentVisible: field.agentVisible,
-                        searchable: field.searchable
-                    )
-                }
-                return field
-            },
-            notes: entry.notes,
-            tags: entry.tags,
-            schema: entry.schema
+        let selectedKeys = Set(selectedTargets.filter { !$0.usesExistingValue }.map(\.fieldKey))
+        let submission = CatalogSecureInputSubmission(
+            selectedTargetIDs: selectedTargets.map(\.id),
+            plaintextByFieldKey: values.filter { selectedKeys.contains($0.key) }
         )
-        let secretInputs = selectedTargets.compactMap { target -> CatalogSecretInput? in
-            guard let value = values[target.fieldKey], !value.isEmpty else { return nil }
-            return CatalogSecretInput(key: target.fieldKey, label: target.label, plaintext: value)
-        }
 
         do {
-            let result = try await appControlClient.catalogCommitEntryEdit(
-                entry,
-                secretInputs: secretInputs,
-                expectedRevision: request.expectedRevision
-            )
-            try? await appControlClient.completeCatalogSecureInput(
+            let status = try await appControlClient.submitCatalogSecureInput(
                 id: request.id,
-                completion: CatalogSecureInputCompletion(revision: result.revision)
+                submission: submission
             )
-            await refreshSensitiveCatalog()
+            if status.status == .completed {
+                await refreshSensitiveCatalog()
+            }
         } catch {
             try? await appControlClient.cancelCatalogSecureInput(id: request.id)
             sensitiveIndexError = catalogMutationUIError(for: error, operation: "安全输入").displayText
@@ -778,6 +763,18 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         try? await appControlClient?.cancelCatalogSecureInput(id: id)
         finishSecureInputRequest(id)
         await presentNextSecureInputRequest()
+    }
+
+    func cancelAllSecureInputRequests() async {
+        var ids = Set(pendingSecureInputQueue)
+        ids.formUnion(presentedSecureInputIDs)
+        if let id = secureInputRequest?.id { ids.insert(id) }
+        for id in ids {
+            try? await appControlClient?.cancelCatalogSecureInput(id: id)
+        }
+        pendingSecureInputQueue.removeAll()
+        presentedSecureInputIDs.removeAll()
+        secureInputRequest = nil
     }
 
     private func finishSecureInputRequest(_ id: UUID) {

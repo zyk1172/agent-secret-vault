@@ -93,8 +93,19 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             secretRef: testSecretReference,
             expectedRevision: 1
         ),
+        .catalogRequestSecureInputs(
+            entryID: testEntryID,
+            targets: [CatalogSecureInputTargetRequest(
+                entryID: testEntryID,
+                fieldKey: "password",
+                mode: .replaceSecret,
+                required: true
+            )],
+            expectedRevision: 1
+        ),
         .catalogValidate,
         .catalogPendingWriteAccessRequestIDs,
+        .catalogSecureInputStatus(id: UUID()),
         .pendingRevealSessions,
         .inspectReference(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
         .deleteRecord(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
@@ -196,6 +207,10 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             filePreflight: nil
         ),
         .catalogPendingWriteAccessRequestIDs([UUID()]),
+        .catalogSecureInputStatus(CatalogSecureInputStatus(
+            requestID: UUID(),
+            status: .pending
+        )),
         .referenceMetadata(SecretReferenceMetadata(
             reference: "secret://0123456789ABCDEFGHJKMNPQRS",
             policy: .read,
@@ -219,6 +234,17 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
 
         #expect(decoded == response)
     }
+}
+
+@Test func secureInputStatusUsesUppercaseWireValue() throws {
+    let response = IPCResponse.catalogSecureInputStatus(
+        CatalogSecureInputStatus(requestID: UUID(), status: .pending)
+    )
+    let object = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(response)) as? [String: Any]
+    )
+    let status = try #require(object["status"] as? [String: Any])
+    #expect(status["status"] as? String == "PENDING")
 }
 
 @Test func encodedResponsesNeverContainPlaintextShapedKeys() throws {

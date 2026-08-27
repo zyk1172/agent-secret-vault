@@ -1576,6 +1576,58 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					160319EC3D54A6D48327EF69 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					220CDA200412FA123E185C24 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					4D4AAA86B56416ED476802A7 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					518A74E184DD0753026716CD = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					5248DC09F2511964B47BA1C6 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					561F723C545CFF984CFD7A7D = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					579CF4058E72E253F0EA1615 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					839BA397656D992385802D9A = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					9B25E141FA32BA15CC63CDBD = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					A2D83343D01B65E759D05B81 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					B1504E1197E69DE63A69534C = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					B74A522843B3D6B8F8D2D0F6 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
+					BE4703D12B227579B175C972 = {
+						DevelopmentTeam = 9KXSB4HR69;
+						ProvisioningStyle = Manual;
+					};
 				};
 			};
 			buildConfigurationList = 9AF0440238A7947A10F81C9F /* Build configuration list for PBXProject "SVLT" */;
@@ -2335,8 +2387,11 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Development: zheng.yun.kai@qq.com (9KXSB4HR69)";
+				CODE_SIGN_STYLE = Manual;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 9KXSB4HR69;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -2420,8 +2475,11 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Development: zheng.yun.kai@qq.com (9KXSB4HR69)";
+				CODE_SIGN_STYLE = Manual;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 9KXSB4HR69;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;

@@ -12,6 +12,9 @@ public enum FileRecordStoreError: Error, Equatable, Sendable {
 public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Sendable {
     private let baseDirectory: URL
 
+    private static let privateDirectoryPermissions: NSNumber = 0o700
+    private static let privateFilePermissions: NSNumber = 0o600
+
     public init(baseDirectory: URL) {
         self.baseDirectory = baseDirectory
     }
@@ -40,6 +43,7 @@ public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Senda
             let encoded = try Self.encode(record)
             try encoded.write(to: temporaryURL, options: [.atomic])
             try rejectSymlink(at: temporaryURL)
+            try setPrivateFilePermissions(at: temporaryURL)
 
             let verified = try Self.decode(Data(contentsOf: temporaryURL))
             guard verified == record else {
@@ -48,6 +52,7 @@ public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Senda
 
             try fileManager.moveItem(at: temporaryURL, to: finalURL)
             try rejectSymlink(at: finalURL)
+            try setPrivateFilePermissions(at: finalURL)
         } catch {
             try? fileManager.removeItem(at: temporaryURL)
             throw error
@@ -192,13 +197,30 @@ public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Senda
             guard values.isDirectory == true else {
                 throw CocoaError(.fileWriteFileExists)
             }
+            try setPrivateDirectoryPermissions(at: directory)
         } else {
             try fileManager.createDirectory(
                 at: directory,
-                withIntermediateDirectories: false
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: Self.privateDirectoryPermissions]
             )
             try rejectSymlink(at: directory)
+            try setPrivateDirectoryPermissions(at: directory)
         }
+    }
+
+    private func setPrivateDirectoryPermissions(at url: URL) throws {
+        try fileManager.setAttributes(
+            [.posixPermissions: Self.privateDirectoryPermissions],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private func setPrivateFilePermissions(at url: URL) throws {
+        try fileManager.setAttributes(
+            [.posixPermissions: Self.privateFilePermissions],
+            ofItemAtPath: url.path
+        )
     }
 
     private func rejectSymlink(at url: URL) throws {

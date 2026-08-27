@@ -242,7 +242,9 @@ public actor VaultDaemonCore {
             ),
             credentialAuthorizationTTL: configuration.credentialAuthorizationTTL,
             externalSendAuthorizationTTL: configuration.externalSendAuthorizationTTL,
-            auditLog: auditLog
+            auditLog: auditLog,
+            auditHealthURL: configuration.auditRootURL
+                .appendingPathComponent("audit-health.json", isDirectory: false)
         )
         let server = UnixSocketServer(configuration: configuration.ipcConfiguration)
         let controller = AppIPCController(

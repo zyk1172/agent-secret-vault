@@ -35,11 +35,18 @@ public struct AppControlRequestHandler: Sendable {
                 return .catalogAuditHealth(await service.catalogAuditHealth())
             case let .catalogSecureInputRequest(id):
                 return .catalogSecureInputRequest(try await service.catalogSecureInputRequest(id: id))
+            case let .catalogSubmitSecureInput(id, submission):
+                return .catalogSecureInputStatus(try await service.submitCatalogSecureInput(
+                    id: id,
+                    submission: submission
+                ))
             case let .catalogBeginSecureInputCommit(id):
-                return .catalogSecureInputRequest(try await service.beginCatalogSecureInputCommit(id: id))
+                _ = id
+                return .failure(code: "SECURE_INPUT_LEGACY_BEGIN_UNSUPPORTED")
             case let .catalogCompleteSecureInput(id, completion):
-                await service.completeCatalogSecureInput(id: id, completion: completion)
-                return .operationCompleted
+                _ = id
+                _ = completion
+                return .failure(code: "SECURE_INPUT_LEGACY_COMPLETE_UNSUPPORTED")
             case let .catalogCancelSecureInput(id):
                 await service.cancelCatalogSecureInput(id: id)
                 return .operationCompleted

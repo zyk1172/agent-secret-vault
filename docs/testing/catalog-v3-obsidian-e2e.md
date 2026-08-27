@@ -50,4 +50,22 @@
 - 发生审批时记录审批结果和 semantic diff 类型，不要截图或复制明文；
 - rename/move 前后的 sidecar 文件名、validation 结果和是否出现人工恢复提示。
 
-本清单需要真实 macOS Obsidian 与 Vault 才能完成。CI/自动环境没有真实 Obsidian GUI，因此自动测试通过不代表本清单已经执行；合并前应将本文件作为 manual verification gap 的明确记录。
+## Release 安装态 Secure Input E2E
+
+在安装到正式位置的 release App 上，使用仓库脚本创建隔离 Catalog：
+
+```bash
+SVLT_RELEASE_APP=/Applications/SVLT.app ./scripts/release-e2e.sh
+```
+
+脚本会在 `test-artifacts/release-e2e/<run-id>/` 自动创建仅当前用户可读写的
+Catalog，并先验证 App 与内置 `SVLTAgent` 的代码签名 Team ID。它不会创建模拟器、
+写入真实凭据或自动操作 Touch ID。按脚本输出的步骤，在真实 macOS 用户会话中完成
+一次测试输入、Touch ID/密码认证、同一 `requestID` 状态轮询，以及失焦/锁屏/睡眠取消
+检查。记录时只保留状态、revision、时间和 semantic diff 类型；不要记录测试明文。
+
+该脚本是手工 release E2E 的准备和证据边界，不是 CI 中的 GUI/Touch ID 替代品。
+
+本清单需要真实 macOS Obsidian、Vault 和用户身份认证才能完成。CI/自动环境没有真实
+Obsidian GUI 或 Touch ID，因此自动测试通过不代表本清单已经执行；合并前应将本文件
+作为 manual verification gap 的明确记录。

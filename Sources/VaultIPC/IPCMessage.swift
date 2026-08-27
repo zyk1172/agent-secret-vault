@@ -102,13 +102,14 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case catalogApplyBatch(mutation: CatalogBatchMutation, expectedRevision: UInt64)
     case catalogRequestSecureInputs(
         entryID: String,
-        targets: [CatalogSecureInputTarget],
+        targets: [CatalogSecureInputTargetRequest],
         expectedRevision: UInt64
     )
     case catalogValidate
     case catalogFilePreflight
     case catalogPendingWriteAccessRequestIDs
     case catalogPendingSecureInputRequestIDs
+    case catalogSecureInputStatus(id: UUID)
     case catalogRequestWriteAccess(CatalogAgentWriteAccessRequest)
     case pendingRevealSessions
     case inspectReference(reference: String)
@@ -166,6 +167,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case descriptor
         case mutation
         case targets
+        case id
     }
 
     private enum RequestType: String, Codable {
@@ -191,6 +193,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case catalogFilePreflight
         case catalogPendingWriteAccessRequestIDs
         case catalogPendingSecureInputRequestIDs
+        case catalogSecureInputStatus
         case catalogRequestWriteAccess
         case pendingRevealSessions
         case inspectReference
@@ -291,7 +294,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case .catalogRequestSecureInputs:
             self = .catalogRequestSecureInputs(
                 entryID: try container.decode(String.self, forKey: .entryID),
-                targets: try container.decode([CatalogSecureInputTarget].self, forKey: .targets),
+                targets: try container.decode([CatalogSecureInputTargetRequest].self, forKey: .targets),
                 expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
         case .catalogValidate:
@@ -302,6 +305,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .catalogPendingWriteAccessRequestIDs
         case .catalogPendingSecureInputRequestIDs:
             self = .catalogPendingSecureInputRequestIDs
+        case .catalogSecureInputStatus:
+            self = .catalogSecureInputStatus(id: try container.decode(UUID.self, forKey: .id))
         case .catalogRequestWriteAccess:
             self = .catalogRequestWriteAccess(
                 try container.decode(CatalogAgentWriteAccessRequest.self, forKey: .request)
@@ -459,6 +464,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.catalogPendingWriteAccessRequestIDs, forKey: .type)
         case .catalogPendingSecureInputRequestIDs:
             try container.encode(RequestType.catalogPendingSecureInputRequestIDs, forKey: .type)
+        case let .catalogSecureInputStatus(id):
+            try container.encode(RequestType.catalogSecureInputStatus, forKey: .type)
+            try container.encode(id, forKey: .id)
         case let .catalogRequestWriteAccess(request):
             try container.encode(RequestType.catalogRequestWriteAccess, forKey: .type)
             try container.encode(request, forKey: .request)
@@ -695,7 +703,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case catalogFilePreflight(CatalogFilePreflight)
     case catalogPendingWriteAccessRequestIDs([UUID])
     case catalogPendingSecureInputRequestIDs([UUID])
-    case catalogSecureInputCompleted(CatalogSecureInputCompletion)
+    case catalogSecureInputStatus(CatalogSecureInputStatus)
     case revealSessionIDs([String])
     case referenceMetadata(SecretReferenceMetadata)
     case displayedToUser
@@ -749,7 +757,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case catalogFilePreflight
         case catalogPendingWriteAccessRequestIDs
         case catalogPendingSecureInputRequestIDs
-        case catalogSecureInputCompleted
+        case catalogSecureInputStatus
         case revealSessionIDs
         case referenceMetadata
         case displayedToUser
@@ -805,8 +813,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .catalogPendingSecureInputRequestIDs(
                 try container.decode([UUID].self, forKey: .requestIDs)
             )
-        case .catalogSecureInputCompleted:
-            self = .catalogSecureInputCompleted(try container.decode(CatalogSecureInputCompletion.self, forKey: .result))
+        case .catalogSecureInputStatus:
+            self = .catalogSecureInputStatus(try container.decode(CatalogSecureInputStatus.self, forKey: .status))
         case .revealSessionIDs:
             self = .revealSessionIDs(try container.decode([String].self, forKey: .sessionIDs))
         case .referenceMetadata:
@@ -884,9 +892,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .catalogPendingSecureInputRequestIDs(requestIDs):
             try container.encode(ResponseType.catalogPendingSecureInputRequestIDs, forKey: .type)
             try container.encode(requestIDs, forKey: .requestIDs)
-        case let .catalogSecureInputCompleted(completion):
-            try container.encode(ResponseType.catalogSecureInputCompleted, forKey: .type)
-            try container.encode(completion, forKey: .result)
+        case let .catalogSecureInputStatus(status):
+            try container.encode(ResponseType.catalogSecureInputStatus, forKey: .type)
+            try container.encode(status, forKey: .status)
         case let .revealSessionIDs(sessionIDs):
             try container.encode(ResponseType.revealSessionIDs, forKey: .type)
             try container.encode(sessionIDs, forKey: .sessionIDs)

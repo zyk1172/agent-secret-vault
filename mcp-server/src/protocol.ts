@@ -330,18 +330,27 @@ export const CatalogDraft = z.object({
 export type CatalogDraft = z.infer<typeof CatalogDraft>;
 
 export const CatalogSecureInputTarget = z.object({
-  entryID: z.string().length(26),
   fieldKey: z.string().min(1).max(128),
-  label: z.string().min(1).max(128),
   mode: z.enum(["fillPlaceholder", "replaceSecret", "convertToSecret"]),
   required: z.boolean().default(false)
 }).strict();
 export type CatalogSecureInputTarget = z.infer<typeof CatalogSecureInputTarget>;
 
-export const CatalogSecureInputCompletion = z.object({
-  revision: z.number().int().nonnegative()
+export const CatalogSecureInputTargetRequest = z.object({
+  entryID: z.string().length(26),
+  fieldKey: z.string().min(1).max(128),
+  mode: z.enum(["fillPlaceholder", "replaceSecret", "convertToSecret"]),
+  required: z.boolean().default(false)
 }).strict();
-export type CatalogSecureInputCompletion = z.infer<typeof CatalogSecureInputCompletion>;
+export type CatalogSecureInputTargetRequest = z.infer<typeof CatalogSecureInputTargetRequest>;
+
+export const CatalogSecureInputStatus = z.object({
+  requestID: z.string().uuid(),
+  status: z.enum(["PENDING", "COMPLETED", "CANCELLED", "EXPIRED", "FAILED"]),
+  revision: z.number().int().nonnegative().nullable().optional(),
+  errorCode: z.string().min(1).max(128).nullable().optional()
+}).strict();
+export type CatalogSecureInputStatus = z.infer<typeof CatalogSecureInputStatus>;
 
 export const CatalogFilePreflight = z.object({
   read: z.string().min(1).max(128),
@@ -705,8 +714,14 @@ export const IpcRequest = z.discriminatedUnion("type", [
     .object({
       type: z.literal("catalogRequestSecureInputs"),
       entryID: z.string().length(26),
-      targets: z.array(CatalogSecureInputTarget).min(1).max(32),
+      targets: z.array(CatalogSecureInputTargetRequest).min(1).max(32),
       expectedRevision: z.number().int().nonnegative()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("catalogSecureInputStatus"),
+      requestID: z.string().uuid()
     })
     .strict(),
   z.object({ type: z.literal("catalogValidate") }).strict(),
@@ -828,7 +843,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
   z.object({ type: z.literal("catalogDraft"), draft: CatalogDraft }).strict(),
   z.object({ type: z.literal("catalogWriteResult"), result: CatalogWriteResult }).strict(),
   z.object({ type: z.literal("catalogStructureWriteResult"), result: CatalogStructureWriteResult }).strict(),
-  z.object({ type: z.literal("catalogSecureInputCompleted"), result: CatalogSecureInputCompletion }).strict(),
+  z.object({ type: z.literal("catalogSecureInputStatus"), status: CatalogSecureInputStatus }).strict(),
   z
     .object({
       type: z.literal("catalogValidation"),

@@ -7,6 +7,8 @@ BUILD_DIR="$ROOT_DIR/build/release"
 STAGING_DIR="$DIST_DIR/SVLT-release"
 MCP_STAGING="$STAGING_DIR/MCP"
 OBSIDIAN_PLUGIN_STAGING="$STAGING_DIR/ObsidianPlugin/svlt"
+SIGNING_TEAM="9KXSB4HR69"
+SIGNING_IDENTITY="Apple Development: zheng.yun.kai@qq.com (9KXSB4HR69)"
 
 cd "$ROOT_DIR"
 
@@ -33,6 +35,9 @@ xcodebuild \
   -scheme AgentSecretVault \
   -configuration Release \
   -derivedDataPath "$BUILD_DIR/DerivedData" \
+  DEVELOPMENT_TEAM="$SIGNING_TEAM" \
+  CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
   build
 
 APP_SOURCE="$BUILD_DIR/DerivedData/Build/Products/Release/SVLT.app"
@@ -49,6 +54,17 @@ if [[ ! -x "$AGENT_EXECUTABLE" || ! -f "$AGENT_PLIST" ]]; then
 fi
 codesign --verify --strict "$AGENT_EXECUTABLE"
 codesign --verify --deep --strict "$APP_SOURCE"
+assert_team_identifier() {
+  local signed_path="$1"
+  local team_identifier
+  team_identifier="$(codesign --display --verbose=4 "$signed_path" 2>&1 | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+  if [[ "$team_identifier" != "$SIGNING_TEAM" ]]; then
+    echo "Unexpected signing TeamIdentifier for $signed_path: ${team_identifier:-missing}" >&2
+    exit 1
+  fi
+}
+assert_team_identifier "$APP_SOURCE"
+assert_team_identifier "$AGENT_EXECUTABLE"
 echo "Embedded, signed SVLTAgent and LaunchAgent verified."
 echo "==> Staging app and MCP bundle"
 cp -R "$APP_SOURCE" "$STAGING_DIR/SVLT.app"

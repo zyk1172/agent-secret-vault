@@ -440,10 +440,12 @@ public enum CatalogSecureInputMode: String, Codable, CaseIterable, Sendable {
     case convertToSecret
 }
 
-public struct CatalogSecureInputTarget: Codable, Equatable, Identifiable, Sendable {
+/// Agent-supplied intent for a Secure Input request.  The Agent is never
+/// trusted to provide display metadata; the daemon resolves the field label
+/// and entry title from the accepted Catalog before creating the UI request.
+public struct CatalogSecureInputTargetRequest: Codable, Equatable, Identifiable, Sendable {
     public let entryID: String
     public let fieldKey: String
-    public let label: String
     public let mode: CatalogSecureInputMode
     public let required: Bool
 
@@ -452,15 +454,112 @@ public struct CatalogSecureInputTarget: Codable, Equatable, Identifiable, Sendab
     public init(
         entryID: String,
         fieldKey: String,
-        label: String,
         mode: CatalogSecureInputMode,
         required: Bool = false
+    ) {
+        self.entryID = entryID
+        self.fieldKey = fieldKey
+        self.mode = mode
+        self.required = required
+    }
+}
+
+public struct CatalogSecureInputTarget: Codable, Equatable, Identifiable, Sendable {
+    public let entryID: String
+    public let fieldKey: String
+    public let label: String
+    public let mode: CatalogSecureInputMode
+    public let required: Bool
+    /// True when a convert-to-secret target already has an ordinary Catalog
+    /// value. The App may submit without asking the Agent or user to copy that
+    /// value; the daemon consumes it locally and never returns it.
+    public let usesExistingValue: Bool
+
+    public var id: String { entryID + ":" + fieldKey }
+
+    private enum CodingKeys: String, CodingKey {
+        case entryID
+        case fieldKey
+        case label
+        case mode
+        case required
+        case usesExistingValue
+    }
+
+    public init(
+        entryID: String,
+        fieldKey: String,
+        label: String,
+        mode: CatalogSecureInputMode,
+        required: Bool = false,
+        usesExistingValue: Bool = false
     ) {
         self.entryID = entryID
         self.fieldKey = fieldKey
         self.label = label
         self.mode = mode
         self.required = required
+        self.usesExistingValue = usesExistingValue
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            entryID: try container.decode(String.self, forKey: .entryID),
+            fieldKey: try container.decode(String.self, forKey: .fieldKey),
+            label: try container.decode(String.self, forKey: .label),
+            mode: try container.decode(CatalogSecureInputMode.self, forKey: .mode),
+            required: try container.decodeIfPresent(Bool.self, forKey: .required) ?? false,
+            usesExistingValue: try container.decodeIfPresent(Bool.self, forKey: .usesExistingValue) ?? false
+        )
+    }
+}
+
+public enum CatalogSecureInputStatusValue: String, Codable, CaseIterable, Sendable {
+    // Keep the wire representation aligned with the MCP protocol. The Swift
+    // case names remain lower-camel for call-site readability, while IPC/MCP
+    // status receipts use the documented uppercase tokens.
+    case pending = "PENDING"
+    case completed = "COMPLETED"
+    case cancelled = "CANCELLED"
+    case expired = "EXPIRED"
+    case failed = "FAILED"
+}
+
+/// A non-sensitive status receipt.  It never contains plaintext or Catalog
+/// contents, and is safe to return to an MCP caller while a local Sheet is
+/// awaiting user action.
+public struct CatalogSecureInputStatus: Codable, Equatable, Sendable {
+    public let requestID: UUID
+    public let status: CatalogSecureInputStatusValue
+    public let revision: UInt64?
+    public let errorCode: String?
+
+    public init(
+        requestID: UUID,
+        status: CatalogSecureInputStatusValue,
+        revision: UInt64? = nil,
+        errorCode: String? = nil
+    ) {
+        self.requestID = requestID
+        self.status = status
+        self.revision = revision
+        self.errorCode = errorCode
+    }
+}
+
+/// Plaintext is transported only over the dedicated AppControl channel.  The
+/// daemon validates every key against the immutable request before encrypting.
+public struct CatalogSecureInputSubmission: Codable, Equatable, Sendable {
+    public let selectedTargetIDs: [String]
+    public let plaintextByFieldKey: [String: String]
+
+    public init(
+        selectedTargetIDs: [String],
+        plaintextByFieldKey: [String: String]
+    ) {
+        self.selectedTargetIDs = selectedTargetIDs
+        self.plaintextByFieldKey = plaintextByFieldKey
     }
 }
 

@@ -53,6 +53,8 @@ describe("MCP tool contracts", () => {
       "secret_catalog_patch_metadata",
       "secret_catalog_commit",
       "secret_catalog_add_secret_placeholder",
+      "secret_catalog_request_secure_inputs",
+      "secret_catalog_secure_input_status",
       "secret_catalog_bind_existing_secret",
       "secret_catalog_validate",
       "secret_catalog_file_preflight",
@@ -65,6 +67,47 @@ describe("MCP tool contracts", () => {
       "secret_reveal_request"
     ]));
     expect(names).not.toContain("restore_references");
+  });
+
+  it("starts secure input asynchronously without trusting agent labels or returning plaintext", async () => {
+    const requestID = "00000000-0000-4000-8000-000000000021";
+    const client = new FakeClient([{
+      type: "catalogSecureInputStatus",
+      status: { requestID, status: "PENDING" }
+    }]);
+
+    const result = await tool(client, "secret_catalog_request_secure_inputs").handler({
+      entryID: "0123456789ABCDEFGHJKMNPQRV",
+      targets: [{ fieldKey: "password", mode: "fillPlaceholder", required: true }],
+      expectedRevision: 7
+    });
+
+    expect(result.structuredContent).toEqual({ requestID, status: "PENDING" });
+    expect(client.requests).toEqual([{
+      type: "catalogRequestSecureInputs",
+      entryID: "0123456789ABCDEFGHJKMNPQRV",
+      targets: [{
+        entryID: "0123456789ABCDEFGHJKMNPQRV",
+        fieldKey: "password",
+        mode: "fillPlaceholder",
+        required: true
+      }],
+      expectedRevision: 7
+    }]);
+    expect(JSON.stringify(result.structuredContent)).not.toContain("plaintext");
+  });
+
+  it("polls secure input status by request ID", async () => {
+    const requestID = "00000000-0000-4000-8000-000000000022";
+    const client = new FakeClient([{
+      type: "catalogSecureInputStatus",
+      status: { requestID, status: "COMPLETED", revision: 8 }
+    }]);
+
+    const result = await tool(client, "secret_catalog_secure_input_status").handler({ requestID });
+
+    expect(result.structuredContent).toEqual({ requestID, status: "COMPLETED", revision: 8 });
+    expect(client.requests).toEqual([{ type: "catalogSecureInputStatus", requestID }]);
   });
 
   it("does not gate normal work on the compatibility locked field", async () => {

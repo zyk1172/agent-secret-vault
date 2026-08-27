@@ -15,6 +15,7 @@ APP_TARGET="$APP_DIR/SVLT.app"
 APP_SUPPORT="$HOME/Library/Application Support/AgentSecretVault"
 MCP_TARGET="$APP_SUPPORT/MCP"
 CONFIG_PATH="$APP_SUPPORT/svlt.mcp.json"
+SIGNING_TEAM="9KXSB4HR69"
 
 if [[ ! -d "$APP_SOURCE" ]]; then
   echo "找不到 SVLT.app。请从完整 release 包中运行本脚本。" >&2
@@ -30,6 +31,15 @@ if [[ ! -x "$APP_SOURCE/Contents/MacOS/SVLTAgent" || ! -f "$APP_SOURCE/Contents/
   echo "SVLT.app 缺少 SVLTAgent 或内置 LaunchAgent，拒绝安装不完整 release。" >&2
   exit 1
 fi
+
+codesign --verify --deep --strict "$APP_SOURCE"
+for signed_path in "$APP_SOURCE" "$APP_SOURCE/Contents/MacOS/SVLTAgent"; do
+  team_identifier="$(codesign --display --verbose=4 "$signed_path" 2>&1 | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+  if [[ "$team_identifier" != "$SIGNING_TEAM" ]]; then
+    echo "release 签名 TeamIdentifier 不匹配，拒绝安装。" >&2
+    exit 1
+  fi
+done
 
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "需要先安装 Node.js 24 或更新版本。安装后重新运行本脚本。" >&2

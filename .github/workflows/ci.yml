@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: svlt-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-tests:
+    name: Swift tests
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Run macOS test suite
+        run: |
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/svlt-derived" \
+            CODE_SIGNING_ALLOWED=NO
+
+  mcp:
+    name: MCP typecheck and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - name: Install dependencies
+        working-directory: mcp-server
+        run: npm ci
+      - name: Typecheck, test, and build
+        working-directory: mcp-server
+        run: npm run typecheck && npm test && npm run build
+
+  obsidian:
+    name: Obsidian typecheck and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: obsidian-plugin/svlt/package-lock.json
+      - name: Install dependencies
+        working-directory: obsidian-plugin/svlt
+        run: npm ci
+      - name: Typecheck, test, and build
+        working-directory: obsidian-plugin/svlt
+        run: npm run typecheck && npm test && npm run build && npm run check:build-artifact
+
+  security-scan:
+    name: Security and repository checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Check shell scripts and executable release E2E entrypoint
+        run: |
+          bash -n scripts/*.sh
+          test -x scripts/release-e2e.sh
+      - name: Check whitespace
+        run: git diff --check HEAD^ HEAD
+      - name: Scan generated artifacts for plaintext canary
+        env:
+          ASV_CANARY: ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST
+        run: ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/svlt/main.js obsidian-plugin/svlt/dist
