@@ -321,7 +321,7 @@ public struct VaultWorkbenchView: View {
             sidebarHeader
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 8) {
                     ForEach(VaultWorkbenchSection.allCases) { section in
                         Button {
                             selectSection(section)
@@ -572,15 +572,16 @@ private struct WorkbenchSidebarRow: View {
                 .frame(width: 3)
 
             Image(systemName: section.systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .frame(width: 20)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 22)
                 .foregroundStyle(isSelected ? Color.accentColor : .secondary)
             Text(section.title)
-                .font(.callout.weight(isSelected ? .semibold : .regular))
+                .font(.body.weight(isSelected ? .semibold : .regular))
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 4)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
+        .frame(minHeight: 42)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(section.title)
