@@ -70,8 +70,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case searchCatalog(query: String, field: SecretCatalogField?, limit: Int)
     case catalogSearch(query: String, field: SecretCatalogField?, limit: Int)
     case catalogGet(entryID: String)
+    case catalogListIndexes
+    case catalogListEntries(indexID: String)
     case catalogCreateIndex(title: String, aliases: [String], tags: [String])
     case catalogCreateEntry(request: CatalogDraftRequest)
+    case catalogCreateStructure(request: CatalogCreateStructureRequest)
     case catalogCreateDraft(request: CatalogDraftRequest)
     case catalogPatchMetadata(
         entryID: String,
@@ -134,6 +137,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case query
         case field
         case limit
+        case indexID
         case entryID
         case request
         case title
@@ -164,8 +168,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case searchCatalog
         case catalogSearch
         case catalogGet
+        case catalogListIndexes
+        case catalogListEntries
         case catalogCreateIndex
         case catalogCreateEntry
+        case catalogCreateStructure
         case catalogCreateDraft
         case catalogPatchMetadata
         case catalogCommit
@@ -218,6 +225,10 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             )
         case .catalogGet:
             self = .catalogGet(entryID: try container.decode(String.self, forKey: .entryID))
+        case .catalogListIndexes:
+            self = .catalogListIndexes
+        case .catalogListEntries:
+            self = .catalogListEntries(indexID: try container.decode(String.self, forKey: .indexID))
         case .catalogCreateIndex:
             self = .catalogCreateIndex(
                 title: try container.decode(String.self, forKey: .title),
@@ -227,6 +238,10 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case .catalogCreateEntry:
             self = .catalogCreateEntry(
                 request: try container.decode(CatalogDraftRequest.self, forKey: .request)
+            )
+        case .catalogCreateStructure:
+            self = .catalogCreateStructure(
+                request: try container.decode(CatalogCreateStructureRequest.self, forKey: .request)
             )
         case .catalogCreateDraft:
             self = .catalogCreateDraft(
@@ -368,6 +383,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .catalogGet(entryID):
             try container.encode(RequestType.catalogGet, forKey: .type)
             try container.encode(entryID, forKey: .entryID)
+        case .catalogListIndexes:
+            try container.encode(RequestType.catalogListIndexes, forKey: .type)
+        case let .catalogListEntries(indexID):
+            try container.encode(RequestType.catalogListEntries, forKey: .type)
+            try container.encode(indexID, forKey: .indexID)
         case let .catalogCreateIndex(title, aliases, tags):
             try container.encode(RequestType.catalogCreateIndex, forKey: .type)
             try container.encode(title, forKey: .title)
@@ -375,6 +395,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(tags, forKey: .tags)
         case let .catalogCreateEntry(request):
             try container.encode(RequestType.catalogCreateEntry, forKey: .type)
+            try container.encode(request, forKey: .request)
+        case let .catalogCreateStructure(request):
+            try container.encode(RequestType.catalogCreateStructure, forKey: .type)
             try container.encode(request, forKey: .request)
         case let .catalogCreateDraft(request):
             try container.encode(RequestType.catalogCreateDraft, forKey: .type)
@@ -633,8 +656,11 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case workbenchStatus(WorkbenchStatus)
     case savedReferences([SecretReferenceMetadata])
     case catalogSearchResult(SecretCatalogSearchResult)
+    case catalogIndexListResult(SecretCatalogIndexListResult)
+    case catalogEntryListResult(SecretCatalogEntryListResult)
     case catalogDraft(CatalogDraft)
     case catalogWriteResult(CatalogWriteResult)
+    case catalogStructureWriteResult(CatalogStructureWriteResult)
     case catalogValidation(
         status: SecretCatalogSearchStatus,
         revision: UInt64?,
@@ -688,8 +714,11 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case workbenchStatus
         case savedReferences
         case catalogSearchResult
+        case catalogIndexListResult
+        case catalogEntryListResult
         case catalogDraft
         case catalogWriteResult
+        case catalogStructureWriteResult
         case catalogValidation
         case catalogFilePreflight
         case catalogPendingWriteAccessRequestIDs
@@ -720,10 +749,16 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .savedReferences(try container.decode([SecretReferenceMetadata].self, forKey: .references))
         case .catalogSearchResult:
             self = .catalogSearchResult(try container.decode(SecretCatalogSearchResult.self, forKey: .result))
+        case .catalogIndexListResult:
+            self = .catalogIndexListResult(try container.decode(SecretCatalogIndexListResult.self, forKey: .result))
+        case .catalogEntryListResult:
+            self = .catalogEntryListResult(try container.decode(SecretCatalogEntryListResult.self, forKey: .result))
         case .catalogDraft:
             self = .catalogDraft(try container.decode(CatalogDraft.self, forKey: .draft))
         case .catalogWriteResult:
             self = .catalogWriteResult(try container.decode(CatalogWriteResult.self, forKey: .result))
+        case .catalogStructureWriteResult:
+            self = .catalogStructureWriteResult(try container.decode(CatalogStructureWriteResult.self, forKey: .result))
         case .catalogValidation:
             self = .catalogValidation(
                 status: try container.decode(SecretCatalogSearchStatus.self, forKey: .catalogStatus),
@@ -784,11 +819,20 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .catalogSearchResult(result):
             try container.encode(ResponseType.catalogSearchResult, forKey: .type)
             try container.encode(result, forKey: .result)
+        case let .catalogIndexListResult(result):
+            try container.encode(ResponseType.catalogIndexListResult, forKey: .type)
+            try container.encode(result, forKey: .result)
+        case let .catalogEntryListResult(result):
+            try container.encode(ResponseType.catalogEntryListResult, forKey: .type)
+            try container.encode(result, forKey: .result)
         case let .catalogDraft(draft):
             try container.encode(ResponseType.catalogDraft, forKey: .type)
             try container.encode(draft, forKey: .draft)
         case let .catalogWriteResult(result):
             try container.encode(ResponseType.catalogWriteResult, forKey: .type)
+            try container.encode(result, forKey: .result)
+        case let .catalogStructureWriteResult(result):
+            try container.encode(ResponseType.catalogStructureWriteResult, forKey: .type)
             try container.encode(result, forKey: .result)
         case let .catalogValidation(status, revision, rawSHA256, diagnostics, filePreflight):
             try container.encode(ResponseType.catalogValidation, forKey: .type)

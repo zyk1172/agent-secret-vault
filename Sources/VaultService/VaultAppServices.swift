@@ -556,6 +556,23 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return catalogSearchService.get(entryID: entryID, document: snapshot.document)
     }
 
+    public func listCatalogIndexes() async throws -> SecretCatalogIndexListResult {
+        let snapshot = try await catalogSnapshotForAgent()
+        return SecretCatalogIndexListResult(
+            revision: snapshot.revision,
+            indices: catalogSearchService.listIndexes(document: snapshot.document)
+        )
+    }
+
+    public func listCatalogEntries(indexID: String) async throws -> SecretCatalogEntryListResult {
+        let snapshot = try await catalogSnapshotForAgent()
+        return catalogSearchService.listEntries(
+            indexID: indexID,
+            document: snapshot.document,
+            revision: snapshot.revision
+        )
+    }
+
     /// Applies a batch as one semantic transaction: one authoritative read,
     /// one risk decision/approval, one store lock and one revision increment.
     public func applyCatalogBatch(
@@ -572,7 +589,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func performCatalogBatch(
         _ mutation: CatalogBatchMutation,
         expectedRevision: UInt64,
-        requireAgentSafeWrite: Bool
+        requireAgentSafeWrite: Bool,
+        authorizationOperation: CatalogAgentWriteOperation = .batchMutation,
+        resultIndexID: String? = nil,
+        resultEntryID: String? = nil
     ) async throws -> CatalogWriteResult {
         let snapshot = try await catalogSnapshotForAgent()
         guard snapshot.revision == expectedRevision else {
@@ -588,7 +608,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let operationContext: AuditContext
         if requireAgentSafeWrite, !diff.isEmpty {
             let intent = CatalogAgentWriteIntent(
-                operation: .batchMutation,
+                operation: authorizationOperation,
                 acceptedRevision: snapshot.revision,
                 candidateSemanticSHA256: CatalogSemanticDigest.sha256(next)
             )
@@ -616,7 +636,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 context: operationContext,
                 operation: .catalogMutation
             )
-            return CatalogWriteResult(revision: updated.revision)
+            return CatalogWriteResult(
+                revision: updated.revision,
+                indexID: resultIndexID,
+                entryID: resultEntryID,
+                validation: await postCommitCatalogValidation()
+            )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(
                 action: "批量修改目录",
@@ -672,7 +697,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 context: operationContext,
                 operation: .catalogMutation
             )
-            return CatalogWriteResult(revision: updated.revision)
+            return CatalogWriteResult(
+                revision: updated.revision,
+                indexID: index.id,
+                validation: await postCommitCatalogValidation()
+            )
         } catch let error as VaultCryptoError where error == .randomGenerationFailed {
             await emitCatalogMutationFailed(action: "创建目录分组", referenceCount: 0, context: operationContext)
             Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .identifierGeneration, error: error)
@@ -684,6 +713,108 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } catch {
             await emitCatalogMutationFailed(action: "创建目录分组", referenceCount: 0, context: operationContext)
             Self.logCatalogMutationFailure(operation: "catalog-create-index", phase: .store, error: error)
+            throw SecretCatalogAgentError.writeFailed
+        }
+    }
+
+    /// Creates one Index and all requested safe Entries as one semantic
+    /// operation. The caller supplies only client correlation keys; SVLT
+    /// generates every opaque ID before the single authorization and atomic
+    /// store commit.
+    public func createCatalogStructure(
+        _ request: CatalogCreateStructureRequest
+    ) async throws -> CatalogStructureWriteResult {
+        let snapshot = try await catalogSnapshotForAgent()
+        let expectedRevision = request.expectedRevision ?? snapshot.revision
+        guard expectedRevision == snapshot.revision else {
+            throw SecretCatalogAgentError.revisionConflict
+        }
+
+        var clientKeys = Set<String>()
+        for entry in request.entries {
+            guard !entry.clientKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  clientKeys.insert(entry.clientKey).inserted,
+                  entry.fields.allSatisfy({ field in
+                      field.secretRef == nil && !(field.type.isSecret && field.value != nil)
+                  })
+            else {
+                throw SecretCatalogAgentError.invalidOperation
+            }
+        }
+
+        let index: SecretCatalogIndex
+        var generatedEntries: [(clientKey: String, entry: SecretCatalogEntry)] = []
+        do {
+            index = try SecretCatalogIndex.generated(
+                title: request.index.title,
+                aliases: request.index.aliases,
+                tags: request.index.tags
+            )
+            generatedEntries.reserveCapacity(request.entries.count)
+            for item in request.entries {
+                let entry = try SecretCatalogEntry.generated(
+                    indexId: index.id,
+                    title: item.title,
+                    type: item.type,
+                    aliases: item.aliases,
+                    endpoints: item.endpoints,
+                    fields: item.fields,
+                    notes: item.notes,
+                    tags: item.tags
+                )
+                generatedEntries.append((clientKey: item.clientKey, entry: entry))
+            }
+        } catch {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+
+        let mutation = CatalogBatchMutation(
+            operations: [.createIndex(index)] + generatedEntries.map { .createEntry($0.entry) }
+        )
+        let next: SecretCatalogDocument
+        do {
+            next = try mutation.applying(to: snapshot.document)
+        } catch {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+        let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
+        let operationContext = try await requestAgentCatalogAuthorization(
+            CatalogAgentWriteIntent(
+                operation: .createStructure,
+                indexID: index.id,
+                acceptedRevision: snapshot.revision,
+                candidateSemanticSHA256: CatalogSemanticDigest.sha256(next)
+            ),
+            reasonCategory: .bulkImport
+        )
+        try await authorizeCatalogDiff(diff, transport: .batchMutation, requireAgentSafeWrite: false)
+        await emitCatalogMutationStarted(action: "创建目录结构", referenceCount: 0, context: operationContext)
+
+        do {
+            let updated = try await catalogDocumentStore!.applyBatch(mutation, expectedRevision: expectedRevision)
+            await emitAudit(
+                action: "创建目录结构",
+                target: "catalog",
+                referenceCount: 0,
+                result: "成功",
+                context: operationContext,
+                operation: .catalogMutation
+            )
+            return CatalogStructureWriteResult(
+                indexID: index.id,
+                entries: generatedEntries.map {
+                    CatalogStructureEntryResult(clientKey: $0.clientKey, entryID: $0.entry.id)
+                },
+                revision: updated.revision,
+                validation: await postCommitCatalogValidation()
+            )
+        } catch let error as SensitiveCatalogDocumentStoreError {
+            await emitCatalogMutationFailed(action: "创建目录结构", referenceCount: 0, context: operationContext)
+            Self.logCatalogMutationFailure(operation: "catalog-create-structure", phase: .store, error: error)
+            throw catalogAgentError(for: error)
+        } catch {
+            await emitCatalogMutationFailed(action: "创建目录结构", referenceCount: 0, context: operationContext)
+            Self.logCatalogMutationFailure(operation: "catalog-create-structure", phase: .store, error: error)
             throw SecretCatalogAgentError.writeFailed
         }
     }
@@ -761,7 +892,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             return CatalogWriteResult(
                 revision: updated.revision,
-                entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
+                entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry,
+                entryID: entry.id,
+                validation: await postCommitCatalogValidation()
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "创建目录条目", referenceCount: referenceCount, context: operationContext)
@@ -864,7 +997,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             return CatalogWriteResult(
                 revision: updatedSnapshot.revision,
-                entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
+                entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry,
+                entryID: entryID,
+                validation: await postCommitCatalogValidation()
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "修改目录条目元数据", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
@@ -923,7 +1058,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             return CatalogWriteResult(
                 revision: updatedSnapshot.revision,
-                entry: catalogSearchService.get(entryID: pending.id, document: updatedSnapshot.document).matches.first?.entry
+                entry: catalogSearchService.get(entryID: pending.id, document: updatedSnapshot.document).matches.first?.entry,
+                entryID: pending.id,
+                validation: await postCommitCatalogValidation()
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
@@ -1009,7 +1146,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             return CatalogWriteResult(
                 revision: updatedSnapshot.revision,
-                entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry
+                entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry,
+                entryID: entryID,
+                validation: await postCommitCatalogValidation()
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "新增目录加密字段占位", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
@@ -1035,6 +1174,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // cannot turn a self-reported user request into authorization.
         try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .bindExistingSecret))
         throw SecretCatalogAgentError.approvalRequired
+    }
+
+    /// Every successful Agent-controlled Catalog write returns this summary so
+    /// callers do not need a second MCP round trip merely to verify the commit.
+    /// The store has already validated the candidate before replacing the
+    /// document; this follow-up reads the authoritative post-commit state and
+    /// preserves any integrity diagnostics without exposing document content.
+    private func postCommitCatalogValidation() async -> CatalogValidationResult {
+        (try? await validateCatalog()) ?? CatalogValidationResult(status: .unavailable)
     }
 
     public func validateCatalog() async throws -> CatalogValidationResult {

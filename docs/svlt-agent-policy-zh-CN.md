@@ -18,6 +18,12 @@
 6. 来源优先级：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 无明确选择时才自动发现。
 7. 以上选择只对当前 operation 有效；不得从上一轮对话、旧 provider 选择或 Agent 状态继承来源。每个 operation 只能产生一个最终 source decision。
 
+Catalog 浏览与 ID 来源：
+1. 浏览分组使用目标 MCP `secret_catalog_list_indices`；结果必须包含空分组。浏览指定分组使用 `secret_catalog_list_entries(indexID)`，单条详情使用 `secret_catalog_get(entryID)`。
+2. `secret_search` / `secret_catalog_search` 是 Entry-centric 搜索，不得用 `query: ""` 冒充 list。目标工具是否可用以当前 MCP `tools/list` 为准；未暴露的工具不能当作已实现能力。
+3. 结构创建的目标调用是 `secret_catalog_create_structure`：一次提交一个 Index 和多个 Entry，由 SVLT 生成 opaque ID，并返回 `indexID`/`entryID`、`revision` 和 post-commit validation；未暴露时不得把它当作已实现能力。
+4. Agent 不得读取 `sensitive-index-selection.json`、Catalog Markdown（例如 `敏感信息.md`）或 `Application Support` 中的 integrity/selection sidecar 来查找或验证 Index/Entry ID；必须使用 MCP API 返回的 ID。
+
 SVLT 敏感信息目录写入规范：
 1. 本文件是 SVLT 敏感信息目录；SVLT 是 opt-in。
 2. `##` 表示分组，`###` 表示条目。
@@ -32,31 +38,34 @@ SVLT 敏感信息目录写入规范：
 11. 必须保留用户原有 Markdown、双链、备注、空行以及非目标区域内容。
 12. `[[双链]]` 属于合法 Markdown 内容，禁止删除或展开成普通文本。
 13. 密码字段不得保存明文。
-14. 密码字段只能为空 placeholder 或合法 `secret://`。
+14. `secret` 字段只能为空 placeholder 或合法 `secret://`。创建空 placeholder 时省略 `value`。合法 JSON 示例：
+   {"key":"password","label":"密码","type":"secret"}
+   反例（不要使用；空字符串仍是 plaintext value）：
+   {"key":"password","label":"密码","type":"secret","value":""}
 15. Token 应写作“令牌”。
-16. API Key 应写作“API 密钥”。
+16. API Key 推荐显示为“API 密钥”，但这只是推荐显示标签，不是 schema 合法性约束；schema 不会仅因 label 没有这几个字而判定非法，`secret` 字段仍不得提供 plaintext `value`。
 17. password/secret 类型用户界面统一使用“密码”，不要显示“秘密”。
 18. 私钥使用“私钥”，Cookie 使用“Cookie”，不要把所有敏感数据粗暴翻译成“秘密”。
-19. 禁止伪造 `secret://`。
-20. 新绑定、替换、删除已有 secretRef 属于高风险语义操作，需要用户批准。
-21. 删除包含密码引用的条目或分组需要用户批准。
-22. 普通标题、别名、备注、标签、非密码字段等修改可以静默完成。
-23. 普通新增分组、条目、字段、空密码 placeholder 可以静默完成。
-24. 合法的普通批量操作不因“批量”本身升级为高风险。
-25. 修改完成后必须通过 Catalog validation（`secret_catalog_validate`）。
-26. 校验失败时不得继续自行猜测修复结构。
-27. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
-28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
-29. 不得把 SVLT 解密得到的明文写回 `敏感信息.md`。
-30. 凭据来源标签包括 `SVLT_MANAGED_OPERATION`、`USER_EXPLICIT_PLAINTEXT`、`EXTERNAL_PROVIDER_OPERATION`、`UNMANAGED_CREDENTIAL`；不得因为用户使用其他凭据 provider 而强制接管。
-31. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次 operation-bound write request；Agent 不能自行开启权限。
-32. 用户批准 Agent Catalog mutation 前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
-33. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
-34. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
-35. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
-36. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
-37. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
-38. 格式修复只能调整格式，不能改变结构或 opaque 引用，不能生成或展开明文。
+19. `endpoint.type` 可以是任意非空类型字符串，例如 `ssh`、`postgresql`、`mysql`、`redis`；结构层合法不等于某个 executor 支持该类型，也不等于绕过 executor 的 allowlist 或操作授权。
+20. 禁止伪造 `secret://`。
+21. 新绑定、替换、删除已有 secretRef 属于高风险语义操作，需要用户批准。
+22. 删除包含密码引用的条目或分组需要用户批准。
+23. 普通标题、别名、备注、标签、非密码字段等修改不触发额外的高风险 secretRef 批准；但由 Agent 提交的 mutation 仍必须走 operation-bound write request。
+24. 普通新增分组、条目、字段、空密码 placeholder 不触发额外的高风险 secretRef 批准；但不等于无边界或无授权写入。
+25. 合法的普通批量操作不因“批量”本身升级为高风险；一次提交的 batch 仍对应一个精确的 operation-bound write request。
+26. 每一笔 Agent semantic Catalog mutation（包括 batch）都必须由 Agent 主动发起一次精确绑定、一次消费的 operation-bound write request；Agent 不能自行开启权限、扩大或复用授权。
+27. 需要用户批准的 Agent Catalog mutation，在用户批准前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
+28. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
+29. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
+30. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
+31. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
+32. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 `secret://`。
+33. 格式修复只能调整格式，不能改变结构或 opaque 引用，不能生成或展开明文。
+34. 受控 MCP Catalog write 的结果必须带 post-commit validation 摘要，至少让 Agent 得到写入状态、revision 和 diagnostics；`secret_catalog_validate` 仍用于用户直接编辑 Markdown 后的检查、Obsidian 问题诊断、显式 health check 或获取详细 diagnostics；不得用本地 sidecar 代替它。
+35. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
+36. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
+37. 不得把 SVLT 解密得到的明文写回 `敏感信息.md`。
+38. 凭据来源标签包括 `SVLT_MANAGED_OPERATION`、`USER_EXPLICIT_PLAINTEXT`、`EXTERNAL_PROVIDER_OPERATION`、`UNMANAGED_CREDENTIAL`；不得因为用户使用其他凭据 provider 而强制接管。
 
 目录状态规则：
 - v3 的外部合法编辑由 SVLT coordinator 重新解析；格式/普通语义变化可以接纳，高风险语义变化进入本机审批，不按编辑器或传输渠道一律拒绝。
@@ -72,10 +81,11 @@ SVLT 敏感信息目录写入规范：
 safeWorkflow：
 1. 在调用 SVLT 前，先判断用户是否明确选择 SVLT，或是否已经亲自提供并明确要求使用当前明文。
 2. 如果用户明确提供明文并要求使用，继续使用该值并遵守当前工具/工作区规则；除非用户要求，不要搜索或替换成 SVLT 引用。
-3. 如果用户选择 SVLT，使用 secret_auto_handle_text、secret_search、secret_catalog_search、secret_catalog_get 或专用 secret action。
+3. 如果用户选择 SVLT，使用 secret_auto_handle_text、secret_search、secret_catalog_search、目标 `secret_catalog_list_indices`、目标 `secret_catalog_list_entries`、`secret_catalog_get` 或专用 secret action；目标工具未暴露时不得用本地文件补足。
 4. 搜索只返回非敏感上下文和 opaque 引用，不授予明文展示、导出或外发权限。
-5. 目录写入后调用 secret_catalog_validate；无授权、完整性失败或旧版目录状态时停止，不要自行修复文件。
-6. 需要本机使用 SVLT 秘密时，使用 secret_action_router 或更窄的工具；不要把 SVLT 解密明文交给普通 shell、curl、URL、header、环境变量、日志、审计或聊天。
+5. 每笔 Agent Catalog mutation 先发起精确 operation-bound write request；受控 MCP write 结果必须携带 post-commit validation。`secret_catalog_validate` 保留给外部编辑、显式 health check 和详细 diagnostics，不要读取 sidecar。
+6. 无授权、完整性失败或旧版目录状态时停止，不要自行修复文件或猜测 ID。
+7. 需要本机使用 SVLT 秘密时，使用 secret_action_router 或更窄的工具；不要把 SVLT 解密明文交给普通 shell、curl、URL、header、环境变量、日志、审计或聊天。
 
 禁止事项：
 - Do not expose plaintext obtained by decrypting an SVLT-managed secret outside the approved SVLT operation.

@@ -125,10 +125,11 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 4. 修改时只改变目标 source range，保留用户原有 Markdown、双链、备注、空行和非目标区域；不要整文件 canonicalize。
 5. 不得把 policy block 当作分组、条目、字段、搜索结果或计数，也不得创建同名“SVLT 管理规范”记录。
 6. 先判断用户是否选择 SVLT；当前明确提供的明文或明确选择的外部 provider 不需要 SVLT lookup、比较或替换。`locked` 不是全局门禁。
-7. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` / `secret_catalog_search` 按非敏感上下文发现 opaque 引用；不同 Entry 不得合并。
-8. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以静默；绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。
-9. 合法普通批量操作不因“批量”本身升级；修改后必须调用 `secret_catalog_validate`，失败时停止，不要猜测修复结构。
-10. 低风险操作不代表获得明文导出权限；SVLT 派生明文只能留在获批的专用本地操作中，不能写回 Catalog、shell、日志、聊天或外发。
+7. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` / `secret_catalog_search` 按非敏感上下文发现 opaque 引用；需要浏览分组时使用 `secret_catalog_list_indices`（包含空分组），再用 MCP 返回的 `indexID` 调用 `secret_catalog_list_entries`，不得用 `query: ""` 或本地文件猜测 ID；不同 Entry 不得合并。
+8. 需要一次建立目录结构时，使用 `secret_catalog_create_structure` 提交一个 Index 和多个安全 Entry；SVLT 生成 opaque ID，以 `clientKey` 返回映射，并在一次 operation-bound 授权和 atomic commit 中完成。Agent 不得提交自造 ID、已有 `secretRef` 或 secret plaintext。
+9. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以不触发额外的高风险 secretRef 批准；但每笔 Agent mutation（包括普通批量操作）仍必须使用精确绑定、一次消费的 operation-bound write request。绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。
+10. 受控 MCP write 会返回 post-commit validation；`secret_catalog_validate` 保留用于外部编辑检查、显式 health check 和详细 diagnostics。失败时停止，不要猜测修复结构。
+11. 低风险操作不代表获得明文导出权限；SVLT 派生明文只能留在获批的专用本地操作中，不能写回 Catalog、shell、日志、聊天或外发。
 
 ## 7. Agent 启动自检
 

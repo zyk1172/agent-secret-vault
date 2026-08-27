@@ -118,6 +118,7 @@ public enum CatalogAgentWriteRequestSource: String, Codable, CaseIterable, Senda
 public enum CatalogAgentWriteOperation: String, Codable, CaseIterable, Sendable {
     case createIndex
     case createEntry
+    case createStructure
     case patchMetadata
     case commitDraft
     case addSecretPlaceholder
@@ -127,6 +128,7 @@ public enum CatalogAgentWriteOperation: String, Codable, CaseIterable, Sendable 
         switch self {
         case .createIndex: return "新建分组"
         case .createEntry: return "新建条目"
+        case .createStructure: return "新建目录结构"
         case .patchMetadata: return "修改条目元数据"
         case .commitDraft: return "提交条目草稿"
         case .addSecretPlaceholder: return "新增加密字段占位"
@@ -314,6 +316,97 @@ public struct CatalogDraftRequest: Codable, Equatable, Sendable {
     }
 }
 
+public struct CatalogStructureIndexRequest: Codable, Equatable, Sendable {
+    public let title: String
+    public let aliases: [String]
+    public let tags: [String]
+
+    public init(title: String, aliases: [String] = [], tags: [String] = []) {
+        self.title = title
+        self.aliases = aliases
+        self.tags = tags
+    }
+}
+
+/// Safe metadata for one Entry in an atomic structure creation request. The
+/// caller supplies only a local correlation key; SVLT generates the opaque
+/// Entry ID after the request passes validation and authorization.
+public struct CatalogStructureEntryRequest: Codable, Equatable, Sendable {
+    public let clientKey: String
+    public let title: String
+    public let type: String
+    public let aliases: [String]
+    public let tags: [String]
+    public let endpoints: [CatalogEndpoint]
+    public let notes: String?
+    public let fields: [SecretCatalogFieldValue]
+
+    public init(
+        clientKey: String,
+        title: String,
+        type: String = "credential",
+        aliases: [String] = [],
+        tags: [String] = [],
+        endpoints: [CatalogEndpoint] = [],
+        notes: String? = nil,
+        fields: [SecretCatalogFieldValue] = []
+    ) {
+        self.clientKey = clientKey
+        self.title = title
+        self.type = type
+        self.aliases = aliases
+        self.tags = tags
+        self.endpoints = endpoints
+        self.notes = notes
+        self.fields = fields
+    }
+}
+
+public struct CatalogCreateStructureRequest: Codable, Equatable, Sendable {
+    public let index: CatalogStructureIndexRequest
+    public let entries: [CatalogStructureEntryRequest]
+    public let expectedRevision: UInt64?
+
+    public init(
+        index: CatalogStructureIndexRequest,
+        entries: [CatalogStructureEntryRequest] = [],
+        expectedRevision: UInt64? = nil
+    ) {
+        self.index = index
+        self.entries = entries
+        self.expectedRevision = expectedRevision
+    }
+}
+
+public struct CatalogStructureEntryResult: Codable, Equatable, Sendable {
+    public let clientKey: String
+    public let entryID: String
+
+    public init(clientKey: String, entryID: String) {
+        self.clientKey = clientKey
+        self.entryID = entryID
+    }
+}
+
+public struct CatalogStructureWriteResult: Codable, Equatable, Sendable {
+    public let indexID: String
+    public let entries: [CatalogStructureEntryResult]
+    public let revision: UInt64
+    public let validation: CatalogValidationResult
+
+    public init(
+        indexID: String,
+        entries: [CatalogStructureEntryResult],
+        revision: UInt64,
+        validation: CatalogValidationResult
+    ) {
+        self.indexID = indexID
+        self.entries = entries
+        self.revision = revision
+        self.validation = validation
+    }
+}
+
 public struct CatalogDraft: Codable, Equatable, Sendable {
     public let draftID: String
     public let baseRevision: UInt64
@@ -344,6 +437,11 @@ public struct CatalogSecretInput: Codable, Equatable, Sendable {
 public struct CatalogWriteResult: Codable, Equatable, Sendable {
     public let revision: UInt64
     public let entry: SecretCatalogEntryMatch?
+    public let indexID: String?
+    public let entryID: String?
+    /// A post-commit, non-sensitive validation summary.  It is optional for
+    /// legacy App-control callers, while Agent-controlled writes populate it.
+    public let validation: CatalogValidationResult?
     /// Opaque reference returned only by the App-controlled secure-input
     /// flow. It is never plaintext and is optional so existing catalog write
     /// responses remain wire-compatible.
@@ -352,11 +450,17 @@ public struct CatalogWriteResult: Codable, Equatable, Sendable {
     public init(
         revision: UInt64,
         entry: SecretCatalogEntryMatch? = nil,
-        secretReference: String? = nil
+        secretReference: String? = nil,
+        indexID: String? = nil,
+        entryID: String? = nil,
+        validation: CatalogValidationResult? = nil
     ) {
         self.revision = revision
         self.entry = entry
+        self.indexID = indexID
+        self.entryID = entryID
         self.secretReference = secretReference
+        self.validation = validation
     }
 }
 

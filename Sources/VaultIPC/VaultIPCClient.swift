@@ -75,6 +75,22 @@ public actor VaultIPCClient {
         return result
     }
 
+    public func listCatalogIndexes() async throws -> SecretCatalogIndexListResult {
+        let response = try await send(.catalogListIndexes)
+        guard case let .catalogIndexListResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func listCatalogEntries(indexID: String) async throws -> SecretCatalogEntryListResult {
+        let response = try await send(.catalogListEntries(indexID: indexID))
+        guard case let .catalogEntryListResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
     public func createCatalogIndex(
         title: String,
         aliases: [String] = [],
@@ -90,6 +106,16 @@ public actor VaultIPCClient {
     public func createCatalogEntry(_ request: CatalogDraftRequest) async throws -> CatalogWriteResult {
         let response = try await send(.catalogCreateEntry(request: request))
         guard case let .catalogWriteResult(result) = response else {
+            throw unexpected(response)
+        }
+        return result
+    }
+
+    public func createCatalogStructure(
+        _ request: CatalogCreateStructureRequest
+    ) async throws -> CatalogStructureWriteResult {
+        let response = try await send(.catalogCreateStructure(request: request))
+        guard case let .catalogStructureWriteResult(result) = response else {
             throw unexpected(response)
         }
         return result

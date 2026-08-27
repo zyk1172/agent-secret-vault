@@ -13,12 +13,15 @@ public protocol WorkbenchServicing: Sendable {
         limit: Int
     ) async throws -> SecretCatalogSearchResult
     func getCatalogEntry(entryID: String) async throws -> SecretCatalogSearchResult
+    func listCatalogIndexes() async throws -> SecretCatalogIndexListResult
+    func listCatalogEntries(indexID: String) async throws -> SecretCatalogEntryListResult
     func createCatalogIndex(
         title: String,
         aliases: [String],
         tags: [String]
     ) async throws -> CatalogWriteResult
     func createCatalogEntry(_ request: CatalogDraftRequest) async throws -> CatalogWriteResult
+    func createCatalogStructure(_ request: CatalogCreateStructureRequest) async throws -> CatalogStructureWriteResult
     func createCatalogDraft(_ request: CatalogDraftRequest) async throws -> CatalogDraft
     func patchCatalogMetadata(
         entryID: String,
@@ -99,6 +102,14 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
+    func listCatalogIndexes() async throws -> SecretCatalogIndexListResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func listCatalogEntries(indexID _: String) async throws -> SecretCatalogEntryListResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
     func createCatalogIndex(
         title _: String,
         aliases _: [String],
@@ -108,6 +119,10 @@ public extension WorkbenchServicing {
     }
 
     func createCatalogEntry(_: CatalogDraftRequest) async throws -> CatalogWriteResult {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func createCatalogStructure(_: CatalogCreateStructureRequest) async throws -> CatalogStructureWriteResult {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
@@ -240,6 +255,10 @@ public struct IPCRequestHandler: Sendable {
             return try await handleCatalogSearch(query: query, field: field, limit: limit)
         case let .catalogGet(entryID):
             return .catalogSearchResult(try await service.getCatalogEntry(entryID: entryID))
+        case .catalogListIndexes:
+            return .catalogIndexListResult(try await service.listCatalogIndexes())
+        case let .catalogListEntries(indexID):
+            return .catalogEntryListResult(try await service.listCatalogEntries(indexID: indexID))
         case let .catalogCreateIndex(title, aliases, tags):
             return .catalogWriteResult(try await service.createCatalogIndex(
                 title: title,
@@ -248,6 +267,8 @@ public struct IPCRequestHandler: Sendable {
             ))
         case let .catalogCreateEntry(request):
             return .catalogWriteResult(try await service.createCatalogEntry(request))
+        case let .catalogCreateStructure(request):
+            return .catalogStructureWriteResult(try await service.createCatalogStructure(request))
         case let .catalogCreateDraft(request):
             return .catalogDraft(try await service.createCatalogDraft(request))
         case let .catalogPatchMetadata(entryID, patch, expectedRevision):

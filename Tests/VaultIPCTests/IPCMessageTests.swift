@@ -53,6 +53,18 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .searchCatalog(query: "QNAP", field: .password, limit: 10),
         .catalogSearch(query: "Komga", field: nil, limit: 20),
         .catalogGet(entryID: testEntryID),
+        .catalogListIndexes,
+        .catalogListEntries(indexID: testIndexID),
+        .catalogCreateIndex(title: "数据库", aliases: [], tags: []),
+        .catalogCreateStructure(request: CatalogCreateStructureRequest(
+            index: CatalogStructureIndexRequest(title: "数据库"),
+            entries: [CatalogStructureEntryRequest(
+                clientKey: "postgres",
+                title: "PostgreSQL",
+                endpoints: [CatalogEndpoint(type: "postgresql", host: "db.home", port: 5432)],
+                fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)]
+            )]
+        )),
         .catalogCreateDraft(
             request: CatalogDraftRequest(indexID: testIndexID, title: "SSH", fields: [
                 SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("zyk"))
@@ -158,8 +170,24 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             status: .found,
             matches: [sampleCatalogMatch()]
         )),
+        .catalogIndexListResult(SecretCatalogIndexListResult(
+            revision: 2,
+            indices: [SecretCatalogIndexSummary(id: testIndexID, title: "QNAP", entryCount: 1)]
+        )),
+        .catalogEntryListResult(SecretCatalogEntryListResult(
+            status: .found,
+            revision: 2,
+            indexID: testIndexID,
+            entries: [sampleCatalogMatch().entry]
+        )),
         .catalogDraft(CatalogDraft(draftID: testEntryID, baseRevision: 1, entry: sampleCatalogMatch().entry)),
         .catalogWriteResult(CatalogWriteResult(revision: 2, entry: sampleCatalogMatch().entry)),
+        .catalogStructureWriteResult(CatalogStructureWriteResult(
+            indexID: testIndexID,
+            entries: [CatalogStructureEntryResult(clientKey: "postgres", entryID: testEntryID)],
+            revision: 3,
+            validation: CatalogValidationResult(status: .found, revision: 3)
+        )),
         .catalogValidation(
             status: .found,
             revision: 2,

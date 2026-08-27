@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   AuthenticatedIpcRequest,
   CapabilityToken,
+  CatalogCreateEntryRequest,
+  CatalogCreateStructureRequest,
   IpcFrameCodec,
   IpcRequest,
   IpcResponse
@@ -78,6 +80,26 @@ describe("IPC response schema", () => {
         }
       },
       {
+        type: "catalogIndexListResult",
+        result: {
+          status: "FOUND",
+          revision: 47,
+          indices: [
+            { id: validIndexID, title: "QNAP", aliases: [], tags: ["设备"], entryCount: 2 },
+            { id: validEntryID, title: "空分组", aliases: [], tags: [], entryCount: 0 }
+          ]
+        }
+      },
+      {
+        type: "catalogEntryListResult",
+        result: {
+          status: "FOUND",
+          revision: 47,
+          indexID: validIndexID,
+          entries: []
+        }
+      },
+      {
         type: "catalogDraft",
         draft: {
           draftID: validEntryID,
@@ -95,6 +117,15 @@ describe("IPC response schema", () => {
         }
       },
       { type: "catalogWriteResult", result: { revision: 2, entry: null } },
+      {
+        type: "catalogStructureWriteResult",
+        result: {
+          indexID: validIndexID,
+          entries: [{ clientKey: "postgres", entryID: validEntryID }],
+          revision: 3,
+          validation: { status: "FOUND", revision: 3, diagnostics: [] }
+        }
+      },
       { type: "catalogValidation", catalogStatus: "FOUND", revision: 2, diagnostics: [] },
       {
         type: "catalogFilePreflight",
@@ -266,6 +297,8 @@ describe("IPC request schema", () => {
       { type: "searchCatalog", query: "QNAP", field: "password", limit: 10 },
       { type: "catalogSearch", query: "QNAP", limit: 10 },
       { type: "catalogGet", entryID: validEntryID },
+      { type: "catalogListIndexes" },
+      { type: "catalogListEntries", indexID: validIndexID },
       {
         type: "catalogCreateIndex",
         title: "QNAP",
@@ -298,6 +331,39 @@ describe("IPC request schema", () => {
               searchable: false
             }
           ]
+        }
+      },
+      {
+        type: "catalogCreateStructure",
+        request: {
+          index: { title: "数据库", aliases: [], tags: [] },
+          entries: [{
+            clientKey: "postgres",
+            title: "PostgreSQL",
+            type: "credential",
+            aliases: [],
+            tags: [],
+            endpoints: [{ type: "postgresql", host: "db.home", port: 5432 }],
+            fields: [{ key: "password", label: "密码", type: "secret", agentVisible: true, searchable: true }]
+          }]
+        }
+      },
+      {
+        type: "catalogRequestWriteAccess",
+        request: {
+          id: "00000000-0000-4000-8000-000000000001",
+          source: "mcp-client",
+          reasonCategory: "bulk-import",
+          duration: "single-use",
+          createdAt: "2026-08-27T12:00:00.000Z",
+          intent: {
+            requestID: "00000000-0000-4000-8000-000000000001",
+            operation: "createStructure",
+            indexID: validIndexID,
+            acceptedRevision: 47,
+            candidateSemanticSHA256: "a".repeat(64)
+          },
+          expiresAt: "2026-08-27T12:01:00.000Z"
         }
       },
       {
@@ -438,6 +504,43 @@ describe("IPC request schema", () => {
         fields: [{ key: "username", label: "用户名", type: "text", value: "admin", secretRef: validReference }]
       },
       expectedRevision: 1
+    })).toThrow();
+  });
+
+  it("reports duplicate field keys at the exact input path", () => {
+    const result = CatalogCreateEntryRequest.safeParse({
+      indexID: validIndexID,
+      title: "重复字段",
+      fields: [
+        { key: "host", label: "主机", type: "text", value: "db.home" },
+        { key: "host", label: "备用主机", type: "text", value: "db2.home" }
+      ]
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ["fields", 1, "key"] })
+    ]));
+  });
+
+  it("accepts empty secret placeholders and non-http endpoint types", () => {
+    const request = CatalogCreateStructureRequest.parse({
+      index: { title: "数据库" },
+      entries: [{
+        clientKey: "postgres",
+        title: "PostgreSQL",
+        endpoints: [{ type: "postgresql", host: "db.home", port: 5432 }],
+        fields: [{ key: "password", label: "API Key", type: "secret" }]
+      }]
+    });
+    expect(request.entries[0]?.fields[0]?.value).toBeUndefined();
+    expect(() => CatalogCreateStructureRequest.parse({
+      index: { title: "数据库" },
+      entries: [{
+        clientKey: "postgres",
+        title: "PostgreSQL",
+        fields: [{ key: "password", label: "密码", type: "secret", value: "" }]
+      }]
     })).toThrow();
   });
 });

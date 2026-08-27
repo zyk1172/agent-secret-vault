@@ -133,6 +133,26 @@ function validateCatalogFieldSafety(
   }
 }
 
+function validateUniqueFieldKeys(
+  fields: Array<{ key: string }>,
+  context: z.RefinementCtx,
+  pathPrefix: Array<string | number> = ["fields"]
+): void {
+  const firstIndexByKey = new Map<string, number>();
+  fields.forEach((field, index) => {
+    const firstIndex = firstIndexByKey.get(field.key);
+    if (firstIndex === undefined) {
+      firstIndexByKey.set(field.key, index);
+      return;
+    }
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...pathPrefix, index, "key"],
+      message: `duplicate field key; the first occurrence is at ${[...pathPrefix, firstIndex, "key"].join(".")}`
+    });
+  });
+}
+
 export const SecretCatalogFieldMatch = z
   .object({
     key: z.string().min(1),
@@ -210,7 +230,9 @@ export const CatalogDraftRequest = z.object({
   endpoints: z.array(CatalogEndpoint).max(64).default([]),
   notes: z.string().max(2000).nullable().optional(),
   fields: z.array(CatalogFieldValue).max(128).default([])
-}).strict();
+}).strict().superRefine((value, context) => {
+  validateUniqueFieldKeys(value.fields, context);
+});
 export type CatalogDraftRequest = z.infer<typeof CatalogDraftRequest>;
 
 // Direct creation is intentionally narrower than a draft. A safe Agent
@@ -241,7 +263,9 @@ export const CatalogCreateEntryRequest = z.object({
   endpoints: z.array(CatalogEndpoint).max(64).default([]),
   notes: z.string().max(2000).nullable().optional(),
   fields: z.array(CatalogSafeFieldValue).max(128).default([])
-}).strict();
+}).strict().superRefine((value, context) => {
+  validateUniqueFieldKeys(value.fields, context);
+});
 export type CatalogCreateEntryRequest = z.infer<typeof CatalogCreateEntryRequest>;
 
 export const CatalogMetadataPatch = z.object({
@@ -251,8 +275,52 @@ export const CatalogMetadataPatch = z.object({
   endpoints: z.array(CatalogEndpoint).max(64).optional(),
   notes: z.string().max(2000).optional(),
   fields: z.array(CatalogFieldValue).max(128).optional()
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.fields !== undefined) {
+    validateUniqueFieldKeys(value.fields, context);
+  }
+});
 export type CatalogMetadataPatch = z.infer<typeof CatalogMetadataPatch>;
+
+const CatalogStructureIndexRequest = z.object({
+  title: z.string().trim().min(1).max(2000),
+  aliases: z.array(z.string()).max(64).default([]),
+  tags: z.array(z.string()).max(64).default([])
+}).strict();
+
+const CatalogStructureEntryRequest = z.object({
+  clientKey: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(2000),
+  type: z.string().trim().min(1).max(2000).default("credential"),
+  aliases: z.array(z.string()).max(64).default([]),
+  tags: z.array(z.string()).max(64).default([]),
+  endpoints: z.array(CatalogEndpoint).max(64).default([]),
+  notes: z.string().max(2000).nullable().optional(),
+  fields: z.array(CatalogSafeFieldValue).max(128).default([])
+}).strict().superRefine((value, context) => {
+  validateUniqueFieldKeys(value.fields, context);
+});
+
+export const CatalogCreateStructureRequest = z.object({
+  index: CatalogStructureIndexRequest,
+  entries: z.array(CatalogStructureEntryRequest).max(128).default([]),
+  expectedRevision: z.number().int().nonnegative().optional()
+}).strict().superRefine((value, context) => {
+  const firstIndexByClientKey = new Map<string, number>();
+  value.entries.forEach((entry, index) => {
+    const firstIndex = firstIndexByClientKey.get(entry.clientKey);
+    if (firstIndex === undefined) {
+      firstIndexByClientKey.set(entry.clientKey, index);
+      return;
+    }
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["entries", index, "clientKey"],
+      message: `duplicate clientKey; the first occurrence is at entries.${firstIndex}.clientKey`
+    });
+  });
+});
+export type CatalogCreateStructureRequest = z.infer<typeof CatalogCreateStructureRequest>;
 
 export const CatalogDraft = z.object({
   draftID: z.string().length(26),
@@ -260,12 +328,6 @@ export const CatalogDraft = z.object({
   entry: SecretCatalogEntryMatch
 }).strict();
 export type CatalogDraft = z.infer<typeof CatalogDraft>;
-
-export const CatalogWriteResult = z.object({
-  revision: z.number().int().nonnegative(),
-  entry: SecretCatalogEntryMatch.nullable().optional()
-}).strict();
-export type CatalogWriteResult = z.infer<typeof CatalogWriteResult>;
 
 export const CatalogFilePreflight = z.object({
   read: z.string().min(1).max(128),
@@ -281,6 +343,7 @@ export const CatalogAgentWriteIntent = z.object({
   operation: z.enum([
     "createIndex",
     "createEntry",
+    "createStructure",
     "patchMetadata",
     "commitDraft",
     "addSecretPlaceholder",
@@ -339,6 +402,50 @@ export const CatalogValidationResult = z.object({
 }).strict();
 export type CatalogValidationResult = z.infer<typeof CatalogValidationResult>;
 
+export const CatalogWriteResult = z.object({
+  revision: z.number().int().nonnegative(),
+  entry: SecretCatalogEntryMatch.nullable().optional(),
+  indexID: z.string().length(26).optional(),
+  entryID: z.string().length(26).optional(),
+  validation: CatalogValidationResult.optional()
+}).strict();
+export type CatalogWriteResult = z.infer<typeof CatalogWriteResult>;
+
+export const CatalogStructureWriteResult = z.object({
+  indexID: z.string().length(26),
+  entries: z.array(z.object({
+    clientKey: z.string().min(1),
+    entryID: z.string().length(26)
+  }).strict()),
+  revision: z.number().int().nonnegative(),
+  validation: CatalogValidationResult
+}).strict();
+export type CatalogStructureWriteResult = z.infer<typeof CatalogStructureWriteResult>;
+
+export const CatalogIndexSummary = z.object({
+  id: z.string().length(26),
+  title: z.string().min(1),
+  aliases: z.array(z.string()),
+  tags: z.array(z.string()),
+  entryCount: z.number().int().nonnegative()
+}).strict();
+export type CatalogIndexSummary = z.infer<typeof CatalogIndexSummary>;
+
+export const CatalogIndexListResult = z.object({
+  status: SecretCatalogSearchResult.shape.status,
+  revision: z.number().int().nonnegative(),
+  indices: z.array(CatalogIndexSummary)
+}).strict();
+export type CatalogIndexListResult = z.infer<typeof CatalogIndexListResult>;
+
+export const CatalogEntryListResult = z.object({
+  status: SecretCatalogSearchResult.shape.status,
+  revision: z.number().int().nonnegative(),
+  indexID: z.string().length(26),
+  entries: z.array(SecretCatalogEntryMatch)
+}).strict();
+export type CatalogEntryListResult = z.infer<typeof CatalogEntryListResult>;
+
 const CatalogBatchIndex = z
   .object({
     schema: z.literal("svlt.catalog.index/v3"),
@@ -362,7 +469,10 @@ const CatalogBatchEntry = z
     notes: z.string().max(2000).nullable().optional(),
     tags: z.array(z.string()).max(64)
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    validateUniqueFieldKeys(value.fields, context);
+  });
 
 export const CatalogBatchOperation = z.discriminatedUnion("type", [
   z.object({ type: z.literal("createIndex"), index: CatalogBatchIndex }).strict(),
@@ -507,6 +617,8 @@ export const IpcRequest = z.discriminatedUnion("type", [
     })
     .strict(),
   z.object({ type: z.literal("catalogGet"), entryID: z.string().length(26) }).strict(),
+  z.object({ type: z.literal("catalogListIndexes") }).strict(),
+  z.object({ type: z.literal("catalogListEntries"), indexID: z.string().length(26) }).strict(),
   z
     .object({
       type: z.literal("catalogCreateIndex"),
@@ -519,6 +631,12 @@ export const IpcRequest = z.discriminatedUnion("type", [
     .object({
       type: z.literal("catalogCreateEntry"),
       request: CatalogDraftRequest
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("catalogCreateStructure"),
+      request: CatalogCreateStructureRequest
     })
     .strict(),
   z
@@ -683,8 +801,11 @@ export const IpcResponse = z.discriminatedUnion("type", [
       result: SecretCatalogSearchResult
     })
     .strict(),
+  z.object({ type: z.literal("catalogIndexListResult"), result: CatalogIndexListResult }).strict(),
+  z.object({ type: z.literal("catalogEntryListResult"), result: CatalogEntryListResult }).strict(),
   z.object({ type: z.literal("catalogDraft"), draft: CatalogDraft }).strict(),
   z.object({ type: z.literal("catalogWriteResult"), result: CatalogWriteResult }).strict(),
+  z.object({ type: z.literal("catalogStructureWriteResult"), result: CatalogStructureWriteResult }).strict(),
   z
     .object({
       type: z.literal("catalogValidation"),

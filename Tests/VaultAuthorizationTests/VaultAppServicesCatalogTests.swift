@@ -47,8 +47,67 @@ private struct CatalogTextEncryptor: TextEncrypting {
     try await service.respondToCatalogWriteAccessRequest(id: request.id, approved: true)
     let result = try await task.value
     #expect(result.entry?.title == "Komga")
+    #expect(result.entryID != nil)
+    #expect(result.validation?.status == .found)
+    #expect(result.validation?.revision == result.revision)
     #expect(await approver.count == 1)
     #expect(await service.catalogAgentWriteStatus().mode == .disabled)
+}
+
+@Test func agentCanCreateCatalogStructureWithGeneratedIDsAndOneApproval() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let captured = RequestCapture()
+    let approver = CatalogApprovalRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver,
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier(present: { request in
+            Task { await captured.set(request) }
+        })
+    )
+
+    let task = Task {
+        try await service.createCatalogStructure(CatalogCreateStructureRequest(
+            index: CatalogStructureIndexRequest(title: "数据库"),
+            entries: [
+                CatalogStructureEntryRequest(
+                    clientKey: "postgres",
+                    title: "PostgreSQL",
+                    endpoints: [CatalogEndpoint(type: "postgresql", host: "db.home", port: 5432)],
+                    fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)]
+                ),
+                CatalogStructureEntryRequest(
+                    clientKey: "redis",
+                    title: "Redis",
+                    endpoints: [CatalogEndpoint(type: "redis", host: "cache.home", port: 6379)]
+                )
+            ]
+        ))
+    }
+    let request = try await awaitAgentWriteRequest(captured)
+
+    #expect(request.intent?.operation == .createStructure)
+    #expect(request.intent?.indexID?.count == 26)
+    #expect(request.intent?.entryID == nil)
+    try await service.respondToCatalogWriteAccessRequest(id: request.id, approved: true)
+    let result = try await task.value
+
+    #expect(result.indexID.count == 26)
+    #expect(result.entries.map(\.clientKey) == ["postgres", "redis"])
+    #expect(result.entries.allSatisfy { $0.entryID.count == 26 })
+    #expect(result.revision == 2)
+    #expect(result.validation.status == .found)
+    #expect(result.validation.revision == result.revision)
+    #expect(await approver.count == 1)
+
+    let snapshot = try await fixture.store.snapshot()
+    #expect(snapshot.document.indexes.contains { $0.id == result.indexID && $0.title == "数据库" })
+    #expect(snapshot.document.entries.filter { $0.indexId == result.indexID }.count == 2)
 }
 
 @Test func rejectedAgentWriteRequestDoesNotGrantAccess() async throws {

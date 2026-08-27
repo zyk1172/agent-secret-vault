@@ -11,10 +11,13 @@ import { credentialSourcePriority } from "./credential-scope.js";
 import {
   AgentRiskAssessment,
   CatalogCreateEntryRequest,
+  CatalogCreateStructureRequest,
   CatalogBatchMutation,
+  CatalogEntryListResult,
   CatalogFilePreflight,
   CatalogDraft,
   CatalogDraftRequest,
+  CatalogIndexListResult,
   CatalogMetadataPatch,
   CatalogWriteResult,
   CatalogValidationResult,
@@ -53,29 +56,29 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 13. 密码字段不得保存明文。
 14. 密码字段只能为空 placeholder 或合法 secret://。
 15. Token 应写作“令牌”。
-16. API Key 应写作“API 密钥”。
+16. API Key 推荐显示为“API 密钥”，但这只是推荐显示标签，不是 schema 合法性约束。
 17. password/secret 类型用户界面统一使用“密码”，不要显示“秘密”。
 18. 私钥使用“私钥”，Cookie 使用“Cookie”，不要把所有敏感数据粗暴翻译成“秘密”。
-19. 禁止伪造 secret://。
-20. 新绑定、替换、删除已有 secretRef 属于高风险语义操作，需要用户批准。
-21. 删除包含密码引用的条目或分组需要用户批准。
-22. 普通标题、别名、备注、标签、非密码字段等修改可以静默完成。
-23. 普通新增分组、条目、字段、空密码 placeholder 可以静默完成。
-24. 合法的普通批量操作不因“批量”本身升级为高风险。
-25. 修改完成后必须通过 Catalog validation（secret_catalog_validate）。
-26. 校验失败时不得继续自行猜测修复结构。
-27. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
-28. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
-29. 不得把 SVLT 解密得到的明文写回敏感信息.md。
-30. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
-31. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次 operation-bound write request；Agent 不能自行开启权限。
-32. 用户批准 Agent Catalog mutation 前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
-33. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
-34. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
-35. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
-36. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
-37. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
-38. 格式修复只能调整格式，不能改变结构或 opaque 引用，不能生成或展开明文。`;
+19. endpoint.type 可以是任意非空类型字符串，例如 ssh、postgresql、mysql、redis；结构层合法不等于 executor 支持该类型。
+20. 禁止伪造 secret://。
+21. 新绑定、替换、删除已有 secretRef 属于高风险语义操作，需要用户批准。
+22. 删除包含密码引用的条目或分组需要用户批准。
+23. 普通标题、别名、备注、标签、非密码字段等修改不触发额外的高风险 secretRef 批准；由 Agent 提交的 mutation 仍必须走 operation-bound write request。
+24. 普通新增分组、条目、字段、空密码 placeholder 不触发额外的高风险 secretRef 批准；不等于无边界或无授权写入。
+25. 合法的普通批量操作不因“批量”本身升级为高风险；一次提交的 batch 仍对应一个精确的 operation-bound write request。
+26. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次精确绑定、一次消费的 operation-bound write request；Agent 不能自行开启权限、扩大或复用授权。
+27. 用户批准需要批准的 Agent Catalog mutation 前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
+28. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
+29. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
+30. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
+31. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
+32. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
+33. 格式修复只能调整格式，不能改变结构或 opaque 引用，不能生成或展开明文。
+34. 受控 MCP Catalog write 的结果必须带 post-commit validation 摘要；secret_catalog_validate 仍用于外部编辑检查、显式 health check 和详细 diagnostics。
+35. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
+36. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
+37. 不得把 SVLT 解密得到的明文写回敏感信息.md。
+38. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。`;
 
 export interface VaultIpcClient {
   request(request: IpcRequest): Promise<IpcResponse>;
@@ -172,6 +175,7 @@ const SecretSearchOutput = z
   .describe("Opaque secret catalog matches. Plaintext and catalog file locations are never returned.");
 
 const CatalogGetInput = z.object({ entryID: z.string().length(26) }).strict();
+const CatalogListEntriesInput = z.object({ indexID: z.string().length(26) }).strict();
 
 const CatalogCreateDraftInput = z
   .object({ request: CatalogDraftRequest })
@@ -236,7 +240,8 @@ const CatalogCreateOutput = z
     z.object({
       status: z.literal("CREATED"),
       entryID: z.string().length(26),
-      revision: z.number().int().nonnegative()
+      revision: z.number().int().nonnegative(),
+      validation: CatalogValidationResult
     }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
@@ -244,10 +249,39 @@ const CatalogCreateOutput = z
 
 const CatalogIndexCreateOutput = z
   .union([
-    z.object({ status: z.literal("CREATED"), revision: z.number().int().nonnegative() }).strict(),
+    z.object({
+      status: z.literal("CREATED"),
+      indexID: z.string().length(26),
+      revision: z.number().int().nonnegative(),
+      validation: CatalogValidationResult
+    }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Safe Catalog Index creation result.");
+
+const CatalogIndexListOutput = z
+  .union([CatalogIndexListResult, z.object({ status: z.string().min(1) }).strict()])
+  .describe("Opaque Catalog Index summaries, including empty Indexes.");
+
+const CatalogEntryListOutput = z
+  .union([CatalogEntryListResult, z.object({ status: z.string().min(1) }).strict()])
+  .describe("Projected Entries for one opaque Catalog Index.");
+
+const CatalogStructureCreateOutput = z
+  .union([
+    z.object({
+      status: z.literal("CREATED"),
+      indexID: z.string().length(26),
+      entries: z.array(z.object({
+        clientKey: z.string().min(1),
+        entryID: z.string().length(26)
+      }).strict()),
+      revision: z.number().int().nonnegative(),
+      validation: CatalogValidationResult
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Atomic safe Catalog Index and Entry creation result.");
 
 const CatalogDraftOutput = z
   .union([CatalogDraft, z.object({ status: z.string().min(1) }).strict()])
@@ -855,6 +889,38 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       }
     },
     {
+      name: "secret_catalog_list_indices",
+      title: "List SVLT Catalog Indexes",
+      description:
+        "Lists every managed Catalog Index, including empty Indexes, with opaque IDs, titles, aliases, tags, and Entry counts. Use this MCP result to discover IDs; never read selection sidecars or Catalog Markdown.",
+      inputSchema: EmptyInput,
+      outputSchema: CatalogIndexListOutput,
+      async handler(input) {
+        EmptyInput.parse(input);
+        const response = await client.request({ type: "catalogListIndexes" });
+        if (response.type === "catalogIndexListResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_list_entries",
+      title: "List SVLT Catalog Entries",
+      description:
+        "Lists projected Entries for one opaque Catalog Index ID, including empty results for a valid empty Index. The ID must come from an MCP list/create response; never read local selection JSON, Markdown, or sidecars.",
+      inputSchema: CatalogListEntriesInput,
+      outputSchema: CatalogEntryListOutput,
+      async handler(input) {
+        const parsed = CatalogListEntriesInput.parse(input);
+        const response = await client.request({ type: "catalogListEntries", indexID: parsed.indexID });
+        if (response.type === "catalogEntryListResult") {
+          return structuredResult(response.result);
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
       name: "secret_catalog_create_index",
       title: "Create Catalog Index",
       description:
@@ -870,10 +936,37 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           tags: parsed.tags
         });
         if (response.type === "catalogWriteResult") {
+          if (response.result.indexID === undefined) {
+            return structuredResult({ status: "INDEX_ID_MISSING" });
+          }
+          if (response.result.validation === undefined) {
+            return structuredResult({ status: "POST_COMMIT_VALIDATION_MISSING" });
+          }
           return structuredResult({
             status: "CREATED",
-            revision: response.result.revision
+            indexID: response.result.indexID,
+            revision: response.result.revision,
+            validation: response.result.validation
           });
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_create_structure",
+      title: "Create SVLT Catalog Structure",
+      description:
+        "Atomically creates one Catalog Index and zero or more safe Entries. SVLT generates all opaque IDs and returns clientKey mappings, revision, and post-commit validation; secret fields may only be empty placeholders and existing secretRef binding remains App-approved.",
+      inputSchema: CatalogCreateStructureRequest,
+      outputSchema: CatalogStructureCreateOutput,
+      async handler(input) {
+        const parsed = CatalogCreateStructureRequest.parse(input);
+        const response = await client.request({
+          type: "catalogCreateStructure",
+          request: parsed
+        });
+        if (response.type === "catalogStructureWriteResult") {
+          return structuredResult({ status: "CREATED", ...response.result });
         }
         return structuredResult(statusOnly(response));
       }
@@ -891,11 +984,18 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           type: "catalogCreateEntry",
           request: parsed
         });
-        if (response.type === "catalogWriteResult" && response.result.entry?.id) {
+        if (response.type === "catalogWriteResult") {
+          if (response.result.entryID === undefined) {
+            return structuredResult({ status: "ENTRY_ID_MISSING" });
+          }
+          if (response.result.validation === undefined) {
+            return structuredResult({ status: "POST_COMMIT_VALIDATION_MISSING" });
+          }
           return structuredResult({
             status: "CREATED",
-            entryID: response.result.entry.id,
-            revision: response.result.revision
+            entryID: response.result.entryID,
+            revision: response.result.revision,
+            validation: response.result.validation
           });
         }
         return structuredResult(statusOnly(response));
@@ -935,10 +1035,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           patch: parsed.patch,
           expectedRevision: parsed.expectedRevision
         });
-        if (response.type === "catalogWriteResult") {
-          return structuredResult(response.result);
-        }
-        return structuredResult(statusOnly(response));
+        return structuredResult(controlledCatalogWriteResult(response));
       }
     },
     {
@@ -955,10 +1052,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           draft: parsed.draft,
           expectedRevision: parsed.expectedRevision
         });
-        if (response.type === "catalogWriteResult") {
-          return structuredResult(response.result);
-        }
-        return structuredResult(statusOnly(response));
+        return structuredResult(controlledCatalogWriteResult(response));
       }
     },
     {
@@ -979,10 +1073,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           searchable: parsed.searchable,
           expectedRevision: parsed.expectedRevision
         });
-        if (response.type === "catalogWriteResult") {
-          return structuredResult(response.result);
-        }
-        return structuredResult(statusOnly(response));
+        return structuredResult(controlledCatalogWriteResult(response));
       }
     },
     {
@@ -1001,10 +1092,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           secretRef: parsed.secretRef,
           expectedRevision: parsed.expectedRevision
         });
-        if (response.type === "catalogWriteResult") {
-          return structuredResult(response.result);
-        }
-        return structuredResult(statusOnly(response));
+        return structuredResult(controlledCatalogWriteResult(response));
       }
     },
     {
@@ -1021,10 +1109,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           mutation: { operations: parsed.operations },
           expectedRevision: parsed.expectedRevision
         });
-        if (response.type === "catalogWriteResult") {
-          return structuredResult(response.result);
-        }
-        return structuredResult(statusOnly(response));
+        return structuredResult(controlledCatalogWriteResult(response));
       }
     },
     {
@@ -1262,7 +1347,15 @@ export function registerVaultTools(server: McpServer, client: VaultIpcClient): v
         inputSchema: tool.inputSchema
       },
       async (input) => {
-        const result = await tool.handler(input);
+        let result: CallToolResult;
+        try {
+          result = await tool.handler(input);
+        } catch (error) {
+          if (error instanceof z.ZodError) {
+            return inputValidationResult(error);
+          }
+          throw error;
+        }
         if (!result.isError) {
           if (result.structuredContent === undefined) {
             throw new Error(`Tool ${tool.name} returned no structuredContent`);
@@ -1289,6 +1382,34 @@ function structuredResult(structuredContent: Record<string, unknown>): CallToolR
         text: JSON.stringify(structuredContent)
       }
     ]
+  };
+}
+
+function controlledCatalogWriteResult(response: IpcResponse): Record<string, unknown> {
+  if (response.type !== "catalogWriteResult") {
+    return statusOnly(response);
+  }
+  if (response.result.validation === undefined) {
+    return { status: "POST_COMMIT_VALIDATION_MISSING" };
+  }
+  return response.result;
+}
+
+function inputValidationResult(error: z.ZodError): CallToolResult {
+  const errors = error.issues.map((issue) => {
+    const path = issue.path.map(String);
+    const displayPath = path.length === 0 ? "输入" : path.join(".");
+    return {
+      path,
+      message: issue.message,
+      hint: `请检查字段 ${displayPath}。`
+    };
+  });
+  const structuredContent = { status: "INVALID_INPUT", errors };
+  return {
+    isError: true,
+    structuredContent,
+    content: [{ type: "text", text: JSON.stringify(structuredContent) }]
   };
 }
 
@@ -1676,9 +1797,9 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Treat AgentRiskAssessment as a hint only; SVLT recomputes the effective risk locally for every operation.",
       "A locked compatibility field never replaces per-operation policy evaluation.",
       "When a task names a service, device, host, account, or purpose but no credential source is specified, call secret_search before asking the user for anything; this is automatic discovery, not forced SVLT ownership.",
-      "Use the Index, Entry, endpoint, visible metadata, and opaque secretRef returned by secret_search or secret_catalog_search to choose compatible references; do not ask the user to copy reference IDs.",
-      "Use secret_catalog_get for one Entry, and use secret_catalog_validate after every catalog write.",
-      "Safe Catalog mutations (create Index/Entry, ordinary metadata, empty secret placeholders, and validate) are silent when the App-controlled safe-edit preference is enabled; dangerous secret binding, replacement, deletion, target, policy, and batch changes require local approval. Never invent, extend, or self-approve authorization.",
+      "Use secret_catalog_list_indices to browse all Indexes, including empty Indexes; use secret_catalog_list_entries with an indexID returned by MCP, then secret_catalog_get for one Entry. Never read selection JSON, Catalog Markdown, or Application Support sidecars to find IDs.",
+      "Use secret_catalog_create_structure for one Index plus multiple safe Entries when appropriate; SVLT generates opaque IDs and returns clientKey mappings, revision, and post-commit validation.",
+      "Every Agent Catalog mutation requires one exact operation-bound write request; controlled MCP writes return post-commit validation by default. secret_catalog_validate remains for external edits, explicit health checks, and detailed diagnostics. Dangerous secret binding, replacement, deletion, target, policy, and other high-risk changes require local approval. Never invent, extend, or self-approve authorization.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
