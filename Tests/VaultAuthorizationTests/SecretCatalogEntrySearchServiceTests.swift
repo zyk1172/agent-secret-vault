@@ -90,3 +90,25 @@ private func qnapCatalogDocument() -> SecretCatalogDocument {
 
     #expect(ids == Set([searchAdminID, searchKomgaID, searchSSHID]))
 }
+
+@Test func catalogBrowsingIncludesEmptyIndexesAndProjectsEntriesByIndex() {
+    let emptyIndexID = "0123456789ABCDEFGHJKMNPQRY"
+    let document = SecretCatalogDocument(
+        indexes: [
+            SecretCatalogIndex(id: searchIndexID, title: "QNAP"),
+            SecretCatalogIndex(id: emptyIndexID, title: "空分组")
+        ],
+        entries: qnapCatalogDocument().entries
+    )
+    let service = SecretCatalogEntrySearchService()
+
+    let indexes = service.listIndexes(document: document)
+    #expect(indexes.map(\.title) == ["QNAP", "空分组"])
+    #expect(indexes.first?.entryCount == 3)
+    #expect(indexes.last?.entryCount == 0)
+
+    let emptyEntries = service.listEntries(indexID: emptyIndexID, document: document, revision: 7)
+    #expect(emptyEntries.status == .found)
+    #expect(emptyEntries.entries.isEmpty)
+    #expect(emptyEntries.revision == 7)
+}

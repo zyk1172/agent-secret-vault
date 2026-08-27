@@ -53,6 +53,54 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 
 来源优先级（每个 operation 独立计算）：用户当前明确凭据/来源 → 用户明确指定的外部 provider → 用户明确指定的 SVLT → 无指定时才自动发现。`USER_EXPLICIT_PLAINTEXT` 不要求 SVLT lookup、comparison、replacement、import 或 authorization；当前用户选择覆盖上一轮的 SVLT/provider 选择，不继承为 sticky state。
 
+## Catalog 浏览与结构创建
+
+Catalog 的浏览和结构写入应通过 MCP API 完成。下面的
+`secret_catalog_list_indices`、`secret_catalog_list_entries` 和
+`secret_catalog_create_structure` 是当前调用流；实际能力仍以当前 MCP server 的
+`tools/list` 为准，不要用读取本地文件来补足未暴露的工具。
+
+1. 浏览分组时调用 `secret_catalog_list_indices`。结果应返回每个 Index 的 opaque
+   `id`、标题、aliases、tags 和 `entryCount`，并且必须包含 `entryCount: 0` 的空分组。
+2. 浏览指定分组时调用 `secret_catalog_list_entries(indexID)`，使用 MCP 返回的
+   `indexID` 获取 Entry ID 和可见 metadata；必要时再用
+   `secret_catalog_get(entryID)` 获取单个 Entry。`secret_search` /
+   `secret_catalog_search` 用于按查询发现凭据或 Entry，不用 `query: ""` 冒充 list。
+3. 创建一组结构时，目标工具 `secret_catalog_create_structure` 接收一个 Index 和多个
+   Entry 的普通 metadata、endpoint、字段及空 `secret` placeholder。由 SVLT 生成所有
+   opaque ID，以 `clientKey` 对应返回的 `indexID`/`entryID`，作为一次 semantic mutation
+   和 atomic commit；绑定已有 `secret://`、替换或删除已有引用仍按单独的高风险流程处理。
+4. 目标写入响应应同时返回新对象 ID、`revision` 和 post-commit validation 摘要，例如：
+
+   ```json
+   {
+     "status": "CREATED",
+     "indexID": "12QA95B9PFK0NF5RXT8XDRNYQK",
+     "revision": 47,
+     "validation": {
+       "status": "FOUND",
+       "diagnostics": []
+     }
+   }
+   ```
+
+   如果兼容的低层 `secret_catalog_create_index` / `secret_catalog_create_entry`
+   在某个版本中仍未返回新对象 ID，Agent 不得猜测、拼接，或从其他文件回读 ID；应报告
+   API 缺口，或使用已暴露且能完整返回 ID 的结构创建调用流。
+   `CREATED` 表示 semantic commit 已提交；只有 `validation.status == FOUND` 且
+   `validation.diagnostics` 为空，才表示提交后的健康确认成功。如果返回
+   `CREATED` 但 validation 是 `CATALOG_UNAVAILABLE` 等状态，说明写入可能已经成功，
+   只是健康确认未完成；不要盲目重复写入，服务恢复后用 `secret_catalog_validate` 显式确认。
+5. 每一笔 Agent Catalog mutation（包括 create、update、delete 和 batch）都必须先由
+   Agent 发起精确绑定、一次消费的 operation-bound write authorization；Agent 不能自行
+   开启、扩大或复用授权。只读的 list/get 不属于 mutation；绑定、替换或删除已有
+   `secret://` 仍需单独的高风险批准。
+
+Agent 不得读取 `sensitive-index-selection.json`、Catalog Markdown（例如
+`敏感信息.md`）或 `Application Support` 中的 integrity/selection sidecar 来查找或验证
+Index/Entry ID。它们是本地存储实现细节，不是 Agent 的发现 API；ID 必须来自 MCP 的
+list/get/create 响应。
+
 ## 工具选择规则
 
 优先使用 `secret_action_router` 或能完成整个动作的具体安全工具：
@@ -70,7 +118,10 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 | 本地文件导出 | `secret_action_router` 的 `export_resolved_text`，或 `export_resolved_text_to_local_file` | 用户明确要求导出时使用；只返回状态和路径。 |
 | 用户本地查看明文 | `secret_reveal_request` / `paragraph_reveal_request` | 明文显示在本地 app，不进入聊天。 |
 | 元数据检查 | `secret_inspect_reference` | 只返回 reference、policy、label、时间等非敏感字段。 |
-| 服务/设备/主机发现 | `secret_search` / `secret_catalog_search` | 按 Index、Entry、alias、tag、NAS、endpoint 或允许搜索的字段查询；只返回 Entry-centric opaque 引用和非敏感 catalog metadata。 |
+| 服务/设备/主机发现 | `secret_search` / `secret_catalog_search` | 按 Index、Entry、alias、tag、NAS、endpoint 或允许搜索的字段查询；只返回 Entry-centric opaque 引用和非敏感 catalog metadata，不承担空 Index 浏览。 |
+| Catalog 分组浏览 | `secret_catalog_list_indices` | 列出全部 Index，包含空分组；以运行时 MCP 工具目录为准。 |
+| 指定分组条目浏览 | `secret_catalog_list_entries` | 传入 MCP 返回的 `indexID` 列出 Entry；不读取本地 Markdown 或 sidecar。 |
+| Catalog 结构创建 | `secret_catalog_create_structure` | 一次创建一个 Index 和多个 Entry，由 SVLT 生成 opaque ID，并返回 post-commit validation。 |
 | 创建引用 | `secret_create_request` | 从本地 app 选择/输入生成 `secret://`。 |
 
 `secret_action_router` 支持的 intent：
@@ -117,6 +168,8 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 - 返回 `REQUEST_FAILED`、`SSH_REQUEST_FAILED`：报告失败状态和非敏感上下文，可建议检查网络/服务状态。
 - 返回 `SELECTION_ENCRYPT_UNAVAILABLE`：说明当前 SVLT 加密桥接能力不可用；不要强迫用户把本次明文导入 SVLT，也不要把 SVLT 派生明文交给普通工具。
 - 返回 `QUARANTINED`：只报告隔离原因，不展示被隔离输出。
+- 目标 Catalog 浏览或结构创建工具未出现在当前 MCP 工具目录：说明目标调用流尚未在该版本暴露；不要读取 selection JSON、Catalog Markdown 或 Application Support sidecar 来猜测 ID，也不要自行伪造 opaque ID。
+- 受控 MCP Catalog write 的结果应带 post-commit validation 摘要；只有 `status == FOUND` 且 diagnostics 为空才表示健康确认完成。若返回 `CATALOG_UNAVAILABLE` 等状态，写入可能已经提交但确认未完成，不要盲目重复写入；服务恢复后只调用 `secret_catalog_validate`，不要改读本地 sidecar。
 - 没有匹配工具：明确选择 SVLT 时请求新增 allowlisted MCP 工具；明确选择其他 provider 或当前明文时不由 SVLT 阻断，遵守该工具和工作区规则。
 
 ## 可选兜底提示

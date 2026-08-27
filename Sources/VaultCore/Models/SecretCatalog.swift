@@ -85,6 +85,32 @@ public struct SecretCatalogIndexMatch: Codable, Equatable, Sendable {
     }
 }
 
+/// A non-sensitive Index projection used for Catalog browsing.  Unlike the
+/// Entry-centric search result, this projection intentionally includes empty
+/// Indexes so an Agent can continue a create/read workflow without reading
+/// selection sidecars or the Markdown document.
+public struct SecretCatalogIndexSummary: Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let aliases: [String]
+    public let tags: [String]
+    public let entryCount: Int
+
+    public init(
+        id: String,
+        title: String,
+        aliases: [String] = [],
+        tags: [String] = [],
+        entryCount: Int
+    ) {
+        self.id = id
+        self.title = title
+        self.aliases = aliases
+        self.tags = tags
+        self.entryCount = entryCount
+    }
+}
+
 public struct SecretCatalogFieldMatch: Codable, Equatable, Sendable {
     public let key: String
     public let label: String
@@ -161,5 +187,40 @@ public struct SecretCatalogSearchResult: Codable, Equatable, Sendable {
     public init(status: SecretCatalogSearchStatus, matches: [SecretCatalogMatch] = []) {
         self.status = status
         self.matches = matches
+    }
+}
+
+public struct SecretCatalogIndexListResult: Codable, Equatable, Sendable {
+    public let status: SecretCatalogSearchStatus
+    public let revision: UInt64
+    public let indices: [SecretCatalogIndexSummary]
+
+    public init(
+        status: SecretCatalogSearchStatus = .found,
+        revision: UInt64,
+        indices: [SecretCatalogIndexSummary] = []
+    ) {
+        self.status = status
+        self.revision = revision
+        self.indices = indices
+    }
+}
+
+public struct SecretCatalogEntryListResult: Codable, Equatable, Sendable {
+    public let status: SecretCatalogSearchStatus
+    public let revision: UInt64
+    public let indexID: String
+    public let entries: [SecretCatalogEntryMatch]
+
+    public init(
+        status: SecretCatalogSearchStatus,
+        revision: UInt64,
+        indexID: String,
+        entries: [SecretCatalogEntryMatch] = []
+    ) {
+        self.status = status
+        self.revision = revision
+        self.indexID = indexID
+        self.entries = entries
     }
 }

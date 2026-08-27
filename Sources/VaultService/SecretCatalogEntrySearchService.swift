@@ -55,6 +55,49 @@ public struct SecretCatalogEntrySearchService: Sendable {
         return SecretCatalogSearchResult(status: .found, matches: [project(index: index, entry: entry)])
     }
 
+    /// Lists every Index, including Indexes with no Entries.  This is a
+    /// separate projection from search because an Entry-centric match cannot
+    /// represent an empty Index.
+    public func listIndexes(document: SecretCatalogDocument) -> [SecretCatalogIndexSummary] {
+        document.indexes.map { index in
+            SecretCatalogIndexSummary(
+                id: index.id,
+                title: index.title,
+                aliases: index.aliases,
+                tags: index.tags,
+                entryCount: document.entries.count(where: { $0.indexId == index.id })
+            )
+        }
+    }
+
+    /// Lists the projected Entries belonging to one Index.  A valid empty
+    /// Index returns FOUND with an empty array; an unknown opaque ID returns
+    /// NOT_FOUND without exposing document details.
+    public func listEntries(
+        indexID: String,
+        document: SecretCatalogDocument,
+        revision: UInt64
+    ) -> SecretCatalogEntryListResult {
+        guard document.indexes.contains(where: { $0.id == indexID }) else {
+            return SecretCatalogEntryListResult(
+                status: .notFound,
+                revision: revision,
+                indexID: indexID
+            )
+        }
+
+        let index = document.indexes.first { $0.id == indexID }!
+        let entries = document.entries
+            .filter { $0.indexId == indexID }
+            .map { project(index: index, entry: $0).entry }
+        return SecretCatalogEntryListResult(
+            status: .found,
+            revision: revision,
+            indexID: indexID,
+            entries: entries
+        )
+    }
+
     private func project(
         index: SecretCatalogIndex,
         entry: SecretCatalogEntry

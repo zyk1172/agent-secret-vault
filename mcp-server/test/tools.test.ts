@@ -43,7 +43,10 @@ describe("MCP tool contracts", () => {
       "secret_search",
       "secret_catalog_search",
       "secret_catalog_get",
+      "secret_catalog_list_indices",
+      "secret_catalog_list_entries",
       "secret_catalog_create_index",
+      "secret_catalog_create_structure",
       "secret_catalog_create_entry",
       "secret_catalog_batch",
       "secret_catalog_create_draft",
@@ -186,6 +189,61 @@ describe("MCP tool contracts", () => {
     expect(serialized).not.toContain("line");
   });
 
+  it("lists empty and populated Indexes without using entry-centric search", async () => {
+    const indexID = "0123456789ABCDEFGHJKMNPQRT";
+    const client = new FakeClient([{
+      type: "catalogIndexListResult",
+      result: {
+        status: "FOUND",
+        revision: 47,
+        indices: [
+          { id: indexID, title: "QNAP", aliases: [], tags: [], entryCount: 2 },
+          { id: "0123456789ABCDEFGHJKMNPQRV", title: "自动化测试", aliases: [], tags: [], entryCount: 0 }
+        ]
+      }
+    }]);
+
+    const result = await tool(client, "secret_catalog_list_indices").handler({});
+
+    expect(result.structuredContent).toMatchObject({
+      status: "FOUND",
+      revision: 47,
+      indices: [
+        expect.objectContaining({ title: "QNAP", entryCount: 2 }),
+        expect.objectContaining({ title: "自动化测试", entryCount: 0 })
+      ]
+    });
+    expect(client.requests).toEqual([{ type: "catalogListIndexes" }]);
+  });
+
+  it("lists projected Entries by an MCP-provided Index ID", async () => {
+    const indexID = "0123456789ABCDEFGHJKMNPQRT";
+    const entryID = "0123456789ABCDEFGHJKMNPQRS";
+    const client = new FakeClient([{
+      type: "catalogEntryListResult",
+      result: {
+        status: "FOUND",
+        revision: 48,
+        indexID,
+        entries: [{
+          id: entryID,
+          indexId: indexID,
+          title: "QNAP",
+          type: "credential",
+          aliases: [],
+          endpoints: [{ type: "ssh", host: "qnap.local", port: 22 }],
+          fields: [{ key: "password", label: "密码", type: "secret", secretRef: reference }],
+          tags: []
+        }]
+      }
+    }]);
+
+    const result = await tool(client, "secret_catalog_list_entries").handler({ indexID });
+
+    expect(result.structuredContent).toMatchObject({ status: "FOUND", revision: 48, indexID });
+    expect(client.requests).toEqual([{ type: "catalogListEntries", indexID }]);
+  });
+
   it("rejects empty catalog queries before touching IPC", async () => {
     const client = new FakeClient([]);
     await expect(tool(client, "secret_search").handler({ query: "   " })).rejects.toThrow();
@@ -194,7 +252,10 @@ describe("MCP tool contracts", () => {
 
   it("uses App-controlled authorization for metadata writes and never accepts catalog plaintext", async () => {
     const client = new FakeClient([
-      { type: "catalogWriteResult", result: { revision: 2, entry: null } },
+      {
+        type: "catalogWriteResult",
+        result: { revision: 2, entry: null, validation: { status: "FOUND", revision: 2, diagnostics: [] } }
+      },
       { type: "catalogValidation", catalogStatus: "FOUND", revision: 2 }
     ]);
 
@@ -203,7 +264,11 @@ describe("MCP tool contracts", () => {
       patch: { title: "QNAP 管理后台登录" },
       expectedRevision: 1
     });
-    expect(write.structuredContent).toEqual({ revision: 2, entry: null });
+    expect(write.structuredContent).toEqual({
+      revision: 2,
+      entry: null,
+      validation: { status: "FOUND", revision: 2, diagnostics: [] }
+    });
     expect(client.requests[0]).toMatchObject({
       type: "catalogPatchMetadata",
       expectedRevision: 1,
@@ -218,6 +283,105 @@ describe("MCP tool contracts", () => {
       diagnostics: []
     });
     expect(client.requests[1]).toEqual({ type: "catalogValidate" });
+  });
+
+  it("does not report a controlled write as successful without post-commit validation", async () => {
+    const client = new FakeClient([{
+      type: "catalogWriteResult",
+      result: { revision: 2, entry: null }
+    }]);
+
+    const result = await tool(client, "secret_catalog_batch").handler({
+      expectedRevision: 1,
+      operations: [{
+        type: "deleteEntry",
+        id: "0123456789ABCDEFGHJKMNPQRS"
+      }]
+    });
+
+    expect(result.structuredContent).toEqual({ status: "POST_COMMIT_VALIDATION_MISSING" });
+  });
+
+  it("returns the generated Index ID and post-commit validation", async () => {
+    const indexID = "0123456789ABCDEFGHJKMNPQRT";
+    const validation = { status: "FOUND", revision: 9, diagnostics: [] };
+    const client = new FakeClient([{
+      type: "catalogWriteResult",
+      result: { revision: 9, indexID, validation }
+    }]);
+
+    const result = await tool(client, "secret_catalog_create_index").handler({ title: "数据库" });
+
+    expect(result.structuredContent).toEqual({
+      status: "CREATED",
+      indexID,
+      revision: 9,
+      validation
+    });
+    expect(client.requests).toEqual([{
+      type: "catalogCreateIndex",
+      title: "数据库",
+      aliases: [],
+      tags: []
+    }]);
+  });
+
+  it("creates an Index and multiple Entries atomically with clientKey mappings", async () => {
+    const indexID = "0123456789ABCDEFGHJKMNPQRT";
+    const firstEntryID = "0123456789ABCDEFGHJKMNPQRS";
+    const secondEntryID = "0123456789ABCDEFGHJKMNPQRV";
+    const client = new FakeClient([{
+      type: "catalogStructureWriteResult",
+      result: {
+        indexID,
+        entries: [
+          { clientKey: "postgres", entryID: firstEntryID },
+          { clientKey: "redis", entryID: secondEntryID }
+        ],
+        revision: 12,
+        validation: { status: "FOUND", revision: 12, diagnostics: [] }
+      }
+    }]);
+
+    const result = await tool(client, "secret_catalog_create_structure").handler({
+      index: { title: "数据库" },
+      entries: [
+        {
+          clientKey: "postgres",
+          title: "PostgreSQL",
+          endpoints: [{ type: "postgresql", host: "db.home", port: 5432 }],
+          fields: [{ key: "password", label: "密码", type: "secret" }]
+        },
+        {
+          clientKey: "redis",
+          title: "Redis",
+          endpoints: [{ type: "redis", host: "nas.home", port: 6379 }],
+          fields: [{ key: "password", label: "密码", type: "secret" }]
+        }
+      ]
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      status: "CREATED",
+      indexID,
+      entries: [
+        { clientKey: "postgres", entryID: firstEntryID },
+        { clientKey: "redis", entryID: secondEntryID }
+      ],
+      revision: 12,
+      validation: { status: "FOUND", revision: 12, diagnostics: [] }
+    });
+    expect(client.requests).toEqual([{
+      type: "catalogCreateStructure",
+      request: expect.objectContaining({
+        index: { title: "数据库", aliases: [], tags: [] },
+        entries: expect.arrayContaining([
+          expect.objectContaining({ clientKey: "postgres" }),
+          expect.objectContaining({ clientKey: "redis" })
+        ])
+      })
+    }]);
+    expect(JSON.stringify(client.requests)).not.toMatch(/"id"|secretRef/);
   });
 
   it("exposes an explicit catalog file preflight tool", async () => {
@@ -242,7 +406,7 @@ describe("MCP tool contracts", () => {
   it("serializes a v3 batch as one IPC mutation and keeps secret fields opaque", async () => {
     const client = new FakeClient([{
       type: "catalogWriteResult",
-      result: { revision: 8, entry: null }
+      result: { revision: 8, entry: null, validation: { status: "FOUND", revision: 8, diagnostics: [] } }
     }]);
     const indexID = "0123456789ABCDEFGHJKMNPQRY";
     const entryID = "0123456789ABCDEFGHJKMNPQRW";
@@ -283,7 +447,11 @@ describe("MCP tool contracts", () => {
       ]
     });
 
-    expect(result.structuredContent).toEqual({ revision: 8, entry: null });
+    expect(result.structuredContent).toEqual({
+      revision: 8,
+      entry: null,
+      validation: { status: "FOUND", revision: 8, diagnostics: [] }
+    });
     expect(client.requests).toEqual([{
       type: "catalogApplyBatch",
       mutation: {
@@ -330,6 +498,7 @@ describe("MCP tool contracts", () => {
       type: "catalogWriteResult",
       result: {
         revision: 4,
+        entryID: "0123456789ABCDEFGHJKMNPQRS",
         entry: {
           id: "0123456789ABCDEFGHJKMNPQRS",
           indexId: "0123456789ABCDEFGHJKMNPQRT",
@@ -343,6 +512,11 @@ describe("MCP tool contracts", () => {
           ],
           notes: null,
           tags: []
+          },
+        validation: {
+          status: "FOUND",
+          revision: 4,
+          diagnostics: []
         }
       }
     } as IpcResponse]);
@@ -360,7 +534,12 @@ describe("MCP tool contracts", () => {
     expect(result.structuredContent).toEqual({
       status: "CREATED",
       entryID: "0123456789ABCDEFGHJKMNPQRS",
-      revision: 4
+      revision: 4,
+      validation: {
+        status: "FOUND",
+        revision: 4,
+        diagnostics: []
+      }
     });
     expect(client.requests[0]).toMatchObject({
       type: "catalogCreateEntry",
@@ -385,6 +564,19 @@ describe("MCP tool contracts", () => {
         secretRef: reference
       }]
     })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("rejects duplicate field keys before IPC with a precise field path", async () => {
+    const client = new FakeClient([]);
+    await expect(tool(client, "secret_catalog_create_entry").handler({
+      indexID: "0123456789ABCDEFGHJKMNPQRT",
+      title: "重复字段",
+      fields: [
+        { key: "host", label: "主机", type: "text", value: "db.home" },
+        { key: "host", label: "备用主机", type: "text", value: "db2.home" }
+      ]
+    })).rejects.toThrow(/duplicate field key|fields.*1.*key/i);
     expect(client.requests).toHaveLength(0);
   });
 
