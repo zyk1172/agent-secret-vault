@@ -22,6 +22,20 @@ private struct ControlService: AppControlServicing {
         return []
     }
 
+    func catalogAuditHealth() async -> String? { nil }
+
+    func catalogSecureInputRequest(id _: UUID) async throws -> CatalogAgentSecureInputRequest {
+        throw AppControlRequestHandlerError.unsupportedRequest
+    }
+
+    func beginCatalogSecureInputCommit(id _: UUID) async throws -> CatalogAgentSecureInputRequest {
+        throw AppControlRequestHandlerError.unsupportedRequest
+    }
+
+    func completeCatalogSecureInput(id _: UUID, completion _: CatalogSecureInputCompletion) async {}
+
+    func cancelCatalogSecureInput(id _: UUID) async {}
+
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         CatalogValidationResult(status: .found, revision: 1)
     }

@@ -54,7 +54,7 @@ SVLT 敏感信息目录写入规范：
 24. 普通新增分组、条目、字段、空密码 placeholder 不触发额外的高风险 secretRef 批准；但不等于无边界或无授权写入。
 25. 合法的普通批量操作不因“批量”本身升级为高风险；一次提交的 batch 仍对应一个精确的 operation-bound write request。
 26. 每一笔 Agent semantic Catalog mutation（包括 batch）都必须由 Agent 主动发起一次精确绑定、一次消费的 operation-bound write request；Agent 不能自行开启权限、扩大或复用授权。
-27. 需要用户批准的 Agent Catalog mutation，在用户批准前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
+27. 每笔需要授权的 Agent semantic Catalog mutation 都会直接触发一次精确绑定的 macOS device-owner authentication；该身份认证本身就是本次用户授权，不存在额外的 App 前置确认，认证票据只消费一次。
 28. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
 29. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
 30. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。

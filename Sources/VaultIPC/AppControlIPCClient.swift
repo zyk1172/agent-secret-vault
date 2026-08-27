@@ -45,6 +45,34 @@ public actor AppControlIPCClient {
         return entries
     }
 
+    public func catalogAuditHealth() async throws -> String? {
+        let response = try await send(.catalogAuditHealth)
+        guard case let .catalogAuditHealth(health) = response else { throw unexpected(response) }
+        return health
+    }
+
+    public func catalogSecureInputRequest(id: UUID) async throws -> CatalogAgentSecureInputRequest {
+        let response = try await send(.catalogSecureInputRequest(id: id))
+        guard case let .catalogSecureInputRequest(request) = response else { throw unexpected(response) }
+        return request
+    }
+
+    public func beginCatalogSecureInputCommit(id: UUID) async throws -> CatalogAgentSecureInputRequest {
+        let response = try await send(.catalogBeginSecureInputCommit(id: id))
+        guard case let .catalogSecureInputRequest(request) = response else { throw unexpected(response) }
+        return request
+    }
+
+    public func completeCatalogSecureInput(id: UUID, completion: CatalogSecureInputCompletion) async throws {
+        let response = try await send(.catalogCompleteSecureInput(id: id, completion: completion))
+        guard case .operationCompleted = response else { throw unexpected(response) }
+    }
+
+    public func cancelCatalogSecureInput(id: UUID) async throws {
+        let response = try await send(.catalogCancelSecureInput(id: id))
+        guard case .operationCompleted = response else { throw unexpected(response) }
+    }
+
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         let response = try await send(.catalogAdoptExternalV2)
         guard case let .catalogStatus(status) = response else { throw unexpected(response) }

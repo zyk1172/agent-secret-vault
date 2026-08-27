@@ -19,6 +19,7 @@ import {
   CatalogDraftRequest,
   CatalogIndexListResult,
   CatalogMetadataPatch,
+  CatalogSecureInputTarget,
   CatalogWriteResult,
   CatalogValidationResult,
   IpcRequest,
@@ -67,7 +68,7 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 24. 普通新增分组、条目、字段、空密码 placeholder 不触发额外的高风险 secretRef 批准；不等于无边界或无授权写入。
 25. 合法的普通批量操作不因“批量”本身升级为高风险；一次提交的 batch 仍对应一个精确的 operation-bound write request。
 26. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次精确绑定、一次消费的 operation-bound write request；Agent 不能自行开启权限、扩大或复用授权。
-27. 用户批准需要批准的 Agent Catalog mutation 前必须完成 macOS device-owner authentication；授权只消费一次，不能被另一笔 mutation 复用。
+27. 每笔需要授权的 Agent semantic Catalog mutation 都会直接触发一次精确绑定的 macOS device-owner authentication；该身份认证本身就是本次用户授权，不存在额外的 App 前置确认，认证票据只消费一次。
 28. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
 29. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
 30. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
@@ -225,6 +226,24 @@ const CatalogBindInput = z
     expectedRevision: z.number().int().nonnegative()
   })
   .strict();
+
+const CatalogSecureInputRequestInput = z
+  .object({
+    entryID: z.string().length(26),
+    targets: z.array(z.object({
+      fieldKey: z.string().min(1).max(128),
+      label: z.string().min(1).max(128),
+      mode: z.enum(["fillPlaceholder", "convertToSecret"]),
+      required: z.boolean().default(false)
+    }).strict()).min(1).max(32),
+    expectedRevision: z.number().int().nonnegative()
+  })
+  .strict();
+
+const CatalogSecureInputCompletedOutput = z.object({
+  status: z.literal("COMPLETED"),
+  revision: z.number().int().nonnegative()
+}).strict();
 
 const CatalogBatchInput = CatalogBatchMutation;
 
@@ -1077,6 +1096,34 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       }
     },
     {
+      name: "secret_catalog_request_secure_inputs",
+      title: "Request Secure Input",
+      description:
+        "Asks SVLT to show a local secure-input sheet for an existing Entry. The Agent supplies only field metadata and never sees plaintext. fillPlaceholder fills an empty secret field; convertToSecret lets the user select an ordinary field to encrypt.",
+      inputSchema: CatalogSecureInputRequestInput,
+      outputSchema: CatalogSecureInputCompletedOutput,
+      async handler(input) {
+        const parsed = CatalogSecureInputRequestInput.parse(input);
+        const targets: CatalogSecureInputTarget[] = parsed.targets.map(target => ({
+          entryID: parsed.entryID,
+          fieldKey: target.fieldKey,
+          label: target.label,
+          mode: target.mode,
+          required: target.required
+        }));
+        const response = await client.request({
+          type: "catalogRequestSecureInputs",
+          entryID: parsed.entryID,
+          targets,
+          expectedRevision: parsed.expectedRevision
+        });
+        if (response.type === "catalogSecureInputCompleted") {
+          return structuredResult({ status: "COMPLETED", revision: response.result.revision });
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
       name: "secret_catalog_bind_existing_secret",
       title: "Bind Existing Secret",
       description:
@@ -1799,7 +1846,8 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "When a task names a service, device, host, account, or purpose but no credential source is specified, call secret_search before asking the user for anything; this is automatic discovery, not forced SVLT ownership.",
       "Use secret_catalog_list_indices to browse all Indexes, including empty Indexes; use secret_catalog_list_entries with an indexID returned by MCP, then secret_catalog_get for one Entry. Never read selection JSON, Catalog Markdown, or Application Support sidecars to find IDs.",
       "Use secret_catalog_create_structure for one Index plus multiple safe Entries when appropriate; SVLT generates opaque IDs and returns clientKey mappings, revision, and post-commit validation.",
-      "Every Agent Catalog mutation requires one exact operation-bound write request; controlled MCP writes return post-commit validation by default. secret_catalog_validate remains for external edits, explicit health checks, and detailed diagnostics. Dangerous secret binding, replacement, deletion, target, policy, and other high-risk changes require local approval. Never invent, extend, or self-approve authorization.",
+      "Every Agent Catalog mutation requires one exact operation-bound write request; SVLT raises macOS device-owner authentication directly, and that authentication is the user authorization for that one mutation. There is no extra App confirm button; never invent, extend, reuse, or self-approve authorization.",
+      "When an Entry needs a user-supplied password, API key, token, or another secret value, call secret_catalog_request_secure_inputs. SVLT shows a local SecureField sheet; the agent receives only the final revision and never receives plaintext.",
       "Treat a controlled write as health-confirmed only when validation.status is FOUND and validation.diagnostics is empty. CREATED with CATALOG_UNAVAILABLE or another validation status may mean the commit succeeded but confirmation did not complete; do not blindly repeat the write, and use secret_catalog_validate after service recovery.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",

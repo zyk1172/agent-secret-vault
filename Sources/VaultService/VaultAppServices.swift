@@ -86,6 +86,14 @@ private enum CatalogWriteAccessState: Sendable {
     case cancelled
 }
 
+private enum CatalogSecureInputState: Sendable {
+    case awaitingInput
+    case submitting
+    case completed
+    case expired
+    case cancelled
+}
+
 private final class CatalogWriteAccessContinuationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
@@ -145,6 +153,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let auditLog: EncryptedAuditLog?
     private let exportDirectory: URL
     private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
+    private let secureInputNotifier: CatalogAgentSecureInputNotifier
     private var pluginConnectedAt: Date?
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
@@ -155,6 +164,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// The Agent creates the request context; the App later uses the same
     /// correlation/request IDs when it records the device-owner decision.
     private var pendingWriteAuditContexts: [UUID: AuditContext] = [:]
+    private var lastAuditAppendFailed = false
+    private var pendingSecureInputRequests: [UUID: CatalogAgentSecureInputRequest] = [:]
+    private var secureInputContinuations: [UUID: CatalogWriteAccessContinuationBox] = [:]
+    private var secureInputStates: [UUID: CatalogSecureInputState] = [:]
+    private var secureInputCompletions: [UUID: CatalogSecureInputCompletion] = [:]
+    private var secureInputAuditContexts: [UUID: AuditContext] = [:]
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -188,7 +203,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)? = nil,
         auditLog: EncryptedAuditLog? = nil,
         exportDirectory: URL? = nil,
-        writeAccessNotifier: CatalogAgentWriteAccessNotifier = CatalogAgentWriteAccessNotifier()
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier = CatalogAgentWriteAccessNotifier(),
+        secureInputNotifier: CatalogAgentSecureInputNotifier = CatalogAgentSecureInputNotifier()
     ) {
         self.textEncryptor = textEncryptor
         self.activeRoot = activeRoot
@@ -224,6 +240,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.auditLog = auditLog
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
         self.writeAccessNotifier = writeAccessNotifier
+        self.secureInputNotifier = secureInputNotifier
     }
 
     public init(
@@ -1292,6 +1309,189 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return events.map(Self.safeAuditEntry)
     }
 
+    /// A deliberately narrow, non-sensitive health signal. It never contains
+    /// paths, payloads, reference IDs, or key material.
+    public func catalogAuditHealth() async -> String? {
+        lastAuditAppendFailed ? "AUDIT_APPEND_FAILED" : nil
+    }
+
+    public func pendingCatalogSecureInputRequestIDs() async -> [UUID] {
+        pendingSecureInputRequests
+            .filter { secureInputStates[$0.key] == .awaitingInput || secureInputStates[$0.key] == .submitting }
+            .map(\.value)
+            .sorted { $0.createdAt < $1.createdAt }
+            .map(\.id)
+    }
+
+    public func catalogSecureInputRequest(id: UUID) async throws -> CatalogAgentSecureInputRequest {
+        guard let request = pendingSecureInputRequests[id],
+              secureInputStates[id] == .awaitingInput || secureInputStates[id] == .submitting
+        else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+        return request
+    }
+
+    public func requestCatalogSecureInputs(
+        entryID: String,
+        targets: [CatalogSecureInputTarget],
+        expectedRevision: UInt64
+    ) async throws -> CatalogSecureInputCompletion {
+        let snapshot = try await catalogSnapshotForAgent()
+        guard snapshot.revision == expectedRevision else {
+            throw SecretCatalogAgentError.revisionConflict
+        }
+        guard let entry = snapshot.document.entries.first(where: { $0.id == entryID }),
+              !targets.isEmpty,
+              Set(targets.map(\.fieldKey)).count == targets.count
+        else {
+            throw SecretCatalogAgentError.revisionConflict
+        }
+        let fields = Dictionary(uniqueKeysWithValues: entry.fields.map { ($0.key, $0) })
+        for target in targets {
+            guard let field = fields[target.fieldKey] else {
+                throw SecretCatalogAgentError.invalidOperation
+            }
+            switch target.mode {
+            case .fillPlaceholder:
+                guard field.type.isSecret && field.secretRef == nil else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+            case .convertToSecret:
+                guard !field.type.isSecret else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+            }
+        }
+
+        let callerContext = AuditContext.current ?? AuditContext(source: .agent)
+        let requestID = UUID()
+        let operationContext = callerContext.withRequestID(requestID)
+        let createdAt = now()
+        let request = CatalogAgentSecureInputRequest(
+            id: UUID(),
+            correlationID: callerContext.correlationID,
+            requestID: requestID,
+            entryID: entryID,
+            entryTitle: entry.title,
+            expectedRevision: expectedRevision,
+            createdAt: createdAt,
+            expiresAt: createdAt.addingTimeInterval(180),
+            targets: targets
+        )
+        pendingSecureInputRequests[request.id] = request
+        secureInputStates[request.id] = .awaitingInput
+        secureInputContinuations[request.id] = CatalogWriteAccessContinuationBox()
+        secureInputAuditContexts[request.id] = operationContext
+        await emitAudit(
+            action: "智能体安全输入请求",
+            target: "catalog-field",
+            referenceCount: targets.count,
+            result: "请求中",
+            context: operationContext,
+            operation: .authorization,
+            authorizationOutcome: .requested,
+            status: .requested
+        )
+
+        var timeoutTask: Task<Void, Never>?
+        defer {
+            timeoutTask?.cancel()
+            pendingSecureInputRequests.removeValue(forKey: request.id)
+            secureInputContinuations.removeValue(forKey: request.id)
+            secureInputAuditContexts.removeValue(forKey: request.id)
+            secureInputStates.removeValue(forKey: request.id)
+        }
+        do {
+            try await withTaskCancellationHandler(operation: {
+                try await withCheckedThrowingContinuation { continuation in
+                    secureInputContinuations[request.id]?.store(continuation)
+                    timeoutTask = Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(180))
+                        await self?.expireCatalogSecureInputRequest(id: request.id)
+                    }
+                    secureInputNotifier.present(requestID: request.id)
+                }
+            }, onCancel: { [weak self] in
+                Task { await self?.cancelCatalogSecureInputRequest(id: request.id) }
+            })
+            guard secureInputStates[request.id] == .completed,
+                  let completion = secureInputCompletions[request.id]
+            else {
+                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
+            }
+            return completion
+        } catch {
+            secureInputStates[request.id] = .cancelled
+            await emitAudit(
+                action: error is CancellationError ? "智能体安全输入取消" : "智能体安全输入失败",
+                target: "catalog-field",
+                referenceCount: targets.count,
+                result: error is CancellationError ? "已取消" : "失败",
+                context: operationContext,
+                operation: .authorization,
+                authorizationOutcome: error is CancellationError ? .cancelled : .denied,
+                status: error is CancellationError ? .cancelled : .failure
+            )
+            throw error is CancellationError
+                ? SecretCatalogAgentError.agentWriteApprovalUnavailable
+                : error
+        }
+    }
+
+    /// Called by the App immediately before its local transaction. This
+    /// makes submission one-shot and prevents duplicate SecureField submits.
+    public func beginCatalogSecureInputCommit(id: UUID) async throws -> CatalogAgentSecureInputRequest {
+        guard let request = pendingSecureInputRequests[id],
+              secureInputStates[id] == .awaitingInput,
+              request.expiresAt > now()
+        else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
+        secureInputStates[id] = .submitting
+        return request
+    }
+
+    public func completeCatalogSecureInput(
+        id: UUID,
+        completion: CatalogSecureInputCompletion
+    ) async {
+        guard secureInputStates[id] == .submitting,
+              let continuation = secureInputContinuations[id]
+        else { return }
+        secureInputCompletions[id] = completion
+        secureInputStates[id] = .completed
+        continuation.resume()
+        await emitAudit(
+            action: "智能体安全输入完成",
+            target: "catalog-field",
+            referenceCount: 0,
+            result: "成功",
+            context: AuditContext.current ?? AuditContext(source: .app),
+            operation: .authorization,
+            authorizationOutcome: .approved,
+            status: .completed
+        )
+    }
+
+    public func cancelCatalogSecureInput(id: UUID) async {
+        cancelCatalogSecureInputRequest(id: id)
+    }
+
+    private func expireCatalogSecureInputRequest(id: UUID) {
+        guard secureInputStates[id] == .awaitingInput || secureInputStates[id] == .submitting else { return }
+        secureInputStates[id] = .expired
+        secureInputNotifier.notifyQueueChanged(requestID: id)
+        secureInputContinuations[id]?.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
+    }
+
+    private func cancelCatalogSecureInputRequest(id: UUID) {
+        guard secureInputStates[id] == .awaitingInput || secureInputStates[id] == .submitting else { return }
+        secureInputStates[id] = .cancelled
+        secureInputNotifier.notifyQueueChanged(requestID: id)
+        secureInputContinuations[id]?.resume(throwing: CancellationError())
+    }
+
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
         let store = try await selectedCatalogStoreForApp()
         do {
@@ -1581,7 +1781,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private func catalogWriteApprovalSummary(_ request: CatalogAgentWriteAccessRequest) -> String {
         let operation = request.intent?.operation.rawValue ?? "unknown-operation"
-        return "SVLT 验证并授权一次目录操作：\(operation)；请求 \(request.id.uuidString)"
+        return "SVLT 需要本机身份认证来完成一次目录操作：\(operation)"
     }
 
     private func iso8601String(_ date: Date) -> String {
@@ -1929,7 +2129,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 revision: updated.revision,
                 entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
             )
-            await emitAudit(action: "修改目录条目并写入凭据", target: "catalog", referenceCount: createdReferences.count, result: "成功", operation: .catalogMutation)
+            await emitAudit(
+                action: "修改目录条目并写入凭据",
+                target: "catalog",
+                referenceCount: createdReferences.count,
+                result: "成功",
+                context: secureInputContext(forEntryID: entry.id) ?? AuditContext.current ?? AuditContext(source: .app),
+                operation: .catalogMutation
+            )
             return result
         } catch let error as SensitiveCatalogDocumentStoreError {
             if let cleanupError = await compensateCreatedReferences(createdReferences) {
@@ -3010,6 +3217,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // The production daemon supplies an independent Keychain audit key.
             // This call must never go through resolvedMasterKey().
             try await auditLog.append(event)
+            lastAuditAppendFailed = false
             CatalogSecurityAuditNotifier.notify()
         } catch {
             // Explicit test callers may have supplied an already-held
@@ -3020,9 +3228,22 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     CatalogSecurityAuditNotifier.notify()
                 } catch {
                     // Audit persistence must not make the user operation fail.
+                    lastAuditAppendFailed = true
+                    Self.logAuditAppendFailure()
                 }
             }
+            if masterKey == nil {
+                lastAuditAppendFailed = true
+                Self.logAuditAppendFailure()
+            }
         }
+    }
+
+    private static func logAuditAppendFailure() {
+        // Stable, path-free diagnostics make the failure observable without
+        // turning the audit channel into a sensitive-data channel.
+        Logger(subsystem: "com.agent-secret-vault.SVLT", category: "audit")
+            .error("AUDIT_APPEND_FAILED")
     }
 
     private func agentAuditContext() -> AuditContext {
@@ -3031,6 +3252,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private func appAuditContext() -> AuditContext {
         AuditContext.current ?? AuditContext(source: .app)
+    }
+
+    private func secureInputContext(forEntryID entryID: String) -> AuditContext? {
+        for (requestID, request) in pendingSecureInputRequests
+        where request.entryID == entryID && secureInputStates[requestID] == .submitting {
+            return secureInputAuditContexts[requestID]
+        }
+        return nil
     }
 
     private func emitCatalogMutationStarted(

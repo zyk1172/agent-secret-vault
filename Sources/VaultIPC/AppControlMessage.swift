@@ -6,6 +6,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
     case catalogFormatRepairPlan
     case catalogRepairFormat(expectedRawSHA256: String)
     case catalogRecentAuditEntries(limit: Int)
+    case catalogAuditHealth
+    case catalogSecureInputRequest(id: UUID)
+    case catalogBeginSecureInputCommit(id: UUID)
+    case catalogCompleteSecureInput(id: UUID, completion: CatalogSecureInputCompletion)
+    case catalogCancelSecureInput(id: UUID)
     case catalogAdoptExternalV2
     case catalogAdoptExternalV3
     case catalogApproveExternalChange(
@@ -68,6 +73,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case entry
         case secretInputs
         case mutation
+        case result
         case id
         case approved
         case plan
@@ -78,6 +84,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case catalogFormatRepairPlan
         case catalogRepairFormat
         case catalogRecentAuditEntries
+        case catalogAuditHealth
+        case catalogSecureInputRequest
+        case catalogBeginSecureInputCommit
+        case catalogCompleteSecureInput
+        case catalogCancelSecureInput
         case catalogAdoptExternalV2
         case catalogAdoptExternalV3
         case catalogApproveExternalChange
@@ -111,6 +122,19 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             self = .catalogRecentAuditEntries(
                 limit: try container.decodeIfPresent(Int.self, forKey: .limit) ?? 100
             )
+        case .catalogAuditHealth:
+            self = .catalogAuditHealth
+        case .catalogSecureInputRequest:
+            self = .catalogSecureInputRequest(id: try container.decode(UUID.self, forKey: .id))
+        case .catalogBeginSecureInputCommit:
+            self = .catalogBeginSecureInputCommit(id: try container.decode(UUID.self, forKey: .id))
+        case .catalogCompleteSecureInput:
+            self = .catalogCompleteSecureInput(
+                id: try container.decode(UUID.self, forKey: .id),
+                completion: try container.decode(CatalogSecureInputCompletion.self, forKey: .result)
+            )
+        case .catalogCancelSecureInput:
+            self = .catalogCancelSecureInput(id: try container.decode(UUID.self, forKey: .id))
         case .catalogAdoptExternalV2:
             self = .catalogAdoptExternalV2
         case .catalogAdoptExternalV3:
@@ -201,6 +225,21 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case let .catalogRecentAuditEntries(limit):
             try container.encode(RequestType.catalogRecentAuditEntries, forKey: .type)
             try container.encode(limit, forKey: .limit)
+        case .catalogAuditHealth:
+            try container.encode(RequestType.catalogAuditHealth, forKey: .type)
+        case let .catalogSecureInputRequest(id):
+            try container.encode(RequestType.catalogSecureInputRequest, forKey: .type)
+            try container.encode(id, forKey: .id)
+        case let .catalogBeginSecureInputCommit(id):
+            try container.encode(RequestType.catalogBeginSecureInputCommit, forKey: .type)
+            try container.encode(id, forKey: .id)
+        case let .catalogCompleteSecureInput(id, completion):
+            try container.encode(RequestType.catalogCompleteSecureInput, forKey: .type)
+            try container.encode(id, forKey: .id)
+            try container.encode(completion, forKey: .result)
+        case let .catalogCancelSecureInput(id):
+            try container.encode(RequestType.catalogCancelSecureInput, forKey: .type)
+            try container.encode(id, forKey: .id)
         case .catalogAdoptExternalV2:
             try container.encode(RequestType.catalogAdoptExternalV2, forKey: .type)
         case .catalogAdoptExternalV3:
@@ -273,6 +312,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
     case catalogStatus(CatalogValidationResult)
     case catalogFormatRepairPlan(CatalogFormatRepairPlan?)
     case catalogRecentAuditEntries([CatalogSecurityAuditEntry])
+    case catalogAuditHealth(String?)
+    case catalogSecureInputRequest(CatalogAgentSecureInputRequest)
     case catalogAgentWriteStatus(CatalogAgentWriteAuthorizationStatus)
     case catalogWriteAccessRequest(CatalogAgentWriteAccessRequest)
     case catalogWriteResult(CatalogWriteResult)
@@ -297,6 +338,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case catalogStatus
         case catalogFormatRepairPlan
         case catalogRecentAuditEntries
+        case catalogAuditHealth
+        case catalogSecureInputRequest
         case catalogAgentWriteStatus
         case catalogWriteAccessRequest
         case catalogWriteResult
@@ -315,6 +358,10 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
             self = .catalogFormatRepairPlan(try container.decodeIfPresent(CatalogFormatRepairPlan.self, forKey: .plan))
         case .catalogRecentAuditEntries:
             self = .catalogRecentAuditEntries(try container.decode([CatalogSecurityAuditEntry].self, forKey: .entries))
+        case .catalogAuditHealth:
+            self = .catalogAuditHealth(try container.decodeIfPresent(String.self, forKey: .code))
+        case .catalogSecureInputRequest:
+            self = .catalogSecureInputRequest(try container.decode(CatalogAgentSecureInputRequest.self, forKey: .result))
         case .catalogAgentWriteStatus:
             self = .catalogAgentWriteStatus(try container.decode(CatalogAgentWriteAuthorizationStatus.self, forKey: .status))
         case .catalogWriteAccessRequest:
@@ -347,6 +394,12 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case let .catalogRecentAuditEntries(entries):
             try container.encode(ResponseType.catalogRecentAuditEntries, forKey: .type)
             try container.encode(entries, forKey: .entries)
+        case let .catalogAuditHealth(health):
+            try container.encode(ResponseType.catalogAuditHealth, forKey: .type)
+            try container.encodeIfPresent(health, forKey: .code)
+        case let .catalogSecureInputRequest(request):
+            try container.encode(ResponseType.catalogSecureInputRequest, forKey: .type)
+            try container.encode(request, forKey: .result)
         case let .catalogAgentWriteStatus(status):
             try container.encode(ResponseType.catalogAgentWriteStatus, forKey: .type)
             try container.encode(status, forKey: .status)
@@ -387,6 +440,11 @@ public protocol AppControlServicing: Sendable {
     func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan?
     func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult
     func catalogRecentAuditEntries(limit: Int) async throws -> [CatalogSecurityAuditEntry]
+    func catalogAuditHealth() async -> String?
+    func catalogSecureInputRequest(id: UUID) async throws -> CatalogAgentSecureInputRequest
+    func beginCatalogSecureInputCommit(id: UUID) async throws -> CatalogAgentSecureInputRequest
+    func completeCatalogSecureInput(id: UUID, completion: CatalogSecureInputCompletion) async
+    func cancelCatalogSecureInput(id: UUID) async
     func adoptCatalogExternalV2() async throws -> CatalogValidationResult
     func adoptCatalogExternalV3() async throws -> CatalogValidationResult
     func approveCatalogExternalChange(

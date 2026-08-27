@@ -100,9 +100,15 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         expectedRevision: UInt64
     )
     case catalogApplyBatch(mutation: CatalogBatchMutation, expectedRevision: UInt64)
+    case catalogRequestSecureInputs(
+        entryID: String,
+        targets: [CatalogSecureInputTarget],
+        expectedRevision: UInt64
+    )
     case catalogValidate
     case catalogFilePreflight
     case catalogPendingWriteAccessRequestIDs
+    case catalogPendingSecureInputRequestIDs
     case catalogRequestWriteAccess(CatalogAgentWriteAccessRequest)
     case pendingRevealSessions
     case inspectReference(reference: String)
@@ -159,6 +165,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case markdownReferences
         case descriptor
         case mutation
+        case targets
     }
 
     private enum RequestType: String, Codable {
@@ -179,9 +186,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case catalogAddSecretPlaceholder
         case catalogBindExistingSecret
         case catalogApplyBatch
+        case catalogRequestSecureInputs
         case catalogValidate
         case catalogFilePreflight
         case catalogPendingWriteAccessRequestIDs
+        case catalogPendingSecureInputRequestIDs
         case catalogRequestWriteAccess
         case pendingRevealSessions
         case inspectReference
@@ -279,12 +288,20 @@ public enum IPCRequest: Codable, Equatable, Sendable {
                 mutation: try container.decode(CatalogBatchMutation.self, forKey: .mutation),
                 expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
             )
+        case .catalogRequestSecureInputs:
+            self = .catalogRequestSecureInputs(
+                entryID: try container.decode(String.self, forKey: .entryID),
+                targets: try container.decode([CatalogSecureInputTarget].self, forKey: .targets),
+                expectedRevision: try container.decode(UInt64.self, forKey: .expectedRevision)
+            )
         case .catalogValidate:
             self = .catalogValidate
         case .catalogFilePreflight:
             self = .catalogFilePreflight
         case .catalogPendingWriteAccessRequestIDs:
             self = .catalogPendingWriteAccessRequestIDs
+        case .catalogPendingSecureInputRequestIDs:
+            self = .catalogPendingSecureInputRequestIDs
         case .catalogRequestWriteAccess:
             self = .catalogRequestWriteAccess(
                 try container.decode(CatalogAgentWriteAccessRequest.self, forKey: .request)
@@ -429,12 +446,19 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.catalogApplyBatch, forKey: .type)
             try container.encode(mutation, forKey: .mutation)
             try container.encode(expectedRevision, forKey: .expectedRevision)
+        case let .catalogRequestSecureInputs(entryID, targets, expectedRevision):
+            try container.encode(RequestType.catalogRequestSecureInputs, forKey: .type)
+            try container.encode(entryID, forKey: .entryID)
+            try container.encode(targets, forKey: .targets)
+            try container.encode(expectedRevision, forKey: .expectedRevision)
         case .catalogValidate:
             try container.encode(RequestType.catalogValidate, forKey: .type)
         case .catalogFilePreflight:
             try container.encode(RequestType.catalogFilePreflight, forKey: .type)
         case .catalogPendingWriteAccessRequestIDs:
             try container.encode(RequestType.catalogPendingWriteAccessRequestIDs, forKey: .type)
+        case .catalogPendingSecureInputRequestIDs:
+            try container.encode(RequestType.catalogPendingSecureInputRequestIDs, forKey: .type)
         case let .catalogRequestWriteAccess(request):
             try container.encode(RequestType.catalogRequestWriteAccess, forKey: .type)
             try container.encode(request, forKey: .request)
@@ -670,6 +694,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     )
     case catalogFilePreflight(CatalogFilePreflight)
     case catalogPendingWriteAccessRequestIDs([UUID])
+    case catalogPendingSecureInputRequestIDs([UUID])
+    case catalogSecureInputCompleted(CatalogSecureInputCompletion)
     case revealSessionIDs([String])
     case referenceMetadata(SecretReferenceMetadata)
     case displayedToUser
@@ -722,6 +748,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case catalogValidation
         case catalogFilePreflight
         case catalogPendingWriteAccessRequestIDs
+        case catalogPendingSecureInputRequestIDs
+        case catalogSecureInputCompleted
         case revealSessionIDs
         case referenceMetadata
         case displayedToUser
@@ -773,6 +801,12 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .catalogPendingWriteAccessRequestIDs(
                 try container.decode([UUID].self, forKey: .requestIDs)
             )
+        case .catalogPendingSecureInputRequestIDs:
+            self = .catalogPendingSecureInputRequestIDs(
+                try container.decode([UUID].self, forKey: .requestIDs)
+            )
+        case .catalogSecureInputCompleted:
+            self = .catalogSecureInputCompleted(try container.decode(CatalogSecureInputCompletion.self, forKey: .result))
         case .revealSessionIDs:
             self = .revealSessionIDs(try container.decode([String].self, forKey: .sessionIDs))
         case .referenceMetadata:
@@ -847,6 +881,12 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .catalogPendingWriteAccessRequestIDs(requestIDs):
             try container.encode(ResponseType.catalogPendingWriteAccessRequestIDs, forKey: .type)
             try container.encode(requestIDs, forKey: .requestIDs)
+        case let .catalogPendingSecureInputRequestIDs(requestIDs):
+            try container.encode(ResponseType.catalogPendingSecureInputRequestIDs, forKey: .type)
+            try container.encode(requestIDs, forKey: .requestIDs)
+        case let .catalogSecureInputCompleted(completion):
+            try container.encode(ResponseType.catalogSecureInputCompleted, forKey: .type)
+            try container.encode(completion, forKey: .result)
         case let .revealSessionIDs(sessionIDs):
             try container.encode(ResponseType.revealSessionIDs, forKey: .type)
             try container.encode(sessionIDs, forKey: .sessionIDs)

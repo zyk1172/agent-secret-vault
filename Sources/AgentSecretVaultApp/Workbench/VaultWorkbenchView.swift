@@ -169,17 +169,16 @@ public struct VaultWorkbenchView: View {
     let restartAgentService: (() async -> Void)?
     let auditEntries: [CatalogSecurityAuditEntry]
     let auditError: String?
+    let secureInputRequest: CatalogAgentSecureInputRequest?
+    let beginSecureInputCommit: ((UUID) async -> CatalogAgentSecureInputRequest?)?
+    let submitSecureInput: ((CatalogAgentSecureInputRequest, [CatalogSecureInputTarget], [String: String]) async -> Void)?
+    let cancelSecureInput: ((UUID) async -> Void)?
     let savedReferences: [SecretReferenceMetadata]
     let sensitiveIndexURL: URL?
     let sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
     let sensitiveCatalogError: String?
     let sensitiveCatalogCanAdoptV2: Bool
     let sensitiveCatalogCanAdoptV3: Bool
-    let pendingWriteAccessRequest: CatalogAgentWriteAccessRequest?
-    /// Total number of still-pending agent Catalog write requests. When this
-    /// exceeds one the banner shows the queue position so the user knows more
-    /// requests follow.
-    var pendingWriteAccessQueueCount: Int = 0
     let refreshSavedReferences: (() async -> Void)?
     let chooseSensitiveIndex: (() -> Void)?
     let refreshSensitiveCatalog: (() async -> Void)?
@@ -196,7 +195,6 @@ public struct VaultWorkbenchView: View {
     let revealCatalogField: ((String, String) async throws -> String)?
     let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
-    let respondToWriteAccessRequest: ((UUID, Bool) async -> Void)?
     let showSensitiveCatalogTemplate: (() async -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedSection: VaultWorkbenchSection = .overview
@@ -211,14 +209,16 @@ public struct VaultWorkbenchView: View {
         restartAgentService: (() async -> Void)? = nil,
         auditEntries: [CatalogSecurityAuditEntry] = [],
         auditError: String? = nil,
+        secureInputRequest: CatalogAgentSecureInputRequest? = nil,
+        beginSecureInputCommit: ((UUID) async -> CatalogAgentSecureInputRequest?)? = nil,
+        submitSecureInput: ((CatalogAgentSecureInputRequest, [CatalogSecureInputTarget], [String: String]) async -> Void)? = nil,
+        cancelSecureInput: ((UUID) async -> Void)? = nil,
         savedReferences: [SecretReferenceMetadata] = [],
         sensitiveIndexURL: URL? = nil,
         sensitiveCatalogSnapshot: SensitiveCatalogSnapshot? = nil,
         sensitiveCatalogError: String? = nil,
         sensitiveCatalogCanAdoptV2: Bool = false,
         sensitiveCatalogCanAdoptV3: Bool = false,
-        pendingWriteAccessRequest: CatalogAgentWriteAccessRequest? = nil,
-        pendingWriteAccessQueueCount: Int = 0,
         refreshSavedReferences: (() async -> Void)? = nil,
         chooseSensitiveIndex: (() -> Void)? = nil,
         refreshSensitiveCatalog: (() async -> Void)? = nil,
@@ -235,7 +235,6 @@ public struct VaultWorkbenchView: View {
         revealCatalogField: ((String, String) async throws -> String)? = nil,
         replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)? = nil,
         applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)? = nil,
-        respondToWriteAccessRequest: ((UUID, Bool) async -> Void)? = nil,
         showSensitiveCatalogTemplate: (() async -> Void)? = nil
     ) {
         self.status = status
@@ -247,14 +246,16 @@ public struct VaultWorkbenchView: View {
         self.restartAgentService = restartAgentService
         self.auditEntries = auditEntries
         self.auditError = auditError
+        self.secureInputRequest = secureInputRequest
+        self.beginSecureInputCommit = beginSecureInputCommit
+        self.submitSecureInput = submitSecureInput
+        self.cancelSecureInput = cancelSecureInput
         self.savedReferences = savedReferences
         self.sensitiveIndexURL = sensitiveIndexURL
         self.sensitiveCatalogSnapshot = sensitiveCatalogSnapshot
         self.sensitiveCatalogError = sensitiveCatalogError
         self.sensitiveCatalogCanAdoptV2 = sensitiveCatalogCanAdoptV2
         self.sensitiveCatalogCanAdoptV3 = sensitiveCatalogCanAdoptV3
-        self.pendingWriteAccessRequest = pendingWriteAccessRequest
-        self.pendingWriteAccessQueueCount = pendingWriteAccessQueueCount
         self.refreshSavedReferences = refreshSavedReferences
         self.chooseSensitiveIndex = chooseSensitiveIndex
         self.refreshSensitiveCatalog = refreshSensitiveCatalog
@@ -271,7 +272,6 @@ public struct VaultWorkbenchView: View {
         self.revealCatalogField = revealCatalogField
         self.replaceCatalogSecret = replaceCatalogSecret
         self.applyCatalogBatch = applyCatalogBatch
-        self.respondToWriteAccessRequest = respondToWriteAccessRequest
         self.showSensitiveCatalogTemplate = showSensitiveCatalogTemplate
     }
 
@@ -279,32 +279,10 @@ public struct VaultWorkbenchView: View {
         NavigationSplitView {
             sidebar
         } detail: {
-            ZStack {
-                WorkbenchBackground()
-                VStack(spacing: 0) {
-                    if let pendingWriteAccessRequest {
-                        PendingWriteAccessBanner(
-                            request: pendingWriteAccessRequest,
-                            queueCount: pendingWriteAccessQueueCount,
-                            respond: respondToWriteAccessRequest
-                        )
-                    }
-                    selectedContent
-                        .id(selectedSection)
-                        .transition(
-                            reduceMotion
-                                ? .opacity
-                                : .opacity.combined(with: .offset(x: 6))
-                        )
-                }
-                .animation(
-                    reduceMotion ? nil : VaultWorkbenchMotion.authorization,
-                    value: pendingWriteAccessRequest?.id
-                )
-            }
+            detail
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 1080, minHeight: 720)
+        .frame(minWidth: 1180, minHeight: 760)
         .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchNavigate)) { notification in
             guard
                 let rawValue = notification.userInfo?["section"] as? String,
@@ -312,8 +290,37 @@ public struct VaultWorkbenchView: View {
             else {
                 return
             }
-            selectSection(section)
+        selectSection(section)
         }
+    }
+
+    private var detail: some View {
+        ZStack {
+            WorkbenchBackground()
+            selectedContent
+                .id(selectedSection)
+                .transition(pageTransition)
+        }
+        .sheet(isPresented: Binding(
+            get: { secureInputRequest != nil },
+            set: { isPresented in
+                guard !isPresented, let request = secureInputRequest else { return }
+                Task { await cancelSecureInput?(request.id) }
+            }
+        )) {
+            if let request = secureInputRequest {
+                CatalogAgentSecureInputSheet(
+                    request: request,
+                    begin: beginSecureInputCommit,
+                    submit: submitSecureInput,
+                    cancel: cancelSecureInput
+                )
+            }
+        }
+    }
+
+    private var pageTransition: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .offset(x: 6))
     }
 
     private var sidebar: some View {
@@ -412,18 +419,20 @@ public struct VaultWorkbenchView: View {
                         commitEntryEdit: commitCatalogEntryEdit,
                         revealCatalogField: revealCatalogField,
                             replaceCatalogSecret: replaceCatalogSecret,
-                            applyBatch: applyCatalogBatch
-                        )
-                        CatalogFormatCheckCard(
-                            plan: formatRepairPlan,
-                            check: checkSensitiveCatalogFormat,
-                            repair: repairSensitiveCatalogFormat
+                            applyBatch: applyCatalogBatch,
+                            indexURL: sensitiveIndexURL,
+                            chooseIndex: chooseSensitiveIndex,
+                            formatRepairPlan: formatRepairPlan,
+                            checkFormat: checkSensitiveCatalogFormat,
+                            repairFormat: repairSensitiveCatalogFormat
                         )
                     }
-                    SensitiveIndexLibraryCard(
-                        indexURL: sensitiveIndexURL,
-                        chooseIndex: chooseSensitiveIndex
-                    )
+                    if sensitiveIndexURL == nil && sensitiveCatalogSnapshot == nil {
+                        SensitiveIndexLibraryCard(
+                            indexURL: nil,
+                            chooseIndex: chooseSensitiveIndex
+                        )
+                    }
                 }
             }
         case .automation:
@@ -455,7 +464,7 @@ public struct VaultWorkbenchView: View {
                 restartAgentService: restartAgentService
             )
 
-            CompactAuditPreviewCard(entries: Array(auditEntries.prefix(2)))
+            CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)
         }
     }
 
@@ -524,40 +533,39 @@ private struct WorkbenchPage<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(alignment: .center, spacing: 12) {
-                    Text(title)
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                    Spacer()
-                    if showsOverviewActions {
-                        Button {
-                            NSWorkspace.shared.open(VaultWorkbenchCopy.documentationURL)
-                        } label: {
-                            Image("GitHubMark")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 18, height: 18)
-                                .foregroundStyle(.primary)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("打开 GitHub 文档")
-
-                        Button {
-                            Task { await showTemplate?() }
-                        } label: {
-                            Image(systemName: "doc.text.magnifyingglass")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("查看敏感信息模板")
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(title)
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                Spacer()
+                if showsOverviewActions {
+                    Button {
+                        NSWorkspace.shared.open(VaultWorkbenchCopy.documentationURL)
+                    } label: {
+                        Image("GitHubMark")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 18, height: 18)
+                            .foregroundStyle(.primary)
                     }
-                }
+                    .buttonStyle(.borderless)
+                    .help("打开 GitHub 文档")
 
-                content
+                    Button {
+                        Task { await showTemplate?() }
+                    } label: {
+                        Image(systemName: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("查看敏感信息模板")
+                }
             }
-            .padding(30)
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .scrollIndicators(.automatic)
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -589,55 +597,145 @@ private struct WorkbenchSidebarRow: View {
     }
 }
 
-private struct PendingWriteAccessBanner: View {
-    let request: CatalogAgentWriteAccessRequest
-    let queueCount: Int
-    let respond: ((UUID, Bool) async -> Void)?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+private struct CatalogAgentSecureInputSheet: View {
+    let request: CatalogAgentSecureInputRequest
+    let begin: ((UUID) async -> CatalogAgentSecureInputRequest?)?
+    let submit: ((CatalogAgentSecureInputRequest, [CatalogSecureInputTarget], [String: String]) async -> Void)?
+    let cancel: ((UUID) async -> Void)?
+
+    @State private var selectedTargets: Set<String> = []
+    @State private var values: [String: String] = [:]
+    @State private var revealedFields: Set<String> = []
+    @State private var isSubmitting = false
+    @State private var startError: String?
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "person.badge.key.fill")
-                .font(.title3)
-                .foregroundStyle(.orange)
-                .frame(width: 34, height: 34)
-                .background(Color.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("待处理的本机授权")
-                    .font(.callout.weight(.semibold))
-                Text("\(request.displayName) 请求进行 \(request.intent.map { $0.operation.displayName } ?? "目录修改")" + (queueCount > 1 ? " · 队列中还有 \(queueCount - 1) 笔" : ""))
-                    .font(.caption)
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("输入敏感信息")
+                    .font(.title2.weight(.bold))
+                Text("Agent 正在请求 \(request.entryTitle)。明文只在本应用内加密，不会发送给 Agent。")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
 
-            Spacer(minLength: 12)
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(request.targets) { target in
+                        secureInputRow(target)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(minHeight: 160, maxHeight: 320)
 
-            Button("拒绝") {
-                Task { await respond?(request.id, false) }
+            if let startError {
+                Label(startError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
             }
-            .buttonStyle(.bordered)
-            Button("验证并授权") {
-                Task { await respond?(request.id, true) }
+
+            HStack {
+                Spacer()
+                Button("取消") {
+                    Task { await cancel?(request.id) }
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(isSubmitting)
+
+                Button {
+                    submitSelected()
+                } label: {
+                    if isSubmitting { ProgressView().controlSize(.small) } else { Text("加密并写入") }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(isSubmitting || selectedTargets.isEmpty)
             }
-            .buttonStyle(.borderedProminent)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .background(Color.orange.opacity(0.08))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.orange.opacity(0.24))
-                .frame(height: 1)
+        .padding(24)
+        .frame(width: 580, height: 540, alignment: .topLeading)
+        .onAppear {
+            selectedTargets = Set(request.targets.filter { !$0.required }.map(\.id))
+            Task { await beginRequest() }
         }
-        .transition(
-            reduceMotion
-                ? .opacity
-                : .opacity.combined(with: .offset(y: -6))
+    }
+
+    @ViewBuilder
+    private func secureInputRow(_ target: CatalogSecureInputTarget) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Toggle(isOn: Binding(
+                get: { selectedTargets.contains(target.id) },
+                set: { selected in
+                    if selected { selectedTargets.insert(target.id) } else { selectedTargets.remove(target.id) }
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(target.label)
+                        .font(.headline.weight(.semibold))
+                    Text(target.mode == .fillPlaceholder ? "填充已选中的密码字段" : "转换为密文字段")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.checkbox)
+            .accessibilityLabel(target.label)
+
+            Spacer()
+
+            HStack(spacing: 4) {
+                Group {
+                    if revealedFields.contains(target.id) {
+                        TextField("敏感值", text: binding(for: target))
+                    } else {
+                        SecureField("敏感值", text: binding(for: target))
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 240)
+
+                Button {
+                    if revealedFields.contains(target.id) {
+                        revealedFields.remove(target.id)
+                    } else {
+                        revealedFields.insert(target.id)
+                    }
+                } label: {
+                    Image(systemName: revealedFields.contains(target.id) ? "eye.slash" : "eye")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(revealedFields.contains(target.id) ? "隐藏密码" : "显示密码")
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func binding(for target: CatalogSecureInputTarget) -> Binding<String> {
+        Binding(
+            get: { values[target.fieldKey] ?? "" },
+            set: { values[target.fieldKey] = $0 }
         )
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("待处理的本机授权")
+    }
+
+    private func beginRequest() async {
+        guard let confirmed = await begin?(request.id) else {
+            startError = "安全输入请求已过期或不可用"
+            return
+        }
+        _ = confirmed
+    }
+
+    private func submitSelected() {
+        let targets = request.targets.filter { selectedTargets.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        isSubmitting = true
+        Task {
+            await submit?(request, targets, values)
+            values.removeAll()
+            revealedFields.removeAll()
+            isSubmitting = false
+        }
     }
 }
 
@@ -809,11 +907,12 @@ private struct OverviewAgentControl: View {
 
 private struct TutorialPage: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            TutorialSection(title: "开始使用", systemImage: "1.circle.fill", text: "选择一个敏感信息目录，然后在分组中创建条目。普通字段可以直接查看，密码字段始终以加密状态保存。")
-            TutorialSection(title: "查看密码", systemImage: "2.circle.fill", text: "打开具体条目，在需要的字段点击“解密”。完成本机身份认证后，明文只会在这个 App 内短暂显示。")
-            TutorialSection(title: "交给智能体", systemImage: "3.circle.fill", text: "把 secret:// 引用交给智能体。MCP 和 Obsidian 插件只处理引用与非敏感元数据，不会接收密码、token 或 Authorization header。")
-            TutorialSection(title: "批准目录修改", systemImage: "4.circle.fill", text: "智能体每次修改目录都会生成独立请求。只批准你当前确认的那一笔操作，批准会在使用后立即消费。")
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 22) {
+                TutorialSection(title: "开始使用", systemImage: "1.circle.fill", text: "选择一个敏感信息目录，然后在分组中创建条目。普通字段可以直接查看，密码字段始终以加密状态保存。")
+                TutorialSection(title: "查看密码", systemImage: "2.circle.fill", text: "打开具体条目，在需要的字段点击“解密”。完成本机身份认证后，明文只会在这个 App 内短暂显示。")
+                TutorialSection(title: "交给智能体", systemImage: "3.circle.fill", text: "把 secret:// 引用交给智能体。MCP 和 Obsidian 插件只处理引用与非敏感元数据，不会接收密码、token 或 Authorization header。")
+                TutorialSection(title: "批准目录修改", systemImage: "4.circle.fill", text: "智能体每次修改目录都会生成独立请求。只批准你当前确认的那一笔操作，批准会在使用后立即消费。")
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("安全边界")
@@ -836,7 +935,11 @@ private struct TutorialPage: View {
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
+            }
+            .padding(.vertical, 2)
         }
+        .scrollIndicators(.automatic)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -874,20 +977,25 @@ private struct FAQPage: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(questions.enumerated()), id: \.offset) { _, question in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(question.0)
-                        .font(.title3.weight(.semibold))
-                    Text(question.1)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(Array(questions.enumerated()), id: \.offset) { _, question in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(question.0)
+                            .font(.title3.weight(.semibold))
+                        Text(question.1)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
+            .padding(.vertical, 2)
         }
+        .scrollIndicators(.automatic)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -966,6 +1074,7 @@ private struct QuickMenuCard: View {
 
 private struct CompactAuditPreviewCard: View {
     let entries: [CatalogSecurityAuditEntry]
+    let errorMessage: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -974,9 +1083,15 @@ private struct CompactAuditPreviewCard: View {
                 Label("最近自动化", systemImage: "sparkles.rectangle.stack")
                     .font(.headline.weight(.semibold))
                 Spacer()
-                Text(entries.isEmpty ? "暂无记录" : "最近 \(entries.count) 条")
+            Text(entries.isEmpty ? "暂无记录" : "最近 \(entries.count) 条")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
+            }
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
 
             if entries.isEmpty {
@@ -988,9 +1103,10 @@ private struct CompactAuditPreviewCard: View {
                 }
                 .foregroundStyle(.secondary)
             } else {
-                VStack(spacing: 6) {
-                    ForEach(entries) { entry in
-                        HStack(spacing: 8) {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 6) {
+                        ForEach(entries) { entry in
+                            HStack(spacing: 8) {
                             Image(systemName: iconName(for: entry.operation))
                                 .foregroundStyle(.blue)
                                 .frame(width: 18)
@@ -1006,16 +1122,19 @@ private struct CompactAuditPreviewCard: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 10)
-                        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .transition(
-                            reduceMotion
-                                ? .opacity
-                                : .opacity.combined(with: .offset(y: -4))
-                        )
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 10)
+                            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .opacity.combined(with: .offset(y: -4))
+                            )
+                        }
                     }
                 }
+                .scrollIndicators(.automatic)
+                .frame(minHeight: 240, maxHeight: 300)
             }
         }
         .padding(14)
@@ -1209,6 +1328,11 @@ private struct SensitiveCatalogEditorCard: View {
     let revealCatalogField: ((String, String) async throws -> String)?
     let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
+    let indexURL: URL?
+    let chooseIndex: (() -> Void)?
+    let formatRepairPlan: CatalogFormatRepairPlan?
+    let checkFormat: (() async -> Void)?
+    let repairFormat: (() async -> Void)?
 
     @State private var newIndexTitle = ""
     @State private var isWorking = false
@@ -1237,6 +1361,45 @@ private struct SensitiveCatalogEditorCard: View {
                     }
                     .disabled(isWorking)
                 }
+                if let checkFormat {
+                    Button("检查格式") {
+                        Task { await checkFormat() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isWorking)
+                }
+                if formatRepairPlan?.canRepair == true, let repairFormat {
+                    Button("修复格式") {
+                        Task { await repairFormat() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                if let chooseIndex {
+                    Button("更换文件…", action: chooseIndex)
+                        .buttonStyle(.bordered)
+                }
+            }
+
+            if let indexURL {
+                Text(indexURL.lastPathComponent)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(indexURL.path)
+            }
+
+            if let formatRepairPlan, !formatRepairPlan.diagnostics.isEmpty {
+                Label(
+                    formatRepairPlan.unrepairableDiagnostics.isEmpty
+                        ? "发现可修复格式问题"
+                        : "发现不能自动修复的问题",
+                    systemImage: formatRepairPlan.unrepairableDiagnostics.isEmpty
+                        ? "exclamationmark.triangle"
+                        : "xmark.octagon"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(formatRepairPlan.unrepairableDiagnostics.isEmpty ? .orange : .red)
             }
 
             if let errorMessage {
@@ -1427,7 +1590,7 @@ private struct SensitiveCatalogEditorCard: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .alert(item: $pendingIndexDeletion) { request in
             Alert(
@@ -2780,6 +2943,7 @@ private struct SavedSecretReferencesCard: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -2982,9 +3146,10 @@ private struct AgentAutomationAuditCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             } else {
-                VStack(spacing: 10) {
-                    ForEach(entries.prefix(6)) { entry in
-                        HStack(alignment: .top, spacing: 12) {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 10) {
+                        ForEach(entries) { entry in
+                            HStack(alignment: .top, spacing: 12) {
                             Image(systemName: iconName(for: entry.operation))
                                 .foregroundStyle(.blue)
                                 .frame(width: 24)
@@ -3007,10 +3172,13 @@ private struct AgentAutomationAuditCard: View {
                                     .foregroundStyle(.tertiary)
                             }
                         }
-                        .padding(14)
-                        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .padding(14)
+                            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
                     }
                 }
+                .scrollIndicators(.automatic)
+                .frame(maxHeight: .infinity)
             }
         }
         .padding(20)

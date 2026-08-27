@@ -218,6 +218,36 @@ private func qnapDocument() -> SecretCatalogDocument {
     )
 }
 
+@Test func catalogV3FormatRepairMigratesThePreAutoAuthorizationPolicyWithoutChangingSemantics() throws {
+    let previousPolicy = SVLTAgentCatalogPolicy.preAutoAuthorizationDocumentPolicyBlock
+    #expect(SVLTAgentCatalogPolicy.legacyDocumentPolicyBlocks.contains(previousPolicy))
+
+    let canonical = try SensitiveCatalogDocumentCodec.encode(qnapDocument())
+    let legacy = canonical.replacingOccurrences(
+        of: SVLTAgentCatalogPolicy.documentPolicyBlock,
+        with: previousPolicy
+    )
+    #expect(throws: SecretCatalogValidationError.invalidPolicyBlock) {
+        try SensitiveCatalogDocumentCodec.decode(legacy)
+    }
+
+    let plan = try #require(SensitiveCatalogDocumentCodec.formatRepairPlan(Data(legacy.utf8)))
+    #expect(plan.canRepair)
+    #expect(plan.repairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+    #expect(plan.unrepairableDiagnostics.isEmpty)
+
+    let repaired = try SensitiveCatalogDocumentCodec.applyingFormatRepair(to: Data(legacy.utf8))
+    #expect(repaired == Data(canonical.utf8))
+
+    let canonicalDocument = try SensitiveCatalogDocumentCodec.decode(canonical)
+    let repairedDocument = try SensitiveCatalogDocumentCodec.decode(String(data: repaired, encoding: .utf8)!)
+    #expect(repairedDocument == canonicalDocument)
+    #expect(
+        Set(repairedDocument.entries.flatMap { $0.fields.compactMap(\.secretRef) })
+            == Set(canonicalDocument.entries.flatMap { $0.fields.compactMap(\.secretRef) })
+    )
+}
+
 @Test func detailedValidationReportsTheSecondDuplicateFieldMarkerLine() throws {
     let document = SecretCatalogDocument(
         indexes: [SecretCatalogIndex(id: v2IndexID, title: "QNAP")],

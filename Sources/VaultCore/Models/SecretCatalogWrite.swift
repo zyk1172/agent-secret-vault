@@ -434,6 +434,77 @@ public struct CatalogSecretInput: Codable, Equatable, Sendable {
     }
 }
 
+public enum CatalogSecureInputMode: String, Codable, CaseIterable, Sendable {
+    case fillPlaceholder
+    case convertToSecret
+}
+
+public struct CatalogSecureInputTarget: Codable, Equatable, Identifiable, Sendable {
+    public let entryID: String
+    public let fieldKey: String
+    public let label: String
+    public let mode: CatalogSecureInputMode
+    public let required: Bool
+
+    public var id: String { entryID + ":" + fieldKey }
+
+    public init(
+        entryID: String,
+        fieldKey: String,
+        label: String,
+        mode: CatalogSecureInputMode,
+        required: Bool = false
+    ) {
+        self.entryID = entryID
+        self.fieldKey = fieldKey
+        self.label = label
+        self.mode = mode
+        self.required = required
+    }
+}
+
+public struct CatalogAgentSecureInputRequest: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let correlationID: UUID
+    public let requestID: UUID
+    public let entryID: String
+    public let entryTitle: String
+    public let expectedRevision: UInt64
+    public let createdAt: Date
+    public let expiresAt: Date
+    public let targets: [CatalogSecureInputTarget]
+
+    public init(
+        id: UUID,
+        correlationID: UUID,
+        requestID: UUID,
+        entryID: String,
+        entryTitle: String,
+        expectedRevision: UInt64,
+        createdAt: Date,
+        expiresAt: Date,
+        targets: [CatalogSecureInputTarget]
+    ) {
+        self.id = id
+        self.correlationID = correlationID
+        self.requestID = requestID
+        self.entryID = entryID
+        self.entryTitle = entryTitle
+        self.expectedRevision = expectedRevision
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt
+        self.targets = targets
+    }
+}
+
+public struct CatalogSecureInputCompletion: Codable, Equatable, Sendable {
+    public let revision: UInt64
+
+    public init(revision: UInt64) {
+        self.revision = revision
+    }
+}
+
 public struct CatalogWriteResult: Codable, Equatable, Sendable {
     public let revision: UInt64
     public let entry: SecretCatalogEntryMatch?
