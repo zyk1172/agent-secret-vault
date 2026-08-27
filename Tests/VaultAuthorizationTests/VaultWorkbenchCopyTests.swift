@@ -127,6 +127,8 @@ import Foundation
     #expect(source.contains("Color.cyan.opacity(0.42)"))
     #expect(!source.contains("CatalogCardPalette"))
     #expect(source.contains("为什么智能体每次修改目录都要授权？"))
+    #expect(source.contains(".font(.headline.weight(.semibold))"))
+    #expect(source.contains(".font(.callout)"))
     #expect(source.contains("暂无活动"))
     #expect(!source.contains("LocalSensitiveScanCard"))
     #expect(!source.contains("记录维护"))

@@ -817,7 +817,7 @@ private struct TutorialPage: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("安全边界")
-                    .font(.title2.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                 ForEach(VaultUICopy.securityBoundaries) { boundary in
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: boundary.symbolName)
@@ -825,13 +825,13 @@ private struct TutorialPage: View {
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(boundary.chineseTitle)
-                                .font(.title3.weight(.semibold))
+                                .font(.headline.weight(.semibold))
                             Text(boundary.chineseBody)
-                                .font(.body)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(16)
+                    .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
@@ -848,18 +848,18 @@ private struct TutorialSection: View {
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: systemImage)
-                .font(.title2)
+                .font(.title3)
                 .foregroundStyle(.blue)
                 .frame(width: 30)
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .font(.title3.weight(.semibold))
+                    .font(.headline.weight(.semibold))
                 Text(text)
-                    .font(.body)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(18)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
