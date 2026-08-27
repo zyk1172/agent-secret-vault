@@ -87,6 +87,10 @@ Catalog 的浏览和结构写入应通过 MCP API 完成。下面的
    如果兼容的低层 `secret_catalog_create_index` / `secret_catalog_create_entry`
    在某个版本中仍未返回新对象 ID，Agent 不得猜测、拼接，或从其他文件回读 ID；应报告
    API 缺口，或使用已暴露且能完整返回 ID 的结构创建调用流。
+   `CREATED` 表示 semantic commit 已提交；只有 `validation.status == FOUND` 且
+   `validation.diagnostics` 为空，才表示提交后的健康确认成功。如果返回
+   `CREATED` 但 validation 是 `CATALOG_UNAVAILABLE` 等状态，说明写入可能已经成功，
+   只是健康确认未完成；不要盲目重复写入，服务恢复后用 `secret_catalog_validate` 显式确认。
 5. 每一笔 Agent Catalog mutation（包括 create、update、delete 和 batch）都必须先由
    Agent 发起精确绑定、一次消费的 operation-bound write authorization；Agent 不能自行
    开启、扩大或复用授权。只读的 list/get 不属于 mutation；绑定、替换或删除已有
@@ -165,7 +169,7 @@ list/get/create 响应。
 - 返回 `SELECTION_ENCRYPT_UNAVAILABLE`：说明当前 SVLT 加密桥接能力不可用；不要强迫用户把本次明文导入 SVLT，也不要把 SVLT 派生明文交给普通工具。
 - 返回 `QUARANTINED`：只报告隔离原因，不展示被隔离输出。
 - 目标 Catalog 浏览或结构创建工具未出现在当前 MCP 工具目录：说明目标调用流尚未在该版本暴露；不要读取 selection JSON、Catalog Markdown 或 Application Support sidecar 来猜测 ID，也不要自行伪造 opaque ID。
-- 受控 MCP Catalog write 的结果应带 post-commit validation 摘要；若当前兼容版本尚未提供该摘要，只在 MCP API 可用且授权边界满足时调用 `secret_catalog_validate`，不要改读本地 sidecar。
+- 受控 MCP Catalog write 的结果应带 post-commit validation 摘要；只有 `status == FOUND` 且 diagnostics 为空才表示健康确认完成。若返回 `CATALOG_UNAVAILABLE` 等状态，写入可能已经提交但确认未完成，不要盲目重复写入；服务恢复后只调用 `secret_catalog_validate`，不要改读本地 sidecar。
 - 没有匹配工具：明确选择 SVLT 时请求新增 allowlisted MCP 工具；明确选择其他 provider 或当前明文时不由 SVLT 阻断，遵守该工具和工作区规则。
 
 ## 可选兜底提示

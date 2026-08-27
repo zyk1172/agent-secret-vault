@@ -82,7 +82,7 @@ executor allowlist、网络限制或操作授权的权限。
 - `secret` 字段只能为空 placeholder 或合法 `secret://`，禁止明文、伪造引用、同时设置普通值和引用。
 - Agent 不得从 selection JSON、Catalog Markdown 或 `Application Support` sidecar 查找或验证 Index/Entry ID；应使用 MCP 的 list/get/create 响应。目标调用流是 `secret_catalog_list_indices` 浏览分组（包括空分组）、`secret_catalog_list_entries(indexID)` 浏览条目，以及 `secret_catalog_create_structure` 一次创建 Index 和多个 Entry；工具是否可用以当前 MCP `tools/list` 为准。
 - 每一笔 Agent Catalog mutation（包括 batch）都必须使用精确绑定、一次消费的 operation-bound write authorization；Agent 不能自行开启、扩大或复用授权。
-- 受控 MCP write 的结果必须带 post-commit validation 摘要；`secret_catalog_validate` 仍用于外部编辑检查、显式 health check 和详细 diagnostics。
+- 受控 MCP write 的结果必须带 post-commit validation 摘要。只有 `validation.status == FOUND` 且 `validation.diagnostics` 为空才表示提交后的健康确认成功；`CREATED` 搭配 `CATALOG_UNAVAILABLE` 等状态表示写入可能已提交但确认未完成，不要盲目重试写入，服务恢复后再用 `secret_catalog_validate` 显式确认。
 - `SVLT-POLICY` 是 document-level 折叠 callout，不是分组、条目、字段，不计入搜索和数量。
 - 任何合法 writer 都可以修改 v3；安全策略比较 semantic diff：普通 metadata 可不触发额外的高风险 secretRef 批准，绑定/替换/删除已有引用及删除带引用对象需要本机审批。由 Agent 提交的 mutation 仍须走 operation-bound write authorization。
 - 原始 Markdown hash 只用于 CAS；空行、用户注释或非受管排版变化不会被当成篡改。Coordinator 使用锁、重读和冲突检测尽量避免丢写，但面对不参与协作的第三方 writer，最终替换仍存在 TOCTOU 窗口；v3 不宣称绝对的 multi-writer atomicity，冲突时应重新读取、rebase 后重试。

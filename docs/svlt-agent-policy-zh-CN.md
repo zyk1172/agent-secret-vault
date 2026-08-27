@@ -96,3 +96,8 @@ safeWorkflow：
 ```
 
 Schema 详见 [`svlt-catalog-schema-v3.md`](svlt-catalog-schema-v3.md)；v2 仅见于 [`svlt-catalog-schema-v2.md`](svlt-catalog-schema-v2.md) 的迁移说明。App 不展示 policy 正文；`SVLTAgentCatalogPolicy` 同时生成文档 policy block 和 MCP `agent_secret_usage_policy` 响应。
+
+受控写入的 `CREATED` 表示 semantic commit 已提交。只有返回的
+`validation.status == FOUND` 且 `validation.diagnostics` 为空，才表示提交后的健康确认
+成功；若是 `CREATED` 但 validation 为 `CATALOG_UNAVAILABLE` 等状态，表示写入可能已
+成功而确认未完成，不要盲目重试写入，服务恢复后用 `secret_catalog_validate` 显式确认。
