@@ -153,10 +153,15 @@ struct AgentSecretVaultApplication: App {
                     }
                     .keyboardShortcut("3", modifiers: [.command])
 
-                    Button("安全边界") {
-                        navigateWorkbench(to: .security)
+                    Button("使用教程") {
+                        navigateWorkbench(to: .tutorial)
                     }
                     .keyboardShortcut("4", modifiers: [.command])
+
+                    Button("常见问题") {
+                        navigateWorkbench(to: .faq)
+                    }
+                    .keyboardShortcut("5", modifiers: [.command])
                 }
             }
 

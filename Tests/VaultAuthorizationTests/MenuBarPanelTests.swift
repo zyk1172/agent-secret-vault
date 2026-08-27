@@ -42,6 +42,18 @@ import VaultIPC
     #expect(source.contains(".accessibilityValue(selectedSection == section ? \"已选中\" : \"未选中\")"))
 }
 
+@Test func compactPanelUsesTheCurrentWorkbenchSurfaces() throws {
+    let source = try menuBarSource(named: "MenuBarVaultPanel.swift")
+
+    #expect(source.contains("case .tutorial:"))
+    #expect(source.contains("case .faq:"))
+    #expect(source.contains("shortcut(.tutorial)"))
+    #expect(!source.contains("shortcut(.security)"))
+    #expect(!source.contains("case .tutorial, .faq:"))
+    #expect(source.contains("Text(headerSubtitle)"))
+    #expect(source.contains("openMainWindow()"))
+}
+
 @Test func savedReferenceDisplaySubstitutesTheCurrentReferenceIntoParagraphTemplates() {
     let metadata = SecretReferenceMetadata(
         reference: "secret://current-reference",
