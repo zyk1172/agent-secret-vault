@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 import VaultAuthorization
 import VaultCore
@@ -396,6 +397,132 @@ private struct CatalogFixture {
     #expect(result.revision == 1)
     #expect(result.rawSHA256 != nil)
     #expect(result.diagnostics.isEmpty)
+}
+
+@Test func agentCatalogCreateIndexIsVisibleThroughAuthoritativeRecentAudit() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let auditDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-audit-\(UUID().uuidString)")
+    let auditKey = SymmetricKey(data: Data(repeating: 0x61, count: 32))
+    let auditLog = EncryptedAuditLog(directoryURL: auditDirectory) {
+        auditKey
+    }
+    let captured = RequestCapture()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: CatalogApprovalRecorder(),
+        auditLog: auditLog,
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier(present: { request in
+            Task { await captured.set(request) }
+        })
+    )
+
+    let task = Task {
+        try await AuditContext.$current.withValue(AuditContext(source: .agent)) {
+            try await service.createCatalogIndex(title: "审计分组", aliases: [], tags: [])
+        }
+    }
+    let request = try await awaitAgentWriteRequest(captured)
+    try await service.respondToCatalogWriteAccessRequest(id: request.id, approved: true)
+    _ = try await task.value
+
+    let recent = try await service.catalogRecentAuditEntries(limit: 100)
+    #expect(recent.contains { entry in
+        entry.source == .agent
+            && entry.operation == .catalogMutation
+            && entry.target == "catalog"
+    })
+    #expect(try await service.catalogAuditHealth() == nil)
+}
+
+@Test func failedAuditAppendExposesSafeHealthWithoutFailingOperation() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    // The non-nil log without a key provider makes every append fail while
+    // the production operation remains allowed to complete.
+    let auditLog = EncryptedAuditLog(
+        directoryURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("svlt-audit-health-\(UUID().uuidString)")
+    )
+    let captured = RequestCapture()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: CatalogApprovalRecorder(),
+        auditLog: auditLog,
+        writeAccessNotifier: CatalogAgentWriteAccessNotifier(present: { request in
+            Task { await captured.set(request) }
+        })
+    )
+
+    let task = Task {
+        try await AuditContext.$current.withValue(AuditContext(source: .agent)) {
+            try await service.createCatalogIndex(title: "健康检查分组", aliases: [], tags: [])
+        }
+    }
+    let request = try await awaitAgentWriteRequest(captured)
+    try await service.respondToCatalogWriteAccessRequest(id: request.id, approved: true)
+    let result = try await task.value
+    #expect(result.revision == 2)
+    #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+}
+
+@Test func agentSecureInputSessionIsOneShotAndCompletesAfterLocalCommit() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+
+    let agentTask = Task {
+        try await AuditContext.$current.withValue(AuditContext(source: .agent)) {
+            try await service.requestCatalogSecureInputs(
+                entryID: serviceEntryID,
+                targets: [
+                    CatalogSecureInputTarget(
+                        entryID: serviceEntryID,
+                        fieldKey: "username",
+                        label: "用户名",
+                        mode: .convertToSecret
+                    )
+                ],
+                expectedRevision: 1
+            )
+        }
+    }
+
+    var requestID: UUID?
+    for _ in 0..<100 {
+        let ids = await service.pendingCatalogSecureInputRequestIDs()
+        if let id = ids.first {
+            requestID = id
+            break
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    let id = try #require(requestID)
+    let request = try await service.beginCatalogSecureInputCommit(id: id)
+    #expect(request.entryID == serviceEntryID)
+    await #expect(throws: SecretCatalogAgentError.invalidOperation) {
+        _ = try await service.beginCatalogSecureInputCommit(id: id)
+    }
+
+    await service.completeCatalogSecureInput(id: id, completion: CatalogSecureInputCompletion(revision: 2))
+    let completion = try await agentTask.value
+    #expect(completion.revision == 2)
+    #expect(await service.pendingCatalogSecureInputRequestIDs().isEmpty)
 }
 
 private struct ExternalCatalogAdoptionFixture {

@@ -329,6 +329,20 @@ export const CatalogDraft = z.object({
 }).strict();
 export type CatalogDraft = z.infer<typeof CatalogDraft>;
 
+export const CatalogSecureInputTarget = z.object({
+  entryID: z.string().length(26),
+  fieldKey: z.string().min(1).max(128),
+  label: z.string().min(1).max(128),
+  mode: z.enum(["fillPlaceholder", "replaceSecret", "convertToSecret"]),
+  required: z.boolean().default(false)
+}).strict();
+export type CatalogSecureInputTarget = z.infer<typeof CatalogSecureInputTarget>;
+
+export const CatalogSecureInputCompletion = z.object({
+  revision: z.number().int().nonnegative()
+}).strict();
+export type CatalogSecureInputCompletion = z.infer<typeof CatalogSecureInputCompletion>;
+
 export const CatalogFilePreflight = z.object({
   read: z.string().min(1).max(128),
   parentTempCreate: z.string().min(1).max(128),
@@ -687,6 +701,14 @@ export const IpcRequest = z.discriminatedUnion("type", [
       expectedRevision: z.number().int().nonnegative()
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("catalogRequestSecureInputs"),
+      entryID: z.string().length(26),
+      targets: z.array(CatalogSecureInputTarget).min(1).max(32),
+      expectedRevision: z.number().int().nonnegative()
+    })
+    .strict(),
   z.object({ type: z.literal("catalogValidate") }).strict(),
   z.object({ type: z.literal("catalogFilePreflight") }).strict(),
   z.object({ type: z.literal("catalogRequestWriteAccess"), request: CatalogAgentWriteAccessRequest }).strict(),
@@ -806,6 +828,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
   z.object({ type: z.literal("catalogDraft"), draft: CatalogDraft }).strict(),
   z.object({ type: z.literal("catalogWriteResult"), result: CatalogWriteResult }).strict(),
   z.object({ type: z.literal("catalogStructureWriteResult"), result: CatalogStructureWriteResult }).strict(),
+  z.object({ type: z.literal("catalogSecureInputCompleted"), result: CatalogSecureInputCompletion }).strict(),
   z
     .object({
       type: z.literal("catalogValidation"),

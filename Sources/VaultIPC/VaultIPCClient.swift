@@ -212,6 +212,22 @@ public actor VaultIPCClient {
         return result
     }
 
+    public func requestCatalogSecureInputs(
+        entryID: String,
+        targets: [CatalogSecureInputTarget],
+        expectedRevision: UInt64
+    ) async throws -> CatalogSecureInputCompletion {
+        let response = try await send(.catalogRequestSecureInputs(
+            entryID: entryID,
+            targets: targets,
+            expectedRevision: expectedRevision
+        ))
+        guard case let .catalogSecureInputCompleted(completion) = response else {
+            throw unexpected(response)
+        }
+        return completion
+    }
+
     public func validateCatalog() async throws -> CatalogValidationResult {
         let response = try await send(.catalogValidate)
         guard case let .catalogValidation(status, revision, rawSHA256, diagnostics, filePreflight) = response else {
@@ -229,6 +245,14 @@ public actor VaultIPCClient {
     public func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
         let response = try await send(.catalogPendingWriteAccessRequestIDs)
         guard case let .catalogPendingWriteAccessRequestIDs(requestIDs) = response else {
+            throw unexpected(response)
+        }
+        return requestIDs
+    }
+
+    public func pendingCatalogSecureInputRequestIDs() async throws -> [UUID] {
+        let response = try await send(.catalogPendingSecureInputRequestIDs)
+        guard case let .catalogPendingSecureInputRequestIDs(requestIDs) = response else {
             throw unexpected(response)
         }
         return requestIDs

@@ -31,6 +31,18 @@ public struct AppControlRequestHandler: Sendable {
                 return .catalogStatus(try await service.repairCatalogFormat(expectedRawSHA256: expectedRawSHA256))
             case let .catalogRecentAuditEntries(limit):
                 return .catalogRecentAuditEntries(try await service.catalogRecentAuditEntries(limit: limit))
+            case .catalogAuditHealth:
+                return .catalogAuditHealth(await service.catalogAuditHealth())
+            case let .catalogSecureInputRequest(id):
+                return .catalogSecureInputRequest(try await service.catalogSecureInputRequest(id: id))
+            case let .catalogBeginSecureInputCommit(id):
+                return .catalogSecureInputRequest(try await service.beginCatalogSecureInputCommit(id: id))
+            case let .catalogCompleteSecureInput(id, completion):
+                await service.completeCatalogSecureInput(id: id, completion: completion)
+                return .operationCompleted
+            case let .catalogCancelSecureInput(id):
+                await service.cancelCatalogSecureInput(id: id)
+                return .operationCompleted
             case .catalogAdoptExternalV2:
                 return .catalogStatus(try await service.adoptCatalogExternalV2())
             case .catalogAdoptExternalV3:

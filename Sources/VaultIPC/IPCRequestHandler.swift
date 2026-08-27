@@ -50,9 +50,15 @@ public protocol WorkbenchServicing: Sendable {
         _ mutation: CatalogBatchMutation,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult
+    func requestCatalogSecureInputs(
+        entryID: String,
+        targets: [CatalogSecureInputTarget],
+        expectedRevision: UInt64
+    ) async throws -> CatalogSecureInputCompletion
     func validateCatalog() async throws -> CatalogValidationResult
     func catalogFilePreflight() async throws -> CatalogFilePreflight
     func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID]
+    func pendingCatalogSecureInputRequestIDs() async -> [UUID]
     func requestCatalogWriteAccess(
         source: CatalogAgentWriteRequestSource,
         reasonCategory: CatalogAgentWriteReasonCategory,
@@ -172,6 +178,14 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
+    func requestCatalogSecureInputs(
+        entryID _: String,
+        targets _: [CatalogSecureInputTarget],
+        expectedRevision _: UInt64
+    ) async throws -> CatalogSecureInputCompletion {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
     func validateCatalog() async throws -> CatalogValidationResult {
         throw IPCRequestHandlerError.unsupportedRequest
     }
@@ -181,6 +195,10 @@ public extension WorkbenchServicing {
     }
 
     func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
+        []
+    }
+
+    func pendingCatalogSecureInputRequestIDs() async -> [UUID] {
         []
     }
 
@@ -303,6 +321,12 @@ public struct IPCRequestHandler: Sendable {
                 mutation,
                 expectedRevision: expectedRevision
             ))
+        case let .catalogRequestSecureInputs(entryID, targets, expectedRevision):
+            return .catalogSecureInputCompleted(try await service.requestCatalogSecureInputs(
+                entryID: entryID,
+                targets: targets,
+                expectedRevision: expectedRevision
+            ))
         case .catalogValidate:
             let result = try await service.validateCatalog()
             return .catalogValidation(
@@ -317,6 +341,10 @@ public struct IPCRequestHandler: Sendable {
         case .catalogPendingWriteAccessRequestIDs:
             return .catalogPendingWriteAccessRequestIDs(
                 try await service.pendingCatalogWriteAccessRequestIDs()
+            )
+        case .catalogPendingSecureInputRequestIDs:
+            return .catalogPendingSecureInputRequestIDs(
+                await service.pendingCatalogSecureInputRequestIDs()
             )
         case let .catalogRequestWriteAccess(request):
             try await service.requestCatalogWriteAccess(

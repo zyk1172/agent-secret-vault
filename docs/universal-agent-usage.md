@@ -127,9 +127,10 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 6. 先判断用户是否选择 SVLT；当前明确提供的明文或明确选择的外部 provider 不需要 SVLT lookup、比较或替换。`locked` 不是全局门禁。
 7. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` / `secret_catalog_search` 按非敏感上下文发现 opaque 引用；需要浏览分组时使用 `secret_catalog_list_indices`（包含空分组），再用 MCP 返回的 `indexID` 调用 `secret_catalog_list_entries`，不得用 `query: ""` 或本地文件猜测 ID；不同 Entry 不得合并。
 8. 需要一次建立目录结构时，使用 `secret_catalog_create_structure` 提交一个 Index 和多个安全 Entry；SVLT 生成 opaque ID，以 `clientKey` 返回映射，并在一次 operation-bound 授权和 atomic commit 中完成。Agent 不得提交自造 ID、已有 `secretRef` 或 secret plaintext。
-9. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以不触发额外的高风险 secretRef 批准；但每笔 Agent mutation（包括普通批量操作）仍必须使用精确绑定、一次消费的 operation-bound write request。绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。
+9. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以不触发额外的高风险 secretRef 批准；但每笔 Agent mutation（包括普通批量操作）仍必须使用精确绑定、一次消费的 operation-bound write request。SVLT 直接弹 macOS device-owner authentication；认证本身是授权，没有额外 App 确认按钮。绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。
 10. 受控 MCP write 会返回 post-commit validation；只有 `validation.status == FOUND` 且 `validation.diagnostics` 为空才表示健康确认成功。`CREATED` 搭配 `CATALOG_UNAVAILABLE` 等状态表示写入可能已提交但确认未完成，不要盲目重试写入，服务恢复后再用 `secret_catalog_validate` 显式确认。失败时停止，不要猜测修复结构。
 11. 低风险操作不代表获得明文导出权限；SVLT 派生明文只能留在获批的专用本地操作中，不能写回 Catalog、shell、日志、聊天或外发。
+12. 需要真实密码、API 密钥或 token 时调用 `secret_catalog_request_secure_inputs`；只发送 field metadata 和 revision，用户在本机 SecureField 中选择/输入，Agent 只收到完成状态和 revision。
 
 ## 7. Agent 启动自检
 

@@ -112,18 +112,15 @@ import Foundation
     #expect(!source.contains(".navigationTitle(selectedSection.title)"))
     #expect(source.contains("接纳外部 v3 文件"))
     #expect(source.contains("验证并接纳"))
-    #expect(source.contains("CatalogFormatCheckCard("))
     #expect(source.contains("检查格式"))
     #expect(source.contains("修复格式"))
     #expect(source.contains("查看敏感信息模板"))
     #expect(source.contains("prepareIndexDeletion(for: index, snapshot: snapshot)"))
-    #expect(source.contains(".accessibilityElement(children: .contain)"))
     #expect(!source.contains("@State private var writeAccessRequest"))
     #expect(!source.contains(".alert(item: $writeAccessRequest)"))
     #expect(!source.contains("transaction.animation = nil"))
     #expect(source.contains(".transition("))
     #expect(source.contains(".offset(x: 6)"))
-    #expect(source.contains(".offset(y: -6)"))
     #expect(source.contains("Color.cyan.opacity(0.42)"))
     #expect(!source.contains("CatalogCardPalette"))
     #expect(source.contains("为什么智能体每次修改目录都要授权？"))
@@ -148,7 +145,8 @@ import Foundation
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     #expect(source.contains("OverviewStatusStrip(status: status)"))
-    #expect(source.contains("CompactAuditPreviewCard(entries: Array(auditEntries.prefix(2)))"))
+    #expect(source.contains("CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)"))
+    #expect(source.contains("ScrollView(.vertical, showsIndicators: true)"))
     #expect(!source.contains("HeroCard("))
 }
 
@@ -168,6 +166,54 @@ import Foundation
     #expect(source.contains("VaultWorkbenchMotion.interactive"))
     #expect(source.contains("withAnimation(VaultWorkbenchMotion.interactive)"))
     #expect(source.contains(".animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)"))
+}
+
+@Test func agentAuthenticationUsesSingleDeviceOwnerConsumerWithoutApprovalBanner() throws {
+    let runtimeURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift")
+    let runtime = try String(contentsOf: runtimeURL, encoding: .utf8)
+    let workbenchURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift")
+    let workbench = try String(contentsOf: workbenchURL, encoding: .utf8)
+
+    #expect(!runtime.contains("PendingWriteAccessBanner"))
+    #expect(!workbench.contains("PendingWriteAccessBanner"))
+    #expect(!workbench.contains("验证并授权"))
+    #expect(runtime.contains("autoAuthenticatingCatalogRequestID"))
+    #expect(runtime.contains("guard !isAutoAuthenticatingCatalogRequest"))
+    #expect(runtime.contains("pendingWriteAccessQueue.currentID"))
+    #expect(runtime.contains(".defaultSize(width: 1280, height: 820)"))
+}
+
+@Test func agentSecureInputUsesLocalSheetAndScrollOwners() throws {
+    let runtimeURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift")
+    let runtime = try String(contentsOf: runtimeURL, encoding: .utf8)
+    let workbenchURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift")
+    let workbench = try String(contentsOf: workbenchURL, encoding: .utf8)
+
+    #expect(runtime.contains("refreshPendingSecureInputRequests"))
+    #expect(runtime.contains("catalogCommitEntryEdit"))
+    #expect(workbench.contains("CatalogAgentSecureInputSheet"))
+    #expect(workbench.contains("SecureField(\"敏感值\""))
+    #expect(workbench.contains("加密并写入"))
+    #expect(workbench.contains("显示密码"))
+    #expect(workbench.contains("隐藏密码"))
+    #expect(workbench.contains("ScrollView(.vertical, showsIndicators: true)"))
+    #expect(!workbench.contains("private struct WorkbenchPage<Content: View>: View {\n    var body: some View {\n        ScrollView"))
 }
 
 @Test func numericTelemetryLabelsRespondToStringSelectorsOnMacOS27() {

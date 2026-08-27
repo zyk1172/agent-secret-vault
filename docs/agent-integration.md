@@ -95,6 +95,13 @@ Catalog 的浏览和结构写入应通过 MCP API 完成。下面的
    Agent 发起精确绑定、一次消费的 operation-bound write authorization；Agent 不能自行
    开启、扩大或复用授权。只读的 list/get 不属于 mutation；绑定、替换或删除已有
    `secret://` 仍需单独的高风险批准。
+   SVLT 会直接唤起 macOS device-owner authentication；认证成功就是这一笔 mutation 的
+   用户授权。没有额外的 App“验证并授权”按钮。取消、失败或超时都不会执行写入。
+   Agent 需要用户提供真实凭据时调用 `secret_catalog_request_secure_inputs`；只发送
+   `entryID`、field key、label、模式和 revision。`fillPlaceholder`、`replaceSecret`
+   和 `convertToSecret` 都由用户在本机 SecureField sheet 中最终选择/输入；SVLT 本机
+   加密后提交，Agent 只收到最终 revision，永远收不到明文。替换已有密文仍按高风险
+   semantic diff 走本机认证，不会被普通 metadata 静默化。
 
 Agent 不得读取 `sensitive-index-selection.json`、Catalog Markdown（例如
 `敏感信息.md`）或 `Application Support` 中的 integrity/selection sidecar 来查找或验证

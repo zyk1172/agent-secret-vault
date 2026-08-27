@@ -93,6 +93,7 @@
 		546265B910095E57BA330857 /* AgentSecretVaultApp.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BC81E6674343F8A973F23AFF /* AgentSecretVaultApp.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		54E441E879B37CF5AADD7F51 /* FileRecordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE421C1C0CE508E7B7D7D7 /* FileRecordStoreTests.swift */; };
 		567FEC59BBA95DF764D102CD /* MenuBarPanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83515BB865B0C48959133C6D /* MenuBarPanelTests.swift */; };
+		56D9ED1646C1034C55B969C0 /* CatalogAgentSecureInputNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A5C59930BDC0496260D5F19 /* CatalogAgentSecureInputNotifier.swift */; };
 		5746C5B832CB59A24C85B10C /* SecretOperationExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EF107ADF182FED721882F63 /* SecretOperationExecutor.swift */; };
 		5D269A36C3A54A01896A8C11 /* SetupGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 808B211D9D0B0CAECEEE707F /* SetupGuideView.swift */; };
 		5D8C0DB8724D081EAD209385 /* VaultDaemonCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 114E878E0FB68A4D79741DB1 /* VaultDaemonCore.swift */; };
@@ -584,6 +585,7 @@
 		057BE7EECB4FC0CE15C66DBC /* RecordMigratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordMigratorTests.swift; sourceTree = "<group>"; };
 		070FB29CEF8A483506131C94 /* MenuBarPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPresentationTests.swift; sourceTree = "<group>"; };
 		07796B9A54434E39DBC43F15 /* VaultAppServicesCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultAppServicesCatalogTests.swift; sourceTree = "<group>"; };
+		0A5C59930BDC0496260D5F19 /* CatalogAgentSecureInputNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogAgentSecureInputNotifier.swift; sourceTree = "<group>"; };
 		0A79A3544E1A26B4D4CB142E /* AuditKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditKeyStore.swift; sourceTree = "<group>"; };
 		0B16271D5D5E20F9F18EBC90 /* OutputSanitizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputSanitizerTests.swift; sourceTree = "<group>"; };
 		0B45898B2D2BE5426A9A6EFD /* SecretCatalogSelectionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretCatalogSelectionStore.swift; sourceTree = "<group>"; };
@@ -968,6 +970,7 @@
 			children = (
 				DCECBDC026AD47F6CD6C0385 /* AgentUIRequestNotifier.swift */,
 				BCFAC93CE8B2212CAC175AC2 /* AppProtectionKeyStore.swift */,
+				0A5C59930BDC0496260D5F19 /* CatalogAgentSecureInputNotifier.swift */,
 				3897F39305FB394E3A24FC2E /* CatalogAgentWriteAccessNotifier.swift */,
 				02B1FE885879A5387F50C486 /* CatalogSecurityAuditNotifier.swift */,
 				A0A6EB02EBDB05DDB71F9AE4 /* EncryptSelectionCoordinator.swift */,
@@ -1818,6 +1821,7 @@
 			files = (
 				3B3E060E5BE9F24EE46D632E /* AgentUIRequestNotifier.swift in Sources */,
 				4CB9B88E349BEA31FAA3AAFA /* AppProtectionKeyStore.swift in Sources */,
+				56D9ED1646C1034C55B969C0 /* CatalogAgentSecureInputNotifier.swift in Sources */,
 				528A3E3B902BA9ACC9CE8938 /* CatalogAgentWriteAccessNotifier.swift in Sources */,
 				E1E78AC9FBF53A896FAE416C /* CatalogSecurityAuditNotifier.swift in Sources */,
 				307FF8408D14E63800E91E7D /* EncryptSelectionCoordinator.swift in Sources */,

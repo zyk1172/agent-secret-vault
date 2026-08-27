@@ -38,14 +38,26 @@ struct AgentSecretVaultApplication: App {
                 },
                 auditEntries: runtime.auditEntries,
                 auditError: runtime.auditError,
+                secureInputRequest: runtime.secureInputRequest,
+                beginSecureInputCommit: { id in
+                    await runtime.beginSecureInputCommit(id: id)
+                },
+                submitSecureInput: { request, selectedTargets, values in
+                    await runtime.submitSecureInput(
+                        request: request,
+                        selectedTargets: selectedTargets,
+                        values: values
+                    )
+                },
+                cancelSecureInput: { id in
+                    await runtime.cancelSecureInput(id: id)
+                },
                 savedReferences: runtime.savedReferences,
                 sensitiveIndexURL: runtime.sensitiveIndexURL,
                 sensitiveCatalogSnapshot: runtime.sensitiveCatalogSnapshot,
                 sensitiveCatalogError: runtime.sensitiveIndexError,
                 sensitiveCatalogCanAdoptV2: runtime.sensitiveCatalogCanAdoptV2,
                 sensitiveCatalogCanAdoptV3: runtime.sensitiveCatalogCanAdoptV3,
-                pendingWriteAccessRequest: runtime.pendingWriteAccessRequest,
-                pendingWriteAccessQueueCount: runtime.pendingWriteAccessRequestIDs.count,
                 refreshSavedReferences: {
                     await runtime.refreshSavedReferences()
                 },
@@ -96,9 +108,6 @@ struct AgentSecretVaultApplication: App {
                 },
                 applyCatalogBatch: { mutation in
                     await runtime.applyCatalogBatch(mutation)
-                },
-                respondToWriteAccessRequest: { id, approved in
-                    await runtime.respondToCatalogWriteAccessRequest(id: id, approved: approved)
                 },
                 showSensitiveCatalogTemplate: {
                     await runtime.showSensitiveCatalogTemplate()
@@ -156,6 +165,7 @@ struct AgentSecretVaultApplication: App {
                     .keyboardShortcut("5", modifiers: [.command])
                 }
             }
+            .defaultSize(width: 1280, height: 820)
 
         MenuBarExtra("SVLT", systemImage: MenuBarPresentation.statusItemSymbol) {
             MenuBarVaultPanel(
@@ -204,6 +214,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var agentServiceActionErrorMessage: String?
     @Published var auditEntries: [CatalogSecurityAuditEntry] = []
     @Published var auditError: String?
+    @Published var secureInputRequest: CatalogAgentSecureInputRequest?
     @Published var savedReferences: [SecretReferenceMetadata] = []
     @Published var sensitiveIndexURL: URL?
     @Published var sensitiveCatalogSnapshot: SensitiveCatalogSnapshot?
@@ -211,11 +222,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     @Published var sensitiveCatalogCanAdoptV3 = false
     @Published var catalogAgentWriteStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled)
     @Published var catalogAgentWriteError: String?
-    @Published var pendingWriteAccessRequest: CatalogAgentWriteAccessRequest?
-    /// Snapshot of every still-pending agent Catalog write request, oldest
-    /// first. The first entry is the one currently shown; the UI uses the
-    /// count to present "待处理请求 1 / 3" style queue state.
-    @Published var pendingWriteAccessRequestIDs: [UUID] = []
     @Published var sensitiveIndexError: String?
     @Published var formatRepairPlan: CatalogFormatRepairPlan?
 
@@ -225,6 +231,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private var uiRequestObserver: NSObjectProtocol?
     private var writeAccessObserver: NSObjectProtocol?
     private var auditObserver: NSObjectProtocol?
+    private var secureInputObserver: NSObjectProtocol?
     private var applicationActivationObserver: NSObjectProtocol?
     private var presentedAgentSessionIDs: Set<String> = []
     private var sensitiveIndexStore: SensitiveInformationDocumentStore?
@@ -234,6 +241,13 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private var isStarting = false
     private var readinessTask: Task<Void, Never>?
     private var pendingWriteAccessQueue = PendingCatalogWriteAccessQueue()
+    /// The daemon retains the ordered pending requests. The App is only the
+    /// single consumer that advances the current request directly into
+    /// device-owner authentication; no separate confirmation button exists.
+    private var autoAuthenticatingCatalogRequestID: UUID?
+    private var isAutoAuthenticatingCatalogRequest = false
+    private var pendingSecureInputQueue: [UUID] = []
+    private var presentedSecureInputIDs: Set<UUID> = []
 
     func start() async {
         guard !started, !isStarting else {
@@ -256,6 +270,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             startUIRequestObserver()
             startWriteAccessObserver()
             startSecurityAuditObserver()
+            startSecureInputObserver()
             startApplicationActivationObserver()
             try? catalogTemplateStore.ensureInstalled()
             sensitiveIndexStore = try makeSensitiveIndexStore()
@@ -278,6 +293,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             await refreshSensitiveCatalog()
             await refreshAuditEntries()
             await refreshPendingCatalogWriteAccessRequests()
+            await refreshPendingSecureInputRequests()
             started = true
 
             if !(await connectToAgent(client)) {
@@ -328,6 +344,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 await refreshSavedReferences()
                 await refreshAuditEntries()
                 await refreshPendingCatalogWriteAccessRequests()
+                await refreshPendingSecureInputRequests()
                 await presentPendingRevealSessions()
                 return true
             } catch {
@@ -566,6 +583,52 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
+    private func startSecureInputObserver() {
+        guard secureInputObserver == nil else { return }
+        secureInputObserver = DistributedNotificationCenter.default().addObserver(
+            forName: CatalogAgentSecureInputNotifier.notificationName,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let rawID = notification.userInfo?["requestID"] as? String,
+                  let id = UUID(uuidString: rawID)
+            else { return }
+            Task { @MainActor [weak self] in
+                await self?.enqueueSecureInputRequest(id: id)
+            }
+        }
+    }
+
+    private func refreshPendingSecureInputRequests() async {
+        guard let agentClient,
+              let requestIDs = try? await agentClient.pendingCatalogSecureInputRequestIDs()
+        else { return }
+        for id in requestIDs {
+            await enqueueSecureInputRequest(id: id)
+        }
+    }
+
+    private func enqueueSecureInputRequest(id: UUID) async {
+        guard presentedSecureInputIDs.insert(id).inserted else { return }
+        pendingSecureInputQueue.append(id)
+        await presentNextSecureInputRequest()
+    }
+
+    private func presentNextSecureInputRequest() async {
+        guard secureInputRequest == nil, let id = pendingSecureInputQueue.first else { return }
+        pendingSecureInputQueue.removeFirst()
+        guard let appControlClient else {
+            presentedSecureInputIDs.remove(id)
+            return
+        }
+        do {
+            secureInputRequest = try await appControlClient.catalogSecureInputRequest(id: id)
+        } catch {
+            presentedSecureInputIDs.remove(id)
+            await presentNextSecureInputRequest()
+        }
+    }
+
     private func startApplicationActivationObserver() {
         guard applicationActivationObserver == nil else { return }
         applicationActivationObserver = NotificationCenter.default.addObserver(
@@ -576,6 +639,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             Task { @MainActor [weak self] in
                 await self?.refreshPendingCatalogWriteAccessRequests()
                 await self?.refreshAuditEntries()
+                await self?.refreshPendingSecureInputRequests()
             }
         }
     }
@@ -583,7 +647,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private func refreshPendingCatalogWriteAccessRequests() async {
         guard let agentClient else {
             pendingWriteAccessQueue.replace(with: [])
-            pendingWriteAccessRequestIDs = []
             return
         }
         guard let requestIDs = try? await agentClient.pendingCatalogWriteAccessRequestIDs() else {
@@ -592,32 +655,21 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             return
         }
         pendingWriteAccessQueue.replace(with: requestIDs)
-        pendingWriteAccessRequestIDs = pendingWriteAccessQueue.ids
         if requestIDs.isEmpty {
-            pendingWriteAccessRequest = nil
             return
         }
-        if let current = pendingWriteAccessRequest, !requestIDs.contains(current.id) {
-            pendingWriteAccessRequest = nil
-        }
-        for requestID in requestIDs {
-            await loadPendingWriteAccessRequest(id: requestID)
-            if pendingWriteAccessRequest != nil {
-                return
-            }
-            // The request vanished (expired/cancelled/consumed) while we were
-            // loading it; drop it and try the next one in the same pass.
-            pendingWriteAccessQueue.finish(requestID)
-            pendingWriteAccessRequestIDs = pendingWriteAccessQueue.ids
-        }
+        await authenticateNextPendingCatalogWriteAccessRequest()
     }
 
-    private func loadPendingWriteAccessRequest(id: UUID) async {
-        guard let appControlClient else { return }
-        if let current = pendingWriteAccessRequest, current.id != id {
+    private func authenticateNextPendingCatalogWriteAccessRequest() async {
+        guard !isAutoAuthenticatingCatalogRequest,
+              autoAuthenticatingCatalogRequestID == nil,
+              let requestID = pendingWriteAccessQueue.currentID
+        else {
             return
         }
-        pendingWriteAccessRequest = try? await appControlClient.pendingCatalogWriteAccessRequest(id: id)
+        autoAuthenticatingCatalogRequestID = requestID
+        await respondToCatalogWriteAccessRequest(id: requestID, approved: true)
     }
 
     /// After a terminal outcome for one request (approved, denied,
@@ -628,13 +680,19 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         Task { @MainActor [weak self] in
             await Task.yield()
             try? await Task.sleep(nanoseconds: 350_000_000)
-            guard let self, self.pendingWriteAccessRequest == nil else { return }
+            guard let self, self.autoAuthenticatingCatalogRequestID == nil else { return }
             await self.refreshPendingCatalogWriteAccessRequests()
         }
     }
 
     func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async {
         guard let appControlClient else { return }
+        guard !isAutoAuthenticatingCatalogRequest else { return }
+        isAutoAuthenticatingCatalogRequest = true
+        defer {
+            isAutoAuthenticatingCatalogRequest = false
+            autoAuthenticatingCatalogRequestID = nil
+        }
         do {
             try await appControlClient.respondToCatalogWriteAccessRequest(id: id, approved: approved)
             catalogAgentWriteStatus = (try? await appControlClient.catalogAgentWriteStatus())
@@ -644,10 +702,88 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
         // Every terminal path lands here: consume exactly this one request
         // and then continue with whatever is still pending.
-        pendingWriteAccessRequest = nil
         pendingWriteAccessQueue.finish(id)
-        pendingWriteAccessRequestIDs = pendingWriteAccessQueue.ids
         scheduleNextPendingCatalogWriteAccessRefresh()
+    }
+
+    func beginSecureInputCommit(id: UUID) async -> CatalogAgentSecureInputRequest? {
+        guard let appControlClient else { return nil }
+        return try? await appControlClient.beginCatalogSecureInputCommit(id: id)
+    }
+
+    func submitSecureInput(
+        request: CatalogAgentSecureInputRequest,
+        selectedTargets: [CatalogSecureInputTarget],
+        values: [String: String]
+    ) async {
+        guard let appControlClient,
+              let snapshot = sensitiveCatalogSnapshot,
+              var entry = snapshot.document.entries.first(where: { $0.id == request.entryID })
+        else {
+            await cancelSecureInput(id: request.id)
+            return
+        }
+
+        let selectedKeys = Set(selectedTargets.map(\.fieldKey))
+        entry = SecretCatalogEntry(
+            id: entry.id,
+            indexId: entry.indexId,
+            title: entry.title,
+            type: entry.type,
+            aliases: entry.aliases,
+            endpoints: entry.endpoints,
+            fields: entry.fields.map { field in
+                guard selectedKeys.contains(field.key) else { return field }
+                let target = selectedTargets.first { $0.fieldKey == field.key }
+                if target?.mode == .convertToSecret {
+                    return SecretCatalogFieldValue(
+                        key: field.key,
+                        label: field.label,
+                        type: .secret,
+                        agentVisible: field.agentVisible,
+                        searchable: field.searchable
+                    )
+                }
+                return field
+            },
+            notes: entry.notes,
+            tags: entry.tags,
+            schema: entry.schema
+        )
+        let secretInputs = selectedTargets.compactMap { target -> CatalogSecretInput? in
+            guard let value = values[target.fieldKey], !value.isEmpty else { return nil }
+            return CatalogSecretInput(key: target.fieldKey, label: target.label, plaintext: value)
+        }
+
+        do {
+            let result = try await appControlClient.catalogCommitEntryEdit(
+                entry,
+                secretInputs: secretInputs,
+                expectedRevision: request.expectedRevision
+            )
+            try? await appControlClient.completeCatalogSecureInput(
+                id: request.id,
+                completion: CatalogSecureInputCompletion(revision: result.revision)
+            )
+            await refreshSensitiveCatalog()
+        } catch {
+            try? await appControlClient.cancelCatalogSecureInput(id: request.id)
+            sensitiveIndexError = catalogMutationUIError(for: error, operation: "安全输入").displayText
+        }
+        finishSecureInputRequest(request.id)
+        await presentNextSecureInputRequest()
+    }
+
+    func cancelSecureInput(id: UUID) async {
+        try? await appControlClient?.cancelCatalogSecureInput(id: id)
+        finishSecureInputRequest(id)
+        await presentNextSecureInputRequest()
+    }
+
+    private func finishSecureInputRequest(_ id: UUID) {
+        if secureInputRequest?.id == id { secureInputRequest = nil }
+        presentedSecureInputIDs.remove(id)
+        pendingSecureInputQueue.removeAll { $0 == id }
     }
 
     private func presentPendingRevealSessions() async {
@@ -708,7 +844,11 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
         do {
             auditEntries = try await appControlClient.catalogRecentAuditEntries(limit: 100)
-            auditError = nil
+            if let auditHealth = try? await appControlClient.catalogAuditHealth(), auditHealth == "AUDIT_APPEND_FAILED" {
+                auditError = "安全活动记录写入异常；近期活动可能不完整。"
+            } else {
+                auditError = nil
+            }
         } catch {
             // A transient AppControl failure should not erase the last known
             // window; expose a stable safe warning instead of hiding an audit
