@@ -97,6 +97,7 @@ public enum VaultWorkbenchRenderingPolicy {
 
 public enum VaultWorkbenchMotion {
     public static let interactive = Animation.easeInOut(duration: 0.18)
+    public static let authorization = Animation.spring(response: 0.28, dampingFraction: 0.86)
 }
 
 public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable {
@@ -174,12 +175,10 @@ public struct VaultWorkbenchView: View {
     let sensitiveCatalogError: String?
     let sensitiveCatalogCanAdoptV2: Bool
     let sensitiveCatalogCanAdoptV3: Bool
-    let catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus
-    let catalogAgentWriteError: String?
     let pendingWriteAccessRequest: CatalogAgentWriteAccessRequest?
     /// Total number of still-pending agent Catalog write requests. When this
-    /// exceeds one the alert title shows the queue position so the user knows
-    /// more requests follow.
+    /// exceeds one the banner shows the queue position so the user knows more
+    /// requests follow.
     var pendingWriteAccessQueueCount: Int = 0
     let refreshSavedReferences: (() async -> Void)?
     let chooseSensitiveIndex: (() -> Void)?
@@ -197,12 +196,10 @@ public struct VaultWorkbenchView: View {
     let revealCatalogField: ((String, String) async throws -> String)?
     let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
-    let enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)?
-    let revokeCatalogAgentWrite: (() async -> Void)?
     let respondToWriteAccessRequest: ((UUID, Bool) async -> Void)?
     let showSensitiveCatalogTemplate: (() async -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedSection: VaultWorkbenchSection = .overview
-    @State private var writeAccessRequest: CatalogAgentWriteAccessRequest?
 
     public init(
         status: WorkbenchStatus,
@@ -220,8 +217,6 @@ public struct VaultWorkbenchView: View {
         sensitiveCatalogError: String? = nil,
         sensitiveCatalogCanAdoptV2: Bool = false,
         sensitiveCatalogCanAdoptV3: Bool = false,
-        catalogAgentWriteStatus: CatalogAgentWriteAuthorizationStatus = CatalogAgentWriteAuthorizationStatus(mode: .disabled),
-        catalogAgentWriteError: String? = nil,
         pendingWriteAccessRequest: CatalogAgentWriteAccessRequest? = nil,
         pendingWriteAccessQueueCount: Int = 0,
         refreshSavedReferences: (() async -> Void)? = nil,
@@ -240,8 +235,6 @@ public struct VaultWorkbenchView: View {
         revealCatalogField: ((String, String) async throws -> String)? = nil,
         replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)? = nil,
         applyCatalogBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)? = nil,
-        enableCatalogAgentWrite: ((CatalogAgentWriteMode) async -> Void)? = nil,
-        revokeCatalogAgentWrite: (() async -> Void)? = nil,
         respondToWriteAccessRequest: ((UUID, Bool) async -> Void)? = nil,
         showSensitiveCatalogTemplate: (() async -> Void)? = nil
     ) {
@@ -260,8 +253,6 @@ public struct VaultWorkbenchView: View {
         self.sensitiveCatalogError = sensitiveCatalogError
         self.sensitiveCatalogCanAdoptV2 = sensitiveCatalogCanAdoptV2
         self.sensitiveCatalogCanAdoptV3 = sensitiveCatalogCanAdoptV3
-        self.catalogAgentWriteStatus = catalogAgentWriteStatus
-        self.catalogAgentWriteError = catalogAgentWriteError
         self.pendingWriteAccessRequest = pendingWriteAccessRequest
         self.pendingWriteAccessQueueCount = pendingWriteAccessQueueCount
         self.refreshSavedReferences = refreshSavedReferences
@@ -280,8 +271,6 @@ public struct VaultWorkbenchView: View {
         self.revealCatalogField = revealCatalogField
         self.replaceCatalogSecret = replaceCatalogSecret
         self.applyCatalogBatch = applyCatalogBatch
-        self.enableCatalogAgentWrite = enableCatalogAgentWrite
-        self.revokeCatalogAgentWrite = revokeCatalogAgentWrite
         self.respondToWriteAccessRequest = respondToWriteAccessRequest
         self.showSensitiveCatalogTemplate = showSensitiveCatalogTemplate
     }
@@ -302,36 +291,19 @@ public struct VaultWorkbenchView: View {
                     }
                     selectedContent
                         .id(selectedSection)
-                        .transaction { transaction in
-                            transaction.animation = nil
-                        }
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .opacity.combined(with: .offset(x: 6))
+                        )
                 }
+                .animation(
+                    reduceMotion ? nil : VaultWorkbenchMotion.authorization,
+                    value: pendingWriteAccessRequest?.id
+                )
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .onChange(of: pendingWriteAccessRequest) { request in
-            writeAccessRequest = request
-        }
-        .alert(item: $writeAccessRequest) { request in
-            let queueSuffix = pendingWriteAccessQueueCount > 1
-                ? "（待处理请求 1 / \(pendingWriteAccessQueueCount)）"
-                : ""
-            return Alert(
-                title: Text("\(request.displayName) 请求修改敏感信息目录\(queueSuffix)"),
-                message: Text("""
-                    操作：\(request.intent.map { $0.operation.displayName } ?? "目录修改")
-                    原因类别：\(request.reasonCategory.displayName)
-                    目标版本：\(request.intent.map { String($0.acceptedRevision) } ?? "未知")
-                    请求将在短时间内失效，授权仅消费一次。每一笔操作都需要单独验证。
-                    """),
-                primaryButton: .default(Text("验证并授权")) {
-                    Task { await respondToWriteAccessRequest?(request.id, true) }
-                },
-                secondaryButton: .cancel(Text("拒绝")) {
-                    Task { await respondToWriteAccessRequest?(request.id, false) }
-                }
-            )
-        }
         .frame(minWidth: 1080, minHeight: 720)
         .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchNavigate)) { notification in
             guard
@@ -373,9 +345,9 @@ public struct VaultWorkbenchView: View {
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color.cyan.opacity(0.22),
+                            Color.indigo.opacity(0.22),
                             Color.blue.opacity(0.16),
-                            Color.teal.opacity(0.14)
+                            Color.cyan.opacity(0.14)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -488,7 +460,7 @@ public struct VaultWorkbenchView: View {
     }
 
     private func selectSection(_ section: VaultWorkbenchSection) {
-        withAnimation(VaultWorkbenchMotion.interactive) {
+        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
             selectedSection = section
         }
     }
@@ -502,7 +474,7 @@ private struct WorkbenchBackground: View {
                 colors: [
                     Color.indigo.opacity(0.20),
                     Color.blue.opacity(0.10),
-                    Color.purple.opacity(0.18)
+                    Color.cyan.opacity(0.18)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -514,7 +486,7 @@ private struct WorkbenchBackground: View {
                 endRadius: 560
             )
             RadialGradient(
-                colors: [Color.purple.opacity(0.13), .clear],
+                colors: [Color.cyan.opacity(0.13), .clear],
                 center: .bottomLeading,
                 startRadius: 0,
                 endRadius: 620
@@ -620,6 +592,7 @@ private struct PendingWriteAccessBanner: View {
     let request: CatalogAgentWriteAccessRequest
     let queueCount: Int
     let respond: ((UUID, Bool) async -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 12) {
@@ -657,7 +630,12 @@ private struct PendingWriteAccessBanner: View {
                 .fill(Color.orange.opacity(0.24))
                 .frame(height: 1)
         }
-        .accessibilityElement(children: .combine)
+        .transition(
+            reduceMotion
+                ? .opacity
+                : .opacity.combined(with: .offset(y: -6))
+        )
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("待处理的本机授权")
     }
 }
@@ -677,7 +655,7 @@ private struct OverviewStatusStrip: View {
                 title: "策略引擎",
                 value: status.approvalPending ? "待审批" : (status.ready ? "已就绪" : "不可用"),
                 systemImage: status.approvalPending ? "person.badge.key.fill" : (status.ready ? "checkmark.shield.fill" : "exclamationmark.shield.fill"),
-                tint: status.approvalPending ? .orange : (status.ready ? .blue : .red)
+                tint: status.approvalPending ? .orange : (status.ready ? .green : .red)
             )
             OverviewStatusRow(
                 title: "本机通道",
@@ -756,7 +734,7 @@ private struct OverviewHero: View {
                 colors: [
                     Color.blue.opacity(0.24),
                     Color.indigo.opacity(0.12),
-                    Color.purple.opacity(0.20)
+                    Color.cyan.opacity(0.20)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -777,6 +755,7 @@ private struct OverviewAgentControl: View {
     let enableAgent: (() async -> Void)?
     let disableAgent: (() async -> Void)?
     let restartAgent: (() async -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -787,7 +766,7 @@ private struct OverviewAgentControl: View {
                 Text(status.displayName)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(status == .running ? .green : .secondary)
-                    .animation(VaultWorkbenchMotion.interactive, value: status)
+                    .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: status)
             }
 
             HStack(spacing: 10) {
@@ -804,17 +783,21 @@ private struct OverviewAgentControl: View {
             if actionInFlight {
                 ProgressView()
                     .controlSize(.small)
-                    .transition(.opacity)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 4)))
             }
             if let actionErrorMessage {
                 Text(actionErrorMessage)
                     .font(.callout)
                     .foregroundStyle(.orange)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .opacity.combined(with: .offset(y: -4))
+                    )
             }
         }
-        .animation(VaultWorkbenchMotion.interactive, value: actionInFlight)
-        .animation(VaultWorkbenchMotion.interactive, value: actionErrorMessage)
+        .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: actionInFlight)
+        .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: actionErrorMessage)
     }
 
     private func run(_ action: (() async -> Void)?) {
@@ -885,7 +868,7 @@ private struct FAQPage: View {
     private let questions = [
         ("为什么看不到密码？", "这是默认行为。密码字段只有在本机授权后才会短暂显示，MCP 和插件永远不会收到明文。"),
         ("我可以在 Obsidian 里编辑目录吗？", "可以。Obsidian 负责编辑合法的 v3 Markdown，SVLT 负责校验、授权和本机密文记录。"),
-        ("为什么每次修改都要授权？", "目录修改可能改变已有密文引用或目标。每笔操作独立授权，避免一次批准扩大到其他修改。"),
+        ("为什么智能体每次修改目录都要授权？", "智能体的目录修改可能改变已有密文引用或目标。每笔操作独立授权，避免一次批准扩大到其他修改。"),
         ("智能体会看到什么？", "智能体可以看到 secret:// 引用和允许展示的元数据，但不会看到密码、token、cookie 或解密后的字段值。")
     ]
 
@@ -945,6 +928,7 @@ private struct QuickMenuCard: View {
     var compact = false
     let action: () -> Void
     @State private var isHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 8 : 14) {
@@ -973,14 +957,15 @@ private struct QuickMenuCard: View {
             RoundedRectangle(cornerRadius: compact ? 18 : 22, style: .continuous)
                 .stroke(isHovering ? tint.opacity(0.35) : Color.secondary.opacity(0.12))
         )
-        .scaleEffect(isHovering ? 1.015 : 1)
+        .scaleEffect(isHovering && !reduceMotion ? 1.015 : 1)
         .onHover { isHovering = $0 }
-        .animation(VaultWorkbenchMotion.interactive, value: isHovering)
+        .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)
     }
 }
 
 private struct CompactAuditPreviewCard: View {
     let entries: [CatalogSecurityAuditEntry]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1023,6 +1008,11 @@ private struct CompactAuditPreviewCard: View {
                         .padding(.vertical, 6)
                         .padding(.horizontal, 10)
                         .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .opacity.combined(with: .offset(y: -4))
+                        )
                     }
                 }
             }
@@ -1031,7 +1021,7 @@ private struct CompactAuditPreviewCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             LinearGradient(
-                colors: [Color.teal.opacity(0.16), Color.blue.opacity(0.06)],
+                colors: [Color.cyan.opacity(0.16), Color.blue.opacity(0.06)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
@@ -1039,8 +1029,9 @@ private struct CompactAuditPreviewCard: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.teal.opacity(0.14), lineWidth: 1)
+                .stroke(Color.cyan.opacity(0.14), lineWidth: 1)
         }
+        .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: entries.map(\.id))
     }
 
     private func iconName(for operation: AuditOperation) -> String {
@@ -1222,8 +1213,10 @@ private struct SensitiveCatalogEditorCard: View {
     @State private var isWorking = false
     @State private var createIndexError: CatalogMutationUIError?
     @State private var selectedIndexID: String?
+    @State private var hoveredIndexID: String?
     @State private var pendingIndexDeletion: CatalogDeletionRequest?
     @State private var deletionError: CatalogMutationUIError?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1379,9 +1372,9 @@ private struct SensitiveCatalogEditorCard: View {
 
                             ScrollView {
                                 VStack(spacing: 8) {
-                                    ForEach(Array(snapshot.document.indexes.enumerated()), id: \.element.id) { offset, index in
+                                    ForEach(snapshot.document.indexes, id: \.id) { index in
                                         let entries = snapshot.document.entries.filter { $0.indexId == index.id }
-                                        indexRow(index: index, entries: entries, snapshot: snapshot, cardTint: CatalogCardPalette.tint(for: offset))
+                                        indexRow(index: index, entries: entries, snapshot: snapshot)
                                     }
                                 }
                             }
@@ -1447,14 +1440,15 @@ private struct SensitiveCatalogEditorCard: View {
         }
     }
 
-    private func indexRow(index: SecretCatalogIndex, entries: [SecretCatalogEntry], snapshot: SensitiveCatalogSnapshot, cardTint: Color) -> some View {
+    private func indexRow(index: SecretCatalogIndex, entries: [SecretCatalogEntry], snapshot: SensitiveCatalogSnapshot) -> some View {
         let isSelected = selectedIndexID == index.id
-        return HStack(spacing: 12) {
-            Button {
-                withAnimation(VaultWorkbenchMotion.interactive) {
-                    selectedIndexID = index.id
-                }
-            } label: {
+        let isHovered = hoveredIndexID == index.id
+        return Button {
+            withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                selectedIndexID = index.id
+            }
+        } label: {
+            HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(index.title)
                         .font(.callout.weight(isSelected ? .semibold : .regular))
@@ -1463,44 +1457,60 @@ private struct SensitiveCatalogEditorCard: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                Spacer(minLength: 38)
             }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(role: .destructive) {
-                prepareIndexDeletion(for: index, snapshot: snapshot)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.callout.weight(.semibold))
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("删除分组")
-            .accessibilityLabel("删除分组")
-            .disabled(applyBatch == nil)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             LinearGradient(
                 colors: [
-                    cardTint.opacity(isSelected ? 0.24 : 0.14),
-                    cardTint.opacity(isSelected ? 0.12 : 0.05)
+                    Color.blue.opacity(isSelected ? 0.24 : 0.14),
+                    Color.indigo.opacity(isSelected ? 0.14 : 0.05)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
+        .overlay(alignment: .trailing) {
+            Button(role: .destructive) {
+                prepareIndexDeletion(for: index, snapshot: snapshot)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.callout.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("删除分组")
+            .accessibilityLabel("删除分组")
+            .disabled(applyBatch == nil)
+            .padding(.trailing, 8)
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isSelected ? Color.accentColor.opacity(0.78) : cardTint.opacity(0.18), lineWidth: isSelected ? 2 : 1)
+                .stroke(
+                    isSelected
+                        ? Color.accentColor.opacity(0.78)
+                        : (isHovered ? Color.blue.opacity(0.42) : Color.blue.opacity(0.18)),
+                    lineWidth: isSelected ? 2 : (isHovered ? 1.5 : 1)
+                )
+                .allowsHitTesting(false)
         }
+        .scaleEffect(isHovered && !reduceMotion ? 1.01 : 1)
+        .onHover { isHovering in
+            hoveredIndexID = isHovering ? index.id : nil
+        }
+        .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovered)
         .accessibilityLabel(index.title)
         .accessibilityValue(isSelected ? "当前分组" : "分组")
+        .accessibilityHint("查看该分组中的条目")
     }
 
     private func prepareIndexDeletion(for index: SecretCatalogIndex, snapshot: SensitiveCatalogSnapshot) {
@@ -1562,6 +1572,7 @@ private struct SensitiveCatalogGroupSheet: View {
     @State private var deletionError: CatalogMutationUIError?
     @State private var selectedEntryIDs: Set<String> = []
     @State private var isSelectingEntries = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1616,7 +1627,7 @@ private struct SensitiveCatalogGroupSheet: View {
                         .foregroundStyle(.secondary)
 
                     Button {
-                        withAnimation(VaultWorkbenchMotion.interactive) {
+                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
                             isSelectingEntries = false
                             selectedEntryIDs.removeAll()
                         }
@@ -1628,7 +1639,7 @@ private struct SensitiveCatalogGroupSheet: View {
                     .accessibilityLabel("完成批量编辑")
                 } else {
                     Button {
-                        withAnimation(VaultWorkbenchMotion.interactive) {
+                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
                             isSelectingEntries = true
                             selectedEntryIDs.removeAll()
                         }
@@ -1711,10 +1722,9 @@ private struct SensitiveCatalogGroupSheet: View {
                         count: 2
                     )
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                        ForEach(Array(entries.enumerated()), id: \.element.id) { offset, entry in
+                        ForEach(entries, id: \.id) { entry in
                             SensitiveCatalogEntryRow(
                                 entry: entry,
-                                cardTint: CatalogCardPalette.tint(for: offset),
                                 autoEdit: newlyCreatedEntryID == entry.id,
                                 isSelecting: isSelectingEntries,
                                 isSelected: selectedEntryIDs.contains(entry.id),
@@ -1746,7 +1756,7 @@ private struct SensitiveCatalogGroupSheet: View {
     }
 
     private func toggleEntrySelection(_ id: String) {
-        withAnimation(VaultWorkbenchMotion.interactive) {
+        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
             if selectedEntryIDs.contains(id) {
                 selectedEntryIDs.remove(id)
             } else {
@@ -1798,17 +1808,8 @@ private struct SensitiveCatalogGroupSheet: View {
     }
 }
 
-private enum CatalogCardPalette {
-    private static let colors: [Color] = [.blue, .teal, .indigo, .orange, .purple]
-
-    static func tint(for index: Int) -> Color {
-        colors[index % colors.count]
-    }
-}
-
 private struct SensitiveCatalogEntryRow: View {
     let entry: SecretCatalogEntry
-    let cardTint: Color
     let autoEdit: Bool
     let isSelecting: Bool
     let isSelected: Bool
@@ -1833,11 +1834,12 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var revealedPlaintexts: [String: String] = [:]
     @State private var revealingKeys: Set<String> = []
     @State private var revealError: String?
+    @State private var isHovering = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         entry: SecretCatalogEntry,
-        cardTint: Color = .blue,
         autoEdit: Bool = false,
         isSelecting: Bool = false,
         isSelected: Bool = false,
@@ -1849,7 +1851,6 @@ private struct SensitiveCatalogEntryRow: View {
         requestDelete: @escaping () -> Void = {}
     ) {
         self.entry = entry
-        self.cardTint = cardTint
         self.autoEdit = autoEdit
         self.isSelecting = isSelecting
         self.isSelected = isSelected
@@ -1870,7 +1871,7 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Group {
             if isSelecting {
                 Button(action: toggleSelection) {
                     HStack(alignment: .top, spacing: 10) {
@@ -1883,58 +1884,27 @@ private struct SensitiveCatalogEntryRow: View {
                             entryCounts
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(entry.title)
+                .accessibilityValue(isSelected ? "已选中" : "未选中")
+                .accessibilityHint("选择条目用于批量编辑")
             } else {
-                HStack(alignment: .top, spacing: 10) {
-                    Button {
-                        showingDetails = true
-                    } label: {
-                        entrySummary
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Button {
-                        load(entry)
-                        editing = true
-                        showingDetails = true
-                        editorError = nil
-                    } label: {
-                        Image(systemName: "pencil")
-                            .font(.callout.weight(.semibold))
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .help("编辑条目")
-                    .accessibilityLabel("编辑条目")
-                }
-
-                HStack(alignment: .top, spacing: 12) {
-                    entryCounts
-                    Spacer(minLength: 0)
-                    Button(role: .destructive, action: requestDelete) {
-                        Image(systemName: "trash")
-                            .font(.callout.weight(.semibold))
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .help("删除条目")
-                    .accessibilityLabel("删除条目")
-                    .disabled(applyBatch == nil)
-                }
+                normalCard
             }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
         .background(
             LinearGradient(
-                colors: [cardTint.opacity(0.16), cardTint.opacity(0.05)],
+                colors: [
+                    (isSelecting && isSelected) ? Color.accentColor.opacity(0.22) : Color.cyan.opacity(isHovering ? 0.18 : 0.14),
+                    (isSelecting && isSelected) ? Color.indigo.opacity(0.12) : Color.blue.opacity(0.05)
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
@@ -1942,8 +1912,17 @@ private struct SensitiveCatalogEntryRow: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(cardTint.opacity(0.18), lineWidth: 1)
+                .stroke(
+                    (isSelecting && isSelected)
+                        ? Color.accentColor.opacity(0.78)
+                        : (isHovering ? Color.cyan.opacity(0.42) : Color.cyan.opacity(0.18)),
+                    lineWidth: isSelecting && isSelected ? 2 : (isHovering ? 1.5 : 1)
+                )
+                .allowsHitTesting(false)
         }
+        .scaleEffect(isHovering && !reduceMotion ? 1.01 : 1)
+        .onHover { isHovering = $0 }
+        .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)
         .sheet(isPresented: $showingDetails, onDismiss: clearSensitiveOutput) {
             entryDetails
                 .frame(minWidth: 760, idealWidth: 900, minHeight: 520)
@@ -1957,6 +1936,64 @@ private struct SensitiveCatalogEntryRow: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .inactive || phase == .background { clearSensitiveOutput() }
         }
+    }
+
+    private var normalCard: some View {
+        Button {
+            showingDetails = true
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    entrySummary
+                    Spacer(minLength: 44)
+                }
+
+                HStack(alignment: .top, spacing: 12) {
+                    entryCounts
+                    Spacer(minLength: 44)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            Button {
+                load(entry)
+                editing = true
+                showingDetails = true
+                editorError = nil
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.callout.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("编辑条目")
+            .accessibilityLabel("编辑条目")
+            .padding(.top, 7)
+            .padding(.trailing, 8)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Button(role: .destructive, action: requestDelete) {
+                Image(systemName: "trash")
+                    .font(.callout.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("删除条目")
+            .accessibilityLabel("删除条目")
+            .disabled(applyBatch == nil)
+            .padding(.bottom, 7)
+            .padding(.trailing, 8)
+        }
+        .accessibilityLabel(entry.title)
+        .accessibilityHint("打开条目详情")
     }
 
     private var entryDetails: some View {
@@ -2843,7 +2880,7 @@ private extension SavedSecretReferenceRow {
         case .externalSend:
             return .orange
         case .credential:
-            return .purple
+            return .indigo
         }
     }
 }

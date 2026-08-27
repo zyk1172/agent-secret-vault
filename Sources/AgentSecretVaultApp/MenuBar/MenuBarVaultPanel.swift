@@ -119,7 +119,7 @@ public struct MenuBarVaultPanel: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .background(
             LinearGradient(
-                colors: [Color.blue.opacity(0.08), Color.purple.opacity(0.05)],
+                colors: [Color.blue.opacity(0.08), Color.cyan.opacity(0.05)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),

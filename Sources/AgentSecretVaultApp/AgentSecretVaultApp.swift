@@ -44,8 +44,6 @@ struct AgentSecretVaultApplication: App {
                 sensitiveCatalogError: runtime.sensitiveIndexError,
                 sensitiveCatalogCanAdoptV2: runtime.sensitiveCatalogCanAdoptV2,
                 sensitiveCatalogCanAdoptV3: runtime.sensitiveCatalogCanAdoptV3,
-                catalogAgentWriteStatus: runtime.catalogAgentWriteStatus,
-                catalogAgentWriteError: runtime.catalogAgentWriteError,
                 pendingWriteAccessRequest: runtime.pendingWriteAccessRequest,
                 pendingWriteAccessQueueCount: runtime.pendingWriteAccessRequestIDs.count,
                 refreshSavedReferences: {
@@ -98,12 +96,6 @@ struct AgentSecretVaultApplication: App {
                 },
                 applyCatalogBatch: { mutation in
                     await runtime.applyCatalogBatch(mutation)
-                },
-                enableCatalogAgentWrite: { mode in
-                    await runtime.enableCatalogAgentWrite(mode: mode)
-                },
-                revokeCatalogAgentWrite: {
-                    await runtime.revokeCatalogAgentWrite()
                 },
                 respondToWriteAccessRequest: { id, approved in
                     await runtime.respondToCatalogWriteAccessRequest(id: id, approved: approved)
@@ -630,8 +622,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     /// After a terminal outcome for one request (approved, denied,
     /// authentication failed/cancelled, expired), clear it and surface the
-    /// next pending request on a later main-queue turn. A new alert is never
-    /// presented from inside the dismissing alert's callback.
+    /// next pending request on a later main-queue turn instead of replacing
+    /// the current banner while its response is still being processed.
     private func scheduleNextPendingCatalogWriteAccessRefresh() {
         Task { @MainActor [weak self] in
             await Task.yield()
