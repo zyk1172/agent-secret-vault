@@ -6,11 +6,6 @@ if [[ -z "${ASV_CANARY:-}" ]]; then
   exit 2
 fi
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "ripgrep (rg) is required" >&2
-  exit 2
-fi
-
 if [[ "$#" -gt 0 ]]; then
   scan_paths=("$@")
 else
@@ -37,19 +32,34 @@ if [[ "${#existing_paths[@]}" -eq 0 ]]; then
   exit 0
 fi
 
-matches="$(
-  rg \
-    -l \
-    --fixed-strings \
-    --hidden \
-    --glob '!**/.git/**' \
-    --glob '!**/node_modules/**' \
-    --glob '!**/DerivedData/**' \
-    --glob '!**/*.xcresult/**' \
-    -- \
-    "$ASV_CANARY" \
-    "${existing_paths[@]}" 2>/dev/null || true
-)"
+if command -v rg >/dev/null 2>&1; then
+  matches="$(
+    rg \
+      -l \
+      --fixed-strings \
+      --hidden \
+      --glob '!**/.git/**' \
+      --glob '!**/node_modules/**' \
+      --glob '!**/DerivedData/**' \
+      --glob '!**/*.xcresult/**' \
+      -- \
+      "$ASV_CANARY" \
+      "${existing_paths[@]}" 2>/dev/null || true
+  )"
+else
+  # GitHub-hosted runners do not guarantee ripgrep. Keep the same safety
+  # contract with portable find/grep: only matching file paths are emitted;
+  # grep's matching content is always redirected away from the terminal.
+  matches=""
+  while IFS= read -r candidate; do
+    case "$candidate" in
+      */.git/*|*/node_modules/*|*/DerivedData/*|*.xcresult/*) continue ;;
+    esac
+    if grep -IlF -- "$ASV_CANARY" "$candidate" >/dev/null 2>&1; then
+      matches+="$candidate"$'\n'
+    fi
+  done < <(find "${existing_paths[@]}" -type f -print 2>/dev/null)
+fi
 
 if [[ -n "$matches" ]]; then
   printf '%s\n' "$matches"
