@@ -380,6 +380,19 @@ private final class CatalogReadFileResultBox: @unchecked Sendable {
     }
 }
 
+/// POSIX Catalog probes may block behind a File Provider overlay. Keep them
+/// off both the actor executor and the process-wide utility pool: a slow
+/// provider operation must not starve unrelated Catalog reads or test/IPC
+/// handlers that are waiting for their bounded result.
+private enum CatalogPOSIXIO {
+    static let queue = DispatchQueue(
+        label: "com.agent-secret-vault.catalog-posix-io",
+        qos: .userInitiated,
+        attributes: .concurrent,
+        autoreleaseFrequency: .workItem
+    )
+}
+
 public struct CatalogExternalChange: Codable, Equatable, Sendable {
     public let rawSHA256: String
     public let semanticSHA256: String
@@ -2006,7 +2019,7 @@ public actor SensitiveCatalogDocumentStore {
     private func directoryFsyncStatus(_ path: String) -> Int32 {
         guard !path.isEmpty else { return EINVAL }
         let semaphore = DispatchSemaphore(value: 0)
-        let queue = DispatchQueue.global(qos: .utility)
+        let queue = CatalogPOSIXIO.queue
         let resultBox = CatalogDirectoryFsyncResultBox()
         queue.async {
             let observed = path.withCString { svlt_fsync_directory($0) }
@@ -2021,7 +2034,7 @@ public actor SensitiveCatalogDocumentStore {
 
     private func readFileStatus(_ path: String) -> (status: Int32, bytes: UnsafeMutableRawPointer?, length: Int) {
         let semaphore = DispatchSemaphore(value: 0)
-        let queue = DispatchQueue.global(qos: .utility)
+        let queue = CatalogPOSIXIO.queue
         let resultBox = CatalogReadFileResultBox()
         queue.async {
             var observedBytes: UnsafeMutableRawPointer?
