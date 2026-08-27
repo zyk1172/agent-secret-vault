@@ -233,7 +233,7 @@ const CatalogSecureInputRequestInput = z
     targets: z.array(z.object({
       fieldKey: z.string().min(1).max(128),
       label: z.string().min(1).max(128),
-      mode: z.enum(["fillPlaceholder", "convertToSecret"]),
+      mode: z.enum(["fillPlaceholder", "replaceSecret", "convertToSecret"]),
       required: z.boolean().default(false)
     }).strict()).min(1).max(32),
     expectedRevision: z.number().int().nonnegative()
@@ -1099,7 +1099,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_catalog_request_secure_inputs",
       title: "Request Secure Input",
       description:
-        "Asks SVLT to show a local secure-input sheet for an existing Entry. The Agent supplies only field metadata and never sees plaintext. fillPlaceholder fills an empty secret field; convertToSecret lets the user select an ordinary field to encrypt.",
+        "Asks SVLT to show a local secure-input sheet for an existing Entry. The Agent supplies only field metadata and never sees plaintext. fillPlaceholder fills an empty secret field; replaceSecret replaces an existing binding after local approval; convertToSecret lets the user select an ordinary field to encrypt.",
       inputSchema: CatalogSecureInputRequestInput,
       outputSchema: CatalogSecureInputCompletedOutput,
       async handler(input) {

@@ -333,7 +333,7 @@ export const CatalogSecureInputTarget = z.object({
   entryID: z.string().length(26),
   fieldKey: z.string().min(1).max(128),
   label: z.string().min(1).max(128),
-  mode: z.enum(["fillPlaceholder", "convertToSecret"]),
+  mode: z.enum(["fillPlaceholder", "replaceSecret", "convertToSecret"]),
   required: z.boolean().default(false)
 }).strict();
 export type CatalogSecureInputTarget = z.infer<typeof CatalogSecureInputTarget>;

@@ -1357,6 +1357,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 guard field.type.isSecret && field.secretRef == nil else {
                     throw SecretCatalogAgentError.invalidOperation
                 }
+            case .replaceSecret:
+                guard field.type.isSecret && field.secretRef != nil else {
+                    throw SecretCatalogAgentError.invalidOperation
+                }
             case .convertToSecret:
                 guard !field.type.isSecret else {
                     throw SecretCatalogAgentError.invalidOperation
@@ -1994,14 +1998,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let candidateFields = Dictionary(uniqueKeysWithValues: entry.fields.map { ($0.key, $0) })
         for input in secretInputs {
             guard let candidateField = candidateFields[input.key],
-                  candidateField.type.isSecret,
-                  candidateField.secretRef == nil
+                  candidateField.type.isSecret
             else {
-                // Replacing an already-bound secret stays on the explicit
-                // approval path; this transaction only creates new records.
-                throw SecretCatalogAgentError.invalidOperation
-            }
-            if currentFields[input.key]?.secretRef != nil {
+                // Filling, converting, and replacing all require a local
+                // plaintext input; an opaque reference can never be smuggled
+                // through this transaction.
                 throw SecretCatalogAgentError.invalidOperation
             }
         }
@@ -2014,7 +2015,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     // never smuggled in as ordinary Entry metadata.
                     throw SecretCatalogAgentError.invalidOperation
                 }
-                if oldReference != nil && inputsByKey[field.key] != nil {
+                if oldReference != nil && inputsByKey[field.key] == nil {
                     throw SecretCatalogAgentError.invalidOperation
                 }
             }

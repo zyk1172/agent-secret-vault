@@ -673,7 +673,7 @@ private struct CatalogAgentSecureInputSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(target.label)
                         .font(.headline.weight(.semibold))
-                    Text(target.mode == .fillPlaceholder ? "填充已选中的密码字段" : "转换为密文字段")
+                    Text(modeText(target.mode))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -709,6 +709,14 @@ private struct CatalogAgentSecureInputSheet: View {
         }
         .padding(12)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func modeText(_ mode: CatalogSecureInputMode) -> String {
+        switch mode {
+        case .fillPlaceholder: return "填充已选中的密码字段"
+        case .replaceSecret: return "替换已有密文"
+        case .convertToSecret: return "转换为密文字段"
+        }
     }
 
     private func binding(for target: CatalogSecureInputTarget) -> Binding<String> {

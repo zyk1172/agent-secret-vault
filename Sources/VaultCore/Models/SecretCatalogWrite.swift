@@ -436,6 +436,7 @@ public struct CatalogSecretInput: Codable, Equatable, Sendable {
 
 public enum CatalogSecureInputMode: String, Codable, CaseIterable, Sendable {
     case fillPlaceholder
+    case replaceSecret
     case convertToSecret
 }
 
