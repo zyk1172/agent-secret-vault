@@ -44,13 +44,21 @@ public struct MenuBarVaultPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(selectedSection.title)
                         .font(.headline)
-                    Text(statusSummary)
+                    Text(headerSubtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
             .padding(14)
+            .background(
+                LinearGradient(
+                    colors: [Color.blue.opacity(0.16), Color.indigo.opacity(0.06)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
 
             HStack(spacing: 4) {
                 ForEach(Self.supportedSections) { section in
@@ -82,8 +90,7 @@ public struct MenuBarVaultPanel: View {
 
             HStack {
                 Button("打开主窗口") {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: MenuBarPresentation.mainWindowID)
+                    openMainWindow()
                 }
                 Spacer()
                 Button("锁定") { clearSensitiveState() }
@@ -109,6 +116,20 @@ public struct MenuBarVaultPanel: View {
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
             clearSensitiveState()
         }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(
+            LinearGradient(
+                colors: [Color.blue.opacity(0.08), Color.cyan.opacity(0.05)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -120,8 +141,10 @@ public struct MenuBarVaultPanel: View {
             savedReferencesView
         case .automation:
             auditView(entries: Array(auditEntries.prefix(6)))
-        case .security:
-            securityView
+        case .tutorial:
+            tutorialView
+        case .faq:
+            faqView
         }
     }
 
@@ -150,7 +173,7 @@ public struct MenuBarVaultPanel: View {
             HStack(spacing: 8) {
                 shortcut(.secrets)
                 shortcut(.automation)
-                shortcut(.security)
+                shortcut(.tutorial)
             }
 
             Text("最近安全活动")
@@ -161,17 +184,31 @@ public struct MenuBarVaultPanel: View {
     }
 
     private func statusValue(_ title: String, _ available: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let tint = available ? Color.green : Color.secondary
+
+        return VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(available ? "可用" : "未就绪")
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(available ? Color.green : Color.secondary)
+                .foregroundStyle(tint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(
+            LinearGradient(
+                colors: [tint.opacity(0.13), Color(nsColor: .controlBackgroundColor).opacity(0.78)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tint.opacity(0.12), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
     }
 
     private func shortcut(_ section: VaultWorkbenchSection) -> some View {
@@ -182,7 +219,111 @@ public struct MenuBarVaultPanel: View {
                 .font(.caption.weight(.medium))
                 .frame(maxWidth: .infinity, minHeight: 42)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .background(
+            LinearGradient(
+                colors: [Color(nsColor: .controlBackgroundColor).opacity(0.82), Color.blue.opacity(0.07)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var tutorialView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            compactSectionHeader("使用教程", systemImage: VaultWorkbenchSection.tutorial.systemImage)
+            compactInfoRow(
+                title: "开始使用",
+                systemImage: "1.circle.fill",
+                text: "选择敏感信息目录后，在分组中创建条目。"
+            )
+            compactInfoRow(
+                title: "查看密码",
+                systemImage: "2.circle.fill",
+                text: "密码默认显示为已加密；解密前需要本机授权。"
+            )
+            compactInfoRow(
+                title: "交给智能体",
+                systemImage: "3.circle.fill",
+                text: "只传递 secret:// 引用和允许展示的元数据，明文留在本机。"
+            )
+            compactInfoRow(
+                title: "批准目录修改",
+                systemImage: "4.circle.fill",
+                text: "每次修改单独授权，使用后立即消费。"
+            )
+        }
+    }
+
+    private var faqView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            compactSectionHeader("常见问题", systemImage: VaultWorkbenchSection.faq.systemImage)
+            compactInfoRow(
+                title: "为什么看不到密码？",
+                systemImage: "questionmark.circle.fill",
+                text: "这是默认行为。完成本机授权后，密码才会短暂显示。"
+            )
+            compactInfoRow(
+                title: "可以在 Obsidian 里编辑吗？",
+                systemImage: "questionmark.circle.fill",
+                text: "可以。SVLT 会负责校验、授权和本机密文记录。"
+            )
+            compactInfoRow(
+                title: "智能体会看到什么？",
+                systemImage: "questionmark.circle.fill",
+                text: "智能体只能看到 secret:// 引用和允许展示的元数据。"
+            )
+        }
+    }
+
+    private func compactSectionHeader(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(.primary)
+    }
+
+    private func compactInfoRow(title: String, systemImage: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.blue)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+    }
+
+    private var headerSubtitle: String {
+        switch selectedSection {
+        case .overview:
+            return statusSummary
+        case .secrets:
+            return "分组目录与独立加密记录"
+        case .automation:
+            return "查看脱敏后的本机使用记录"
+        case .tutorial:
+            return "安全使用与本机授权说明"
+        case .faq:
+            return "常见问题与使用说明"
+        }
     }
 
     private var savedReferencesView: some View {
@@ -263,27 +404,6 @@ public struct MenuBarVaultPanel: View {
         }
     }
 
-    private var securityView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("安全边界")
-                .font(.headline)
-            fact("聊天中允许", "secret:// 引用和非敏感上下文")
-            fact("明文位置", "仅在本机授权后的窗口短暂显示")
-            fact("智能体禁止", "密码、token 和 Authorization header")
-            fact("高风险动作", "删除和外发都需要本机授权")
-        }
-    }
-
-    private func fact(_ title: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var statusSummary: String {
         if !status.ipcAvailable { return "本机通道未就绪" }
         if status.approvalPending { return "等待本机审批" }
@@ -299,5 +419,18 @@ public struct MenuBarVaultPanel: View {
 
     private func clearSensitiveState() {
         Task { await clearRevealSessions() }
+    }
+
+    private func openMainWindow() {
+        let section = selectedSection
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: MenuBarPresentation.mainWindowID)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .vaultWorkbenchNavigate,
+                object: nil,
+                userInfo: ["section": section.rawValue]
+            )
+        }
     }
 }

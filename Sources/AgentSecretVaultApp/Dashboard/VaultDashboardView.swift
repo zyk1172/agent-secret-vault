@@ -51,8 +51,8 @@ public struct VaultDashboardView: View {
                 systemImage: "paperplane",
                 description: "对外发送需要重新授权，并且返回内容会经过脱敏处理。"
             )
-        case .securityModel:
-            SecurityModelSummaryView()
+        case .tutorial:
+            OverviewGuideView()
         }
     }
 }
@@ -62,7 +62,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
     case encryptText
     case revealSecret
     case agentSend
-    case securityModel
+    case tutorial
 
     public var id: String { rawValue }
 
@@ -72,7 +72,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
         case .encryptText: "加密文本"
         case .revealSecret: "查看明文"
         case .agentSend: "智能体发送"
-        case .securityModel: "安全边界"
+        case .tutorial: "使用教程"
         }
     }
 
@@ -82,7 +82,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
         case .encryptText: "text.badge.lock"
         case .revealSecret: "eye"
         case .agentSend: "paperplane"
-        case .securityModel: "shield.lefthalf.filled"
+        case .tutorial: "book.closed.fill"
         }
     }
 }
@@ -104,20 +104,5 @@ private struct WorkflowInfoView: View {
         }
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
-
-private struct SecurityModelSummaryView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("安全边界")
-                    .font(.largeTitle.weight(.bold))
-                ForEach(VaultUICopy.securityBoundaries) { boundary in
-                    SecurityBoundaryCard(boundary: boundary)
-                }
-            }
-            .padding(28)
-        }
     }
 }

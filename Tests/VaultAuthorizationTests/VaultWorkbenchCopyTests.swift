@@ -51,7 +51,7 @@ import Foundation
 }
 
 @Test func workbenchHidesLocalScanFromNormalNavigation() {
-    #expect(VaultWorkbenchSection.allCases.map(\.rawValue) == ["overview", "secrets", "automation", "security"])
+    #expect(VaultWorkbenchSection.allCases.map(\.rawValue) == ["overview", "secrets", "automation", "tutorial", "faq"])
 }
 
 @Test func primaryWorkbenchCopyAvoidsBilingualSeparators() {
@@ -75,7 +75,8 @@ import Foundation
         "控制台",
         "敏感信息",
         "智能体自动化",
-        "安全边界"
+        "使用教程",
+        "常见问题"
     ])
     #expect(VaultWorkbenchSection.secrets.subtitle.contains("分组目录"))
     #expect(VaultWorkbenchSection.allCases.allSatisfy { !$0.systemImage.isEmpty })
@@ -94,15 +95,41 @@ import Foundation
     #expect(source.contains("独立加密记录"))
     #expect(source.contains("复制可用段落"))
     #expect(source.contains("尚未设置敏感信息目录"))
-    #expect(source.contains("SVLT 使用合法的 Obsidian Markdown 管理账号、密码和其他敏感信息。"))
+    #expect(!source.contains("需要查看空白模板时，请前往“安全边界”页面"))
     #expect(source.contains("LazyVGrid"))
     #expect(source.contains("SensitiveCatalogGroupSheet"))
+    #expect(source.contains("GitHubMark"))
+    #expect(source.contains(".regularMaterial"))
+    #expect(source.contains("LinearGradient("))
+    #expect(source.contains("RadialGradient("))
+    #expect(source.contains("VStack(alignment: .leading, spacing: 8)"))
+    #expect(source.contains(".font(.body.weight(isSelected ? .semibold : .regular))"))
+    #expect(source.contains(".padding(.vertical, 10)"))
+    #expect(source.contains(".frame(minHeight: 42)"))
+    #expect(source.contains("Color.indigo.opacity(0.22)"))
+    #expect(source.contains("Color.cyan.opacity(0.20)"))
+    #expect(source.contains(".allowsHitTesting(false)"))
+    #expect(!source.contains(".navigationTitle(selectedSection.title)"))
     #expect(source.contains("接纳外部 v3 文件"))
     #expect(source.contains("验证并接纳"))
     #expect(source.contains("CatalogFormatCheckCard("))
     #expect(source.contains("检查格式"))
     #expect(source.contains("修复格式"))
     #expect(source.contains("查看敏感信息模板"))
+    #expect(source.contains("prepareIndexDeletion(for: index, snapshot: snapshot)"))
+    #expect(source.contains(".accessibilityElement(children: .contain)"))
+    #expect(!source.contains("@State private var writeAccessRequest"))
+    #expect(!source.contains(".alert(item: $writeAccessRequest)"))
+    #expect(!source.contains("transaction.animation = nil"))
+    #expect(source.contains(".transition("))
+    #expect(source.contains(".offset(x: 6)"))
+    #expect(source.contains(".offset(y: -6)"))
+    #expect(source.contains("Color.cyan.opacity(0.42)"))
+    #expect(!source.contains("CatalogCardPalette"))
+    #expect(source.contains("为什么智能体每次修改目录都要授权？"))
+    #expect(source.contains(".font(.headline.weight(.semibold))"))
+    #expect(source.contains(".font(.callout)"))
+    #expect(source.contains("暂无活动"))
     #expect(!source.contains("LocalSensitiveScanCard"))
     #expect(!source.contains("记录维护"))
     #expect(!source.contains("恢复到版本"))
@@ -136,11 +163,11 @@ import Foundation
     #expect(VaultWorkbenchRenderingPolicy.usesStableRendering)
     #expect(!VaultWorkbenchRenderingPolicy.usesRepeatingAnimations)
     #expect(!VaultWorkbenchRenderingPolicy.usesBlurredBackgrounds)
-    #expect(!VaultWorkbenchRenderingPolicy.usesMaterialBackgrounds)
+    #expect(VaultWorkbenchRenderingPolicy.usesMaterialBackgrounds)
     #expect(VaultWorkbenchRenderingPolicy.usesTransientAnimations)
     #expect(source.contains("VaultWorkbenchMotion.interactive"))
     #expect(source.contains("withAnimation(VaultWorkbenchMotion.interactive)"))
-    #expect(source.contains(".animation(VaultWorkbenchMotion.interactive, value: isHovering)"))
+    #expect(source.contains(".animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)"))
 }
 
 @Test func numericTelemetryLabelsRespondToStringSelectorsOnMacOS27() {
