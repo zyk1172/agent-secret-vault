@@ -1778,6 +1778,20 @@ private struct SensitiveCatalogGroupSheet: View {
     @State private var isSelectingEntries = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var secretFieldCount: Int {
+        entries.reduce(into: 0) { count, entry in
+            count += entry.fields.reduce(into: 0) { fieldCount, field in
+                if field.type.isSecret {
+                    fieldCount += 1
+                }
+            }
+        }
+    }
+
+    private var headerSummary: String {
+        "条目 \(entries.count) · 密码字段 \(secretFieldCount)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
@@ -1787,7 +1801,7 @@ private struct SensitiveCatalogGroupSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(index.title)
                         .font(.title2.weight(.semibold))
-                    Text("条目 " + String(entries.count) + " · 密码字段 " + String(entries.flatMap { $0.fields }.filter { $0.type.isSecret }.count))
+                    Text(headerSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
