@@ -150,7 +150,10 @@ public struct EncryptedAuditLog: Sendable {
         let boundedLimit = min(max(limit, 1), 100)
         let recordResult = try readEventRecords()
         var events: [AuditEvent] = []
-        var integrityFailureCount = recordResult.diagnostics.integrityFailureCount
+        var authenticationFailureCount = recordResult.diagnostics.authenticationFailureCount
+        var eventDecodeFailureCount = recordResult.diagnostics.eventDecodeFailureCount
+        var unsupportedMetadataVersionCount = recordResult.diagnostics.unsupportedMetadataVersionCount
+        var legacyCompatibilityFailureCount = recordResult.diagnostics.legacyCompatibilityFailureCount
 
         // Authenticate and decode every structurally readable record before
         // sorting or applying the top-N bound. In v2, the outer createdAt is
@@ -159,16 +162,33 @@ public struct EncryptedAuditLog: Sendable {
         for (_, record) in recordResult.records {
             do {
                 events.append(try open(record, using: auditKey))
+            } catch let error as AuditRecordOpenFailure {
+                switch error {
+                case .authenticationFailure:
+                    authenticationFailureCount += 1
+                case .eventDecodeFailure:
+                    eventDecodeFailureCount += 1
+                case .unsupportedMetadataVersion:
+                    unsupportedMetadataVersionCount += 1
+                case .legacyCompatibilityFailure:
+                    legacyCompatibilityFailureCount += 1
+                }
             } catch {
-                integrityFailureCount += 1
+                // Keep a defensive bucket for future open-path failures. A
+                // new failure must never turn a partial read into all-or-
+                // nothing behavior or silently appear as a healthy event.
+                authenticationFailureCount += 1
             }
         }
 
         return AuditReadResult(
             events: Array(events.sorted { $0.timestamp > $1.timestamp }.prefix(boundedLimit)),
             diagnostics: AuditReadDiagnostics(
-                unreadableRecordCount: recordResult.diagnostics.unreadableRecordCount,
-                integrityFailureCount: integrityFailureCount
+                recordDecodeFailureCount: recordResult.diagnostics.recordDecodeFailureCount,
+                authenticationFailureCount: authenticationFailureCount,
+                eventDecodeFailureCount: eventDecodeFailureCount,
+                unsupportedMetadataVersionCount: unsupportedMetadataVersionCount,
+                legacyCompatibilityFailureCount: legacyCompatibilityFailureCount
             )
         )
     }
@@ -231,14 +251,20 @@ public struct EncryptedAuditLog: Sendable {
         )
         var records: [(URL, EncryptedAuditEventRecord)] = []
         var unreadableRecordCount = 0
+        var unsupportedMetadataVersionCount = 0
         for url in urls where url.lastPathComponent.hasSuffix(".audit.json") {
             do {
+                let record = try decoder.decode(
+                    EncryptedAuditEventRecord.self,
+                    from: Data(contentsOf: url)
+                )
+                guard Self.isSupportedMetadataVersion(record.metadataVersion) else {
+                    unsupportedMetadataVersionCount += 1
+                    continue
+                }
                 records.append((
                     url,
-                    try decoder.decode(
-                        EncryptedAuditEventRecord.self,
-                        from: Data(contentsOf: url)
-                    )
+                    record
                 ))
             } catch {
                 unreadableRecordCount += 1
@@ -246,38 +272,55 @@ public struct EncryptedAuditLog: Sendable {
         }
         return AuditRecordReadResult(
             records: records,
-            diagnostics: AuditReadDiagnostics(unreadableRecordCount: unreadableRecordCount)
+            diagnostics: AuditReadDiagnostics(
+                recordDecodeFailureCount: unreadableRecordCount,
+                unsupportedMetadataVersionCount: unsupportedMetadataVersionCount
+            )
         )
     }
 
     private func open(_ record: EncryptedAuditEventRecord, using auditKey: SymmetricKey) throws -> AuditEvent {
+        let associatedData: Data
+        switch record.metadataVersion {
+        case 1:
+            associatedData = Self.legacyAuditEventAssociatedData
+        case Self.authenticatedAuditEventMetadataVersion:
+            associatedData = Self.authenticatedAuditEventAssociatedData(
+                id: record.id,
+                createdAt: record.createdAt
+            )
+        default:
+            throw AuditRecordOpenFailure.unsupportedMetadataVersion
+        }
+
+        let data: Data
         do {
-            let associatedData: Data
-            switch record.metadataVersion {
-            case 1:
-                associatedData = Self.legacyAuditEventAssociatedData
-            case Self.authenticatedAuditEventMetadataVersion:
-                associatedData = Self.authenticatedAuditEventAssociatedData(
-                    id: record.id,
-                    createdAt: record.createdAt
-                )
-            default:
-                throw EncryptedAuditLogError.integrityFailed
-            }
             let box = try AES.GCM.SealedBox(
                 nonce: AES.GCM.Nonce(data: record.nonce),
                 ciphertext: record.ciphertext,
                 tag: record.tag
             )
-            let data = try AES.GCM.open(
+            data = try AES.GCM.open(
                 box,
                 using: auditKey,
                 authenticating: associatedData
             )
+        } catch {
+            throw AuditRecordOpenFailure.authenticationFailure
+        }
+
+        do {
             return try decoder.decode(AuditEvent.self, from: data)
         } catch {
-            throw EncryptedAuditLogError.integrityFailed
+            if record.metadataVersion == 1 {
+                throw AuditRecordOpenFailure.legacyCompatibilityFailure
+            }
+            throw AuditRecordOpenFailure.eventDecodeFailure
         }
+    }
+
+    private static func isSupportedMetadataVersion(_ version: Int) -> Bool {
+        version == 1 || version == authenticatedAuditEventMetadataVersion
     }
 
     private func open(_ record: WrappedAuditDataKey, masterKey: SymmetricKey) throws -> Data {
@@ -370,6 +413,13 @@ private struct EncryptedAuditEventRecord: Codable, Sendable {
 private struct AuditRecordReadResult: Sendable {
     let records: [(URL, EncryptedAuditEventRecord)]
     let diagnostics: AuditReadDiagnostics
+}
+
+private enum AuditRecordOpenFailure: Error {
+    case authenticationFailure
+    case eventDecodeFailure
+    case unsupportedMetadataVersion
+    case legacyCompatibilityFailure
 }
 
 private extension AES.GCM.Nonce {

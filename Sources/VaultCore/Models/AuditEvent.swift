@@ -133,24 +133,101 @@ public struct AuditEvent: Codable, Equatable, Sendable {
 
 /// Non-sensitive diagnostics produced while reading encrypted audit records.
 /// Counts identify how many records were omitted without exposing paths,
-/// ciphertext, payloads, or key material.
+/// ciphertext, payloads, or key material. The two legacy aliases are kept in
+/// the public shape and on the wire for older App/Agent builds.
 public struct AuditReadDiagnostics: Codable, Equatable, Sendable {
-    public let unreadableRecordCount: Int
-    public let integrityFailureCount: Int
+    public let recordDecodeFailureCount: Int
+    public let authenticationFailureCount: Int
+    public let eventDecodeFailureCount: Int
+    public let unsupportedMetadataVersionCount: Int
+    public let legacyCompatibilityFailureCount: Int
 
-    public init(unreadableRecordCount: Int = 0, integrityFailureCount: Int = 0) {
-        self.unreadableRecordCount = max(0, unreadableRecordCount)
-        self.integrityFailureCount = max(0, integrityFailureCount)
+    public init(
+        recordDecodeFailureCount: Int = 0,
+        authenticationFailureCount: Int = 0,
+        eventDecodeFailureCount: Int = 0,
+        unsupportedMetadataVersionCount: Int = 0,
+        legacyCompatibilityFailureCount: Int = 0
+    ) {
+        self.recordDecodeFailureCount = max(0, recordDecodeFailureCount)
+        self.authenticationFailureCount = max(0, authenticationFailureCount)
+        self.eventDecodeFailureCount = max(0, eventDecodeFailureCount)
+        self.unsupportedMetadataVersionCount = max(0, unsupportedMetadataVersionCount)
+        self.legacyCompatibilityFailureCount = max(0, legacyCompatibilityFailureCount)
+    }
+
+    /// Source-compatible initializer for the aggregate diagnostics used by
+    /// older App/Agent callers.
+    public init(unreadableRecordCount: Int, integrityFailureCount: Int = 0) {
+        self.init(
+            recordDecodeFailureCount: unreadableRecordCount,
+            authenticationFailureCount: integrityFailureCount
+        )
+    }
+
+    /// Source-compatible initializer for callers that only supplied the old
+    /// integrity aggregate.
+    public init(integrityFailureCount: Int) {
+        self.init(authenticationFailureCount: integrityFailureCount)
     }
 
     public static let none = Self()
 
+    /// Source-compatible alias for callers written before diagnostics were
+    /// split into concrete failure classes.
+    public var unreadableRecordCount: Int { recordDecodeFailureCount }
+
+    /// Source-compatible alias for AES-GCM authentication failures.
+    public var integrityFailureCount: Int { authenticationFailureCount }
+
     public var skippedRecordCount: Int {
-        unreadableRecordCount + integrityFailureCount
+        recordDecodeFailureCount
+            + authenticationFailureCount
+            + eventDecodeFailureCount
+            + unsupportedMetadataVersionCount
+            + legacyCompatibilityFailureCount
     }
 
     public var hasIssues: Bool {
         skippedRecordCount > 0
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case unreadableRecordCount
+        case integrityFailureCount
+        case recordDecodeFailureCount
+        case authenticationFailureCount
+        case eventDecodeFailureCount
+        case unsupportedMetadataVersionCount
+        case legacyCompatibilityFailureCount
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let recordDecodeFailureCount = try container.decodeIfPresent(Int.self, forKey: .recordDecodeFailureCount)
+        let legacyRecordDecodeFailureCount = try container.decodeIfPresent(Int.self, forKey: .unreadableRecordCount)
+        let authenticationFailureCount = try container.decodeIfPresent(Int.self, forKey: .authenticationFailureCount)
+        let legacyAuthenticationFailureCount = try container.decodeIfPresent(Int.self, forKey: .integrityFailureCount)
+        self.init(
+            recordDecodeFailureCount: recordDecodeFailureCount ?? legacyRecordDecodeFailureCount ?? 0,
+            authenticationFailureCount: authenticationFailureCount ?? legacyAuthenticationFailureCount ?? 0,
+            eventDecodeFailureCount: try container.decodeIfPresent(Int.self, forKey: .eventDecodeFailureCount) ?? 0,
+            unsupportedMetadataVersionCount: try container.decodeIfPresent(Int.self, forKey: .unsupportedMetadataVersionCount) ?? 0,
+            legacyCompatibilityFailureCount: try container.decodeIfPresent(Int.self, forKey: .legacyCompatibilityFailureCount) ?? 0
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        // Write both names so an older App can still render the aggregate
+        // warning while a newer App receives the detailed classification.
+        try container.encode(recordDecodeFailureCount, forKey: .unreadableRecordCount)
+        try container.encode(authenticationFailureCount, forKey: .integrityFailureCount)
+        try container.encode(recordDecodeFailureCount, forKey: .recordDecodeFailureCount)
+        try container.encode(authenticationFailureCount, forKey: .authenticationFailureCount)
+        try container.encode(eventDecodeFailureCount, forKey: .eventDecodeFailureCount)
+        try container.encode(unsupportedMetadataVersionCount, forKey: .unsupportedMetadataVersionCount)
+        try container.encode(legacyCompatibilityFailureCount, forKey: .legacyCompatibilityFailureCount)
     }
 }
 

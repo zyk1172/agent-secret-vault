@@ -247,7 +247,13 @@ private struct ControlService: AppControlServicing {
             target: "catalog",
             referenceCount: 0
         )],
-        diagnostics: AuditReadDiagnostics(unreadableRecordCount: 1, integrityFailureCount: 2)
+        diagnostics: AuditReadDiagnostics(
+            recordDecodeFailureCount: 1,
+            authenticationFailureCount: 2,
+            eventDecodeFailureCount: 3,
+            unsupportedMetadataVersionCount: 4,
+            legacyCompatibilityFailureCount: 5
+        )
     )
     let response = AppControlResponse.catalogRecentAuditEntries(result)
     let decoded = try JSONDecoder().decode(

@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import AgentSecretVaultApp
 import VaultCore
@@ -135,6 +137,70 @@ import VaultCore
     #expect(narrow.value >= 0)
 }
 
+@Test func catalogGroupPaneWidthUsesRatioWithUsableBounds() {
+    #expect(CatalogGroupLayout.paneWidth(availableWidth: 700) == CatalogGroupLayout.minimumPaneWidth)
+    #expect(CatalogGroupLayout.paneWidth(availableWidth: 1_000) == 280)
+    #expect(CatalogGroupLayout.paneWidth(availableWidth: 1_400) == CatalogGroupLayout.maximumPaneWidth)
+}
+
+@Test func auditReadDiagnosticsPreserveDetailedCategoriesAndLegacyWireData() throws {
+    let diagnostics = AuditReadDiagnostics(
+        recordDecodeFailureCount: 1,
+        authenticationFailureCount: 2,
+        eventDecodeFailureCount: 3,
+        unsupportedMetadataVersionCount: 4,
+        legacyCompatibilityFailureCount: 5
+    )
+    #expect(diagnostics.skippedRecordCount == 15)
+    #expect(diagnostics.hasIssues)
+
+    let roundTrip = try JSONDecoder().decode(
+        AuditReadDiagnostics.self,
+        from: JSONEncoder().encode(diagnostics)
+    )
+    #expect(roundTrip == diagnostics)
+
+    let legacy = try JSONDecoder().decode(
+        AuditReadDiagnostics.self,
+        from: Data("{\"unreadableRecordCount\":1,\"integrityFailureCount\":2}".utf8)
+    )
+    #expect(legacy.recordDecodeFailureCount == 1)
+    #expect(legacy.authenticationFailureCount == 2)
+    #expect(legacy.skippedRecordCount == 3)
+}
+
+@Test func catalogFieldDraftValidationMatchesCommitBoundaryRules() {
+    let validURL = SecretCatalogFieldValue(
+        key: "url",
+        label: "地址",
+        type: .url,
+        value: .string("https://example.com")
+    )
+    let invalidURL = SecretCatalogFieldValue(
+        key: "url",
+        label: "地址",
+        type: .url,
+        value: .string("not a URL")
+    )
+    let validDate = SecretCatalogFieldValue(
+        key: "date",
+        label: "日期",
+        type: .date,
+        value: .string("2026-08-29")
+    )
+    let invalidDate = SecretCatalogFieldValue(
+        key: "date",
+        label: "日期",
+        type: .date,
+        value: .string("2026-99-99")
+    )
+
+    #expect(CatalogFieldDraftValidation.message(for: validURL) == nil)
+    #expect(CatalogFieldDraftValidation.message(for: invalidURL) == "URL 格式不正确")
+    #expect(CatalogFieldDraftValidation.message(for: validDate) == nil)
+    #expect(CatalogFieldDraftValidation.message(for: invalidDate) == "日期应为 YYYY-MM-DD 或 ISO 8601 格式")
+}
+
 @Test func batchSelectionRetainsVisibleIDsAfterAuthoritativeRefresh() {
     var state = CatalogBatchSelectionState()
     state.begin()
@@ -165,8 +231,8 @@ import VaultCore
         health: .normal
     )
     #expect(partiallyReadable.entries == current)
-    #expect(partiallyReadable.warning?.contains("无法读取 1 条") == true)
-    #expect(partiallyReadable.warning?.contains("完整性验证失败 2 条") == true)
+    #expect(partiallyReadable.warning?.contains("无法解析 1 条") == true)
+    #expect(partiallyReadable.warning?.contains("认证失败 2 条") == true)
 
     let appendFailed = AuditRefreshState.reduce(
         previousEntries: previous,
@@ -215,8 +281,110 @@ import VaultCore
     }
     #expect(hero.lowerBound < activity.lowerBound)
     #expect(activity.lowerBound < pending.lowerBound)
+    #expect(overview.contains("minHeight: 160"))
+    #expect(overview.contains("minHeight: 120"))
+    #expect(overview.contains("idealHeight: 140"))
     #expect(overview.contains(".layoutPriority(1)"))
-    #expect(overview.contains("maxHeight: .infinity"))
+    #expect(!overview.contains("CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)\n                .layoutPriority(1)"))
+    #expect(!overview.contains("PendingSecretFillCard(\n                    pending: pending,\n                    entry: pendingEntry,\n                    commit: commitCatalogEntryEdit\n                )\n                .fixedSize"))
+}
+
+@Test func entryCardKeepsIndependentHitRegionsAndFieldEditorHasOneDraftSource() throws {
+    let source = try workbenchSource()
+    guard let cardStart = source.range(of: "private var normalCard"),
+          let detailsStart = source.range(of: "private var entryDetails")
+    else {
+        Issue.record("entry card regions not found")
+        return
+    }
+    let card = source[cardStart.lowerBound..<detailsStart.lowerBound]
+    #expect(!card.contains(".onTapGesture"))
+    #expect(card.contains("Button { showingDetails = true }"))
+    #expect(card.contains("Button(\"删除\", role: .destructive, action: requestDelete)"))
+
+    #expect(source.contains("ForEach($draftFields, id: \\.key)"))
+    #expect(source.contains("fieldSelection"))
+    #expect(source.contains("deleteSelectedFields()"))
+    #expect(!source.contains("应用字段"))
+    #expect(!source.contains("取消编辑"))
+    #expect(source.contains("CatalogDetailMetrics.horizontalPadding"))
+}
+
+@MainActor @Test func overviewHostingFitsMinimumAndDefaultWindowWithAndWithoutPendingSecret() throws {
+    let status = WorkbenchStatus(
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: nil,
+        pluginConnected: true
+    )
+    let pending = PendingCatalogSecret(
+        indexID: "index",
+        indexTitle: String(repeating: "很长的分组标题 ", count: 8),
+        entryID: "entry",
+        entryTitle: String(repeating: "很长的条目标题 ", count: 8),
+        fieldKey: "password",
+        fieldLabel: String(repeating: "密码字段 ", count: 8),
+        fieldType: .secret,
+        remainingCount: 14
+    )
+    let pendingEntry = SecretCatalogEntry(
+        id: "entry",
+        indexId: "index",
+        title: pending.entryTitle,
+        fields: [SecretCatalogFieldValue(key: pending.fieldKey, label: pending.fieldLabel, type: .secret)]
+    )
+    let cases: [(size: CGSize, pending: PendingCatalogSecret?, entry: SecretCatalogEntry?, activityCount: Int)] = [
+        (CGSize(width: 1_180, height: 760), pending, pendingEntry, 100),
+        (CGSize(width: 1_280, height: 820), pending, pendingEntry, 100),
+        (CGSize(width: 1_180, height: 760), nil, nil, 0),
+        (CGSize(width: 1_280, height: 820), nil, nil, 0)
+    ]
+
+    for configuration in cases {
+        let probe = OverviewLayoutProbe()
+        let content = WorkbenchOverviewContent(
+            status: status,
+            agentServiceStatus: .running,
+            agentServiceActionInFlight: false,
+            agentServiceActionErrorMessage: nil,
+            enableAgentService: nil,
+            disableAgentService: nil,
+            restartAgentService: nil,
+            auditEntries: (0..<configuration.activityCount).map { fixtureAuditEntry(target: "activity-\($0)") },
+            auditError: configuration.activityCount == 100 ? "部分安全活动记录异常" : nil,
+            pending: configuration.pending,
+            pendingEntry: configuration.entry,
+            commitCatalogEntryEdit: nil
+        )
+        let root = content.onPreferenceChange(WorkbenchOverviewSectionFramesKey.self) { frames in
+            probe.frames = frames
+        }
+        let hostingView = NSHostingView(rootView: root)
+        hostingView.frame = NSRect(origin: .zero, size: configuration.size)
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        hostingView.layoutSubtreeIfNeeded()
+
+        let expectedIDs: Set<WorkbenchOverviewSectionID> = configuration.pending == nil
+            ? [.hero, .activity]
+            : [.hero, .activity, .pending]
+        #expect(Set(probe.frames.keys) == expectedIDs)
+        #expect(hostingView.frame.size == configuration.size)
+        #expect(hostingView.fittingSize.height.isFinite)
+        for frame in probe.frames.values {
+            #expect(frame.minX >= -1)
+            #expect(frame.minY >= -1)
+            #expect(frame.maxX <= configuration.size.width + 1)
+            #expect(frame.maxY <= configuration.size.height + 1)
+        }
+        if configuration.pending != nil {
+            let pendingFrame = try #require(probe.frames[.pending])
+            #expect(pendingFrame.height >= 119)
+            #expect(pendingFrame.height <= 171)
+        }
+        let activityFrame = try #require(probe.frames[.activity])
+        #expect(activityFrame.height >= 159)
+    }
 }
 
 @Test func mainWindowUsesHiddenTitleBarWithoutRemovingMacOSChrome() throws {
@@ -255,4 +423,9 @@ private func fixtureAuditEntry(target: String) -> CatalogSecurityAuditEntry {
         target: target,
         referenceCount: 0
     )
+}
+
+@MainActor
+private final class OverviewLayoutProbe {
+    var frames: [WorkbenchOverviewSectionID: CGRect] = [:]
 }
