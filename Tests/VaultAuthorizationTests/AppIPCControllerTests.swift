@@ -40,7 +40,7 @@ import VaultService
 
 @Test func appControlPeerAuthenticatorPinsTheExpectedBundleAndTeam() throws {
     #expect(AppControlPeerAuthenticator.svltBundleIdentifier == "com.agent-secret-vault.SVLT")
-    #expect(AppControlPeerAuthenticator.svltTeamIdentifier == "9KXSB4HR69")
+    #expect(AppControlPeerAuthenticator.svltTeamIdentifier == "JUQXD87P93")
     #expect(AppControlPeerAuthenticator.svltDesignatedRequirement.contains(AppControlPeerAuthenticator.svltBundleIdentifier))
     #expect(AppControlPeerAuthenticator.svltDesignatedRequirement.contains(AppControlPeerAuthenticator.svltTeamIdentifier))
 

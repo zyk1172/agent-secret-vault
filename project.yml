@@ -3,7 +3,7 @@ name: SVLT
 settings:
   base:
     SWIFT_VERSION: 6.0
-    DEVELOPMENT_TEAM: "9KXSB4HR69"
+    DEVELOPMENT_TEAM: "JUQXD87P93"
     CODE_SIGN_STYLE: Automatic
 
 targets:

@@ -1577,55 +1577,55 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					160319EC3D54A6D48327EF69 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					220CDA200412FA123E185C24 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					4D4AAA86B56416ED476802A7 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					518A74E184DD0753026716CD = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					5248DC09F2511964B47BA1C6 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					561F723C545CFF984CFD7A7D = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					579CF4058E72E253F0EA1615 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					839BA397656D992385802D9A = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					9B25E141FA32BA15CC63CDBD = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					A2D83343D01B65E759D05B81 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					B1504E1197E69DE63A69534C = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					B74A522843B3D6B8F8D2D0F6 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 					BE4703D12B227579B175C972 = {
-						DevelopmentTeam = 9KXSB4HR69;
+						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -2390,7 +2390,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 9KXSB4HR69;
+				DEVELOPMENT_TEAM = JUQXD87P93;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -2477,7 +2477,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 9KXSB4HR69;
+				DEVELOPMENT_TEAM = JUQXD87P93;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
