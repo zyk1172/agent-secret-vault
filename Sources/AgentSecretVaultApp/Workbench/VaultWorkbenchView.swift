@@ -87,6 +87,108 @@ public typealias CatalogMutationUIResult = Result<CatalogWriteResult, CatalogMut
 public typealias CatalogEntryCreationError = CatalogMutationUIError
 public typealias CatalogEntryCreationResult = CatalogMutationUIResult
 
+/// The next authoritative empty secret field in Catalog source order.  This
+/// model deliberately carries display metadata only; plaintext never enters
+/// the resolver or the view-model it returns.
+public struct PendingCatalogSecret: Equatable, Sendable {
+    public let indexID: String
+    public let indexTitle: String
+    public let entryID: String
+    public let entryTitle: String
+    public let fieldKey: String
+    public let fieldLabel: String
+    public let fieldType: SecretCatalogFieldType
+    public let remainingCount: Int
+
+    public init(
+        indexID: String,
+        indexTitle: String,
+        entryID: String,
+        entryTitle: String,
+        fieldKey: String,
+        fieldLabel: String,
+        fieldType: SecretCatalogFieldType,
+        remainingCount: Int
+    ) {
+        self.indexID = indexID
+        self.indexTitle = indexTitle
+        self.entryID = entryID
+        self.entryTitle = entryTitle
+        self.fieldKey = fieldKey
+        self.fieldLabel = fieldLabel
+        self.fieldType = fieldType
+        self.remainingCount = remainingCount
+    }
+}
+
+public enum PendingCatalogSecretResolver {
+    public static func resolve(in document: SecretCatalogDocument) -> PendingCatalogSecret? {
+        var placeholders: [(SecretCatalogIndex, SecretCatalogEntry, SecretCatalogFieldValue)] = []
+        for index in document.indexes {
+            for entry in document.entries where entry.indexId == index.id {
+                for field in entry.fields where field.type.isSecret && field.secretRef == nil {
+                    placeholders.append((index, entry, field))
+                }
+            }
+        }
+        guard let first = placeholders.first else { return nil }
+        return PendingCatalogSecret(
+            indexID: first.0.id,
+            indexTitle: first.0.title,
+            entryID: first.1.id,
+            entryTitle: first.1.title,
+            fieldKey: first.2.key,
+            fieldLabel: first.2.label,
+            fieldType: first.2.type,
+            remainingCount: placeholders.count
+        )
+    }
+}
+
+/// Small, shared selection state used by both Catalog batch-delete surfaces.
+public struct CatalogBatchSelectionState: Equatable, Sendable {
+    public private(set) var selectedIDs: Set<String> = []
+    public private(set) var isSelecting = false
+
+    public init() {}
+
+    public mutating func begin() { isSelecting = true; selectedIDs.removeAll() }
+    public mutating func toggle(_ id: String) {
+        if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
+    }
+    public mutating func selectAll(_ ids: [String]) { selectedIDs = Set(ids) }
+    public mutating func clear() { selectedIDs.removeAll() }
+    public mutating func finish() { selectedIDs.removeAll(); isSelecting = false }
+    public mutating func deleteSucceeded(_ ids: [String]) {
+        selectedIDs.subtract(ids)
+        if selectedIDs.isEmpty { isSelecting = false }
+    }
+}
+
+public struct CatalogDeletionSummary: Equatable, Sendable {
+    public let itemCount: Int
+    public let entryCount: Int
+    public let secretFieldCount: Int
+
+    public static func indexes(ids: [String], in document: SecretCatalogDocument) -> Self {
+        let entries = document.entries.filter { ids.contains($0.indexId) }
+        return Self(
+            itemCount: ids.count,
+            entryCount: entries.count,
+            secretFieldCount: entries.flatMap(\.fields).filter { $0.type.isSecret }.count
+        )
+    }
+
+    public static func entries(ids: [String], in entries: [SecretCatalogEntry]) -> Self {
+        let selected = entries.filter { ids.contains($0.id) }
+        return Self(
+            itemCount: ids.count,
+            entryCount: 0,
+            secretFieldCount: selected.flatMap(\.fields).filter { $0.type.isSecret }.count
+        )
+    }
+}
+
 public enum VaultWorkbenchRenderingPolicy {
     public static let usesStableRendering = true
     public static let usesRepeatingAnimations = false
@@ -98,6 +200,14 @@ public enum VaultWorkbenchRenderingPolicy {
 public enum VaultWorkbenchMotion {
     public static let interactive = Animation.easeInOut(duration: 0.18)
     public static let authorization = Animation.spring(response: 0.28, dampingFraction: 0.86)
+}
+
+private struct CatalogDetailContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 260
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
 }
 
 public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable {
@@ -433,9 +543,9 @@ public struct VaultWorkbenchView: View {
             }
         case .automation:
             WorkbenchPage(title: "智能体自动化", subtitle: "", systemImage: selectedSection.systemImage) {
-                VStack(spacing: 14) {
-                    AgentAutomationAuditCard(entries: auditEntries, errorMessage: auditError)
-                }
+                AgentAutomationAuditCard(entries: auditEntries, errorMessage: auditError)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
             }
         case .tutorial:
             WorkbenchPage(title: "使用教程", subtitle: "", systemImage: selectedSection.systemImage) {
@@ -460,7 +570,18 @@ public struct VaultWorkbenchView: View {
                 restartAgentService: restartAgentService
             )
 
+            if let snapshot = sensitiveCatalogSnapshot,
+               let pending = PendingCatalogSecretResolver.resolve(in: snapshot.document),
+               let entry = snapshot.document.entries.first(where: { $0.id == pending.entryID }) {
+                PendingSecretFillCard(
+                    pending: pending,
+                    entry: entry,
+                    commit: commitCatalogEntryEdit
+                )
+            }
+
             CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)
+                .layoutPriority(1)
         }
     }
 
@@ -560,7 +681,8 @@ private struct WorkbenchPage<Content: View>: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(30)
+        .padding(.horizontal, 30)
+        .padding(.vertical, 22)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -1112,85 +1234,165 @@ private struct QuickMenuCard: View {
     }
 }
 
+private struct WorkbenchPanelSurface<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .background(
+                LinearGradient(
+                    colors: [Color.cyan.opacity(0.16), Color.blue.opacity(0.08), Color.indigo.opacity(0.06)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.cyan.opacity(0.16), lineWidth: 1)
+            }
+    }
+}
+
+private struct PendingSecretFillCard: View {
+    let pending: PendingCatalogSecret
+    let entry: SecretCatalogEntry
+    let commit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
+
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var plaintext = ""
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        WorkbenchPanelSurface {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("待填写密文", systemImage: "lock.badge.plus")
+                        .font(.headline.weight(.semibold))
+                    Spacer()
+                    Text("待填写 \(pending.remainingCount) 项")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pending.indexTitle).font(.caption).foregroundStyle(.secondary)
+                    Text(pending.entryTitle).font(.body.weight(.semibold))
+                    Text("\(pending.fieldLabel) · \(pending.fieldType == .secret ? "密文（secret）" : pending.fieldType.rawValue)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 10) {
+                    SecureField("输入\(pending.fieldLabel)", text: $plaintext)
+                        .textFieldStyle(.roundedBorder)
+                    Button(isSubmitting ? "加密中…" : "填写并加密") { submit() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSubmitting || plaintext.isEmpty || commit == nil)
+                }
+
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(14)
+        }
+        .onDisappear(perform: wipePlaintext)
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { wipePlaintext() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            wipePlaintext()
+        }
+    }
+
+    private func submit() {
+        let value = plaintext
+        guard !value.isEmpty, let commit else { return }
+        isSubmitting = true
+        errorMessage = nil
+        Task { @MainActor in
+            let result = await commit(
+                entry,
+                [CatalogSecretInput(key: pending.fieldKey, label: pending.fieldLabel, plaintext: value)]
+            )
+            wipePlaintext()
+            isSubmitting = false
+            switch result {
+            case .success:
+                errorMessage = nil
+            case let .failure(error):
+                errorMessage = error.displayText
+            }
+        }
+    }
+
+    private func wipePlaintext() { plaintext = "" }
+}
+
 private struct CompactAuditPreviewCard: View {
     let entries: [CatalogSecurityAuditEntry]
     let errorMessage: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("最近自动化", systemImage: "sparkles.rectangle.stack")
-                    .font(.headline.weight(.semibold))
-                Spacer()
-            Text(entries.isEmpty ? "暂无记录" : "最近 \(entries.count) 条")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            if entries.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "clock.badge.questionmark")
+        WorkbenchPanelSurface {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("最近自动化", systemImage: "sparkles.rectangle.stack")
+                        .font(.headline.weight(.semibold))
+                    Spacer()
+                    Text(entries.isEmpty ? "暂无记录" : "最近 \(entries.count) 条")
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
-                    Text("暂无活动")
-                        .font(.body)
                 }
-                .foregroundStyle(.secondary)
-            } else {
+
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
                 ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 6) {
-                        ForEach(entries) { entry in
-                            HStack(spacing: 8) {
-                            Image(systemName: iconName(for: entry.operation))
-                                .foregroundStyle(.blue)
-                                .frame(width: 18)
-                            Text(entry.operation.displayName)
-                                .font(.callout.weight(.semibold))
-                                .lineLimit(1)
-                            Text(entry.target)
-                                .font(.caption)
+                    if entries.isEmpty {
+                        VStack {
+                            Spacer(minLength: 24)
+                            Label("暂无活动", systemImage: "clock.badge.questionmark")
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
                             Spacer()
-                            Text(entry.result.displayName)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
                         }
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 10)
-                            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .transition(
-                                reduceMotion
-                                    ? .opacity
-                                    : .opacity.combined(with: .offset(y: -4))
-                            )
+                        .frame(maxWidth: .infinity, minHeight: 160)
+                    } else {
+                        VStack(spacing: 6) {
+                            ForEach(entries) { entry in
+                                HStack(spacing: 8) {
+                                    Image(systemName: iconName(for: entry.operation)).foregroundStyle(.blue).frame(width: 18)
+                                    Text(entry.operation.displayName).font(.callout.weight(.semibold)).lineLimit(1)
+                                    Text(entry.target).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    Spacer()
+                                    Text(entry.result.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 10)
+                                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -4)))
+                            }
                         }
                     }
                 }
                 .scrollIndicators(.automatic)
-                .frame(minHeight: 240, maxHeight: 300)
+                .frame(maxHeight: .infinity)
             }
+            .padding(14)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [Color.cyan.opacity(0.16), Color.blue.opacity(0.06)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.cyan.opacity(0.14), lineWidth: 1)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: entries.map(\.id))
     }
 
@@ -1379,6 +1581,7 @@ private struct SensitiveCatalogEditorCard: View {
     @State private var createIndexError: CatalogMutationUIError?
     @State private var selectedIndexID: String?
     @State private var hoveredIndexID: String?
+    @State private var indexSelection = CatalogBatchSelectionState()
     @State private var pendingIndexDeletion: CatalogDeletionRequest?
     @State private var deletionError: CatalogMutationUIError?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1568,10 +1771,42 @@ private struct SensitiveCatalogEditorCard: View {
                 } else {
                     HStack(alignment: .top, spacing: 0) {
                         VStack(alignment: .leading, spacing: 10) {
-                            HStack {
+                            HStack(alignment: .firstTextBaseline) {
                                 Text("分组")
                                     .font(.headline)
                                 Spacer()
+                                Button(indexSelection.isSelecting ? "完成" : "批量编辑") {
+                                    withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                                        if indexSelection.isSelecting {
+                                            indexSelection.finish()
+                                        } else {
+                                            indexSelection.begin()
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(!indexSelection.isSelecting && snapshot.document.indexes.isEmpty)
+                            }
+
+                            if indexSelection.isSelecting {
+                                HStack(spacing: 8) {
+                                    Text("已选 \(indexSelection.selectedIDs.count)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button(indexSelection.selectedIDs.count == snapshot.document.indexes.count ? "取消全选" : "全选") {
+                                        if indexSelection.selectedIDs.count == snapshot.document.indexes.count {
+                                            indexSelection.clear()
+                                        } else {
+                                            indexSelection.selectAll(snapshot.document.indexes.map(\.id))
+                                        }
+                                    }
+                                    .buttonStyle(.borderless)
+                                    Button("删除所选", role: .destructive) { prepareIndexDeletion(ids: indexSelection.selectedIDs.sorted(), snapshot: snapshot) }
+                                        .buttonStyle(.borderless)
+                                        .disabled(indexSelection.selectedIDs.isEmpty || isWorking || applyBatch == nil)
+                                }
+                                .font(.caption.weight(.medium))
                             }
 
                             ScrollView {
@@ -1647,15 +1882,24 @@ private struct SensitiveCatalogEditorCard: View {
     private func indexRow(index: SecretCatalogIndex, entries: [SecretCatalogEntry], snapshot: SensitiveCatalogSnapshot) -> some View {
         let isSelected = selectedIndexID == index.id
         let isHovered = hoveredIndexID == index.id
-        return Button {
-            withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-                selectedIndexID = index.id
-            }
-        } label: {
+        let isBatchSelected = indexSelection.selectedIDs.contains(index.id)
+        return HStack(spacing: 8) {
+            Button {
+                withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                    if indexSelection.isSelecting {
+                        indexSelection.toggle(index.id)
+                    } else {
+                        selectedIndexID = index.id
+                    }
+                }
+            } label: {
             HStack(spacing: 12) {
+                if indexSelection.isSelecting {
+                    Image(systemName: isBatchSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isBatchSelected ? Color.accentColor : .secondary)
+                }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(index.title)
-                        .font(.callout.weight(isSelected ? .semibold : .regular))
+                    Text(index.title).font(.callout.weight((isSelected || isBatchSelected) ? .semibold : .regular))
                         .fixedSize(horizontal: false, vertical: true)
                     Text("\(entries.count) 个条目")
                         .font(.callout)
@@ -1669,38 +1913,40 @@ private struct SensitiveCatalogEditorCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel(index.title)
+            .accessibilityValue(indexSelection.isSelecting ? (isBatchSelected ? "已选中" : "未选中") : (isSelected ? "当前分组" : "分组"))
+            .accessibilityHint(indexSelection.isSelecting ? "选择分组用于批量删除" : "查看该分组中的条目")
+
+            if !indexSelection.isSelecting {
+                Button(role: .destructive) {
+                    prepareIndexDeletion(for: index, snapshot: snapshot)
+                } label: {
+                    Image(systemName: "trash").font(.callout.weight(.semibold)).frame(width: 34, height: 34)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("删除分组")
+                .accessibilityLabel("删除分组")
+                .disabled(applyBatch == nil)
+            }
+        }
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .background(
             LinearGradient(
                 colors: [
-                    Color.blue.opacity(isSelected ? 0.24 : 0.14),
-                    Color.indigo.opacity(isSelected ? 0.14 : 0.05)
+                    Color.blue.opacity((isSelected || isBatchSelected) ? 0.24 : 0.14),
+                    Color.indigo.opacity((isSelected || isBatchSelected) ? 0.14 : 0.05)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
-        .overlay(alignment: .trailing) {
-            Button(role: .destructive) {
-                prepareIndexDeletion(for: index, snapshot: snapshot)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("删除分组")
-            .accessibilityLabel("删除分组")
-            .disabled(applyBatch == nil)
-            .padding(.trailing, 8)
-        }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(
-                    isSelected
+                    (isSelected || isBatchSelected)
                         ? Color.accentColor.opacity(0.78)
                         : (isHovered ? Color.blue.opacity(0.42) : Color.blue.opacity(0.18)),
                     lineWidth: isSelected ? 2 : (isHovered ? 1.5 : 1)
@@ -1712,20 +1958,22 @@ private struct SensitiveCatalogEditorCard: View {
             hoveredIndexID = isHovering ? index.id : nil
         }
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovered)
-        .accessibilityLabel(index.title)
-        .accessibilityValue(isSelected ? "当前分组" : "分组")
-        .accessibilityHint("查看该分组中的条目")
     }
 
     private func prepareIndexDeletion(for index: SecretCatalogIndex, snapshot: SensitiveCatalogSnapshot) {
-        let selectedEntries = snapshot.document.entries.filter { $0.indexId == index.id }
+        prepareIndexDeletion(ids: [index.id], snapshot: snapshot)
+    }
+
+    private func prepareIndexDeletion(ids: [String], snapshot: SensitiveCatalogSnapshot) {
+        guard !ids.isEmpty else { return }
+        let summary = CatalogDeletionSummary.indexes(ids: ids, in: snapshot.document)
         pendingIndexDeletion = CatalogDeletionRequest(
-            id: index.id,
+            id: ids.joined(separator: ","),
             kind: .indexes,
-            ids: [index.id],
-            itemCount: 1,
-            entryCount: selectedEntries.count,
-            secretFieldCount: selectedEntries.flatMap(\.fields).filter { $0.type.isSecret }.count
+            ids: ids,
+            itemCount: summary.itemCount,
+            entryCount: summary.entryCount,
+            secretFieldCount: summary.secretFieldCount
         )
     }
 
@@ -1748,6 +1996,7 @@ private struct SensitiveCatalogEditorCard: View {
                 if ids.contains(selectedIndexID ?? "") {
                     selectedIndexID = nil
                 }
+                indexSelection.deleteSucceeded(ids)
             case let .failure(error):
                 deletionError = error
             }
@@ -1774,8 +2023,7 @@ private struct SensitiveCatalogGroupSheet: View {
     @State private var isWorking = false
     @State private var createError: CatalogEntryCreationError?
     @State private var deletionError: CatalogMutationUIError?
-    @State private var selectedEntryIDs: Set<String> = []
-    @State private var isSelectingEntries = false
+    @State private var entrySelection = CatalogBatchSelectionState()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var secretFieldCount: Int {
@@ -1814,62 +2062,35 @@ private struct SensitiveCatalogGroupSheet: View {
                     createError = nil
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(entrySelection.isSelecting)
 
-                if isSelectingEntries {
-                    Button {
-                        if selectedEntryIDs.count == entries.count {
-                            selectedEntryIDs.removeAll()
+                Spacer()
+                if entrySelection.isSelecting {
+                    Text("已选 \(entrySelection.selectedIDs.count)").font(.caption).foregroundStyle(.secondary)
+                    Button(entrySelection.selectedIDs.count == entries.count ? "取消全选" : "全选") {
+                        if entrySelection.selectedIDs.count == entries.count {
+                            entrySelection.clear()
                         } else {
-                            selectedEntryIDs = Set(entries.map(\.id))
+                            entrySelection.selectAll(entries.map(\.id))
                         }
-                    } label: {
-                        Image(systemName: selectedEntryIDs.count == entries.count ? "checkmark.circle.fill" : "circle")
                     }
                     .buttonStyle(.borderless)
-                    .help(selectedEntryIDs.count == entries.count ? "取消全选条目" : "全选条目")
-                    .accessibilityLabel(selectedEntryIDs.count == entries.count ? "取消全选条目" : "全选条目")
-
-                    Button(role: .destructive) {
-                        prepareEntryDeletion()
-                    } label: {
-                        Image(systemName: "trash")
+                    Button("删除所选", role: .destructive) { prepareEntryDeletion() }
+                        .buttonStyle(.borderless)
+                        .disabled(isWorking || entrySelection.selectedIDs.isEmpty || applyBatch == nil)
+                    Button("完成") {
+                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) { entrySelection.finish() }
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .help("删除选中条目")
-                    .accessibilityLabel("删除选中条目")
-                    .disabled(isWorking || selectedEntryIDs.isEmpty || applyBatch == nil)
-
-                    Text("已选 \(selectedEntryIDs.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-                            isSelectingEntries = false
-                            selectedEntryIDs.removeAll()
-                        }
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("完成批量编辑")
-                    .accessibilityLabel("完成批量编辑")
                 } else {
-                    Button {
-                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-                            isSelectingEntries = true
-                            selectedEntryIDs.removeAll()
-                        }
-                    } label: {
-                        Label("批量编辑", systemImage: "checklist")
+                    Button("批量编辑") {
+                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) { entrySelection.begin() }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderless)
                     .help("批量编辑条目")
                     .accessibilityLabel("批量编辑条目")
                     .disabled(entries.isEmpty)
                 }
-                Spacer()
             }
 
             if let deletionError {
@@ -1944,8 +2165,8 @@ private struct SensitiveCatalogGroupSheet: View {
                             SensitiveCatalogEntryRow(
                                 entry: entry,
                                 autoEdit: newlyCreatedEntryID == entry.id,
-                                isSelecting: isSelectingEntries,
-                                isSelected: selectedEntryIDs.contains(entry.id),
+                                isSelecting: entrySelection.isSelecting,
+                                isSelected: entrySelection.selectedIDs.contains(entry.id),
                                 toggleSelection: { toggleEntrySelection(entry.id) },
                                 commitEntryEdit: commitEntryEdit,
                                 revealCatalogField: revealCatalogField,
@@ -1975,25 +2196,21 @@ private struct SensitiveCatalogGroupSheet: View {
 
     private func toggleEntrySelection(_ id: String) {
         withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-            if selectedEntryIDs.contains(id) {
-                selectedEntryIDs.remove(id)
-            } else {
-                selectedEntryIDs.insert(id)
-            }
+            entrySelection.toggle(id)
         }
     }
 
     private func prepareEntryDeletion(for entry: SecretCatalogEntry? = nil) {
-        let ids = entry.map { [$0.id] } ?? selectedEntryIDs.sorted()
+        let ids = entry.map { [$0.id] } ?? entrySelection.selectedIDs.sorted()
         guard !ids.isEmpty else { return }
-        let selectedEntries = entries.filter { ids.contains($0.id) }
+        let summary = CatalogDeletionSummary.entries(ids: ids, in: entries)
         pendingEntryDeletion = CatalogDeletionRequest(
             id: ids.joined(separator: ","),
             kind: .entries,
             ids: ids,
-            itemCount: ids.count,
-            entryCount: 0,
-            secretFieldCount: selectedEntries.flatMap(\.fields).filter { $0.type.isSecret }.count
+            itemCount: summary.itemCount,
+            entryCount: summary.entryCount,
+            secretFieldCount: summary.secretFieldCount
         )
     }
 
@@ -2013,10 +2230,7 @@ private struct SensitiveCatalogGroupSheet: View {
             let result = await applyBatch(CatalogBatchMutation(operations: ids.map { .deleteEntry(id: $0) }))
             switch result {
             case .success:
-                selectedEntryIDs.subtract(ids)
-                if selectedEntryIDs.isEmpty {
-                    isSelectingEntries = false
-                }
+                entrySelection.deleteSucceeded(ids)
             case let .failure(error):
                 deletionError = error
             }
@@ -2053,6 +2267,7 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var revealingKeys: Set<String> = []
     @State private var revealError: String?
     @State private var isHovering = false
+    @State private var detailContentHeight: CGFloat = 260
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -2097,15 +2312,15 @@ private struct SensitiveCatalogEntryRow: View {
                             .font(.title3)
                             .foregroundStyle(isSelected ? Color.accentColor : .secondary)
 
-                        VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
                             entrySummary
                             entryCounts
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         Spacer(minLength: 0)
                     }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -2116,7 +2331,7 @@ private struct SensitiveCatalogEntryRow: View {
                 normalCard
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
         .background(
             LinearGradient(
                 colors: [
@@ -2143,7 +2358,14 @@ private struct SensitiveCatalogEntryRow: View {
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)
         .sheet(isPresented: $showingDetails, onDismiss: clearSensitiveOutput) {
             entryDetails
-                .frame(minWidth: 760, idealWidth: 900, minHeight: 520)
+                .frame(
+                    minWidth: 760,
+                    idealWidth: 860,
+                    maxWidth: 900,
+                    minHeight: editing ? 520 : 260,
+                    idealHeight: editing ? 640 : min(max(detailContentHeight + 92, 260), 720),
+                    maxHeight: editing ? 720 : min(max(detailContentHeight + 92, 260), 720)
+                )
         }
         .onDisappear {
             clearSensitiveOutput()
@@ -2154,29 +2376,19 @@ private struct SensitiveCatalogEntryRow: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .inactive || phase == .background { clearSensitiveOutput() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            clearSensitiveOutput()
+        }
     }
 
     private var normalCard: some View {
-        Button {
-            showingDetails = true
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 10) {
-                    entrySummary
-                    Spacer(minLength: 44)
-                }
-
-                HStack(alignment: .top, spacing: 12) {
-                    entryCounts
-                    Spacer(minLength: 44)
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .topTrailing) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Button { showingDetails = true } label: { entrySummary }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(entry.title)
+                    .accessibilityHint("打开条目详情")
+                Spacer(minLength: 0)
             Button {
                 load(entry)
                 editing = true
@@ -2192,31 +2404,24 @@ private struct SensitiveCatalogEntryRow: View {
             .foregroundStyle(.secondary)
             .help("编辑条目")
             .accessibilityLabel("编辑条目")
-            .padding(.top, 7)
-            .padding(.trailing, 8)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            Button(role: .destructive, action: requestDelete) {
-                Image(systemName: "trash")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("删除条目")
-            .accessibilityLabel("删除条目")
-            .disabled(applyBatch == nil)
-            .padding(.bottom, 7)
-            .padding(.trailing, 8)
+            HStack(spacing: 12) {
+                entryCounts
+                Spacer()
+                Button("删除", role: .destructive, action: requestDelete)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("删除条目")
+                    .accessibilityLabel("删除条目")
+                    .disabled(applyBatch == nil)
+            }
         }
-        .accessibilityLabel(entry.title)
-        .accessibilityHint("打开条目详情")
+        .padding(12)
     }
 
     private var entryDetails: some View {
         NavigationStack {
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: editing) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
@@ -2237,7 +2442,14 @@ private struct SensitiveCatalogEntryRow: View {
                     }
                 }
                 .padding(22)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: CatalogDetailContentHeightKey.self, value: proxy.size.height)
+                    }
+                )
             }
+            .frame(maxHeight: editing ? .infinity : min(max(detailContentHeight + 92, 260), 720))
+            .onPreferenceChange(CatalogDetailContentHeightKey.self) { detailContentHeight = $0 }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") {
@@ -2267,22 +2479,20 @@ private struct SensitiveCatalogEntryRow: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "key.horizontal")
                 .foregroundStyle(.green)
+                .frame(width: 18, height: 22, alignment: .top)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.title)
                     .font(.headline.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                if !entry.aliases.isEmpty {
-                    Text(entry.aliases.joined(separator: "、"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(minHeight: 40, alignment: .topLeading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var entryCounts: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(spacing: 12) {
             Label("字段 \(entry.fields.count)", systemImage: "list.bullet")
             Label("密码 \(entry.fields.filter { $0.type.isSecret }.count)", systemImage: "lock.fill")
                 .fixedSize(horizontal: false, vertical: true)
@@ -2292,76 +2502,57 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     private var displayBody: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(entry.fields.enumerated()), id: \.element.key) { offset, field in
-                HStack(spacing: 16) {
-                    Text(field.label)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 150, alignment: .leading)
-
-                    if field.type.isSecret {
-                        Spacer(minLength: 0)
-                        secretFieldValue(field)
-                    } else {
-                        Text(displayValue(field))
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                        Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 16) {
+            Grid(horizontalSpacing: 16, verticalSpacing: 12) {
+                ForEach(entry.fields, id: \.key) { field in
+                    GridRow(alignment: .top) {
+                        Text(field.label)
+                            .font(.body.weight(.semibold))
+                            .frame(minWidth: 110, idealWidth: 140, maxWidth: 170, alignment: .leading)
+                        detailValue(for: field)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        detailAction(for: field)
+                            .frame(width: 80, alignment: .center)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    offset.isMultiple(of: 2)
-                        ? Color(nsColor: .controlBackgroundColor)
-                        : Color(nsColor: .windowBackgroundColor)
-                )
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let notes = entry.notes, !notes.isEmpty {
-                Text(notes)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 16)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("备注").font(.body.weight(.semibold))
+                    Text(notes).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
 
     @ViewBuilder
-    private func secretFieldValue(_ field: SecretCatalogFieldValue) -> some View {
+    private func detailValue(for field: SecretCatalogFieldValue) -> some View {
         if let plaintext = revealedPlaintexts[field.key] {
-            HStack(spacing: 6) {
-                Text(plaintext)
-                    .font(.system(.title3, design: .monospaced))
-                    .foregroundStyle(.orange)
-                Button("隐藏") {
-                    revealedPlaintexts.removeValue(forKey: field.key)
-                }
-                .buttonStyle(.borderless)
-            }
+            Text(plaintext).font(.system(.body, design: .monospaced)).foregroundStyle(.orange).textSelection(.enabled)
         } else if field.secretRef != nil {
-            HStack(spacing: 6) {
-                Text("已加密")
-                    .font(.system(.title3, design: .monospaced))
-                    .foregroundStyle(.orange)
-                Button(revealingKeys.contains(field.key) ? "验证中…" : "解密") {
-                    reveal(field)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(revealCatalogField == nil || revealingKeys.contains(field.key))
+            Text("已加密").font(.system(.body, design: .monospaced)).foregroundStyle(.orange)
+        } else {
+            Text("未填写").foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func detailAction(for field: SecretCatalogFieldValue) -> some View {
+        if field.type.isSecret {
+            if revealedPlaintexts[field.key] != nil {
+                Button("复制") { copy(revealedPlaintexts[field.key] ?? "") }.buttonStyle(.bordered)
+            } else if field.secretRef != nil {
+                Button(revealingKeys.contains(field.key) ? "验证中…" : "解密") { reveal(field) }
+                    .buttonStyle(.bordered)
+                    .disabled(revealCatalogField == nil || revealingKeys.contains(field.key))
+            } else {
+                Button("填写密码") { editing = true }.buttonStyle(.bordered)
             }
         } else {
-            HStack(spacing: 6) {
-                Text("未填写")
-                    .foregroundStyle(.secondary)
-                Button("填写密码") {
-                    editing = true
-                }
+            Button("复制") { copy(displayValue(field)) }
                 .buttonStyle(.bordered)
-            }
+                .disabled(displayValue(field).isEmpty || displayValue(field) == "未填写")
         }
     }
 
@@ -2375,7 +2566,9 @@ private struct SensitiveCatalogEntryRow: View {
             do {
                 let plaintext = try await revealCatalogField(entry.id, fieldKey)
                 guard showingDetails, scenePhase == .active else { return }
-                revealedPlaintexts[fieldKey] = plaintext
+                withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                    revealedPlaintexts[fieldKey] = plaintext
+                }
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(45))
                     guard !Task.isCancelled, showingDetails, scenePhase == .active else { return }
@@ -2393,6 +2586,12 @@ private struct SensitiveCatalogEntryRow: View {
         revealedPlaintexts.removeAll()
         revealingKeys.removeAll()
         revealError = nil
+    }
+
+    private func copy(_ value: String) {
+        guard !value.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private var editorBody: some View {
@@ -3169,75 +3368,63 @@ private struct AgentAutomationAuditCard: View {
     let errorMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center) {
-                Label("智能体自动化", systemImage: "sparkles.rectangle.stack")
-                    .font(.title3.weight(.semibold))
-                Spacer()
-                Text("最近 \(entries.count) 条")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-
-            if entries.isEmpty {
-                HStack(spacing: 10) {
-                    Image(systemName: "clock.badge.questionmark")
-                        .foregroundStyle(.secondary)
-                    Text("暂无活动")
-                        .font(.body)
+        WorkbenchPanelSurface {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center) {
+                    Label("智能体自动化", systemImage: "sparkles.rectangle.stack")
+                        .font(.title3.weight(.semibold))
+                    Spacer()
+                    Text("最近 \(entries.count) 条")
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 10) {
-                        ForEach(entries) { entry in
-                            HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: iconName(for: entry.operation))
-                                .foregroundStyle(.blue)
-                                .frame(width: 24)
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(entry.operation.displayName)
-                                        .font(.headline)
-                                    Spacer()
-                                    Text(entry.result.displayName)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(entry.target)
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                Text("\(entry.source.displayName) · \(entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    if entries.isEmpty {
+                        VStack {
+                            Spacer(minLength: 24)
+                            Label("暂无活动", systemImage: "clock.badge.questionmark")
+                                .foregroundStyle(.secondary)
+                            Spacer()
                         }
-                            .padding(14)
-                            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                    } else {
+                        VStack(spacing: 10) {
+                            ForEach(entries) { entry in
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: iconName(for: entry.operation)).foregroundStyle(.blue).frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack {
+                                            Text(entry.operation.displayName).font(.headline)
+                                            Spacer()
+                                            Text(entry.result.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                        }
+                                        Text(entry.target).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                                        Text("\(entry.source.displayName) · \(entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
+                                            .font(.caption).foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .padding(14)
+                                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
                         }
                     }
                 }
                 .scrollIndicators(.automatic)
                 .frame(maxHeight: .infinity)
             }
+            .padding(20)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func iconName(for operation: AuditOperation) -> String {

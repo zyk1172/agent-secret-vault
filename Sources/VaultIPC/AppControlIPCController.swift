@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
+import os
 import Security
 
 public enum AppControlIPCControllerError: Error, Equatable, Sendable {
@@ -125,6 +126,7 @@ public struct AppControlPeerAuthenticator: @unchecked Sendable {
 }
 
 public final class AppControlIPCController: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "AgentSecretVault", category: "AppControlIPC")
     private let server: UnixSocketServer
     private let handler: AppControlRequestHandler
     private let peerAuthenticator: AppControlPeerAuthenticator
@@ -231,10 +233,22 @@ public final class AppControlIPCController: @unchecked Sendable {
                 if Task.isCancelled || socket.fileDescriptor < 0 { return }
                 continue
             }
-            guard Self.configureAcceptedSocket(clientFD),
-                  peerAuthenticator.isAuthorized(fileDescriptor: clientFD),
-                  registerClientIfAvailable(fileDescriptor: clientFD)
-            else {
+            guard Self.configureAcceptedSocket(clientFD) else {
+                Self.logger.error("APP_CONTROL_SOCKET_CONFIG_FAILED")
+                _ = Darwin.shutdown(clientFD, SHUT_RDWR)
+                Darwin.close(clientFD)
+                continue
+            }
+            guard peerAuthenticator.isAuthorized(fileDescriptor: clientFD) else {
+                // This is deliberately a stable, payload-free code.  A
+                // rejected peer must not receive an authentication detail.
+                Self.logger.error("APP_CONTROL_PEER_AUTH_FAILED")
+                _ = Darwin.shutdown(clientFD, SHUT_RDWR)
+                Darwin.close(clientFD)
+                continue
+            }
+            guard registerClientIfAvailable(fileDescriptor: clientFD) else {
+                Self.logger.error("APP_CONTROL_BUSY")
                 _ = Darwin.shutdown(clientFD, SHUT_RDWR)
                 Darwin.close(clientFD)
                 continue

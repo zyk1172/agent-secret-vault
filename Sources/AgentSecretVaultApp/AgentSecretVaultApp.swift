@@ -178,6 +178,7 @@ struct AgentSecretVaultApplication: App {
                 }
             }
             .defaultSize(width: 1280, height: 820)
+            .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra("SVLT", systemImage: MenuBarPresentation.statusItemSymbol) {
             MenuBarVaultPanel(
@@ -835,8 +836,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     func refreshAuditEntries() async {
         guard let appControlClient else {
-            auditEntries = []
-            auditError = "本机控制服务不可用，安全活动记录暂时不可用。"
+            // Keep the last verified window visible while startup, service
+            // registration, or peer authentication is temporarily unavailable.
+            auditError = "本机控制服务不可用（APP_CONTROL_UNAVAILABLE）。"
             return
         }
         do {
@@ -846,11 +848,20 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             } else {
                 auditError = nil
             }
-        } catch {
+        } catch let error as VaultIPCClientError {
             // A transient AppControl failure should not erase the last known
             // window; expose a stable safe warning instead of hiding an audit
             // integrity/decryption failure behind an empty UI state.
-            auditError = "安全活动记录暂时不可用，可能存在完整性异常或本机控制服务不可用。"
+            switch error {
+            case .incompleteFrame:
+                auditError = "本机控制服务连接被拒绝或中断（APP_CONTROL_UNAVAILABLE）；已保留最近一次可用记录。"
+            case let .responseFailure(code):
+                auditError = "安全活动记录读取失败（\(code)）；已保留最近一次可用记录。"
+            default:
+                auditError = "安全活动记录读取失败（AUDIT_READ_FAILED）；已保留最近一次可用记录。"
+            }
+        } catch {
+            auditError = "安全活动记录读取失败（AUDIT_READ_FAILED）；已保留最近一次可用记录。"
         }
     }
 

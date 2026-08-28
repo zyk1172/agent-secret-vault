@@ -49,6 +49,7 @@
 		29FEC66A2CCB282F07FFD770 /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 869C6FAE8B4BDF3BF292E96C /* VaultCore.framework */; };
 		2A57207202B23FA621E3C02E /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EBECD686FBE1AC20E7DDE73 /* VaultAuthorization.framework */; };
 		2B5C129877B0C0BB2585335F /* AppControlMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11E3AEC6A7246B0B600FE4B6 /* AppControlMessage.swift */; };
+		2B66B8550AE5490D83E6D80E /* VaultCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 869C6FAE8B4BDF3BF292E96C /* VaultCore.framework */; };
 		2C35226AB555414F28697199 /* VaultIPC.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 892621C9C26F5216B8775FB1 /* VaultIPC.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2C88FE6C279E525A682E4DB9 /* RecoveryKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21DAFAB58E97A24C38E5094 /* RecoveryKeyStore.swift */; };
 		2DF5864404D1FD343A07D271 /* VaultExecution.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3344061D1CB333FC44C63D40 /* VaultExecution.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -56,6 +57,7 @@
 		30371264025700FF2353F001 /* SVLTAgentCatalogPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E703A5D3FEA6B27316988B5 /* SVLTAgentCatalogPolicy.swift */; };
 		307FF8408D14E63800E91E7D /* EncryptSelectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A6EB02EBDB05DDB71F9AE4 /* EncryptSelectionCoordinator.swift */; };
 		3098964BDE2709A670A2FB4C /* ExecutionTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F493ADB940C048778F17BD54 /* ExecutionTemplate.swift */; };
+		3113AEEC84665E188C35B782 /* WorkbenchCatalogPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D984450AC03090236653AC29 /* WorkbenchCatalogPresentationTests.swift */; };
 		326A441AE261774E05D67B76 /* VaultDaemonLifecycleMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F7DDA3AE88C763204AF4663 /* VaultDaemonLifecycleMonitor.swift */; };
 		357607350E857249E0B0170C /* IPCMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB96F1D7D78BADE515956EE7 /* IPCMessage.swift */; };
 		35BA5B24D4A7002DDB8B4024 /* VaultRecordResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53ED259C8601F64088E01811 /* VaultRecordResolver.swift */; };
@@ -76,6 +78,7 @@
 		40D14861B78ACB5C9DA1786B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A8D9A200A2686AFAC10A0E9 /* Assets.xcassets */; };
 		426E5A8F9BBC25F4A4A14F6C /* Templates in Resources */ = {isa = PBXBuildFile; fileRef = DA1A7E84D0AF0A8B89239020 /* Templates */; };
 		431F520CCDE9022189FFD3F2 /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EBECD686FBE1AC20E7DDE73 /* VaultAuthorization.framework */; };
+		43D4AB913C40E911A8519376 /* AgentSecretVaultApp.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BC81E6674343F8A973F23AFF /* AgentSecretVaultApp.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4424B4FEA65C10BFC70C069E /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3599EB5CE22C1C3C45C78545 /* DeviceKeyStore.swift */; };
 		44C5AD6B2468DF14B4CC077A /* RestoredParagraph.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F4CD75FB3059EB3A15123A2 /* RestoredParagraph.swift */; };
 		44D18DC2320D93DFF9CC7451 /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EBECD686FBE1AC20E7DDE73 /* VaultAuthorization.framework */; };
@@ -105,6 +108,7 @@
 		659F8699FE2C1B39E20CF73B /* FileRecordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 736DED4C825BC0FC40E62261 /* FileRecordStore.swift */; };
 		66B225EBA2C055ADCC61E4BE /* VaultAppServicesCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07796B9A54434E39DBC43F15 /* VaultAppServicesCatalogTests.swift */; };
 		68230A47F34B5E306EF36174 /* IPCRequestHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C5BD05DF1364C4720EBCEA9 /* IPCRequestHandlerTests.swift */; };
+		696A52E98F52EEE06051BECD /* AgentSecretVaultApp.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC81E6674343F8A973F23AFF /* AgentSecretVaultApp.framework */; };
 		6A0C18BD1E2DE258CE6CBD15 /* CatalogMutationPolicyEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40D81BDEBC70579B28EAA51 /* CatalogMutationPolicyEngineTests.swift */; };
 		6A45789CB1D4FEC116D6D341 /* VaultAuthorization.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7EBECD686FBE1AC20E7DDE73 /* VaultAuthorization.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6B08D1FCD40CD8B8E86855A1 /* AuthorizationSessionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC4679A13EE03B90DEDF1E0 /* AuthorizationSessionPolicyTests.swift */; };
@@ -115,6 +119,7 @@
 		70699354F50D03F015788F45 /* VaultAuthorization.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EBECD686FBE1AC20E7DDE73 /* VaultAuthorization.framework */; };
 		7267BF1DD65C647407117EBB /* MarkdownReferenceScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34210621B34211A8DA4BEB17 /* MarkdownReferenceScannerTests.swift */; };
 		72CE5E9E972100F3AEE51DB3 /* OrphanScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB976F360C31FFA319FDD17 /* OrphanScannerTests.swift */; };
+		750415C8AE02C72869F5C252 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 869C6FAE8B4BDF3BF292E96C /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		75382AF607CE48DAB8135325 /* SensitiveCatalogDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */; };
 		75B2FA78CCAADB3400D6FF82 /* CatalogAgentWriteAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B4B4A8BB2AD0189E518014F /* CatalogAgentWriteAuthorizationTests.swift */; };
 		77976A8E1EEC1B497AD196BD /* AppControlRequestHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53EBE50EB33FDB178CFD325E /* AppControlRequestHandler.swift */; };
@@ -395,6 +400,13 @@
 			remoteGlobalIDString = 220CDA200412FA123E185C24;
 			remoteInfo = VaultCore;
 		};
+		98ED900AF3709786D0615298 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4C65325F91FC909727CD024C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 220CDA200412FA123E185C24;
+			remoteInfo = VaultCore;
+		};
 		AF224F4EE8527FF4BC9A25D0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4C65325F91FC909727CD024C /* Project object */;
@@ -429,6 +441,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 4D4AAA86B56416ED476802A7;
 			remoteInfo = VaultIPC;
+		};
+		C999484BB384DFCBC79794CD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4C65325F91FC909727CD024C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BE4703D12B227579B175C972;
+			remoteInfo = AgentSecretVaultApp;
 		};
 		CC82C01C68D3FE68A4451E2C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -498,6 +517,18 @@
 				B6BE08A29984B19C86EE3531 /* SVLTAgent in Embed Dependencies */,
 			);
 			name = "Embed Dependencies";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		19E91B01305ED45252021A40 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				43D4AB913C40E911A8519376 /* AgentSecretVaultApp.framework in Embed Frameworks */,
+				750415C8AE02C72869F5C252 /* VaultCore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		4C5481C8818E2F40DC4B64CA /* Embed Frameworks */ = {
@@ -601,6 +632,7 @@
 		114E878E0FB68A4D79741DB1 /* VaultDaemonCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultDaemonCore.swift; sourceTree = "<group>"; };
 		11E3AEC6A7246B0B600FE4B6 /* AppControlMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlMessage.swift; sourceTree = "<group>"; };
 		14977E8456304AC9BD17CE1D /* EncryptedAuditLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedAuditLog.swift; sourceTree = "<group>"; };
+		16111EC670627EFCB07C971A /* AgentSecretVaultAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentSecretVaultAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1914E951A33621E87432BF08 /* SVLTAgent */ = {isa = PBXFileReference; includeInIndex = 0; path = SVLTAgent; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A8D9A200A2686AFAC10A0E9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1AAB93D5691841F8A5CDD71A /* SecurityBoundaryCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityBoundaryCard.swift; sourceTree = "<group>"; };
@@ -739,6 +771,7 @@
 		D748BCEA660E92EA1FED8966 /* LegacyCompatibleRecordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacyCompatibleRecordStore.swift; sourceTree = "<group>"; };
 		D76E3BDB17058B5C39D5E292 /* com.agent-secret-vault.SVLT.agent.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "com.agent-secret-vault.SVLT.agent.plist"; sourceTree = "<group>"; };
 		D82C573D6189E75036BA435E /* AgentServiceRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentServiceRegistration.swift; sourceTree = "<group>"; };
+		D984450AC03090236653AC29 /* WorkbenchCatalogPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchCatalogPresentationTests.swift; sourceTree = "<group>"; };
 		DA1A7E84D0AF0A8B89239020 /* Templates */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Templates; path = Resources/Templates; sourceTree = SOURCE_ROOT; };
 		DAD814C06819A25668968DB7 /* OrphanScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrphanScanner.swift; sourceTree = "<group>"; };
 		DBE66268C439A38D8FAA0526 /* MarkdownSensitiveIndexStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSensitiveIndexStore.swift; sourceTree = "<group>"; };
@@ -764,6 +797,15 @@
 			files = (
 				0F641938CE33B2085CF40EFB /* VaultCore.framework in Frameworks */,
 				431F520CCDE9022189FFD3F2 /* VaultAuthorization.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		10F6B77AFB800DDA7443F5CF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				696A52E98F52EEE06051BECD /* AgentSecretVaultApp.framework in Frameworks */,
+				2B66B8550AE5490D83E6D80E /* VaultCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1140,6 +1182,15 @@
 			path = Copy;
 			sourceTree = "<group>";
 		};
+		A1DCB96A3E60A1E4B1E40362 /* AgentSecretVaultAppTests */ = {
+			isa = PBXGroup;
+			children = (
+				D984450AC03090236653AC29 /* WorkbenchCatalogPresentationTests.swift */,
+			);
+			name = AgentSecretVaultAppTests;
+			path = Tests/AgentSecretVaultAppTests;
+			sourceTree = "<group>";
+		};
 		A4F82DD17D0DA367F745CA32 /* Services */ = {
 			isa = PBXGroup;
 			children = (
@@ -1212,6 +1263,7 @@
 			children = (
 				DA1A7E84D0AF0A8B89239020 /* Templates */,
 				B33081D646737C797019F8CA /* AgentSecretVaultApp */,
+				A1DCB96A3E60A1E4B1E40362 /* AgentSecretVaultAppTests */,
 				0A4C1077EE614E145D8F304D /* AppAssets */,
 				45C43677808FC508E456418B /* Config */,
 				AB799D18DEB87E6A50F9BF7C /* LeakTests */,
@@ -1258,6 +1310,7 @@
 			isa = PBXGroup;
 			children = (
 				BC81E6674343F8A973F23AFF /* AgentSecretVaultApp.framework */,
+				16111EC670627EFCB07C971A /* AgentSecretVaultAppTests.xctest */,
 				5E6B1CFA81D6AAA0D3E38BDE /* LeakTests.xctest */,
 				B942848465076FDCD075E749 /* SVLT.app */,
 				1914E951A33621E87432BF08 /* SVLTAgent */,
@@ -1288,6 +1341,27 @@
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
+		11FA050282C48DA372F026A5 /* AgentSecretVaultAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B767886D915F518F73F06DC0 /* Build configuration list for PBXNativeTarget "AgentSecretVaultAppTests" */;
+			buildPhases = (
+				4EB54730594A4023F1DAC17D /* Sources */,
+				10F6B77AFB800DDA7443F5CF /* Frameworks */,
+				19E91B01305ED45252021A40 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				807AF33A9F05A55CDB91AA45 /* PBXTargetDependency */,
+				8C41336310FE24F35A8EDF4E /* PBXTargetDependency */,
+			);
+			name = AgentSecretVaultAppTests;
+			packageProductDependencies = (
+			);
+			productName = AgentSecretVaultAppTests;
+			productReference = 16111EC670627EFCB07C971A /* AgentSecretVaultAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		160319EC3D54A6D48327EF69 /* VaultExecution */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 9B3FCD8D2B749A47EF37DDE5 /* Build configuration list for PBXNativeTarget "VaultExecution" */;
@@ -1576,6 +1650,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					11FA050282C48DA372F026A5 = {
+						DevelopmentTeam = JUQXD87P93;
+						ProvisioningStyle = Automatic;
+					};
 					160319EC3D54A6D48327EF69 = {
 						DevelopmentTeam = JUQXD87P93;
 						ProvisioningStyle = Automatic;
@@ -1646,6 +1724,7 @@
 			targets = (
 				5248DC09F2511964B47BA1C6 /* AgentSecretVault */,
 				BE4703D12B227579B175C972 /* AgentSecretVaultApp */,
+				11FA050282C48DA372F026A5 /* AgentSecretVaultAppTests */,
 				9B25E141FA32BA15CC63CDBD /* LeakTests */,
 				518A74E184DD0753026716CD /* SVLTAgent */,
 				839BA397656D992385802D9A /* VaultAuthorization */,
@@ -1712,6 +1791,14 @@
 				8ADDFBA7DDF1C21905DCDB1B /* VaultLifecycleMonitor.swift in Sources */,
 				3A2252CFA78002E08EFF62DA /* VaultUICopy.swift in Sources */,
 				ECF480FBEE85D6E558103DFA /* VaultWorkbenchView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4EB54730594A4023F1DAC17D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3113AEEC84665E188C35B782 /* WorkbenchCatalogPresentationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2053,6 +2140,16 @@
 			target = BE4703D12B227579B175C972 /* AgentSecretVaultApp */;
 			targetProxy = 64E59AE195F04E923D95D22A /* PBXContainerItemProxy */;
 		};
+		807AF33A9F05A55CDB91AA45 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BE4703D12B227579B175C972 /* AgentSecretVaultApp */;
+			targetProxy = C999484BB384DFCBC79794CD /* PBXContainerItemProxy */;
+		};
+		8C41336310FE24F35A8EDF4E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 220CDA200412FA123E185C24 /* VaultCore */;
+			targetProxy = 98ED900AF3709786D0615298 /* PBXContainerItemProxy */;
+		};
 		9C4D70A2C3C2D5AA9A185331 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 4D4AAA86B56416ED476802A7 /* VaultIPC */;
@@ -2121,6 +2218,22 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		00F0EFD41362F7EA52D536D6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
 		252D1F9E15A95F4CB734883B /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2353,6 +2466,22 @@
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
+		};
+		7ACF921064557CC17675B8F8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+			};
+			name = Debug;
 		};
 		7E1685DA25B6BE108D52C548 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -2846,6 +2975,15 @@
 			buildConfigurations = (
 				C5896B8723BDB538D1D5A0A8 /* Debug */,
 				7E2702A1AB9D4C7F4784411F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B767886D915F518F73F06DC0 /* Build configuration list for PBXNativeTarget "AgentSecretVaultAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7ACF921064557CC17675B8F8 /* Debug */,
+				00F0EFD41362F7EA52D536D6 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

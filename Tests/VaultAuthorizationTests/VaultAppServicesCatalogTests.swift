@@ -3,6 +3,7 @@ import CryptoKit
 import Testing
 import VaultAuthorization
 import VaultCore
+import VaultIPC
 import VaultService
 
 private let serviceIndexID = "0123456789ABCDEFGHJKMNPQRS"
@@ -483,6 +484,17 @@ private struct CatalogFixture {
             && entry.target == "catalog"
     })
     #expect(try await service.catalogAuditHealth() == nil)
+
+    // Keep the App-control hop in this cross-layer test: the App gets the
+    // bounded encrypted-audit projection through this handler, not through
+    // the mutation response or a View-owned fabricated row.
+    let response = await AppControlRequestHandler(service: service)
+        .handle(.catalogRecentAuditEntries(limit: 100))
+    guard case let .catalogRecentAuditEntries(appControlEntries) = response else {
+        Issue.record("AppControl did not return the authoritative audit projection")
+        return
+    }
+    #expect(appControlEntries.contains { $0.operation == .catalogMutation && $0.source == .agent })
 }
 
 @Test func failedAuditAppendExposesSafeHealthWithoutFailingOperation() async throws {
