@@ -311,6 +311,7 @@ public struct CatalogDetailColumnWidths: Equatable, Sendable {
 public enum AuditActivityReadResult: Equatable, Sendable {
     case unavailable
     case success([CatalogSecurityAuditEntry])
+    case partial(entries: [CatalogSecurityAuditEntry], diagnostics: AuditReadDiagnostics)
     case failure(code: String)
 }
 
@@ -349,26 +350,46 @@ public struct AuditRefreshState: Equatable, Sendable {
                 warning: "安全活动记录读取失败（\(code)）；已保留最近一次可用记录。"
             )
         case let .success(entries):
-            switch health ?? .failure {
-            case .normal:
-                return Self(entries: entries, warning: nil)
-            case .appendFailed:
-                return Self(
-                    entries: entries,
-                    warning: "安全活动记录写入异常；近期活动可能不完整。"
+            return Self(entries: entries, warning: healthWarning(for: health))
+        case let .partial(entries, diagnostics):
+            return Self(
+                entries: entries,
+                warning: combinedWarnings(
+                    readWarning(for: diagnostics),
+                    healthWarning(for: health)
                 )
-            case .failure:
-                return Self(
-                    entries: entries,
-                    warning: "无法确认安全活动记录完整性（AUDIT_HEALTH_READ_FAILED）；当前可读取记录仍予以显示。"
-                )
-            case .unknown:
-                return Self(
-                    entries: entries,
-                    warning: "无法确认安全活动记录完整性（AUDIT_HEALTH_UNKNOWN）；当前可读取记录仍予以显示。"
-                )
-            }
+            )
         }
+    }
+
+    private static func combinedWarnings(_ warnings: String?...) -> String? {
+        let values = warnings.compactMap { $0 }
+        return values.isEmpty ? nil : values.joined(separator: " ")
+    }
+
+    private static func healthWarning(for health: AuditHealthReadResult?) -> String? {
+        switch health ?? .failure {
+        case .normal:
+            return nil
+        case .appendFailed:
+            return "安全活动记录写入异常；近期活动可能不完整。"
+        case .failure:
+            return "无法确认安全活动记录完整性（AUDIT_HEALTH_READ_FAILED）；当前可读取记录仍予以显示。"
+        case .unknown:
+            return "无法确认安全活动记录完整性（AUDIT_HEALTH_UNKNOWN）；当前可读取记录仍予以显示。"
+        }
+    }
+
+    private static func readWarning(for diagnostics: AuditReadDiagnostics) -> String? {
+        guard diagnostics.hasIssues else { return nil }
+        var details: [String] = []
+        if diagnostics.unreadableRecordCount > 0 {
+            details.append("无法读取 \(diagnostics.unreadableRecordCount) 条")
+        }
+        if diagnostics.integrityFailureCount > 0 {
+            details.append("完整性验证失败 \(diagnostics.integrityFailureCount) 条")
+        }
+        return "部分安全活动记录异常（\(details.joined(separator: "、"))）；已显示其余正常记录。"
     }
 }
 
@@ -1857,7 +1878,8 @@ private struct SensitiveCatalogEditorCard: View {
     @State private var selectedIndexID: String?
     @State private var hoveredIndexID: String?
     @State private var indexSelection = CatalogBatchSelectionState()
-    @State private var pendingIndexDeletion: CatalogDeletionRequest?
+    @State private var entrySelection = CatalogBatchSelectionState()
+    @State private var pendingDeletion: CatalogDeletionRequest?
     @State private var deletionError: CatalogMutationUIError?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -2065,7 +2087,7 @@ private struct SensitiveCatalogEditorCard: View {
                                             indexSelection.finish()
                                         }
                                     },
-                                    deleteDisabled: indexSelection.selectedIDs.isEmpty || isWorking || applyBatch == nil,
+                                    deleteDisabled: indexSelection.selectedIDs.isEmpty || isWorking,
                                     horizontalInset: CatalogGroupLayout.horizontalInset
                                 )
                             } else {
@@ -2106,7 +2128,10 @@ private struct SensitiveCatalogEditorCard: View {
                                     commitEntryEdit: commitEntryEdit,
                                     revealCatalogField: revealCatalogField,
                                     replaceCatalogSecret: replaceCatalogSecret,
-                                    applyBatch: applyBatch
+                                    entrySelection: $entrySelection,
+                                    requestEntryDeletion: { ids in
+                                        prepareEntryDeletion(ids: ids, snapshot: snapshot)
+                                    }
                                 )
                             } else {
                                 ContentUnavailableView(
@@ -2147,15 +2172,27 @@ private struct SensitiveCatalogEditorCard: View {
                 self.selectedIndexID = nil
             }
         }
-        .alert(item: $pendingIndexDeletion) { request in
-            Alert(
-                title: Text("删除 \(request.itemCount) 个分组？"),
-                message: Text("其中包含 \(request.entryCount) 个条目、\(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
-                primaryButton: .destructive(Text("删除")) {
-                    deleteIndexes(request.ids)
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
+        .alert(item: $pendingDeletion) { request in
+            switch request.kind {
+            case .indexes:
+                Alert(
+                    title: Text("删除 \(request.itemCount) 个分组？"),
+                    message: Text("其中包含 \(request.entryCount) 个条目、\(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
+                    primaryButton: .destructive(Text("删除")) {
+                        delete(request)
+                    },
+                    secondaryButton: .cancel(Text("取消"))
+                )
+            case .entries:
+                Alert(
+                    title: Text("删除 \(request.itemCount) 个条目？"),
+                    message: Text("其中包含 \(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
+                    primaryButton: .destructive(Text("删除")) {
+                        delete(request)
+                    },
+                    secondaryButton: .cancel(Text("取消"))
+                )
+            }
         }
     }
 
@@ -2207,7 +2244,6 @@ private struct SensitiveCatalogEditorCard: View {
                 .foregroundStyle(.secondary)
                 .help("删除分组")
                 .accessibilityLabel("删除分组")
-                .disabled(applyBatch == nil)
             }
         }
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
@@ -2247,7 +2283,7 @@ private struct SensitiveCatalogEditorCard: View {
     private func prepareIndexDeletion(ids: [String], snapshot: SensitiveCatalogSnapshot) {
         guard !ids.isEmpty else { return }
         let summary = CatalogDeletionSummary.indexes(ids: ids, in: snapshot.document)
-        pendingIndexDeletion = CatalogDeletionRequest(
+        pendingDeletion = CatalogDeletionRequest(
             id: ids.joined(separator: ","),
             kind: .indexes,
             ids: ids,
@@ -2257,30 +2293,63 @@ private struct SensitiveCatalogEditorCard: View {
         )
     }
 
-    private func deleteIndexes(_ ids: [String]) {
+    private func prepareEntryDeletion(ids: [String], snapshot: SensitiveCatalogSnapshot) {
+        guard !ids.isEmpty else { return }
+        let summary = CatalogDeletionSummary.entries(ids: ids, in: snapshot.document.entries)
+        pendingDeletion = CatalogDeletionRequest(
+            id: ids.joined(separator: ","),
+            kind: .entries,
+            ids: ids,
+            itemCount: summary.itemCount,
+            entryCount: summary.entryCount,
+            secretFieldCount: summary.secretFieldCount
+        )
+    }
+
+    private func delete(_ request: CatalogDeletionRequest) {
         Task {
             isWorking = true
             deletionError = nil
             guard let applyBatch else {
+                let itemName: String
+                switch request.kind {
+                case .indexes:
+                    itemName = "分组"
+                case .entries:
+                    itemName = "条目"
+                }
                 deletionError = CatalogMutationUIError(
                     code: "APP_CONTROL_UNAVAILABLE",
-                    message: "本机控制服务不可用，无法删除分组"
+                    message: "本机控制服务不可用，无法删除\(itemName)"
                 )
-                pendingIndexDeletion = nil
+                pendingDeletion = nil
                 isWorking = false
                 return
             }
-            let result = await applyBatch(CatalogBatchMutation(operations: ids.map { .deleteIndex(id: $0) }))
+            let operations: [CatalogBatchOperation] = request.ids.map { id in
+                switch request.kind {
+                case .indexes:
+                    return .deleteIndex(id: id)
+                case .entries:
+                    return .deleteEntry(id: id)
+                }
+            }
+            let result = await applyBatch(CatalogBatchMutation(operations: operations))
             switch result {
             case .success:
-                if ids.contains(selectedIndexID ?? "") {
-                    selectedIndexID = nil
+                switch request.kind {
+                case .indexes:
+                    if request.ids.contains(selectedIndexID ?? "") {
+                        selectedIndexID = nil
+                    }
+                    indexSelection.deleteSucceeded(request.ids)
+                case .entries:
+                    entrySelection.deleteSucceeded(request.ids)
                 }
-                indexSelection.deleteSucceeded(ids)
             case let .failure(error):
                 deletionError = error
             }
-            pendingIndexDeletion = nil
+            pendingDeletion = nil
             isWorking = false
         }
     }
@@ -2293,17 +2362,15 @@ private struct SensitiveCatalogGroupSheet: View {
     let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let revealCatalogField: ((String, String) async throws -> String)?
     let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
-    let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
+    @Binding var entrySelection: CatalogBatchSelectionState
+    let requestEntryDeletion: ([String]) -> Void
 
     @State private var isAdding = false
     @State private var newEntryTitle = ""
     @State private var selectedPresetID = SensitiveCatalogEntryPreset.all.first?.id ?? "credential"
-    @State private var pendingEntryDeletion: CatalogDeletionRequest?
     @State private var newlyCreatedEntryID: String?
     @State private var isWorking = false
     @State private var createError: CatalogEntryCreationError?
-    @State private var deletionError: CatalogMutationUIError?
-    @State private var entrySelection = CatalogBatchSelectionState()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var secretFieldCount: Int {
@@ -2356,13 +2423,13 @@ private struct SensitiveCatalogGroupSheet: View {
                                 entrySelection.selectAll(entries.map(\.id))
                             }
                         },
-                        deleteSelected: { prepareEntryDeletion() },
+                        deleteSelected: { requestEntryDeletion(entrySelection.selectedIDs.sorted()) },
                         finish: {
                             withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
                                 entrySelection.finish()
                             }
                         },
-                        deleteDisabled: isWorking || entrySelection.selectedIDs.isEmpty || applyBatch == nil
+                        deleteDisabled: isWorking || entrySelection.selectedIDs.isEmpty
                     )
                 } else {
                     Button("批量编辑") {
@@ -2373,12 +2440,6 @@ private struct SensitiveCatalogGroupSheet: View {
                     .accessibilityLabel("批量编辑条目")
                     .disabled(entries.isEmpty)
                 }
-            }
-
-            if let deletionError {
-                Label(deletionError.displayText, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
             }
 
             if isAdding {
@@ -2453,8 +2514,7 @@ private struct SensitiveCatalogGroupSheet: View {
                                 commitEntryEdit: commitEntryEdit,
                                 revealCatalogField: revealCatalogField,
                                 replaceCatalogSecret: replaceCatalogSecret,
-                                applyBatch: applyBatch,
-                                requestDelete: { prepareEntryDeletion(for: entry) }
+                                requestDelete: { requestEntryDeletion([entry.id]) }
                             )
                         }
                     }
@@ -2467,16 +2527,6 @@ private struct SensitiveCatalogGroupSheet: View {
         .onChange(of: entries.map(\.id)) { _, ids in
             entrySelection.retainVisibleIDs(ids)
         }
-        .alert(item: $pendingEntryDeletion) { request in
-            Alert(
-                title: Text("删除 \(request.itemCount) 个条目？"),
-                message: Text("其中包含 \(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
-                primaryButton: .destructive(Text("删除")) {
-                    deleteEntries(request.ids)
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
-        }
     }
 
     private func toggleEntrySelection(_ id: String) {
@@ -2485,44 +2535,6 @@ private struct SensitiveCatalogGroupSheet: View {
         }
     }
 
-    private func prepareEntryDeletion(for entry: SecretCatalogEntry? = nil) {
-        let ids = entry.map { [$0.id] } ?? entrySelection.selectedIDs.sorted()
-        guard !ids.isEmpty else { return }
-        let summary = CatalogDeletionSummary.entries(ids: ids, in: entries)
-        pendingEntryDeletion = CatalogDeletionRequest(
-            id: ids.joined(separator: ","),
-            kind: .entries,
-            ids: ids,
-            itemCount: summary.itemCount,
-            entryCount: summary.entryCount,
-            secretFieldCount: summary.secretFieldCount
-        )
-    }
-
-    private func deleteEntries(_ ids: [String]) {
-        Task {
-            isWorking = true
-            deletionError = nil
-            guard let applyBatch else {
-                deletionError = CatalogMutationUIError(
-                    code: "APP_CONTROL_UNAVAILABLE",
-                    message: "本机控制服务不可用，无法删除条目"
-                )
-                pendingEntryDeletion = nil
-                isWorking = false
-                return
-            }
-            let result = await applyBatch(CatalogBatchMutation(operations: ids.map { .deleteEntry(id: $0) }))
-            switch result {
-            case .success:
-                entrySelection.deleteSucceeded(ids)
-            case let .failure(error):
-                deletionError = error
-            }
-            pendingEntryDeletion = nil
-            isWorking = false
-        }
-    }
 }
 
 private struct SensitiveCatalogEntryRow: View {
@@ -2534,7 +2546,6 @@ private struct SensitiveCatalogEntryRow: View {
     let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let revealCatalogField: ((String, String) async throws -> String)?
     let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
-    let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
     let requestDelete: () -> Void
 
     @State private var editing = false
@@ -2574,7 +2585,6 @@ private struct SensitiveCatalogEntryRow: View {
         commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?,
         revealCatalogField: ((String, String) async throws -> String)?,
         replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?,
-        applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?,
         requestDelete: @escaping () -> Void = {}
     ) {
         self.entry = entry
@@ -2585,7 +2595,6 @@ private struct SensitiveCatalogEntryRow: View {
         self.commitEntryEdit = commitEntryEdit
         self.revealCatalogField = revealCatalogField
         self.replaceCatalogSecret = replaceCatalogSecret
-        self.applyBatch = applyBatch
         self.requestDelete = requestDelete
         _draftTitle = State(initialValue: entry.title)
         _draftAliases = State(initialValue: entry.aliases.joined(separator: ", "))
@@ -2691,10 +2700,16 @@ private struct SensitiveCatalogEntryRow: View {
     private var normalCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "key.horizontal")
-                    .foregroundStyle(.green)
-                    .frame(width: Metrics.firstLineHeight, height: Metrics.firstLineHeight, alignment: .center)
-                Button { showingDetails = true } label: { entryTitleContent }
+                Button { showingDetails = true } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "key.horizontal")
+                            .foregroundStyle(.green)
+                            .frame(width: Metrics.firstLineHeight, height: Metrics.firstLineHeight, alignment: .center)
+                        entryTitleContent
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
                     .buttonStyle(.plain)
                     .accessibilityLabel(entry.title)
                     .accessibilityHint("打开条目详情")
@@ -2716,23 +2731,24 @@ private struct SensitiveCatalogEntryRow: View {
                 .accessibilityLabel("编辑条目")
             }
             HStack(spacing: 12) {
-                entryCounts
-                Spacer()
+                Button { showingDetails = true } label: {
+                    entryCounts
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(entry.title)
+                .accessibilityHint("打开条目详情")
                 Button("删除", role: .destructive, action: requestDelete)
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
                     .help("删除条目")
                     .accessibilityLabel("删除条目")
-                    .disabled(applyBatch == nil)
             }
         }
         .padding(.horizontal, Metrics.horizontalPadding)
         .padding(.vertical, Metrics.verticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            showingDetails = true
-        }
     }
 
     private var entryDetails: some View {

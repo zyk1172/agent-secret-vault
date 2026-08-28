@@ -853,7 +853,12 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
         let activity: AuditActivityReadResult
         do {
-            activity = .success(try await appControlClient.catalogRecentAuditEntries(limit: 100))
+            let result = try await appControlClient.catalogRecentAuditEntries(limit: 100)
+            if result.diagnostics.hasIssues {
+                activity = .partial(entries: result.entries, diagnostics: result.diagnostics)
+            } else {
+                activity = .success(result.entries)
+            }
         } catch let error as VaultIPCClientError {
             switch error {
             case .endpointUnavailable, .endpointOwnershipInvalid, .endpointPermissionsInvalid,
@@ -874,7 +879,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
 
         var health: AuditHealthReadResult?
-        if case .success = activity {
+        switch activity {
+        case .success, .partial:
             do {
                 let value = try await appControlClient.catalogAuditHealth()
                 if value == "AUDIT_APPEND_FAILED" {
@@ -887,6 +893,8 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             } catch {
                 health = .failure
             }
+        case .unavailable, .failure:
+            break
         }
 
         let state = AuditRefreshState.reduce(

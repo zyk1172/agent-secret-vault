@@ -156,6 +156,18 @@ import VaultCore
     #expect(healthy.entries == current)
     #expect(healthy.warning == nil)
 
+    let partiallyReadable = AuditRefreshState.reduce(
+        previousEntries: previous,
+        activity: .partial(
+            entries: current,
+            diagnostics: AuditReadDiagnostics(unreadableRecordCount: 1, integrityFailureCount: 2)
+        ),
+        health: .normal
+    )
+    #expect(partiallyReadable.entries == current)
+    #expect(partiallyReadable.warning?.contains("无法读取 1 条") == true)
+    #expect(partiallyReadable.warning?.contains("完整性验证失败 2 条") == true)
+
     let appendFailed = AuditRefreshState.reduce(
         previousEntries: previous,
         activity: .success(current),

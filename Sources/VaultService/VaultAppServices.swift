@@ -1429,10 +1429,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
-    public func catalogRecentAuditEntries(limit: Int) async throws -> [CatalogSecurityAuditEntry] {
-        guard let auditLog else { return [] }
-        let events = try await auditLog.recent(limit: min(max(limit, 1), 100))
-        return events.map(Self.safeAuditEntry)
+    public func catalogRecentAuditEntries(limit: Int) async throws -> CatalogRecentAuditResult {
+        guard let auditLog else { return CatalogRecentAuditResult(entries: []) }
+        let readResult = try await auditLog.recentWithDiagnostics(limit: min(max(limit, 1), 100))
+        return CatalogRecentAuditResult(
+            entries: readResult.events.map(Self.safeAuditEntry),
+            diagnostics: readResult.diagnostics
+        )
     }
 
     /// A deliberately narrow, non-sensitive health signal. It never contains

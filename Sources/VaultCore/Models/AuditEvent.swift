@@ -131,6 +131,41 @@ public struct AuditEvent: Codable, Equatable, Sendable {
     }
 }
 
+/// Non-sensitive diagnostics produced while reading encrypted audit records.
+/// Counts identify how many records were omitted without exposing paths,
+/// ciphertext, payloads, or key material.
+public struct AuditReadDiagnostics: Codable, Equatable, Sendable {
+    public let unreadableRecordCount: Int
+    public let integrityFailureCount: Int
+
+    public init(unreadableRecordCount: Int = 0, integrityFailureCount: Int = 0) {
+        self.unreadableRecordCount = max(0, unreadableRecordCount)
+        self.integrityFailureCount = max(0, integrityFailureCount)
+    }
+
+    public static let none = Self()
+
+    public var skippedRecordCount: Int {
+        unreadableRecordCount + integrityFailureCount
+    }
+
+    public var hasIssues: Bool {
+        skippedRecordCount > 0
+    }
+}
+
+/// A bounded audit read returns every record that could be authenticated and
+/// decoded, together with safe diagnostics for records that were skipped.
+public struct AuditReadResult: Equatable, Sendable {
+    public let events: [AuditEvent]
+    public let diagnostics: AuditReadDiagnostics
+
+    public init(events: [AuditEvent], diagnostics: AuditReadDiagnostics = .none) {
+        self.events = events
+        self.diagnostics = diagnostics
+    }
+}
+
 /// Trusted caller metadata installed at the IPC handler boundary. Production
 /// AppControl requests use `.app`; Agent/MCP requests use `.agent`. The task
 /// local survives actor hops without mutable shared state, so concurrent
@@ -273,5 +308,19 @@ public struct CatalogSecurityAuditEntry: Codable, Equatable, Identifiable, Senda
         self.result = result
         self.target = target
         self.referenceCount = max(0, referenceCount)
+    }
+}
+
+/// The bounded, non-sensitive AppControl projection of a recent audit read.
+public struct CatalogRecentAuditResult: Codable, Equatable, Sendable {
+    public let entries: [CatalogSecurityAuditEntry]
+    public let diagnostics: AuditReadDiagnostics
+
+    public init(
+        entries: [CatalogSecurityAuditEntry],
+        diagnostics: AuditReadDiagnostics = .none
+    ) {
+        self.entries = entries
+        self.diagnostics = diagnostics
     }
 }

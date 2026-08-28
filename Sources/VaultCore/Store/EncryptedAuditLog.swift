@@ -69,14 +69,27 @@ public struct EncryptedAuditLog: Sendable {
     /// Returns only the bounded recent window used by the local App. Full
     /// audit export remains unavailable on the App-control protocol.
     public func recent(limit: Int = 100) async throws -> [AuditEvent] {
+        try await recentWithDiagnostics(limit: limit).events
+    }
+
+    /// Returns the bounded recent window together with safe diagnostics for
+    /// records that could not be read or authenticated. The legacy `recent`
+    /// overload above keeps its array-shaped source compatibility for callers
+    /// that do not need diagnostics.
+    public func recentWithDiagnostics(limit: Int = 100) async throws -> AuditReadResult {
         guard let auditKeyProvider else {
             throw EncryptedAuditLogError.auditKeyUnavailable
         }
+        try prepareDirectory()
         let key = try await auditKeyProvider()
         return try recent(limit: limit, auditKey: key)
     }
 
     public func recent(limit: Int = 100, masterKey: SymmetricKey) async throws -> [AuditEvent] {
+        try await recentWithDiagnostics(limit: limit, masterKey: masterKey).events
+    }
+
+    public func recentWithDiagnostics(limit: Int = 100, masterKey: SymmetricKey) async throws -> AuditReadResult {
         try prepareDirectory()
         let auditKey = try auditDataKey(masterKey: masterKey)
         return try recent(limit: limit, auditKey: auditKey)
@@ -133,26 +146,31 @@ public struct EncryptedAuditLog: Sendable {
         return events.sorted { $0.timestamp < $1.timestamp }
     }
 
-    private func recent(limit: Int, auditKey: SymmetricKey) throws -> [AuditEvent] {
+    private func recent(limit: Int, auditKey: SymmetricKey) throws -> AuditReadResult {
         let boundedLimit = min(max(limit, 1), 100)
-        let records = try eventRecords()
-        // Only v2 records have their routing metadata bound to the encrypted
-        // payload. A legacy record has no metadata version, so decrypt every
-        // record and sort by the authenticated event timestamp instead of
-        // trusting its mutable outer createdAt value.
-        let recentRecords: [(URL, EncryptedAuditEventRecord)]
-        if records.allSatisfy({ $0.1.metadataVersion == Self.authenticatedAuditEventMetadataVersion }) {
-            recentRecords = Array(records.suffix(boundedLimit).reversed())
-        } else {
-            let events = try records.map { _, record in
-                try open(record, using: auditKey)
+        let recordResult = try readEventRecords()
+        var events: [AuditEvent] = []
+        var integrityFailureCount = recordResult.diagnostics.integrityFailureCount
+
+        // Authenticate and decode every structurally readable record before
+        // sorting or applying the top-N bound. In v2, the outer createdAt is
+        // authenticated metadata; it must never decide which records receive
+        // integrity verification.
+        for (_, record) in recordResult.records {
+            do {
+                events.append(try open(record, using: auditKey))
+            } catch {
+                integrityFailureCount += 1
             }
-            return Array(events.sorted { $0.timestamp > $1.timestamp }.prefix(boundedLimit))
         }
-        let events = try recentRecords.map { _, record in
-            try open(record, using: auditKey)
-        }
-        return events.sorted { $0.timestamp > $1.timestamp }
+
+        return AuditReadResult(
+            events: Array(events.sorted { $0.timestamp > $1.timestamp }.prefix(boundedLimit)),
+            diagnostics: AuditReadDiagnostics(
+                unreadableRecordCount: recordResult.diagnostics.unreadableRecordCount,
+                integrityFailureCount: integrityFailureCount
+            )
+        )
     }
 
     private func prepareDirectory() throws {
@@ -197,18 +215,39 @@ public struct EncryptedAuditLog: Sendable {
     }
 
     private func eventRecords() throws -> [(URL, EncryptedAuditEventRecord)] {
+        let result = try readEventRecords()
+        guard !result.diagnostics.hasIssues else {
+            throw EncryptedAuditLogError.integrityFailed
+        }
+        return result.records.sorted { lhs, rhs in
+            lhs.1.createdAt < rhs.1.createdAt
+        }
+    }
+
+    private func readEventRecords() throws -> AuditRecordReadResult {
         let urls = try FileManager.default.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: nil
         )
-        return try urls
-            .filter { $0.lastPathComponent.hasSuffix(".audit.json") }
-            .map { url in
-                (url, try decoder.decode(EncryptedAuditEventRecord.self, from: Data(contentsOf: url)))
+        var records: [(URL, EncryptedAuditEventRecord)] = []
+        var unreadableRecordCount = 0
+        for url in urls where url.lastPathComponent.hasSuffix(".audit.json") {
+            do {
+                records.append((
+                    url,
+                    try decoder.decode(
+                        EncryptedAuditEventRecord.self,
+                        from: Data(contentsOf: url)
+                    )
+                ))
+            } catch {
+                unreadableRecordCount += 1
             }
-            .sorted { lhs, rhs in
-                lhs.1.createdAt < rhs.1.createdAt
-            }
+        }
+        return AuditRecordReadResult(
+            records: records,
+            diagnostics: AuditReadDiagnostics(unreadableRecordCount: unreadableRecordCount)
+        )
     }
 
     private func open(_ record: EncryptedAuditEventRecord, using auditKey: SymmetricKey) throws -> AuditEvent {
@@ -326,6 +365,11 @@ private struct EncryptedAuditEventRecord: Codable, Sendable {
         nonce = try container.decode(Data.self, forKey: .nonce)
         tag = try container.decode(Data.self, forKey: .tag)
     }
+}
+
+private struct AuditRecordReadResult: Sendable {
+    let records: [(URL, EncryptedAuditEventRecord)]
+    let diagnostics: AuditReadDiagnostics
 }
 
 private extension AES.GCM.Nonce {

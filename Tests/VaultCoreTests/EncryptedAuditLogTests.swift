@@ -116,7 +116,54 @@ import Testing
     #expect((try await log.recent(limit: 101, masterKey: masterKey)).count == 3)
 }
 
-@Test func encryptedAuditLogRecentRejectsTamperedRoutingMetadata() async throws {
+@Test func encryptedAuditLogRecentCreatesMissingDirectoryAndReturnsEmpty() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-empty-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    #expect(!FileManager.default.fileExists(atPath: directory.path))
+
+    let log = EncryptedAuditLog(
+        directoryURL: directory,
+        auditKeyProvider: { SymmetricKey(data: Data(repeating: 0xD3, count: 32)) }
+    )
+    let events = try await log.recent()
+
+    #expect(events.isEmpty)
+    #expect(FileManager.default.fileExists(atPath: directory.path))
+
+    let result = try await log.recentWithDiagnostics()
+    #expect(result.events.isEmpty)
+    #expect(result.diagnostics == .none)
+}
+
+@Test func encryptedAuditLogRecentKeepsHealthyRecordsWhenOneRecordIsMalformed() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-malformed-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let log = EncryptedAuditLog(directoryURL: directory)
+    let masterKey = SymmetricKey(data: Data(repeating: 0xD4, count: 32))
+    let first = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_400))
+    let second = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_401))
+
+    try await log.append(first, masterKey: masterKey)
+    try await log.append(second, masterKey: masterKey)
+    try Data("{\"truncated\":".utf8).write(
+        to: directory.appending(path: "broken.audit.json"),
+        options: [.atomic]
+    )
+
+    let result = try await log.recentWithDiagnostics(limit: 100, masterKey: masterKey)
+
+    #expect(result.events == [second, first])
+    #expect(result.diagnostics.unreadableRecordCount == 1)
+    #expect(result.diagnostics.integrityFailureCount == 0)
+}
+
+@Test func encryptedAuditLogRecentReportsTamperedRecordWithoutDroppingHealthyRecords() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: "audit-recent-tamper-\(UUID().uuidString)")
     defer {
@@ -126,6 +173,8 @@ import Testing
     let masterKey = SymmetricKey(data: Data(repeating: 0xD4, count: 32))
 
     try await log.append(makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_200)), masterKey: masterKey)
+    let healthy = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_201))
+    try await log.append(healthy, masterKey: masterKey)
     let auditFile = try #require(
         try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .first(where: { $0.pathExtension == "json" && $0.lastPathComponent != "audit-key.json" })
@@ -136,9 +185,46 @@ import Testing
     object["createdAt"] = 0
     try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: auditFile, options: [.atomic])
 
-    await #expect(throws: EncryptedAuditLogError.integrityFailed) {
-        try await log.recent(limit: 1, masterKey: masterKey)
+    let result = try await log.recentWithDiagnostics(limit: 100, masterKey: masterKey)
+
+    #expect(result.events.count == 1)
+    #expect(result.diagnostics.unreadableRecordCount == 0)
+    #expect(result.diagnostics.integrityFailureCount == 1)
+}
+
+@Test func encryptedAuditLogRecentAuthenticatesBeforeApplyingTopN() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-top-n-integrity-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
     }
+    let clock = AuditTestClock(start: 1_700_000_000)
+    let log = EncryptedAuditLog(directoryURL: directory, now: { clock.now() })
+    let masterKey = SymmetricKey(data: Data(repeating: 0xD5, count: 32))
+    let first = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_500))
+    let second = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_501))
+
+    try await log.append(first, masterKey: masterKey)
+    try await log.append(second, masterKey: masterKey)
+    let auditFiles = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        .filter { $0.lastPathComponent.hasSuffix(".audit.json") }
+    let newestOuterRecord = try #require(
+        auditFiles
+            .map { (url: $0, createdAt: try persistedCreatedAt($0)) }
+            .max { $0.createdAt < $1.createdAt }?
+            .url
+    )
+    var object = try #require(
+        JSONSerialization.jsonObject(with: Data(contentsOf: newestOuterRecord)) as? [String: Any]
+    )
+    object["createdAt"] = 0
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        .write(to: newestOuterRecord, options: [.atomic])
+
+    let result = try await log.recentWithDiagnostics(limit: 1, masterKey: masterKey)
+
+    #expect(result.events == [first])
+    #expect(result.diagnostics.integrityFailureCount == 1)
 }
 
 @Test func encryptedAuditLogRecentKeepsLegacyRecordsReadable() async throws {
@@ -174,6 +260,30 @@ import Testing
     try JSONEncoder().encode(legacy).write(to: auditFile, options: [.atomic])
 
     #expect(try await log.recent(limit: 1) == [event])
+}
+
+private final class AuditTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var next: TimeInterval
+
+    init(start: TimeInterval) {
+        next = start
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        defer { next += 1 }
+        return Date(timeIntervalSince1970: next)
+    }
+}
+
+private func persistedCreatedAt(_ url: URL) throws -> Date {
+    let object = try #require(
+        JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+    )
+    let value = try #require(object["createdAt"] as? NSNumber)
+    return Date(timeIntervalSinceReferenceDate: value.doubleValue)
 }
 
 private func makeAuditEvent(timestamp: Date) -> AuditEvent {
