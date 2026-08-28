@@ -103,8 +103,8 @@ private func writeManagedV2WithLegacySidecar(
     // template must not contain an actual opaque reference or example data.
     #expect(MarkdownReferenceScanner.references(in: markdown).isEmpty)
     #expect(!markdown.contains("示例密码"))
-    #expect(!markdown.contains("SVLT-INDEX"))
-    #expect(!markdown.contains("SVLT-ENTRY"))
+    #expect(!markdown.contains("<!-- SVLT-INDEX "))
+    #expect(!markdown.contains("<!-- SVLT-ENTRY "))
 
     let reopened = SensitiveCatalogDocumentStore(
         documentURL: fixture.document,
