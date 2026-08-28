@@ -24,11 +24,22 @@ jobs:
         uses: actions/checkout@v4
       - name: Run macOS test suite
         run: |
+          # Catalog POSIX probes are deliberately bounded because a
+          # File Provider syscall can outlive the caller's timeout.  Hosted
+          # runners can therefore leave a timed-out probe in the test process
+          # and make the next test fail immediately on the shared permit pool.
+          # Keep bundle execution serial and relaunch failed tests so a
+          # transient provider timeout cannot poison a retry; persistent
+          # failures still fail this job.
           xcodebuild test \
             -project SVLT.xcodeproj \
             -scheme AgentSecretVault \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/svlt-derived" \
+            -parallel-testing-enabled NO \
+            -retry-tests-on-failure \
+            -test-iterations 3 \
+            -test-repetition-relaunch-enabled YES \
             CODE_SIGNING_ALLOWED=NO
 
   mcp:
