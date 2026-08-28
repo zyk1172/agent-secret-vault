@@ -22,7 +22,18 @@ import VaultIPC
     let store = RevealSessionStore(defaultTTLSeconds: 0.01)
     let id = await store.create(resolvedParagraph: "Token: ASV_CANARY_REVEAL_TTL")
     #expect(await store.paragraph(id: id) == "Token: ASV_CANARY_REVEAL_TTL")
-    try await Task.sleep(nanoseconds: 50_000_000)
+    // The expiry task hops back onto the actor after sleeping. Poll with a
+    // bounded deadline so a busy CI scheduler cannot make a fixed 50ms sleep
+    // race the actor hop while still asserting the same TTL behavior.
+    var expired = false
+    for _ in 0..<40 {
+        if await store.paragraph(id: id) == nil {
+            expired = true
+            break
+        }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(expired)
     #expect(await store.paragraph(id: id) == nil)
 }
 
