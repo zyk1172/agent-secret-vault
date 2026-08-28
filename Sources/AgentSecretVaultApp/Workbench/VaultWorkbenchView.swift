@@ -163,6 +163,13 @@ public struct CatalogBatchSelectionState: Equatable, Sendable {
         selectedIDs.subtract(ids)
         if selectedIDs.isEmpty { isSelecting = false }
     }
+
+    /// Reconcile selection after an authoritative Catalog refresh. This is
+    /// intentionally not a successful delete: batch mode stays visible so the
+    /// user must re-confirm a destructive operation after a revision change.
+    public mutating func retainVisibleIDs(_ ids: [String]) {
+        selectedIDs.formIntersection(Set(ids))
+    }
 }
 
 public struct CatalogDeletionSummary: Equatable, Sendable {
@@ -189,6 +196,182 @@ public struct CatalogDeletionSummary: Equatable, Sendable {
     }
 }
 
+/// The presentation state for one Catalog field. Authorization, IPC, and
+/// plaintext acquisition stay outside this pure resolver.
+public enum CatalogFieldActionKind: String, Equatable, Sendable {
+    case copy
+    case reveal
+    case fillSecret
+}
+
+public struct CatalogFieldPresentation: Equatable, Sendable {
+    public let displayText: String
+    public let isSecret: Bool
+    public let isRevealed: Bool
+    public let actionKind: CatalogFieldActionKind
+    public let allowsCopy: Bool
+
+    public init(
+        displayText: String,
+        isSecret: Bool,
+        isRevealed: Bool,
+        actionKind: CatalogFieldActionKind,
+        allowsCopy: Bool
+    ) {
+        self.displayText = displayText
+        self.isSecret = isSecret
+        self.isRevealed = isRevealed
+        self.actionKind = actionKind
+        self.allowsCopy = allowsCopy
+    }
+
+    public static func resolve(
+        field: SecretCatalogFieldValue,
+        revealedPlaintext: String? = nil
+    ) -> Self {
+        if field.type.isSecret {
+            if field.secretRef != nil {
+                if let revealedPlaintext {
+                    return Self(
+                        displayText: revealedPlaintext,
+                        isSecret: true,
+                        isRevealed: true,
+                        actionKind: .copy,
+                        allowsCopy: !revealedPlaintext.isEmpty
+                    )
+                }
+                return Self(
+                    displayText: "已加密",
+                    isSecret: true,
+                    isRevealed: false,
+                    actionKind: .reveal,
+                    allowsCopy: false
+                )
+            }
+            return Self(
+                displayText: "未填写",
+                isSecret: true,
+                isRevealed: false,
+                actionKind: .fillSecret,
+                allowsCopy: false
+            )
+        }
+
+        let displayText = displayValue(for: field)
+        return Self(
+            displayText: displayText,
+            isSecret: false,
+            isRevealed: false,
+            actionKind: .copy,
+            allowsCopy: !displayText.isEmpty && displayText != "未填写" && displayText != "已隐藏"
+        )
+    }
+
+    public static func displayValue(for field: SecretCatalogFieldValue) -> String {
+        guard field.agentVisible else { return "已隐藏" }
+        guard let value = field.value else { return "未填写" }
+        switch value {
+        case .string(let value): return value
+        case .number(let value): return String(value)
+        case .boolean(let value): return value ? "是" : "否"
+        case .list(let value): return value.joined(separator: ", ")
+        }
+    }
+}
+
+/// Column widths for the three-column detail table. The helper receives only
+/// available width, so layout behavior can be tested without rendering a
+/// view. The value column receives the remaining space after Grid gaps.
+public struct CatalogDetailColumnWidths: Equatable, Sendable {
+    public let name: CGFloat
+    public let value: CGFloat
+    public let action: CGFloat
+
+    public init(name: CGFloat, value: CGFloat, action: CGFloat) {
+        self.name = name
+        self.value = value
+        self.action = action
+    }
+
+    public static func calculate(
+        availableWidth: CGFloat,
+        horizontalSpacing: CGFloat = 16
+    ) -> Self {
+        let usable = max(0, availableWidth - horizontalSpacing * 2)
+        let name = min(max(usable * 0.20, 90), 180)
+        let action = min(max(usable * 0.15, 72), 120)
+        return Self(
+            name: name,
+            value: max(0, usable - name - action),
+            action: action
+        )
+    }
+}
+
+public enum AuditActivityReadResult: Equatable, Sendable {
+    case unavailable
+    case success([CatalogSecurityAuditEntry])
+    case failure(code: String)
+}
+
+public enum AuditHealthReadResult: Equatable, Sendable {
+    case normal
+    case appendFailed
+    case failure
+    case unknown
+}
+
+/// Pure reducer for the two independent AppControl reads used by the recent
+/// activity cards. A failed read never erases the last verified entries.
+public struct AuditRefreshState: Equatable, Sendable {
+    public let entries: [CatalogSecurityAuditEntry]
+    public let warning: String?
+
+    public init(entries: [CatalogSecurityAuditEntry], warning: String?) {
+        self.entries = entries
+        self.warning = warning
+    }
+
+    public static func reduce(
+        previousEntries: [CatalogSecurityAuditEntry],
+        activity: AuditActivityReadResult,
+        health: AuditHealthReadResult? = nil
+    ) -> Self {
+        switch activity {
+        case .unavailable:
+            return Self(
+                entries: previousEntries,
+                warning: "本机控制服务不可用（APP_CONTROL_UNAVAILABLE）；已保留最近一次可用记录。"
+            )
+        case let .failure(code):
+            return Self(
+                entries: previousEntries,
+                warning: "安全活动记录读取失败（\(code)）；已保留最近一次可用记录。"
+            )
+        case let .success(entries):
+            switch health ?? .failure {
+            case .normal:
+                return Self(entries: entries, warning: nil)
+            case .appendFailed:
+                return Self(
+                    entries: entries,
+                    warning: "安全活动记录写入异常；近期活动可能不完整。"
+                )
+            case .failure:
+                return Self(
+                    entries: entries,
+                    warning: "无法确认安全活动记录完整性（AUDIT_HEALTH_READ_FAILED）；当前可读取记录仍予以显示。"
+                )
+            case .unknown:
+                return Self(
+                    entries: entries,
+                    warning: "无法确认安全活动记录完整性（AUDIT_HEALTH_UNKNOWN）；当前可读取记录仍予以显示。"
+                )
+            }
+        }
+    }
+}
+
 public enum VaultWorkbenchRenderingPolicy {
     public static let usesStableRendering = true
     public static let usesRepeatingAnimations = false
@@ -203,10 +386,18 @@ public enum VaultWorkbenchMotion {
 }
 
 private struct CatalogDetailContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 260
+    static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+        value = nextValue()
+    }
+}
+
+private struct CatalogDetailAvailableWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -267,6 +458,9 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable 
 
 public extension Notification.Name {
     static let vaultWorkbenchNavigate = Notification.Name("AgentSecretVaultWorkbenchNavigate")
+    static let vaultWorkbenchSecurityStateInvalidated = Notification.Name(
+        "AgentSecretVaultWorkbenchSecurityStateInvalidated"
+    )
 }
 
 public struct VaultWorkbenchView: View {
@@ -569,6 +763,11 @@ public struct VaultWorkbenchView: View {
                 disableAgentService: disableAgentService,
                 restartAgentService: restartAgentService
             )
+            .fixedSize(horizontal: false, vertical: true)
+
+            CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)
+                .layoutPriority(1)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             if let snapshot = sensitiveCatalogSnapshot,
                let pending = PendingCatalogSecretResolver.resolve(in: snapshot.document),
@@ -578,10 +777,8 @@ public struct VaultWorkbenchView: View {
                     entry: entry,
                     commit: commitCatalogEntryEdit
                 )
+                .fixedSize(horizontal: false, vertical: true)
             }
-
-            CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)
-                .layoutPriority(1)
         }
     }
 
@@ -1258,6 +1455,75 @@ private struct WorkbenchPanelSurface<Content: View>: View {
     }
 }
 
+private enum CatalogGroupLayout {
+    /// Shared content guide for the group header and the visible group cards.
+    static let horizontalInset: CGFloat = 6
+}
+
+private struct SectionActionBar: View {
+    let title: String
+    let actionTitle: String
+    let action: () -> Void
+    let disabled: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            Spacer(minLength: 0)
+            Button(actionTitle, action: action)
+                .buttonStyle(.plain)
+                .disabled(disabled)
+        }
+        .padding(.horizontal, CatalogGroupLayout.horizontalInset)
+    }
+}
+
+private struct CatalogBatchActionBar: View {
+    let selectedCount: Int
+    let totalCount: Int
+    let toggleAll: () -> Void
+    let deleteSelected: () -> Void
+    let finish: () -> Void
+    let deleteDisabled: Bool
+    let horizontalInset: CGFloat
+
+    init(
+        selectedCount: Int,
+        totalCount: Int,
+        toggleAll: @escaping () -> Void,
+        deleteSelected: @escaping () -> Void,
+        finish: @escaping () -> Void,
+        deleteDisabled: Bool,
+        horizontalInset: CGFloat = 0
+    ) {
+        self.selectedCount = selectedCount
+        self.totalCount = totalCount
+        self.toggleAll = toggleAll
+        self.deleteSelected = deleteSelected
+        self.finish = finish
+        self.deleteDisabled = deleteDisabled
+        self.horizontalInset = horizontalInset
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("已选 \(selectedCount) 项")
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button(selectedCount == totalCount ? "取消全选" : "全选", action: toggleAll)
+                .buttonStyle(.plain)
+            Button("删除所选", role: .destructive, action: deleteSelected)
+                .buttonStyle(.plain)
+                .disabled(deleteDisabled)
+            Button("完成", action: finish)
+                .buttonStyle(.plain)
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, horizontalInset)
+    }
+}
+
 private struct PendingSecretFillCard: View {
     let pending: PendingCatalogSecret
     let entry: SecretCatalogEntry
@@ -1349,7 +1615,7 @@ private struct CompactAuditPreviewCard: View {
                     Label("最近自动化", systemImage: "sparkles.rectangle.stack")
                         .font(.headline.weight(.semibold))
                     Spacer()
-                    Text(entries.isEmpty ? "暂无记录" : "最近 \(entries.count) 条")
+                    Text(summaryText)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -1361,7 +1627,7 @@ private struct CompactAuditPreviewCard: View {
                 }
 
                 ScrollView(.vertical, showsIndicators: true) {
-                    if entries.isEmpty {
+                    if entries.isEmpty, errorMessage == nil {
                         VStack {
                             Spacer(minLength: 24)
                             Label("暂无活动", systemImage: "clock.badge.questionmark")
@@ -1369,6 +1635,10 @@ private struct CompactAuditPreviewCard: View {
                             Spacer()
                         }
                         .frame(maxWidth: .infinity, minHeight: 160)
+                    } else if entries.isEmpty {
+                        Label("最近活动暂不可用", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 100)
                     } else {
                         VStack(spacing: 6) {
                             ForEach(entries) { entry in
@@ -1394,6 +1664,11 @@ private struct CompactAuditPreviewCard: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: entries.map(\.id))
+    }
+
+    private var summaryText: String {
+        if !entries.isEmpty { return "最近 \(entries.count) 条" }
+        return errorMessage == nil ? "暂无记录" : "读取异常"
     }
 
     private func iconName(for operation: AuditOperation) -> String {
@@ -1771,45 +2046,42 @@ private struct SensitiveCatalogEditorCard: View {
                 } else {
                     HStack(alignment: .top, spacing: 0) {
                         VStack(alignment: .leading, spacing: 10) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("分组")
-                                    .font(.headline)
-                                Spacer()
-                                Button(indexSelection.isSelecting ? "完成" : "批量编辑") {
-                                    withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-                                        if indexSelection.isSelecting {
-                                            indexSelection.finish()
-                                        } else {
-                                            indexSelection.begin()
-                                        }
-                                    }
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(!indexSelection.isSelecting && snapshot.document.indexes.isEmpty)
-                            }
-
                             if indexSelection.isSelecting {
-                                HStack(spacing: 8) {
-                                    Text("已选 \(indexSelection.selectedIDs.count)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button(indexSelection.selectedIDs.count == snapshot.document.indexes.count ? "取消全选" : "全选") {
+                                CatalogBatchActionBar(
+                                    selectedCount: indexSelection.selectedIDs.count,
+                                    totalCount: snapshot.document.indexes.count,
+                                    toggleAll: {
                                         if indexSelection.selectedIDs.count == snapshot.document.indexes.count {
                                             indexSelection.clear()
                                         } else {
                                             indexSelection.selectAll(snapshot.document.indexes.map(\.id))
                                         }
-                                    }
-                                    .buttonStyle(.borderless)
-                                    Button("删除所选", role: .destructive) { prepareIndexDeletion(ids: indexSelection.selectedIDs.sorted(), snapshot: snapshot) }
-                                        .buttonStyle(.borderless)
-                                        .disabled(indexSelection.selectedIDs.isEmpty || isWorking || applyBatch == nil)
-                                }
-                                .font(.caption.weight(.medium))
+                                    },
+                                    deleteSelected: {
+                                        prepareIndexDeletion(ids: indexSelection.selectedIDs.sorted(), snapshot: snapshot)
+                                    },
+                                    finish: {
+                                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                                            indexSelection.finish()
+                                        }
+                                    },
+                                    deleteDisabled: indexSelection.selectedIDs.isEmpty || isWorking || applyBatch == nil,
+                                    horizontalInset: CatalogGroupLayout.horizontalInset
+                                )
+                            } else {
+                                SectionActionBar(
+                                    title: "分组",
+                                    actionTitle: "批量编辑",
+                                    action: {
+                                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                                            indexSelection.begin()
+                                        }
+                                    },
+                                    disabled: snapshot.document.indexes.isEmpty
+                                )
                             }
 
-                            ScrollView {
+                            ScrollView(.vertical, showsIndicators: false) {
                                 VStack(spacing: 8) {
                                     ForEach(snapshot.document.indexes, id: \.id) { index in
                                         let entries = snapshot.document.entries.filter { $0.indexId == index.id }
@@ -1867,6 +2139,14 @@ private struct SensitiveCatalogEditorCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onChange(of: snapshot?.revision) { _, _ in
+            guard let snapshot else { return }
+            indexSelection.retainVisibleIDs(snapshot.document.indexes.map(\.id))
+            if let selectedIndexID,
+               !snapshot.document.indexes.contains(where: { $0.id == selectedIndexID }) {
+                self.selectedIndexID = nil
+            }
+        }
         .alert(item: $pendingIndexDeletion) { request in
             Alert(
                 title: Text("删除 \(request.itemCount) 个分组？"),
@@ -1930,7 +2210,6 @@ private struct SensitiveCatalogEditorCard: View {
                 .disabled(applyBatch == nil)
             }
         }
-        .padding(.horizontal, 6)
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .background(
             LinearGradient(
@@ -1953,6 +2232,7 @@ private struct SensitiveCatalogEditorCard: View {
                 )
                 .allowsHitTesting(false)
         }
+        .padding(.horizontal, CatalogGroupLayout.horizontalInset)
         .scaleEffect(isHovered && !reduceMotion ? 1.01 : 1)
         .onHover { isHovering in
             hoveredIndexID = isHovering ? index.id : nil
@@ -2066,22 +2346,24 @@ private struct SensitiveCatalogGroupSheet: View {
 
                 Spacer()
                 if entrySelection.isSelecting {
-                    Text("已选 \(entrySelection.selectedIDs.count)").font(.caption).foregroundStyle(.secondary)
-                    Button(entrySelection.selectedIDs.count == entries.count ? "取消全选" : "全选") {
-                        if entrySelection.selectedIDs.count == entries.count {
-                            entrySelection.clear()
-                        } else {
-                            entrySelection.selectAll(entries.map(\.id))
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    Button("删除所选", role: .destructive) { prepareEntryDeletion() }
-                        .buttonStyle(.borderless)
-                        .disabled(isWorking || entrySelection.selectedIDs.isEmpty || applyBatch == nil)
-                    Button("完成") {
-                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) { entrySelection.finish() }
-                    }
-                    .buttonStyle(.borderless)
+                    CatalogBatchActionBar(
+                        selectedCount: entrySelection.selectedIDs.count,
+                        totalCount: entries.count,
+                        toggleAll: {
+                            if entrySelection.selectedIDs.count == entries.count {
+                                entrySelection.clear()
+                            } else {
+                                entrySelection.selectAll(entries.map(\.id))
+                            }
+                        },
+                        deleteSelected: { prepareEntryDeletion() },
+                        finish: {
+                            withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                                entrySelection.finish()
+                            }
+                        },
+                        deleteDisabled: isWorking || entrySelection.selectedIDs.isEmpty || applyBatch == nil
+                    )
                 } else {
                     Button("批量编辑") {
                         withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) { entrySelection.begin() }
@@ -2182,6 +2464,9 @@ private struct SensitiveCatalogGroupSheet: View {
         }
         .padding(22)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: entries.map(\.id)) { _, ids in
+            entrySelection.retainVisibleIDs(ids)
+        }
         .alert(item: $pendingEntryDeletion) { request in
             Alert(
                 title: Text("删除 \(request.itemCount) 个条目？"),
@@ -2268,8 +2553,17 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var revealError: String?
     @State private var isHovering = false
     @State private var detailContentHeight: CGFloat = 260
+    @State private var detailAvailableWidth: CGFloat = 760
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private enum Metrics {
+        static let firstLineHeight: CGFloat = 24
+        static let titleBlockHeight: CGFloat = 40
+        static let horizontalPadding: CGFloat = 12
+        static let verticalPadding: CGFloat = 10
+        static let sectionSpacing: CGFloat = 6
+    }
 
     init(
         entry: SecretCatalogEntry,
@@ -2311,16 +2605,17 @@ private struct SensitiveCatalogEntryRow: View {
                         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                             .font(.title3)
                             .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                            .frame(width: Metrics.firstLineHeight, height: Metrics.firstLineHeight, alignment: .center)
 
                         VStack(alignment: .leading, spacing: 8) {
-                            entrySummary
+                            entryTitleContent
                             entryCounts
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         Spacer(minLength: 0)
                     }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+                    .padding(.horizontal, Metrics.horizontalPadding)
+                    .padding(.vertical, Metrics.verticalPadding)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -2331,7 +2626,7 @@ private struct SensitiveCatalogEntryRow: View {
                 normalCard
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(
             LinearGradient(
                 colors: [
@@ -2379,31 +2674,46 @@ private struct SensitiveCatalogEntryRow: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
             clearSensitiveOutput()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchSecurityStateInvalidated)) { _ in
+            clearSensitiveOutput()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
+            clearSensitiveOutput()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
+            clearSensitiveOutput()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in
+            clearSensitiveOutput()
+        }
     }
 
     private var normalCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
-                Button { showingDetails = true } label: { entrySummary }
+                Image(systemName: "key.horizontal")
+                    .foregroundStyle(.green)
+                    .frame(width: Metrics.firstLineHeight, height: Metrics.firstLineHeight, alignment: .center)
+                Button { showingDetails = true } label: { entryTitleContent }
                     .buttonStyle(.plain)
                     .accessibilityLabel(entry.title)
                     .accessibilityHint("打开条目详情")
-                Spacer(minLength: 0)
-            Button {
-                load(entry)
-                editing = true
-                showingDetails = true
-                editorError = nil
-            } label: {
-                Image(systemName: "pencil")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("编辑条目")
-            .accessibilityLabel("编辑条目")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    load(entry)
+                    editing = true
+                    showingDetails = true
+                    editorError = nil
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.callout.weight(.semibold))
+                        .frame(width: 34, height: Metrics.firstLineHeight, alignment: .center)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("编辑条目")
+                .accessibilityLabel("编辑条目")
             }
             HStack(spacing: 12) {
                 entryCounts
@@ -2416,7 +2726,8 @@ private struct SensitiveCatalogEntryRow: View {
                     .disabled(applyBatch == nil)
             }
         }
-        .padding(12)
+        .padding(.horizontal, Metrics.horizontalPadding)
+        .padding(.vertical, Metrics.verticalPadding)
     }
 
     private var entryDetails: some View {
@@ -2450,6 +2761,10 @@ private struct SensitiveCatalogEntryRow: View {
             }
             .frame(maxHeight: editing ? .infinity : min(max(detailContentHeight + 92, 260), 720))
             .onPreferenceChange(CatalogDetailContentHeightKey.self) { detailContentHeight = $0 }
+            .onPreferenceChange(CatalogDetailAvailableWidthKey.self) { width in
+                guard width > 0 else { return }
+                detailAvailableWidth = width
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") {
@@ -2475,20 +2790,17 @@ private struct SensitiveCatalogEntryRow: View {
         }
     }
 
-    private var entrySummary: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "key.horizontal")
-                .foregroundStyle(.green)
-                .frame(width: 18, height: 22, alignment: .top)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title)
-                    .font(.headline.weight(.semibold))
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .frame(minHeight: 40, alignment: .topLeading)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+    private var entryTitleContent: some View {
+        Text(entry.title)
+            .font(.headline.weight(.semibold))
+            .lineLimit(2)
+            .truncationMode(.tail)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: Metrics.titleBlockHeight,
+                maxHeight: Metrics.titleBlockHeight,
+                alignment: .topLeading
+            )
     }
 
     private var entryCounts: some View {
@@ -2502,17 +2814,21 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     private var displayBody: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let widths = CatalogDetailColumnWidths.calculate(
+            availableWidth: detailAvailableWidth > 0 ? detailAvailableWidth : 760
+        )
+        return VStack(alignment: .leading, spacing: 16) {
             Grid(horizontalSpacing: 16, verticalSpacing: 12) {
                 ForEach(entry.fields, id: \.key) { field in
                     GridRow(alignment: .top) {
                         Text(field.label)
                             .font(.body.weight(.semibold))
-                            .frame(minWidth: 110, idealWidth: 140, maxWidth: 170, alignment: .leading)
+                            .frame(width: widths.name, alignment: .leading)
                         detailValue(for: field)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(width: widths.value, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                         detailAction(for: field)
-                            .frame(width: 80, alignment: .center)
+                            .frame(width: widths.action, alignment: .center)
                     }
                 }
             }
@@ -2524,36 +2840,62 @@ private struct SensitiveCatalogEntryRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: CatalogDetailAvailableWidthKey.self, value: proxy.size.width)
+            }
+        )
     }
 
     @ViewBuilder
     private func detailValue(for field: SecretCatalogFieldValue) -> some View {
-        if let plaintext = revealedPlaintexts[field.key] {
-            Text(plaintext).font(.system(.body, design: .monospaced)).foregroundStyle(.orange).textSelection(.enabled)
-        } else if field.secretRef != nil {
-            Text("已加密").font(.system(.body, design: .monospaced)).foregroundStyle(.orange)
-        } else {
-            Text("未填写").foregroundStyle(.secondary)
-        }
+        let presentation = CatalogFieldPresentation.resolve(
+            field: field,
+            revealedPlaintext: revealedPlaintexts[field.key]
+        )
+        Text(presentation.displayText)
+            .font(presentation.isSecret ? .system(.body, design: .monospaced) : .body)
+            .foregroundStyle(
+                presentation.isSecret
+                    ? (presentation.isRevealed ? .orange : .orange)
+                    : (presentation.displayText == "未填写" || presentation.displayText == "已隐藏" ? .secondary : .primary)
+            )
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
     private func detailAction(for field: SecretCatalogFieldValue) -> some View {
-        if field.type.isSecret {
-            if revealedPlaintexts[field.key] != nil {
-                Button("复制") { copy(revealedPlaintexts[field.key] ?? "") }.buttonStyle(.bordered)
-            } else if field.secretRef != nil {
+        let presentation = CatalogFieldPresentation.resolve(
+            field: field,
+            revealedPlaintext: revealedPlaintexts[field.key]
+        )
+        Group {
+            switch presentation.actionKind {
+            case .copy:
+                Button("复制") { copy(presentation.displayText) }
+                    .buttonStyle(.bordered)
+                    .disabled(!presentation.allowsCopy)
+            case .reveal:
                 Button(revealingKeys.contains(field.key) ? "验证中…" : "解密") { reveal(field) }
                     .buttonStyle(.bordered)
                     .disabled(revealCatalogField == nil || revealingKeys.contains(field.key))
-            } else {
-                Button("填写密码") { editing = true }.buttonStyle(.bordered)
+            case .fillSecret:
+                Button("填写密码") { editing = true }
+                    .buttonStyle(.bordered)
             }
-        } else {
-            Button("复制") { copy(displayValue(field)) }
-                .buttonStyle(.bordered)
-                .disabled(displayValue(field).isEmpty || displayValue(field) == "未填写")
         }
+        .id("\(field.key)-\(presentation.actionKind.rawValue)")
+        .transition(
+            reduceMotion
+                ? .opacity
+                : .opacity.combined(with: .scale(scale: 0.98))
+        )
+        .animation(
+            reduceMotion ? .easeInOut(duration: 0.12) : .easeInOut(duration: 0.16),
+            value: presentation.actionKind
+        )
     }
 
     private func reveal(_ field: SecretCatalogFieldValue) {
@@ -2566,7 +2908,7 @@ private struct SensitiveCatalogEntryRow: View {
             do {
                 let plaintext = try await revealCatalogField(entry.id, fieldKey)
                 guard showingDetails, scenePhase == .active else { return }
-                withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
                     revealedPlaintexts[fieldKey] = plaintext
                 }
                 Task { @MainActor in
@@ -2771,18 +3113,6 @@ private struct SensitiveCatalogEntryRow: View {
         pendingSecretInputs.removeAll()
     }
 
-    private func displayValue(_ field: SecretCatalogFieldValue) -> String {
-        if field.type.isSecret { return field.secretRef ?? "未绑定（保存时设置）" }
-        guard field.agentVisible else { return "已隐藏" }
-        guard let value = field.value else { return "未填写" }
-        switch value {
-        case .string(let value): return value
-        case .number(let value): return String(value)
-        case .boolean(let value): return value ? "是" : "否"
-        case .list(let value): return value.joined(separator: ", ")
-        }
-    }
-
     private static func csv(_ value: String) -> [String] {
         value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     }
@@ -2829,7 +3159,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
     @State private var draftBoolean: Bool
     @State private var draftAgentVisible: Bool
     @State private var draftSearchable: Bool
-    @State private var showsSecret = true
+    @State private var showsSecret = false
     @State private var isReplacingSecret = false
     @State private var isSubmittingReplacement = false
     @State private var errorMessage: String?
@@ -2893,11 +3223,10 @@ private struct SensitiveCatalogFieldEditorRow: View {
 
             if draftType.isSecret {
                 HStack(spacing: 8) {
-                    if let secretRef = field.secretRef {
-                        Text(secretRef)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
+                    if field.secretRef != nil {
+                        Text("已绑定密文")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                         if isReplacingSecret {
                             if showsSecret {
                                 TextField("输入新密码", text: $secretInput)
@@ -3374,7 +3703,7 @@ private struct AgentAutomationAuditCard: View {
                     Label("智能体自动化", systemImage: "sparkles.rectangle.stack")
                         .font(.title3.weight(.semibold))
                     Spacer()
-                    Text("最近 \(entries.count) 条")
+                    Text(summaryText)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -3389,7 +3718,7 @@ private struct AgentAutomationAuditCard: View {
                 }
 
                 ScrollView(.vertical, showsIndicators: true) {
-                    if entries.isEmpty {
+                    if entries.isEmpty, errorMessage == nil {
                         VStack {
                             Spacer(minLength: 24)
                             Label("暂无活动", systemImage: "clock.badge.questionmark")
@@ -3397,6 +3726,10 @@ private struct AgentAutomationAuditCard: View {
                             Spacer()
                         }
                         .frame(maxWidth: .infinity, minHeight: 180)
+                    } else if entries.isEmpty {
+                        Label("最近活动暂不可用", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 100)
                     } else {
                         VStack(spacing: 10) {
                             ForEach(entries) { entry in
@@ -3425,6 +3758,11 @@ private struct AgentAutomationAuditCard: View {
             .padding(20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var summaryText: String {
+        if !entries.isEmpty { return "最近 \(entries.count) 条" }
+        return errorMessage == nil ? "暂无记录" : "读取异常"
     }
 
     private func iconName(for operation: AuditOperation) -> String {
