@@ -16,9 +16,9 @@ public struct AppControlPeerAuthenticator: @unchecked Sendable {
     /// The Team ID is part of the designated requirement. Checking only the
     /// bundle identifier would allow another developer-signed binary with the
     /// same identifier to connect to the privileged App-control socket.
-    public static let svltTeamIdentifier = "9KXSB4HR69"
+    public static let svltTeamIdentifier = "JUQXD87P93"
     public static let svltDesignatedRequirement =
-        #"identifier "com.agent-secret-vault.SVLT" and anchor apple generic and certificate leaf[subject.OU] = "9KXSB4HR69""#
+        #"identifier "com.agent-secret-vault.SVLT" and anchor apple generic and certificate leaf[subject.OU] = "JUQXD87P93""#
 
     private let validator: @Sendable (Int32) -> Bool
 

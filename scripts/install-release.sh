@@ -15,7 +15,7 @@ APP_TARGET="$APP_DIR/SVLT.app"
 APP_SUPPORT="$HOME/Library/Application Support/AgentSecretVault"
 MCP_TARGET="$APP_SUPPORT/MCP"
 CONFIG_PATH="$APP_SUPPORT/svlt.mcp.json"
-SIGNING_TEAM="9KXSB4HR69"
+SIGNING_TEAM="JUQXD87P93"
 
 if [[ ! -d "$APP_SOURCE" ]]; then
   echo "找不到 SVLT.app。请从完整 release 包中运行本脚本。" >&2

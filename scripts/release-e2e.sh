@@ -10,7 +10,7 @@ E2E_ROOT="$ROOT_DIR/test-artifacts/release-e2e"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_DIR="$E2E_ROOT/$RUN_ID"
 CATALOG_PATH="$RUN_DIR/敏感信息.md"
-TEAM_ID="9KXSB4HR69"
+TEAM_ID="JUQXD87P93"
 
 umask 077
 
