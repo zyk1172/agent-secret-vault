@@ -66,11 +66,11 @@ SVLT 敏感信息目录写入规范：
 36. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
 37. 不得把 SVLT 解密得到的明文写回 `敏感信息.md`。
 38. 凭据来源标签包括 `SVLT_MANAGED_OPERATION`、`USER_EXPLICIT_PLAINTEXT`、`EXTERNAL_PROVIDER_OPERATION`、`UNMANAGED_CREDENTIAL`；不得因为用户使用其他凭据 provider 而强制接管。
-39. `敏感信息.md` 分为前言区、连续的 Catalog 主体区和尾部非托管区；Note、说明、用户 Markdown、callout 与 WikiLink 不属于 Catalog semantic model。
-40. 新建 Index 必须插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前；当前没有 Index 时，插入 policy 和前言之后，不得追加到用户尾注之后。
-41. Index 之间使用 renderer 生成的标准 Markdown 分隔 `\n\n---\n\n`；`---` 只是视觉边界，不属于 Index/Entry/Field，也不得全局重写用户自己的分隔线。
+39. SVLT 自己生成或受控插入的 `敏感信息.md` 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局；已有未知 Note、说明、用户 Markdown、callout 与 WikiLink 不属于 Catalog semantic model，必须保持原位。
+40. 新建 Index 必须插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前；如果已有用户 Markdown 位于 Index 之间，不为追求连续主体而搬迁它；当前没有 Index 时，插入 policy 和前言之后，不得追加到用户尾注之后。
+41. 新生成 Index 之间使用 renderer 的标准 Markdown 分隔 `\n\n---\n\n`；已有 `---` 没有 provenance 时按用户内容保留，不猜测或全局重写用户自己的分隔线。
 42. 同一 Index 内的 Entry 之间使用统一的双空行视觉间距；新增、batch、migration、format repair 和 minimal patch 不得混用一行、两行或三行布局。
-43. Catalog 写入遵守最小修改原则；只改目标 source range 和由 SVLT renderer 明确拥有的边界空白，保留用户普通 Markdown、注释、WikiLink、Note 和尾部内容。
+43. Catalog 写入遵守最小修改原则；只改目标 source range 和新写入时由 SVLT renderer 明确生成的边界空白，保留用户普通 Markdown、注释、WikiLink、Note 和尾部内容；format repair 不搬迁无法确认来源的 Note/Markdown/WikiLink，也不删除用户 HR。
 44. Agent 浏览必须使用 `secret_catalog_list_indices`、`secret_catalog_list_entries`、`secret_catalog_get`、`secret_catalog_create_structure` 等 MCP 响应发现 opaque ID；不得读取 selection sidecar、`敏感信息.md` 或 Application Support 文件解析 ID。
 45. 需要用户输入秘密时使用 `secret_catalog_request_secure_inputs`；若 transport 返回 `PENDING` 与 `requestID`，只能用 `secret_catalog_secure_input_status` 轮询同一请求，Agent 永远只能收到状态/非敏感结果，不能收到 plaintext。
 
@@ -81,11 +81,11 @@ SVLT 敏感信息目录写入规范：
 
 ## Markdown 结构与写入布局
 
-`敏感信息.md` 的结构分为三个逻辑区：前言区、连续的 Catalog 主体区、尾部非托管 Markdown。policy block、Note、使用说明、用户段落、callout 和 `[[WikiLink]]` 都是 unmanaged，不计入 Index/Entry/Field 的语义、搜索、计数或 App UI。
+`敏感信息.md` 的结构分为三个逻辑区（这是 SVLT 自己生成或受控插入时的布局约束）：前言区、连续的 Catalog 主体区、尾部非托管 Markdown。policy block、Note、使用说明、用户段落、callout 和 `[[WikiLink]]` 都是 unmanaged，不计入 Index/Entry/Field 的语义、搜索、计数或 App UI。已有未知用户 Markdown 即使位于两个 Index 之间也保持原位。
 
-业务 Index 必须连续排列。新 Index 插入最后一个合法 `SVLT-INDEX` 之后、任何尾部非托管 Markdown 之前；没有 Index 时插入前言之后。Index 之间由 renderer 生成 `\n\n---\n\n`，横线只是视觉边界，不能全局改写用户自有的 `---`。同一 Index 内 Entry 之间使用统一双空行视觉间距。
+新 Index 插入最后一个合法 `SVLT-INDEX` 之后、任何尾部非托管 Markdown 之前；没有 Index 时插入前言之后。新生成的 Index 之间由 renderer 生成 `\n\n---\n\n`，已有 `---` 没有 provenance 时按用户内容保留，不能全局改写用户自有分隔线。同一 Index 内 Entry 之间使用统一双空行视觉间距。
 
-所有合法 writer（App、MCP、Obsidian、编辑器和脚本）都必须输出 v3 marker/schema；受控写入优先 source-range minimal patch，只调整目标块及 renderer 明确拥有的边界空白，保留用户 Markdown、备注、注释、WikiLink、Note 和尾部内容。format repair 只有在能明确识别官方 legacy Note 时才可移动 Note；无法确认时保持原位。
+所有合法 writer（App、MCP、Obsidian、编辑器和脚本）都必须输出 v3 marker/schema；受控写入优先 source-range minimal patch，只调整目标块及新写入时 renderer 明确生成的边界空白，保留用户 Markdown、备注、注释、WikiLink、Note 和尾部内容。format repair 不为追求连续主体而移动无法确认来源的用户 Note/Markdown/WikiLink，也不删除用户 HR；只有 migration 能确定来自旧版官方结构化“目录说明”的 Note 时，才可将它放入前言。
 
 用户明文覆盖规则：
 1. 用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。即使上一轮使用 SVLT 或 Catalog 中可能已有对应 Secret，本次仍按用户明确选择执行。

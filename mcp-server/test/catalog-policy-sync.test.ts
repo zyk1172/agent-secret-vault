@@ -51,9 +51,9 @@ describe("Catalog policy synchronization", () => {
     const mcp = await readFile(path.join(repositoryRoot, "mcp-server/src/server.ts"), "utf8");
 
     for (const rule of [
-      "39. 敏感信息.md 分为前言区、连续的 Catalog 主体区和尾部非托管区",
+      "39. SVLT 自己生成或受控插入的 managed Catalog 使用",
       "40. 新建 Index 必须插入最后一个合法 SVLT-INDEX 之后、尾部非托管 Markdown 之前",
-      "41. Index 之间使用 renderer 生成的标准 Markdown 分隔",
+      "41. 新生成 Index 之间使用 renderer 的标准 Markdown 分隔",
       "42. 同一 Index 内的 Entry 之间使用统一的双空行视觉间距",
       "43. Catalog 写入遵守最小修改原则",
       "44. Agent 浏览必须使用 secret_catalog_list_indices、secret_catalog_list_entries、secret_catalog_get",

@@ -12,6 +12,8 @@ private let layoutIndexBID = "0123456789ABCDEFGHJKMNPQRT"
 private let layoutIndexCID = "0123456789ABCDEFGHJKMNPQRV"
 private let layoutEntryAID = "0123456789ABCDEFGHJKMNPQRW"
 private let layoutEntryBID = "0123456789ABCDEFGHJKMNPQRY"
+private let layoutEntryCID = "0123456789ABCDEFGHJKMNPQRZ"
+private let layoutIndexDID = "0123456789ABCDEFGHJKMNPQSA"
 
 private func layoutEntry(id: String, indexID: String, title: String) -> SecretCatalogEntry {
     SecretCatalogEntry(
@@ -21,6 +23,66 @@ private func layoutEntry(id: String, indexID: String, title: String) -> SecretCa
         fields: [SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("user"))]
     )
 }
+
+private func layoutEntry(_ entry: SecretCatalogEntry, in indexID: String) -> SecretCatalogEntry {
+    SecretCatalogEntry(
+        id: entry.id,
+        indexId: indexID,
+        title: entry.title,
+        type: entry.type,
+        aliases: entry.aliases,
+        endpoints: entry.endpoints,
+        fields: entry.fields,
+        notes: entry.notes,
+        tags: entry.tags,
+        schema: entry.schema
+    )
+}
+
+private let pr21ReleasedPolicyBlockFixture = """
+<!-- SVLT-POLICY-BEGIN version="3" digest="e67fb9b5e9b62b3f72df86b6a3ec89ec1d40328c9d67fd7ad3e43f05c466e6f4" -->
+> [!info]- SVLT 智能体写入规范
+>
+> 1. 本文件是 SVLT 敏感信息目录；SVLT 是 opt-in。
+> 2. ## 表示分组，### 表示条目。
+> 3. 条目和字段必须符合 SVLT v3 marker 与 schema。
+> 4. 已存在的 id 必须保持稳定，禁止随意重新生成。
+> 5. 同一条目不得出现重复 field key。
+> 6. 新建条目默认只建立一个实际需要的字段，不得为了“完整”自动生成一堆空字段。
+> 7. 字段不够时再增加。
+> 8. SVLT 正式支持三种写入路径：App 受控写入、Agent 经 MCP 写入、Obsidian/编辑器/脚本直接修改文件。
+> 9. 无论哪条路径，都必须产生符合 SVLT v3 的结构；直接写文件不会获得更高权限。
+> 10. 修改时采用最小修改原则，禁止为了新增一条记录重排整个文件。
+> 11. 必须保留用户原有 Markdown、双链、备注、空行以及非目标区域内容。
+> 12. [[双链]] 属于合法 Markdown 内容，禁止删除或展开成普通文本。
+> 13. 密码字段不得保存明文。
+> 14. 密码字段只能为空 placeholder 或合法 secret://。
+> 15. Token 应写作“令牌”。
+> 16. API Key 推荐显示为“API 密钥”，但这只是推荐显示标签，不是 schema 合法性约束。
+> 17. password/secret 类型用户界面统一使用“密码”，不要显示“秘密”。
+> 18. 私钥使用“私钥”，Cookie 使用“Cookie”，不要把所有敏感数据粗暴翻译成“秘密”。
+> 19. endpoint.type 可以是任意非空类型字符串，例如 ssh、postgresql、mysql、redis；结构层合法不等于 executor 支持该类型。
+> 20. 禁止伪造 secret://。
+> 21. 新绑定、替换、删除已有 secretRef 属于高风险语义操作，需要用户批准。
+> 22. 删除包含密码引用的条目或分组需要用户批准。
+> 23. 普通标题、别名、备注、标签、非密码字段等修改不触发额外的高风险 secretRef 批准；由 Agent 提交的 mutation 仍必须走 operation-bound write request。
+> 24. 普通新增分组、条目、字段、空密码 placeholder 不触发额外的高风险 secretRef 批准；不等于无边界或无授权写入。
+> 25. 合法的普通批量操作不因“批量”本身升级为高风险；一次提交的 batch 仍对应一个精确的 operation-bound write request。
+> 26. 每一笔 Agent semantic Catalog mutation 都必须由 Agent 主动发起一次精确绑定、一次消费的 operation-bound write request；Agent 不能自行开启权限、扩大或复用授权。
+> 27. 每笔需要授权的 Agent semantic Catalog mutation 都会直接触发一次精确绑定的 macOS device-owner authentication；该身份认证本身就是本次用户授权，不存在额外的 App 前置确认，认证票据只消费一次。
+> 28. self-reported caller source 只能作为显示提示；未由可信 transport 证明时必须显示为未验证的 MCP 客户端。
+> 29. Agent write authorization 不能替代 secretRef 绑定、替换、删除或删除密码条目的单独高风险批准。
+> 30. App 普通编辑和 External Writer 不走 Agent write gate；Obsidian Plugin 只负责 v3 validator，不是解密 authority。
+> 31. Agent 不得将密码、Token、API Key 或其他明文写入 Markdown、日志或 MCP 响应。
+> 32. 普通 metadata 和合法 WikiLink 是正常编辑；不得用普通字段隐藏 secret://。
+> 33. 格式修复只能调整格式，不能改变结构或 opaque 引用，不能生成或展开明文。
+> 34. 受控 MCP Catalog write 的结果必须带 post-commit validation 摘要；secret_catalog_validate 仍用于外部编辑检查、显式 health check 和详细 diagnostics。
+> 35. policy block 不属于 Catalog 数据，Agent 不得创建同名“SVLT 管理规范”分组或条目。
+> 36. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
+> 37. 不得把 SVLT 解密得到的明文写回敏感信息.md。
+> 38. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
+<!-- SVLT-POLICY-END -->
+"""
 
 private func qnapDocument() -> SecretCatalogDocument {
     let index = SecretCatalogIndex(
@@ -260,6 +322,50 @@ private func qnapDocument() -> SecretCatalogDocument {
         Set(repairedDocument.entries.flatMap { $0.fields.compactMap(\.secretRef) })
             == Set(canonicalDocument.entries.flatMap { $0.fields.compactMap(\.secretRef) })
     )
+}
+
+@Test func catalogV3FormatRepairMigratesTheExactPR21ReleasedPolicyFixture() throws {
+    // Frozen from Resources/Templates/敏感信息.md at merge 890fff8. This
+    // must remain an exact released block rather than an approximation built
+    // from today's policy rules.
+    #expect(pr21ReleasedPolicyBlockFixture == SVLTAgentCatalogPolicy.pr21ReleasedDocumentPolicyBlock)
+    #expect(SVLTAgentCatalogPolicy.pr21ReleasedPolicyDigest == "e67fb9b5e9b62b3f72df86b6a3ec89ec1d40328c9d67fd7ad3e43f05c466e6f4")
+
+    let preamble = "> [!note]- 用户前言\n> 保留说明 [[保留链接]]\n\n用户尾注"
+    let document = qnapDocument()
+    let canonical = try SensitiveCatalogDocumentCodec.encode(document, unmanagedMarkdown: preamble)
+    let legacy = canonical.replacingOccurrences(
+        of: SVLTAgentCatalogPolicy.documentPolicyBlock,
+        with: pr21ReleasedPolicyBlockFixture
+    )
+
+    let strict = SensitiveCatalogDocumentCodec.validateDetailed(Data(legacy.utf8))
+    #expect(strict.diagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+    #expect(throws: SecretCatalogValidationError.invalidPolicyBlock) {
+        try SensitiveCatalogDocumentCodec.decode(legacy)
+    }
+
+    let plan = try #require(SensitiveCatalogDocumentCodec.formatRepairPlan(Data(legacy.utf8)))
+    #expect(plan.canRepair)
+    #expect(plan.repairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+    #expect(!plan.unrepairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+
+    let repaired = try SensitiveCatalogDocumentCodec.applyingFormatRepair(to: Data(legacy.utf8))
+    #expect(repaired == Data(canonical.utf8))
+    #expect(CatalogSemanticDigest.rawSHA256(repaired) != CatalogSemanticDigest.rawSHA256(Data(legacy.utf8)))
+    #expect(plan.semanticSHA256 == CatalogSemanticDigest.sha256(document))
+
+    let repairedDocument = try SensitiveCatalogDocumentCodec.decode(repaired)
+    #expect(repairedDocument == document)
+    #expect(
+        Set(repairedDocument.entries.flatMap { $0.fields.compactMap(\.secretRef) })
+            == Set(document.entries.flatMap { $0.fields.compactMap(\.secretRef) })
+    )
+    let repairedText = String(decoding: repaired, as: UTF8.self)
+    #expect(repairedText.contains(preamble))
+    #expect(repairedText.contains("[[保留链接]]"))
+    #expect(repairedText.contains("用户尾注"))
+    #expect(repairedText.contains(SVLTAgentCatalogPolicy.documentPolicyBeginMarker))
 }
 
 @Test func detailedValidationReportsTheSecondDuplicateFieldMarkerLine() throws {
@@ -571,6 +677,204 @@ private func qnapDocument() -> SecretCatalogDocument {
     #expect(patched.components(separatedBy: "<!-- /SVLT-ENTRY -->\n\n\n<!-- SVLT-ENTRY").count == 3)
     #expect(patched.contains("### 条目 C"))
     #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+}
+
+@Test func catalogV3MovesEntryToTheFirstPositionOfAnotherIndex() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let entryA = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A")
+    let entryB = layoutEntry(id: layoutEntryBID, indexID: indexB.id, title: "条目 B")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryA, entryB])
+    let moved = layoutEntry(entryA, in: indexB.id)
+    let next = SecretCatalogDocument(indexes: [indexA, indexB], entries: [moved, entryB])
+
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(try SensitiveCatalogDocumentCodec.encode(old).utf8),
+        from: old,
+        to: next
+    )
+    let text = String(decoding: patched, as: UTF8.self)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+    #expect(text.range(of: "### 条目 A")!.lowerBound < text.range(of: "### 条目 B")!.lowerBound)
+    #expect(text.components(separatedBy: "<!-- SVLT-ENTRY ").count == 3)
+}
+
+@Test func catalogV3MovesEntryToTheLastPositionOfAnotherIndex() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let entryA = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A")
+    let entryB = layoutEntry(id: layoutEntryBID, indexID: indexB.id, title: "条目 B")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryA, entryB])
+    let moved = layoutEntry(entryB, in: indexA.id)
+    let next = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryA, moved])
+
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(try SensitiveCatalogDocumentCodec.encode(old).utf8),
+        from: old,
+        to: next
+    )
+    let text = String(decoding: patched, as: UTF8.self)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+    #expect(text.range(of: "### 条目 A")!.lowerBound < text.range(of: "### 条目 B")!.lowerBound)
+}
+
+@Test func catalogV3MovesEntryIntoAnEmptyIndex() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "空分组 B")
+    let entryA = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryA])
+    let moved = layoutEntry(entryA, in: indexB.id)
+    let next = SecretCatalogDocument(indexes: [indexA, indexB], entries: [moved])
+
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(try SensitiveCatalogDocumentCodec.encode(old).utf8),
+        from: old,
+        to: next
+    )
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+}
+
+@Test func catalogV3BatchMovesEntriesUsingOnlyDestinationAnchors() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let entryA1 = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A1")
+    let entryA2 = layoutEntry(id: layoutEntryCID, indexID: indexA.id, title: "条目 A2")
+    let entryB1 = layoutEntry(id: layoutEntryBID, indexID: indexB.id, title: "条目 B1")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryA1, entryA2, entryB1])
+    let movedA1 = layoutEntry(entryA1, in: indexB.id)
+    let movedA2 = layoutEntry(entryA2, in: indexB.id)
+    let next = SecretCatalogDocument(indexes: [indexA, indexB], entries: [movedA1, movedA2, entryB1])
+
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(try SensitiveCatalogDocumentCodec.encode(old).utf8),
+        from: old,
+        to: next
+    )
+    let text = String(decoding: patched, as: UTF8.self)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+    #expect(text.range(of: "### 条目 A1")!.lowerBound < text.range(of: "### 条目 A2")!.lowerBound)
+    #expect(text.range(of: "### 条目 A2")!.lowerBound < text.range(of: "### 条目 B1")!.lowerBound)
+    #expect(text.components(separatedBy: "<!-- SVLT-ENTRY ").count == 4)
+}
+
+@Test func catalogV3MovePreservesUserMarkdownBetweenDestinationEntries() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let entryA = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A")
+    let entryB1 = layoutEntry(id: layoutEntryBID, indexID: indexB.id, title: "条目 B1")
+    let entryB2 = layoutEntry(id: layoutEntryCID, indexID: indexB.id, title: "条目 B2")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryA, entryB1, entryB2])
+    let canonical = try SensitiveCatalogDocumentCodec.encode(old)
+    let firstClose = try #require(canonical.range(of: "<!-- /SVLT-ENTRY -->"))
+    let secondClose = try #require(canonical.range(of: "<!-- /SVLT-ENTRY -->", range: firstClose.upperBound..<canonical.endIndex))
+    let note = "\n用户备注\n[[WikiLink]]\n"
+    var decorated = canonical
+    decorated.insert(contentsOf: note, at: secondClose.upperBound)
+
+    let moved = layoutEntry(entryA, in: indexB.id)
+    let next = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryB1, moved, entryB2])
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(decorated.utf8),
+        from: old,
+        to: next
+    )
+    let text = String(decoding: patched, as: UTF8.self)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+    #expect(text.contains(note))
+    #expect(text.range(of: "### 条目 B1")!.lowerBound < text.range(of: "### 条目 A")!.lowerBound)
+    #expect(text.range(of: "### 条目 A")!.lowerBound < text.range(of: "### 条目 B2")!.lowerBound)
+}
+
+@Test func catalogV3MovePreservesUserNoteBeforeIndexCloseMarker() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let entryA = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB], entries: [entryA])
+    let canonical = try SensitiveCatalogDocumentCodec.encode(old)
+    let note = "用户 close 前注释\n[[CloseWiki]]\n"
+    let decorated = canonical.replacingOccurrences(
+        of: "<!-- /SVLT-INDEX -->",
+        with: note + "<!-- /SVLT-INDEX -->",
+        range: canonical.range(of: "<!-- /SVLT-INDEX -->")
+    )
+    let moved = layoutEntry(entryA, in: indexB.id)
+    let next = SecretCatalogDocument(indexes: [indexA, indexB], entries: [moved])
+
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(decorated.utf8),
+        from: old,
+        to: next
+    )
+    let text = String(decoding: patched, as: UTF8.self)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+    #expect(text.contains(note))
+}
+
+@Test func catalogV3DeletingIndexesRemovesOnlyCanonicalManagedBoundaries() throws {
+    let indexes = [
+        SecretCatalogIndex(id: layoutIndexAID, title: "分组 A"),
+        SecretCatalogIndex(id: layoutIndexBID, title: "分组 B"),
+        SecretCatalogIndex(id: layoutIndexCID, title: "分组 C"),
+        SecretCatalogIndex(id: layoutIndexDID, title: "分组 D")
+    ]
+    let old = SecretCatalogDocument(indexes: indexes)
+    let source = Data(try SensitiveCatalogDocumentCodec.encode(old).utf8)
+
+    for removed in [Set([layoutIndexAID]), Set([layoutIndexDID]), Set([layoutIndexBID]), Set([layoutIndexBID, layoutIndexCID])] {
+        let remaining = indexes.filter { !removed.contains($0.id) }
+        let next = SecretCatalogDocument(indexes: remaining)
+        let patched = try SensitiveCatalogDocumentCodec.minimalPatch(source, from: old, to: next)
+        let text = String(decoding: patched, as: UTF8.self)
+        #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+        #expect(text.components(separatedBy: "\n---\n\n").count == max(1, remaining.count))
+        #expect(!text.hasPrefix("\n---\n\n"))
+        if remaining.count > 1 {
+            #expect(text.components(separatedBy: "\n---\n\n").count == remaining.count)
+        }
+    }
+}
+
+@Test func catalogV3DeletingLastIndexPreservesTrailingUserMarkdownWithoutOrphanBoundary() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB])
+    let canonical = try SensitiveCatalogDocumentCodec.encode(old)
+    let tail = "\n用户尾注\n[[尾部链接]]"
+    let decorated = canonical + tail
+    let next = SecretCatalogDocument(indexes: [indexA])
+
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(decorated.utf8),
+        from: old,
+        to: next
+    )
+    let text = String(decoding: patched, as: UTF8.self)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+    #expect(text.contains(tail))
+    #expect(!text.contains("\n---\n\n用户尾注"))
+}
+
+@Test func catalogV3DeletingIndexPreservesUserHorizontalRuleWithUnmanagedText() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let old = SecretCatalogDocument(indexes: [indexA, indexB])
+    let canonical = try SensitiveCatalogDocumentCodec.encode(old)
+    let userGap = "\n\n---\n\n用户自己的分隔线说明\n\n"
+    let decorated = canonical.replacingOccurrences(
+        of: "\n---\n\n",
+        with: userGap,
+        range: canonical.range(of: "\n---\n\n")
+    )
+    let next = SecretCatalogDocument(indexes: [indexA])
+
+    let patched = try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(decorated.utf8),
+        from: old,
+        to: next
+    )
+    let text = String(decoding: patched, as: UTF8.self)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+    #expect(text.contains(userGap))
 }
 
 @Test func catalogV3MinimalPatchPreservesUnrelatedBytesWhenAnotherEntryChanges() throws {

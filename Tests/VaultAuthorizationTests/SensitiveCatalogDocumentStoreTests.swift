@@ -338,6 +338,45 @@ private func writeManagedV2WithLegacySidecar(
     #expect(try await store.snapshot().integrity == .verified)
 }
 
+@Test func catalogStoreRepairsTheExactPR21ReleasedPolicyWithoutChangingRevision() async throws {
+    let fixture = try CatalogStoreFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = SensitiveCatalogDocumentStore(
+        documentURL: fixture.document,
+        integrityURL: fixture.integrity,
+        keyStore: fixture.keyStore
+    )
+    let index = SecretCatalogIndex(id: storeIndexID, title: "QNAP")
+    let entry = SecretCatalogEntry(
+        id: storeEntryID,
+        indexId: storeIndexID,
+        title: "管理后台",
+        fields: [SecretCatalogFieldValue(key: "password", label: "密码", type: .secret, secretRef: storeSecretReference)],
+        notes: "保留说明 [[QNAP]]"
+    )
+    let accepted = try await store.canonicalWrite(
+        SecretCatalogDocument(indexes: [index], entries: [entry])
+    )
+    let canonical = try String(contentsOf: fixture.document, encoding: .utf8)
+    let legacy = canonical.replacingOccurrences(
+        of: SVLTAgentCatalogPolicy.documentPolicyBlock,
+        with: SVLTAgentCatalogPolicy.pr21ReleasedDocumentPolicyBlock
+    )
+    try Data(legacy.utf8).write(to: fixture.document, options: [.atomic])
+
+    let plan = try #require(try await store.formatRepairPlan())
+    #expect(plan.canRepair)
+    #expect(plan.repairableDiagnostics.contains { $0.code == "POLICY_BLOCK_INVALID" })
+    #expect(plan.unrepairableDiagnostics.isEmpty)
+
+    let repaired = try await store.repairFormat(expectedRawSHA256: plan.currentRawSHA256)
+    #expect(repaired.revision == accepted.revision)
+    #expect(repaired.document == accepted.document)
+    #expect(repaired.document.entries.first?.fields.compactMap(\.secretRef) == [storeSecretReference])
+    #expect(try String(contentsOf: fixture.document, encoding: .utf8) == canonical)
+    #expect(try await store.snapshot().integrity == .verified)
+}
+
 @Test func catalogStoreRejectsFormatRepairWhenCurrentRawChangesAfterPlanning() async throws {
     let fixture = try CatalogStoreFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

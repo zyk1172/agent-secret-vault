@@ -615,6 +615,13 @@ public enum SensitiveCatalogDocumentCodec {
             patch(&patches, source.blockRange, Data())
             deletedIndexes.insert(index.id)
         }
+        removeDeletedIndexBoundaries(
+            deletedIndexes: deletedIndexes,
+            oldIndexes: old.indexes,
+            source: parsed.source,
+            data: data,
+            patches: &patches
+        )
         let newIndexes = new.indexes.filter { oldIndexes[$0.id] == nil }
         for index in newIndexes { newIndexesOnDisk.insert(index.id) }
         insertNewIndexes(
@@ -800,10 +807,10 @@ private extension SensitiveCatalogDocumentCodec {
         }
 
         // Boundary whitespace is part of the managed renderer's layout, but
-        // ordinary Markdown between managed blocks remains user-owned. Only
-        // replace a gap when it contains whitespace and the optional
-        // renderer-owned horizontal rule; prose, links and comments are left
-        // byte-for-byte untouched.
+        // ordinary Markdown between managed blocks remains user-owned. The
+        // source map has no provenance for an existing horizontal rule, so
+        // this helper only normalizes whitespace-only gaps. Existing rules,
+        // prose, links and comments stay byte-for-byte untouched.
         let orderedIndexSources = document.indexes.compactMap { parsed.source.indexes[$0.id] }
         for pair in zip(orderedIndexSources, orderedIndexSources.dropFirst()) {
             let gap = pair.0.blockRange.upperBound..<pair.1.blockRange.lowerBound
@@ -814,6 +821,7 @@ private extension SensitiveCatalogDocumentCodec {
         let orderedEntries = document.entries
             .compactMap { entry -> (SecretCatalogEntry, EntrySource)? in
                 guard let source = parsed.source.entries[entry.id] else { return nil }
+                guard source.indexID == entry.indexId else { return nil }
                 return (entry, source)
             }
         for pair in zip(orderedEntries, orderedEntries.dropFirst()) {
@@ -858,6 +866,7 @@ private extension SensitiveCatalogDocumentCodec {
         let closeStart: Int
     }
     struct EntrySource {
+        let indexID: String
         let markerRange: Range<Int>
         let headingRange: Range<Int>
         let notesRange: Range<Int>
@@ -1041,6 +1050,7 @@ private extension SensitiveCatalogDocumentCodec {
                 currentIndex.entries.append(value)
                 index = currentIndex
                 source.entries[value.id] = EntrySource(
+                    indexID: current.indexID,
                     markerRange: current.markerRange,
                     headingRange: heading,
                     notesRange: noteRange,
@@ -1370,6 +1380,88 @@ private extension SensitiveCatalogDocumentCodec {
             return prefix + (data.flatMap { String(data: $0, encoding: .utf8) } ?? "[]")
         }
     }
+
+    static func removeDeletedIndexBoundaries(
+        deletedIndexes: Set<String>,
+        oldIndexes: [SecretCatalogIndex],
+        source: Source,
+        data: Data,
+        patches: inout [Patch]
+    ) {
+        guard !deletedIndexes.isEmpty else { return }
+
+        let orderedSources = oldIndexes.compactMap { index -> (String, IndexSource)? in
+            guard let source = source.indexes[index.id] else { return nil }
+            return (index.id, source)
+        }
+        guard !orderedSources.isEmpty else { return }
+
+        // A separator is renderer-owned only when it is the exact canonical
+        // boundary directly between two managed Index blocks. Existing rules
+        // elsewhere, or gaps containing prose/links/comments, remain user
+        // content because the source map has no stronger provenance.
+        func removeBoundary(between left: IndexSource, and right: IndexSource) -> Bool {
+            guard left.blockRange.upperBound <= right.blockRange.lowerBound else { return false }
+            let gap = left.blockRange.upperBound..<right.blockRange.lowerBound
+            guard isRendererOwnedIndexBoundary(data, range: gap) else { return false }
+            patch(&patches, gap, Data())
+            return true
+        }
+
+        var offset = 0
+        while offset < orderedSources.count {
+            guard deletedIndexes.contains(orderedSources[offset].0) else {
+                offset += 1
+                continue
+            }
+
+            let runStart = offset
+            while offset < orderedSources.count, deletedIndexes.contains(orderedSources[offset].0) {
+                offset += 1
+            }
+            let runEnd = offset - 1
+            let previous = runStart > 0 ? orderedSources[runStart - 1].1 : nil
+            let next = offset < orderedSources.count ? orderedSources[offset].1 : nil
+
+            // Remove every canonical boundary touching the deleted run,
+            // including boundaries between two consecutively deleted Indexes.
+            if runStart > 0 {
+                _ = removeBoundary(between: orderedSources[runStart - 1].1, and: orderedSources[runStart].1)
+            }
+            if runStart < runEnd {
+                for pairOffset in runStart..<runEnd {
+                    _ = removeBoundary(between: orderedSources[pairOffset].1, and: orderedSources[pairOffset + 1].1)
+                }
+            }
+            if runEnd + 1 < orderedSources.count {
+                _ = removeBoundary(between: orderedSources[runEnd].1, and: orderedSources[runEnd + 1].1)
+            }
+
+            // If both outer boundaries were canonical renderer boundaries,
+            // bridge the two surviving managed Indexes with one boundary.
+            if let previous, let next,
+               isRendererOwnedIndexBoundary(
+                   data,
+                   range: previous.blockRange.upperBound..<orderedSources[runStart].1.blockRange.lowerBound
+               ),
+               isRendererOwnedIndexBoundary(
+                   data,
+                   range: orderedSources[runEnd].1.blockRange.upperBound..<next.blockRange.lowerBound
+               ) {
+                patch(
+                    &patches,
+                    orderedSources[runStart].1.blockRange.lowerBound..<orderedSources[runStart].1.blockRange.lowerBound,
+                    Data(indexBoundaryText.utf8)
+                )
+            }
+        }
+    }
+
+    static func isRendererOwnedIndexBoundary(_ data: Data, range: Range<Int>) -> Bool {
+        guard range.lowerBound >= 0, range.upperBound <= data.count else { return false }
+        return data[range] == Data(indexBoundaryText.utf8)
+    }
+
     static func renderNotes(_ notes: String?) -> String {
         guard let notes else { return "" }
         return "\n<!-- SVLT-NOTES-BEGIN -->\n\(notes)\n<!-- SVLT-NOTES-END -->\n"
@@ -1477,30 +1569,84 @@ private extension SensitiveCatalogDocumentCodec {
         indexSource: IndexSource,
         data: Data
     ) -> Insertion {
-        guard entries.contains(where: { $0.id == entry.id }) else {
-            return Insertion(range: indexSource.closeStart..<indexSource.closeStart, data: Data((renderEntry(entry).joined(separator: "\n") + "\n\n").utf8))
-        }
         let sameIndex = entries.filter { $0.indexId == indexID }
         let samePosition = sameIndex.firstIndex(where: { $0.id == entry.id }) ?? sameIndex.count
-        let previousSource: EntrySource? = sameIndex[..<samePosition].reversed().compactMap { source.entries[$0.id] }.first
-        let nextSource: EntrySource? = sameIndex.dropFirst(samePosition + 1).compactMap { source.entries[$0.id] }.first
-        let start = previousSource?.blockRange.upperBound ?? indexSource.closeStart
-        let end = nextSource?.blockRange.lowerBound ?? indexSource.closeStart
-        let gap = start..<end
+        let previousSource = sameIndex[..<samePosition]
+            .reversed()
+            .compactMap { sourceEntry($0.id, indexID: indexID, source: source) }
+            .first
+        let nextSource = sameIndex.dropFirst(samePosition + 1)
+            .compactMap { sourceEntry($0.id, indexID: indexID, source: source) }
+            .first
         let body = renderEntry(entry).joined(separator: "\n")
-        if isWhitespaceOnly(data, range: gap) {
-            let prefix = previousSource == nil ? "" : "\n\n"
-            let suffix = nextSource == nil ? "\n\n" : "\n\n\n"
-            return Insertion(range: gap, data: Data((prefix + body + suffix).utf8))
+
+        // Case A: both anchors are real source blocks from the destination
+        // Index. Never form a range until its ordering has been proven.
+        if let previousSource, let nextSource,
+           previousSource.blockRange.upperBound <= nextSource.blockRange.lowerBound {
+            let gap = previousSource.blockRange.upperBound..<nextSource.blockRange.lowerBound
+            if isWhitespaceOnly(data, range: gap) {
+                return insertion(
+                    range: gap,
+                    body: body,
+                    prefix: "\n\n",
+                    suffix: "\n\n\n"
+                )
+            }
+
+            // User Markdown occupies the gap. Keep it byte-for-byte and put
+            // the managed entry immediately before the next source block.
+            return insertion(
+                at: nextSource.blockRange.lowerBound,
+                body: body,
+                prefix: "\n\n",
+                suffix: "\n\n\n"
+            )
         }
 
-        // A user paragraph/comment occupies the source gap. Preserve it and
-        // insert the new managed block immediately before the next managed
-        // object (or the Index close marker).
-        let at = nextSource?.blockRange.lowerBound ?? indexSource.closeStart
-        let prefix = previousSource == nil ? "" : "\n\n"
-        let suffix = nextSource == nil ? "\n\n" : "\n\n\n"
-        return Insertion(range: at..<at, data: Data((prefix + body + suffix).utf8))
+        // Case B: the entry is first in the destination Index. The next
+        // source block, not closeStart (which is after all entries), is the
+        // only valid anchor. This also handles a moved entry whose old source
+        // block still belongs to another Index.
+        if let nextSource {
+            return insertion(
+                at: nextSource.blockRange.lowerBound,
+                body: body,
+                prefix: "",
+                suffix: "\n\n\n"
+            )
+        }
+
+        // Case C: append after a real destination source entry. A whitespace
+        // gap can be canonicalized; user Markdown remains in place and the
+        // new entry is inserted immediately before the Index close marker.
+        if let previousSource,
+           previousSource.blockRange.upperBound <= indexSource.closeStart {
+            let gap = previousSource.blockRange.upperBound..<indexSource.closeStart
+            if isWhitespaceOnly(data, range: gap) {
+                return insertion(
+                    range: gap,
+                    body: body,
+                    prefix: "\n\n",
+                    suffix: "\n\n"
+                )
+            }
+            return insertion(
+                at: indexSource.closeStart,
+                body: body,
+                prefix: "\n\n",
+                suffix: "\n\n"
+            )
+        }
+
+        // Case D: no real destination entries exist. Insert at closeStart;
+        // the existing heading/prefix remains untouched.
+        return insertion(
+            at: indexSource.closeStart,
+            body: body,
+            prefix: "",
+            suffix: "\n\n"
+        )
     }
 
     static func entryInsertions(
@@ -1526,28 +1672,84 @@ private extension SensitiveCatalogDocumentCodec {
                 position += 1
             }
             let run = Array(sameIndex[runStart..<position])
-            let previousSource: EntrySource? = sameIndex[..<runStart].reversed().compactMap { source.entries[$0.id] }.first
-            let nextSource: EntrySource? = sameIndex[position...].compactMap { source.entries[$0.id] }.first
-            let start = previousSource?.blockRange.upperBound ?? indexSource.closeStart
-            let end = nextSource?.blockRange.lowerBound ?? indexSource.closeStart
-            let gap = start..<end
+            let previousSource = sameIndex[..<runStart]
+                .reversed()
+                .compactMap { sourceEntry($0.id, indexID: indexID, source: source) }
+                .first
+            let nextSource = sameIndex[position...]
+                .compactMap { sourceEntry($0.id, indexID: indexID, source: source) }
+                .first
             let body = run.map { renderEntry($0).joined(separator: "\n") }.joined(separator: "\n\n\n")
 
-            if isWhitespaceOnly(data, range: gap) {
-                let prefix = previousSource == nil ? "" : "\n\n"
-                let suffix = nextSource == nil ? "\n\n" : "\n\n\n"
-                result.append(Insertion(range: gap, data: Data((prefix + body + suffix).utf8)))
+            // Apply the same four cases as the single-entry path, but emit
+            // one patch for the whole contiguous run. This prevents
+            // overlapping insertions and keeps batch moves in semantic order.
+            if let previousSource, let nextSource,
+               previousSource.blockRange.upperBound <= nextSource.blockRange.lowerBound {
+                let gap = previousSource.blockRange.upperBound..<nextSource.blockRange.lowerBound
+                if isWhitespaceOnly(data, range: gap) {
+                    result.append(insertion(
+                        range: gap,
+                        body: body,
+                        prefix: "\n\n",
+                        suffix: "\n\n\n"
+                    ))
+                } else {
+                    result.append(insertion(
+                        at: nextSource.blockRange.lowerBound,
+                        body: body,
+                        prefix: "\n\n",
+                        suffix: "\n\n\n"
+                    ))
+                }
+            } else if let nextSource {
+                result.append(insertion(
+                    at: nextSource.blockRange.lowerBound,
+                    body: body,
+                    prefix: "",
+                    suffix: "\n\n\n"
+                ))
+            } else if let previousSource,
+                      previousSource.blockRange.upperBound <= indexSource.closeStart {
+                let gap = previousSource.blockRange.upperBound..<indexSource.closeStart
+                if isWhitespaceOnly(data, range: gap) {
+                    result.append(insertion(
+                        range: gap,
+                        body: body,
+                        prefix: "\n\n",
+                        suffix: "\n\n"
+                    ))
+                } else {
+                    result.append(insertion(
+                        at: indexSource.closeStart,
+                        body: body,
+                        prefix: "\n\n",
+                        suffix: "\n\n"
+                    ))
+                }
             } else {
-                // Preserve an unmanaged paragraph/comment in the gap and put
-                // the whole contiguous managed run immediately before the
-                // next source entry (or the Index close marker).
-                let at = nextSource?.blockRange.lowerBound ?? indexSource.closeStart
-                let prefix = previousSource == nil ? "" : "\n\n"
-                let suffix = nextSource == nil ? "\n\n" : "\n\n\n"
-                result.append(Insertion(range: at..<at, data: Data((prefix + body + suffix).utf8)))
+                result.append(insertion(
+                    at: indexSource.closeStart,
+                    body: body,
+                    prefix: "",
+                    suffix: "\n\n"
+                ))
             }
         }
         return result
+    }
+
+    static func sourceEntry(_ id: String, indexID: String, source: Source) -> EntrySource? {
+        guard let entry = source.entries[id], entry.indexID == indexID else { return nil }
+        return entry
+    }
+
+    static func insertion(range: Range<Int>, body: String, prefix: String, suffix: String) -> Insertion {
+        Insertion(range: range, data: Data((prefix + body + suffix).utf8))
+    }
+
+    static func insertion(at offset: Int, body: String, prefix: String, suffix: String) -> Insertion {
+        insertion(range: offset..<offset, body: body, prefix: prefix, suffix: suffix)
     }
 
     static func firstNonWhitespaceOffset(after offset: Int, in data: Data) -> Int {
@@ -1569,8 +1771,8 @@ private extension SensitiveCatalogDocumentCodec {
     static func isIndexBoundaryGap(_ data: Data, range: Range<Int>) -> Bool {
         // A user-authored horizontal rule is indistinguishable from an old
         // renderer separator at this source-map layer. Only whitespace-only
-        // gaps are therefore safe to normalize; any existing `---` line is
-        // preserved byte-for-byte as unmanaged/user-owned formatting.
+        // gaps are therefore safe to normalize; any existing horizontal-rule
+        // line is preserved byte-for-byte as unmanaged/user-owned formatting.
         isWhitespaceOnly(data, range: range)
     }
     static func fieldInsertOffset(_ key: String, _ entryID: String, _ fields: [SecretCatalogFieldValue], _ source: Source, _ fallback: Int) -> Int {

@@ -80,11 +80,11 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 36. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
 37. 不得把 SVLT 解密得到的明文写回敏感信息.md。
 38. 凭据来源标签包括 SVLT_MANAGED_OPERATION、USER_EXPLICIT_PLAINTEXT、EXTERNAL_PROVIDER_OPERATION、UNMANAGED_CREDENTIAL；不得因为用户使用其他凭据 provider 而强制接管。
-39. 敏感信息.md 分为前言区、连续的 Catalog 主体区和尾部非托管区；Note、说明、用户 Markdown、callout 与 WikiLink 不属于 Catalog semantic model。
-40. 新建 Index 必须插入最后一个合法 SVLT-INDEX 之后、尾部非托管 Markdown 之前；当前没有 Index 时，插入 policy 和前言之后，不得追加到用户尾注之后。
-41. Index 之间使用 renderer 生成的标准 Markdown 分隔 \\n\\n---\\n\\n；--- 只是视觉边界，不属于 Index/Entry/Field，也不得全局重写用户自己的分隔线。
+39. SVLT 自己生成或受控插入的 managed Catalog 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局；已有未知 Note、说明、用户 Markdown、callout 与 WikiLink 不属于 Catalog semantic model，必须保持原位。
+40. 新建 Index 必须插入最后一个合法 SVLT-INDEX 之后、尾部非托管 Markdown 之前；如果已有用户 Markdown 位于 Index 之间，不为追求连续主体而搬迁它；当前没有 Index 时，插入 policy 和前言之后，不得追加到用户尾注之后。
+41. 新生成 Index 之间使用 renderer 的标准 Markdown 分隔 \\n\\n---\\n\\n；已有 --- 没有 provenance 时按用户内容保留，不猜测或全局重写用户自己的分隔线。
 42. 同一 Index 内的 Entry 之间使用统一的双空行视觉间距；新增、batch、migration、format repair 和 minimal patch 不得混用一行、两行或三行布局。
-43. Catalog 写入遵守最小修改原则；只改目标 source range 和由 SVLT renderer 明确拥有的边界空白，保留用户普通 Markdown、注释、WikiLink、Note 和尾部内容。
+43. Catalog 写入遵守最小修改原则；只改目标 source range 和新写入时由 SVLT renderer 明确生成的边界空白，保留用户普通 Markdown、注释、WikiLink、Note 和尾部内容；format repair 不搬迁无法确认来源的 Note/Markdown/WikiLink，也不删除用户 HR。
 44. Agent 浏览必须使用 secret_catalog_list_indices、secret_catalog_list_entries、secret_catalog_get、secret_catalog_create_structure 等 MCP 响应发现 opaque ID；不得读取 selection sidecar、敏感信息.md 或 Application Support 文件解析 ID。
 45. 需要用户输入秘密时使用 secret_catalog_request_secure_inputs；若 transport 返回 PENDING 与 requestID，只能用 secret_catalog_secure_input_status 轮询同一请求，Agent 永远只能收到状态/非敏感结果，不能收到 plaintext。`;
 

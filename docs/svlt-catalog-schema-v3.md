@@ -5,24 +5,27 @@ SVLT marker 定义，标题、字段正文、备注、空行和双链仍保留�
 
 ## 文档区域与写入布局
 
-v3 文档按三个逻辑区域理解：
+v3 文档按三个逻辑区域理解（这是 SVLT 自己生成或受控插入时的布局约束）：
 
 1. 前言区：policy block、Note、使用说明、用户段落、callout、评论和 WikiLink 等 unmanaged Markdown。
 2. Catalog 主体区：连续排列的 `SVLT-INDEX`、`SVLT-ENTRY`、`SVLT-FIELD` 及其绑定标题、字段正文和 notes。
 3. 尾部非托管区：最后一个 Index 后用户保留的普通 Markdown。
 
-前言和尾部内容不属于 semantic Catalog，不计入分组/条目搜索、计数或 App UI。新 Index
-必须插入最后一个合法 Index 之后、尾部非托管 Markdown 之前；没有 Index 时插入前言之后。
-Index 之间由 renderer 生成标准 `\n\n---\n\n`，`---` 只是视觉边界，不是 schema
-对象，也不能全局重写用户自有分隔线。同一 Index 内 Entry 之间使用统一的双空行视觉间距。
-所有合法 writer 都必须遵守这套布局；受控写入优先 source-range minimal patch，只调整目标
-块和 renderer 明确拥有的边界空白，保留其他用户字节。
+前言和尾部内容不属于 semantic Catalog，不计入分组/条目搜索、计数或 App UI。已有未知
+用户 Markdown、Note、WikiLink 或评论即使位于两个 Index 之间也保持原位，不会为了追求
+连续主体而自动搬迁。新 Index 必须插入最后一个合法 Index 之后、尾部非托管 Markdown
+之前；没有 Index 时插入前言之后。新生成 Index 之间由 renderer 生成标准 `\n\n---\n\n`；
+已有 `---` 没有 provenance 时按用户内容保留，不能全局重写。同一 Index 内 Entry 之间
+使用统一的双空行视觉间距。所有合法 writer 都必须遵守这套写入规则；受控写入优先
+source-range minimal patch，只调整目标块和新写入时由 SVLT renderer 明确生成的边界空白，保留
+其他用户字节。format repair 不移动无法确认来源的用户 Note/Markdown/WikiLink，也不删除
+用户 HR。
 
 ```markdown
 <!-- SVLT-CATALOG schema="3" -->
 # 敏感信息
 
-<!-- SVLT-POLICY-BEGIN version="3" digest="0a60174a46a5f6d1fffcbe99194a96a6fb39c9819773501db0b95aee7d7924b6" -->
+<!-- SVLT-POLICY-BEGIN version="3" digest="a0d5bc9c4270a7198163323526d2575b9df8d1b834164563626d18bbf70c9605" -->
 > [!info]- SVLT 智能体写入规范
 > ...
 <!-- SVLT-POLICY-END -->

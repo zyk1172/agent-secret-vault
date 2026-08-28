@@ -41,11 +41,11 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 
 ## Catalog Markdown 布局
 
-- `敏感信息.md` 由三个逻辑区组成：前言区、连续的 Catalog 主体区、尾部非托管 Markdown。Note、说明、callout、用户段落和 WikiLink 是 unmanaged，不属于 Index/Entry/Field semantic model，也不计入搜索、计数或 App UI。
-- policy block 与前言位于业务 Catalog 之前；存在 Index 时，新 Index 插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前。没有 Index 时，首个 Index 插入前言之后。不得把新内容简单 append 到文件绝对末尾。
-- Index marker/Entry marker/Field marker 是 authoritative structure。Index 之间由 renderer 生成标准 `\n\n---\n\n`；`---` 只是 managed visual boundary，不要全局重写用户自己的分隔线。
+- SVLT 自己生成或受控插入的 `敏感信息.md` 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局。Note、说明、callout、用户段落和 WikiLink 是 unmanaged，不属于 Index/Entry/Field semantic model，也不计入搜索、计数或 App UI；已有未知用户 Markdown 即使位于两个 Index 之间也保持原位。
+- policy block 与前言位于业务 Catalog 之前；存在 Index 时，新 Index 插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前。没有 Index 时，首个 Index 插入前言之后。不得把新内容简单 append 到文件绝对末尾，也不要为了追求连续主体搬迁既有用户 Markdown。
+- Index marker/Entry marker/Field marker 是 authoritative structure。新生成的 Index 之间由 renderer 生成标准 `\n\n---\n\n`；已有 `---` 没有 provenance 时按用户内容保留，不要全局重写用户自己的分隔线。
 - 同一 Index 内 Entry 之间统一使用双空行视觉间距；canonical render、create、batch、migration、format repair 和 minimal patch 必须遵守同一布局。
-- 普通写入优先 source-range minimal patch，只修改目标块和 renderer 明确拥有的边界空白，保留用户 Markdown、注释、WikiLink、Note、备注和尾部内容。format repair 只有在能明确识别官方 legacy Note 时才可移动；无法确认时保持原位。
+- 普通写入优先 source-range minimal patch，只修改目标块和新写入时 renderer 明确生成的边界空白，保留用户 Markdown、注释、WikiLink、Note、备注和尾部内容。format repair 不为追求连续主体而移动无法确认来源的用户 Note/Markdown/WikiLink，也不删除用户 HR；只有 migration 能确定来自旧版官方结构化“目录说明”的 Note 时，才可将它放入前言。
 
 ## 工具选择
 
