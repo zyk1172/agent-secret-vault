@@ -108,6 +108,21 @@ Catalog 的浏览和结构写入应通过 MCP API 完成。下面的
    高风险 semantic diff 走同一笔本机认证，不会被普通 metadata 静默化；请求过期、
    取消、失焦、睡眠或锁定都不会提交。
 
+## Markdown 布局与最小修改
+
+SVLT 自己生成或受控插入的 `敏感信息.md` 结构遵循“前言区 → 连续 Catalog 主体 →
+尾部非托管区”。Note、说明、callout、用户段落、备注和 WikiLink 不属于 Catalog semantic
+model，也不影响 Index/Entry 搜索、计数或 App UI；已有未知用户 Markdown 即使位于两个
+Index 之间也保持原位。存在 Index 时，新 Index 插入最后一个合法 `SVLT-INDEX` 之后、
+尾部非托管 Markdown 之前；没有 Index 时插入前言之后，不得 append 到文件绝对末尾。
+
+新生成 Index 之间使用 renderer 生成的 `\n\n---\n\n`；已有 `---` 没有 provenance 时按
+用户内容保留，不猜测或全局重写用户分隔线。同一 Index 内 Entry 之间使用统一双空行视觉
+间距。App、MCP、Obsidian、编辑器和脚本都可以写合法 v3 Markdown，但受控写入优先
+source-range minimal patch，只调整目标块和新写入时由 renderer 明确生成的边界空白，保留
+用户内容；format repair 不为追求连续主体而移动无法明确识别来源的 Note、Markdown、
+WikiLink 或用户 HR。
+
 Agent 不得读取 `sensitive-index-selection.json`、Catalog Markdown（例如
 `敏感信息.md`）或 `Application Support` 中的 integrity/selection sidecar 来查找或验证
 Index/Entry ID。它们是本地存储实现细节，不是 Agent 的发现 API；ID 必须来自 MCP 的

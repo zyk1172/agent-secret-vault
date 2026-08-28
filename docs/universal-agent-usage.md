@@ -132,6 +132,9 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 11. 低风险操作不代表获得明文导出权限；SVLT 派生明文只能留在获批的专用本地操作中，不能写回 Catalog、shell、日志、聊天或外发。
 12. 需要真实密码、API 密钥或 token 时调用 `secret_catalog_request_secure_inputs`；只发送 `entryID`、field key、模式和 revision，不发送或覆盖字段 label。SVLT 会从 accepted Catalog 重建 label，并立即返回 `PENDING` 与 `requestID`。用户在本机 SecureField 中选择/输入后，Agent 只能轮询 `secret_catalog_secure_input_status` 获取 `COMPLETED`、`CANCELLED`、`EXPIRED` 或 `FAILED`（以及 revision/errorCode）；永远收不到明文。请求过期、取消或 App 失焦/睡眠/锁定时不会提交。若返回 `UNKNOWN`，先重新读取 Catalog/revision 做结果对账，禁止自动重新提交明文。
 
+13. SVLT 自己生成或受控插入的 `敏感信息.md` 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局。Note、说明、callout、普通段落、备注和 `[[WikiLink]]` 都是 unmanaged，不属于 Catalog semantic model；已有未知用户 Markdown 即使位于两个 Index 之间也保持原位。存在 Index 时，新 Index 插入最后一个合法 `SVLT-INDEX` 后、尾部非托管 Markdown 前；没有 Index 时插入前言后，不得简单 append 到文件末尾。
+14. 新生成 Index 之间使用 renderer 的 `\n\n---\n\n`；已有 `---` 没有 provenance 时按用户内容保留，不猜测或全局重写。同一 Index 内 Entry 使用统一双空行视觉间距。所有合法 writer（App、MCP、Obsidian、编辑器、脚本）都必须遵守 v3 marker/schema，受控写入优先 minimal patch 并保留用户 Markdown。format repair 不为追求连续主体而移动无法确认来源的用户 Note/Markdown/WikiLink，也不删除用户 HR。Agent 不得读取 selection JSON、Catalog Markdown 或 Application Support sidecar 猜测 opaque ID，也不得读取本地 `sensitive-index-selection.json`、integrity sidecar 或其他 Application Support 文件解析 ID。
+
 ## 7. Agent 启动自检
 
 Agent 接入后先做：

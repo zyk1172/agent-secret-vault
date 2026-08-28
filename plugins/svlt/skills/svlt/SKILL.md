@@ -30,13 +30,22 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 
 ## 硬规则
 
-- 用户在 App 中选定的 v2 `敏感信息.md` 是 SVLT managed catalog。只能经 MCP 使用 `secret://` 或允许返回的非敏感元数据；不得直接读取、搜索、解析、修改或重写 managed 文件及本地加密记录。
-- Catalog 写入只能使用 SVLT Catalog MCP 和 App 当前有效的编辑授权。不得使用 shell、Python、sed、echo、编辑器或文件 API 直接修改 Markdown/JSON。
+- 用户在 App 中选定的 v3 `敏感信息.md` 是 SVLT managed catalog。Agent 只能经 MCP 使用 `secret://` 或允许返回的非敏感元数据；不得读取 managed Markdown 或本地 sidecar 来发现、验证或猜测 opaque ID。
+- Catalog 的合法 writer 可以是 App、MCP、Obsidian、编辑器或脚本；无论渠道都必须产生符合 v3 marker/schema 的 Markdown，不得伪造 marker/`secret://`、写入 plaintext，Agent 的 mutation 仍必须走 SVLT operation-bound authorization。
 - `secret://` 是不透明句柄；不要猜测、分类、摘要、解码、比较或改写背后的值。
 - SVLT MCP/search/response/log/audit 不返回秘密明文。秘密字段只能是 opaque `secret://` 引用；Catalog JSON 不得写入秘密明文。
 - 用户明确选择的当前明文可以由用户指定的外部工具/工作区按其安全规则使用；SVLT 不自动创建 Secret、替换输入或阻止操作。其他仓库、日志、持久化、网络和工具规则仍然有效。
 - 不得把通过 SVLT 解密得到的明文交给普通 shell、curl、URL、header、环境变量、日志、审计或聊天。禁止的是 Agent 自己把 `secret://` 洗成明文绕过 SVLT 专用操作。
 - 不要把用户主动提供的明文识别为 security bypass attempt，也不要把它与已有 Secret 做等值关联。
+- 每笔 Agent Catalog mutation 都必须使用精确绑定、一次消费的 operation-bound write request；需要批准时直接触发 macOS device-owner authentication，认证本身就是本次授权，不存在额外 App“验证并授权”按钮。
+
+## Catalog Markdown 布局
+
+- SVLT 自己生成或受控插入的 `敏感信息.md` 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局。Note、说明、callout、用户段落和 WikiLink 是 unmanaged，不属于 Index/Entry/Field semantic model，也不计入搜索、计数或 App UI；已有未知用户 Markdown 即使位于两个 Index 之间也保持原位。
+- policy block 与前言位于业务 Catalog 之前；存在 Index 时，新 Index 插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前。没有 Index 时，首个 Index 插入前言之后。不得把新内容简单 append 到文件绝对末尾，也不要为了追求连续主体搬迁既有用户 Markdown。
+- Index marker/Entry marker/Field marker 是 authoritative structure。新生成的 Index 之间由 renderer 生成标准 `\n\n---\n\n`；已有 `---` 没有 provenance 时按用户内容保留，不要全局重写用户自己的分隔线。
+- 同一 Index 内 Entry 之间统一使用双空行视觉间距；canonical render、create、batch、migration、format repair 和 minimal patch 必须遵守同一布局。
+- 普通写入优先 source-range minimal patch，只修改目标块和新写入时 renderer 明确生成的边界空白，保留用户 Markdown、注释、WikiLink、Note、备注和尾部内容。format repair 不为追求连续主体而移动无法确认来源的用户 Note/Markdown/WikiLink，也不删除用户 HR；只有 migration 能确定来自旧版官方结构化“目录说明”的 Note 时，才可将它放入前言。
 
 ## 工具选择
 
@@ -47,6 +56,11 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `secret_auto_handle_text`：文本中出现 `secret://` 且用户没有明确选择其他来源时使用。
 - `secret_search` / `secret_catalog_search`：没有明确来源且需要发现 SVLT 记录时使用；明确 plaintext 或外部 provider 时不要调用来替换来源。
 - `secret_catalog_get`：用户明确选择 SVLT Entry 后获取非敏感上下文和 opaque 引用。
+- `secret_catalog_list_indices`：列出全部 Index（包括空 Index），从 MCP 响应获取 opaque `indexID`。
+- `secret_catalog_list_entries`：使用 MCP 返回的 `indexID` 列出目标 Index 的 Entry。
+- `secret_catalog_create_structure`：一次创建一个 Index 和多个安全 Entry，由 SVLT 生成 opaque ID 并返回映射、revision 与 validation。
+- `secret_catalog_add_secret_placeholder`：向已存在 Entry 添加空 `secret` placeholder；不要提交 plaintext 或自造 `secretRef`。
+- `secret_catalog_request_secure_inputs`：请求本机 SecureField 填写秘密；只发送 field metadata 和 revision，Agent 永远不接收 plaintext。当前同步 transport 返回完成状态/revision；若兼容 transport 返回 `PENDING` + `requestID`，只能用 `secret_catalog_secure_input_status` 轮询同一请求。
 - `secret_action_router`：用户明确选择 SVLT 且需要在本机/内网执行受控动作时使用；明文只在 SVLT 专用边界内处理。
 - `ssh_command_with_secret`、`local_http_request_with_secret`、`api_request_with_token`、`database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret`：仅用于 `secret://` 管理路径。
 - `secret_reveal_request` / `paragraph_reveal_request`：用户明确要在本机 App 查看 SVLT 明文时使用；结果是本地显示状态，不是返回给 Agent 的明文。
@@ -63,6 +77,6 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 ## 失败处理
 
 - SVLT managed 操作遇到 `APP_UNAVAILABLE`、`CATALOG_INVALID`、`EXTERNAL_CATALOG_MODIFICATION`、策略拒绝或审批取消时，只报告非敏感状态；不得把 SVLT 派生明文交给普通工具。
-- 旧版 Catalog 的 `LEGACY_CATALOG_UNSUPPORTED` 只表示需要用户手工转换为 v2；Agent 不得自行转换或直接修改旧文件。
+- 旧版 Catalog 的 `LEGACY_CATALOG_UNSUPPORTED` 表示需要用户在 App 中走明确的备份、验证并升级流程；Agent 不得自行转换或直接修改旧文件。
 - 如果用户明确选择当前明文或外部 provider，SVLT 的不可用、未安装或 Catalog 命中都不是阻断本次操作的理由；是否能执行由用户选定的工具和工作区规则决定。
 - 如果用户明确要求把当前明文存入 SVLT，先走 App/MCP 的安全导入流程；成功后再使用生成的 `secret://`。不得默认保存。
