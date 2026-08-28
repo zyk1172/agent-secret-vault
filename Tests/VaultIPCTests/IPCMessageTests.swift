@@ -105,7 +105,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         ),
         .catalogValidate,
         .catalogPendingWriteAccessRequestIDs,
-        .catalogSecureInputStatus(id: UUID()),
+        .catalogSecureInputStatus(requestID: UUID()),
         .pendingRevealSessions,
         .inspectReference(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
         .deleteRecord(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
@@ -170,6 +170,20 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
 
         #expect(decoded == request)
     }
+}
+
+@Test func secureInputStatusRequestDecodesMCPRequestIDWireFixture() throws {
+    let requestID = try #require(UUID(uuidString: "00000000-0000-4000-8000-000000000024"))
+    let data = Data(#"{"type":"catalogSecureInputStatus","requestID":"00000000-0000-4000-8000-000000000024"}"#.utf8)
+
+    let decoded = try JSONDecoder().decode(IPCRequest.self, from: data)
+
+    #expect(decoded == .catalogSecureInputStatus(requestID: requestID))
+    let encoded = try JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(decoded)
+    ) as? [String: Any]
+    #expect(encoded?["requestID"] as? String == requestID.uuidString.lowercased())
+    #expect(encoded?["id"] == nil)
 }
 
 @Test func responseJSONRoundTripsEveryCase() throws {

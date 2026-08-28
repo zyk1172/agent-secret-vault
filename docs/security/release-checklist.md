@@ -19,6 +19,11 @@ git status --short
 SVLT_RELEASE_APP=/Applications/SVLT.app ./scripts/release-e2e.sh
 ```
 
+For a signed release package, provide the identity explicitly, for example:
+`SVLT_SIGNING_IDENTITY='Developer ID Application: ...' ./scripts/package-release.sh`.
+The project keeps the Team ID pin for AppControl verification but never stores
+an individual certificate identity in source control.
+
 ## Acceptance criteria
 
 1. For SVLT-managed test secrets, test plaintext cannot be found in the knowledge base, search index, audit logs, Codex transcript, application logs, notifications, or crash reports. This criterion does not claim to erase user plaintext explicitly selected for an external current operation.

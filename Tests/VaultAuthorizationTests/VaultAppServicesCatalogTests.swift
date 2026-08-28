@@ -339,6 +339,27 @@ private actor CatalogApprovalGate: OperationApproving {
     }
 }
 
+private final class TestDateBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) {
+        self.value = value
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        value.addTimeInterval(interval)
+        lock.unlock()
+    }
+}
+
 private func catalogMetadataRecord(id: String, label: String = "QNAP credential") -> EncryptedRecord {
     EncryptedRecord(
         formatVersion: 2,
@@ -554,7 +575,7 @@ private struct CatalogFixture {
     let id = try #require((await service.pendingCatalogSecureInputRequestIDs()).first)
     let request = try await service.catalogSecureInputRequest(id: id)
     #expect(request.targets.first?.label == "密码")
-    #expect(await service.catalogSecureInputStatus(id: id).status == .pending)
+    #expect(await service.catalogSecureInputStatus(requestID: id).status == .pending)
 
     let completed = try await service.submitCatalogSecureInput(
         id: id,
@@ -567,7 +588,7 @@ private struct CatalogFixture {
     #expect(completed.revision == 2)
     #expect(await approver.count == 1)
     #expect(await service.pendingCatalogSecureInputRequestIDs().isEmpty)
-    #expect(await service.catalogSecureInputStatus(id: id).revision == 2)
+    #expect(await service.catalogSecureInputStatus(requestID: id).revision == 2)
     let snapshot = try await fixture.store.snapshot()
     let field = try #require(snapshot.document.entries[0].fields.first(where: { $0.key == "password" }))
     #expect(field.type.isSecret)
@@ -584,6 +605,102 @@ private struct CatalogFixture {
             )
         )
     }
+}
+
+@Test func secureInputTerminalReceiptsSurviveRestartAndExpireAsUnknown() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let clock = TestDateBox(Date(timeIntervalSince1970: 1_800_000_000))
+    let receiptURL = fixture.root.appendingPathComponent("secure-input-receipts.json")
+    let recordStore = CatalogMetadataRecordStore(record: catalogMetadataRecord(
+        id: String(servicePasswordRef.dropFirst("secret://".count))
+    ))
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: CatalogApprovalRecorder(),
+        now: { clock.now() },
+        secureInputReceiptURL: receiptURL
+    )
+
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(
+            entryID: serviceEntryID,
+            fieldKey: "password",
+            mode: .fillPlaceholder,
+            required: true
+        )],
+        expectedRevision: 1
+    )
+    let request = try await service.catalogSecureInputRequest(id: pending.requestID)
+    _ = try await service.submitCatalogSecureInput(
+        id: pending.requestID,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: [request.targets[0].id],
+            plaintextByFieldKey: ["password": "persisted-receipt"]
+        )
+    )
+
+    let restored = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        now: { clock.now() },
+        secureInputReceiptURL: receiptURL
+    )
+    let restoredStatus = await restored.catalogSecureInputStatus(requestID: pending.requestID)
+    #expect(restoredStatus.status == .completed)
+    #expect(restoredStatus.revision == 2)
+
+    clock.advance(by: 15 * 60 + 1)
+    let expiredStatus = await service.catalogSecureInputStatus(requestID: pending.requestID)
+    #expect(expiredStatus.status == .unknown)
+    #expect(expiredStatus.errorCode == "SECURE_INPUT_REQUEST_UNKNOWN")
+    #expect((await restored.catalogSecureInputStatus(requestID: pending.requestID)).status == .unknown)
+}
+
+@Test func secureInputReceiptLoaderKeepsNewestDuplicateWithoutTrapping() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let clock = TestDateBox(Date(timeIntervalSince1970: 1_800_000_000))
+    let receiptURL = fixture.root.appendingPathComponent("secure-input-receipts.json")
+    let requestID = UUID()
+    let terminalAt = clock.now().timeIntervalSinceReferenceDate
+    let records: [[String: Any]] = [
+        [
+            "schemaVersion": 1,
+            "requestID": requestID.uuidString,
+            "status": "COMPLETED",
+            "revision": 1,
+            "terminalAt": terminalAt - 1
+        ],
+        [
+            "schemaVersion": 1,
+            "requestID": requestID.uuidString,
+            "status": "COMPLETED",
+            "revision": 2,
+            "terminalAt": terminalAt
+        ]
+    ]
+    try JSONSerialization.data(withJSONObject: records, options: [.sortedKeys]).write(to: receiptURL)
+
+    let restored = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        now: { clock.now() },
+        secureInputReceiptURL: receiptURL
+    )
+    let status = await restored.catalogSecureInputStatus(requestID: requestID)
+    #expect(status.status == .completed)
+    #expect(status.revision == 2)
 }
 
 @Test func agentSecureInputConvertsExistingCatalogValueWithoutDroppingIt() async throws {
@@ -796,7 +913,7 @@ private struct CatalogFixture {
             expectedRevision: 1
         )
     }
-    #expect(await service.catalogSecureInputStatus(id: pending.requestID).status == .pending)
+    #expect(await service.catalogSecureInputStatus(requestID: pending.requestID).status == .pending)
     #expect(try await fixture.store.snapshot().revision == 1)
 }
 
@@ -842,8 +959,37 @@ private struct CatalogFixture {
     } catch {
         #expect(error is SecretCatalogAgentError)
     }
-    #expect(await service.catalogSecureInputStatus(id: pending.requestID).status == .cancelled)
+    #expect(await service.catalogSecureInputStatus(requestID: pending.requestID).status == .cancelled)
     #expect(try await fixture.store.snapshot().revision == 1)
+}
+
+@Test func invalidatingSecurityStateCancelsAwaitingSecureInput() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(
+            entryID: serviceEntryID,
+            fieldKey: "password",
+            mode: .fillPlaceholder,
+            required: true
+        )],
+        expectedRevision: 1
+    )
+
+    await service.invalidateSecurityState()
+
+    #expect(await service.pendingCatalogSecureInputRequestIDs().isEmpty)
+    let status = await service.catalogSecureInputStatus(requestID: pending.requestID)
+    #expect(status.status == .cancelled)
+    #expect(status.errorCode == "SECURE_INPUT_CANCELLED")
 }
 
 private struct ExternalCatalogAdoptionFixture {

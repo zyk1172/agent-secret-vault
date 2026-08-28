@@ -122,6 +122,20 @@ private struct CatalogAuditHealthRecord: Codable, Sendable {
     let lastSuccessfulSequence: UInt64
 }
 
+/// A bounded, non-sensitive terminal receipt.  It contains only the opaque
+/// request ID, outcome metadata, and timestamp; Catalog contents and
+/// plaintext never enter this sidecar.
+private struct CatalogSecureInputReceiptRecord: Codable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let requestID: UUID
+    let status: CatalogSecureInputStatusValue
+    let revision: UInt64?
+    let errorCode: String?
+    let terminalAt: Date
+}
+
 private final class CatalogWriteAccessContinuationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
@@ -180,6 +194,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)?
     private let auditLog: EncryptedAuditLog?
     private let auditHealthURL: URL?
+    private let secureInputReceiptURL: URL?
     private let exportDirectory: URL
     private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
     private let secureInputNotifier: CatalogAgentSecureInputNotifier
@@ -240,6 +255,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)? = nil,
         auditLog: EncryptedAuditLog? = nil,
         auditHealthURL: URL? = nil,
+        secureInputReceiptURL: URL? = nil,
         exportDirectory: URL? = nil,
         writeAccessNotifier: CatalogAgentWriteAccessNotifier = CatalogAgentWriteAccessNotifier(),
         secureInputNotifier: CatalogAgentSecureInputNotifier = CatalogAgentSecureInputNotifier()
@@ -277,10 +293,35 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.savedReferencesObserver = savedReferencesObserver
         self.auditLog = auditLog
         self.auditHealthURL = auditHealthURL?.standardizedFileURL
+        let resolvedSecureInputReceiptURL = (secureInputReceiptURL
+            ?? auditHealthURL?.deletingLastPathComponent().appendingPathComponent("secure-input-receipts.json"))?
+            .standardizedFileURL
+        self.secureInputReceiptURL = resolvedSecureInputReceiptURL
         let persistedAuditHealth = Self.loadAuditHealth(from: auditHealthURL)
         self.auditAppendFailureAt = persistedAuditHealth?.lastFailureAt
         self.auditAppendGapDetected = persistedAuditHealth?.gapDetected ?? false
         self.lastSuccessfulAuditSequence = persistedAuditHealth?.lastSuccessfulSequence ?? 0
+        let persistedSecureInputReceipts = Self.loadSecureInputReceipts(
+            from: resolvedSecureInputReceiptURL,
+            now: now()
+        )
+        // The sidecar is non-authoritative and may have been interrupted or
+        // manually repaired.  Do not use Dictionary(uniqueKeysWithValues:),
+        // which traps on duplicate request IDs; the loader orders records
+        // oldest-to-newest so the newest valid record wins deterministically.
+        var restoredStatuses: [UUID: CatalogSecureInputStatus] = [:]
+        var restoredTerminalAt: [UUID: Date] = [:]
+        for record in persistedSecureInputReceipts {
+            restoredStatuses[record.requestID] = CatalogSecureInputStatus(
+                requestID: record.requestID,
+                status: record.status,
+                revision: record.revision,
+                errorCode: record.errorCode
+            )
+            restoredTerminalAt[record.requestID] = record.terminalAt
+        }
+        self.secureInputStatuses = restoredStatuses
+        self.secureInputTerminalAt = restoredTerminalAt
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
         self.writeAccessNotifier = writeAccessNotifier
         self.secureInputNotifier = secureInputNotifier
@@ -318,6 +359,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)? = nil,
         auditLog: EncryptedAuditLog? = nil,
         auditHealthURL: URL? = nil,
+        secureInputReceiptURL: URL? = nil,
         exportDirectory: URL? = nil,
         writeAccessNotifier: CatalogAgentWriteAccessNotifier = CatalogAgentWriteAccessNotifier()
     ) {
@@ -353,6 +395,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             savedReferencesObserver: savedReferencesObserver,
             auditLog: auditLog,
             auditHealthURL: auditHealthURL,
+            secureInputReceiptURL: secureInputReceiptURL,
             exportDirectory: exportDirectory,
             writeAccessNotifier: writeAccessNotifier
         )
@@ -385,6 +428,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func invalidateSecurityState() async {
+        // Lock/sleep/daemon shutdown must latch cancellation before protected
+        // keys are cleared.  A submit suspended in authentication or Catalog
+        // I/O then observes the abort reason on its next actor resumption;
+        // requests that have not crossed the commit linearization point cannot
+        // outlive the security-state invalidation.
+        await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
         for authorization in agentDecryptAuthorizations.values {
             var keyData = authorization.key.withUnsafeBytes { Data($0) }
@@ -393,6 +442,38 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         agentDecryptAuthorizations.removeAll()
         await clearProtectedKeyState?()
         await statusObserver?(status())
+    }
+
+    private func cancelAllSecureInputRequests() async {
+        let requestIDs = Array(pendingSecureInputRequests.keys)
+        for id in requestIDs {
+            guard let request = pendingSecureInputRequests[id],
+                  let state = secureInputStates[id]
+            else { continue }
+            switch state {
+            case .awaitingInput:
+                await finishSecureInputRequest(
+                    id: id,
+                    status: CatalogSecureInputStatus(
+                        requestID: request.id,
+                        status: .cancelled,
+                        errorCode: "SECURE_INPUT_CANCELLED"
+                    ),
+                    action: "智能体安全输入取消",
+                    result: "已取消",
+                    authorizationOutcome: .cancelled,
+                    auditStatus: .cancelled
+                )
+            case .submitting:
+                secureInputAbortReasons[id] = .cancelled
+                secureInputNotifier.notifyQueueChanged(requestID: id)
+            case .committing, .completed, .failed, .expired, .cancelled:
+                // `.committing` is the linearization point: it is already
+                // authorized to finish, so shutdown must not rewrite a real
+                // commit as a cancellation.
+                continue
+            }
+        }
     }
 
     public func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String {
@@ -1382,22 +1463,22 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return request
     }
 
-    public func catalogSecureInputStatus(id: UUID) async -> CatalogSecureInputStatus {
+    public func catalogSecureInputStatus(requestID: UUID) async -> CatalogSecureInputStatus {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        if let status = secureInputStatuses[id] {
+        if let status = secureInputStatuses[requestID] {
             return status
         }
-        if let state = secureInputStates[id] {
+        if let state = secureInputStates[requestID] {
             return CatalogSecureInputStatus(
-                requestID: id,
+                requestID: requestID,
                 status: secureInputStatusValue(for: state)
             )
         }
         return CatalogSecureInputStatus(
-            requestID: id,
-            status: .failed,
-            errorCode: "SECURE_INPUT_REQUEST_NOT_FOUND"
+            requestID: requestID,
+            status: .unknown,
+            errorCode: "SECURE_INPUT_REQUEST_UNKNOWN"
         )
     }
 
@@ -1683,18 +1764,26 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private func pruneSecureInputReceipts() {
         let cutoff = now().addingTimeInterval(-15 * 60)
-        for id in secureInputTerminalAt.keys where secureInputTerminalAt[id, default: .distantFuture] < cutoff {
+        var didChange = false
+        for id in Array(secureInputTerminalAt.keys) where secureInputTerminalAt[id, default: .distantFuture] < cutoff {
             secureInputTerminalAt.removeValue(forKey: id)
             secureInputStatuses.removeValue(forKey: id)
+            secureInputStates.removeValue(forKey: id)
+            didChange = true
         }
-        if secureInputStatuses.count > 128 {
+        if secureInputTerminalAt.count > 128 {
             let oldest = secureInputTerminalAt
                 .sorted { $0.value < $1.value }
-                .prefix(max(0, secureInputStatuses.count - 128))
+                .prefix(secureInputTerminalAt.count - 128)
             for (id, _) in oldest {
                 secureInputTerminalAt.removeValue(forKey: id)
                 secureInputStatuses.removeValue(forKey: id)
+                secureInputStates.removeValue(forKey: id)
+                didChange = true
             }
+        }
+        if didChange {
+            persistSecureInputReceipts()
         }
     }
 
@@ -1724,9 +1813,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         case .expired: .expired
         case .cancelled: .cancelled
         case .pending: .submitting
+        case .unknown: .failed
         }
         secureInputStatuses[id] = status
         secureInputTerminalAt[id] = now()
+        persistSecureInputReceipts()
         secureInputAbortReasons.removeValue(forKey: id)
         secureInputExpiryTasks.removeValue(forKey: id)?.cancel()
         let context = secureInputAuditContexts.removeValue(forKey: id)
@@ -3721,6 +3812,76 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             Logger(subsystem: "com.agent-secret-vault.SVLT", category: "audit")
                 .error("AUDIT_HEALTH_PERSIST_FAILED")
         }
+    }
+
+    private func persistSecureInputReceipts() {
+        guard let secureInputReceiptURL else { return }
+        let cutoff = now().addingTimeInterval(-15 * 60)
+        let records = secureInputTerminalAt.compactMap { id, terminalAt -> CatalogSecureInputReceiptRecord? in
+            guard terminalAt >= cutoff,
+                  let status = secureInputStatuses[id],
+                  status.status != .pending
+            else {
+                return nil
+            }
+            return CatalogSecureInputReceiptRecord(
+                schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion,
+                requestID: id,
+                status: status.status,
+                revision: status.revision,
+                errorCode: status.errorCode,
+                terminalAt: terminalAt
+            )
+        }
+        .sorted { $0.terminalAt < $1.terminalAt }
+        .suffix(128)
+
+        do {
+            let parentURL = secureInputReceiptURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: parentURL,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: parentURL.path
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(Array(records))
+            try data.write(to: secureInputReceiptURL, options: [.atomic])
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: secureInputReceiptURL.path
+            )
+        } catch {
+            Logger(subsystem: "com.agent-secret-vault.SVLT", category: "secure-input")
+                .error("SECURE_INPUT_RECEIPT_PERSIST_FAILED")
+        }
+    }
+
+    private static func loadSecureInputReceipts(
+        from url: URL?,
+        now: Date
+    ) -> [CatalogSecureInputReceiptRecord] {
+        guard let url,
+              let data = try? Data(contentsOf: url),
+              let records = try? JSONDecoder().decode([CatalogSecureInputReceiptRecord].self, from: data)
+        else {
+            return []
+        }
+        let cutoff = now.addingTimeInterval(-15 * 60)
+        let recent = records
+            .filter {
+                $0.schemaVersion == CatalogSecureInputReceiptRecord.currentSchemaVersion
+                    && $0.status != .pending
+                    && $0.terminalAt >= cutoff
+                    && $0.terminalAt <= now
+            }
+            .sorted { $0.terminalAt > $1.terminalAt }
+            .prefix(128)
+        return Array(recent.reversed())
     }
 
     private static func loadAuditHealth(from url: URL?) -> CatalogAuditHealthRecord? {

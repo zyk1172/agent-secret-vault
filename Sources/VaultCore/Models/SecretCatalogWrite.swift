@@ -524,6 +524,9 @@ public enum CatalogSecureInputStatusValue: String, Codable, CaseIterable, Sendab
     case cancelled = "CANCELLED"
     case expired = "EXPIRED"
     case failed = "FAILED"
+    /// The daemon no longer has a receipt for this request ID. Callers must
+    /// reconcile against the Catalog/revision and must not resubmit blindly.
+    case unknown = "UNKNOWN"
 }
 
 /// A non-sensitive status receipt.  It never contains plaintext or Catalog

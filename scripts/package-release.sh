@@ -8,7 +8,12 @@ STAGING_DIR="$DIST_DIR/SVLT-release"
 MCP_STAGING="$STAGING_DIR/MCP"
 OBSIDIAN_PLUGIN_STAGING="$STAGING_DIR/ObsidianPlugin/svlt"
 SIGNING_TEAM="9KXSB4HR69"
-SIGNING_IDENTITY="Apple Development: zheng.yun.kai@qq.com (9KXSB4HR69)"
+SIGNING_IDENTITY="${SVLT_SIGNING_IDENTITY:-}"
+
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+  echo "SVLT_SIGNING_IDENTITY is required for release signing (for example, a Developer ID Application identity)." >&2
+  exit 2
+fi
 
 cd "$ROOT_DIR"
 

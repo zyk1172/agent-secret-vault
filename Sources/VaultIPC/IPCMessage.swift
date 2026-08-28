@@ -109,7 +109,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case catalogFilePreflight
     case catalogPendingWriteAccessRequestIDs
     case catalogPendingSecureInputRequestIDs
-    case catalogSecureInputStatus(id: UUID)
+    case catalogSecureInputStatus(requestID: UUID)
     case catalogRequestWriteAccess(CatalogAgentWriteAccessRequest)
     case pendingRevealSessions
     case inspectReference(reference: String)
@@ -167,7 +167,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case descriptor
         case mutation
         case targets
-        case id
+        case requestID
     }
 
     private enum RequestType: String, Codable {
@@ -306,7 +306,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case .catalogPendingSecureInputRequestIDs:
             self = .catalogPendingSecureInputRequestIDs
         case .catalogSecureInputStatus:
-            self = .catalogSecureInputStatus(id: try container.decode(UUID.self, forKey: .id))
+            self = .catalogSecureInputStatus(requestID: try container.decode(UUID.self, forKey: .requestID))
         case .catalogRequestWriteAccess:
             self = .catalogRequestWriteAccess(
                 try container.decode(CatalogAgentWriteAccessRequest.self, forKey: .request)
@@ -464,9 +464,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.catalogPendingWriteAccessRequestIDs, forKey: .type)
         case .catalogPendingSecureInputRequestIDs:
             try container.encode(RequestType.catalogPendingSecureInputRequestIDs, forKey: .type)
-        case let .catalogSecureInputStatus(id):
+        case let .catalogSecureInputStatus(requestID):
             try container.encode(RequestType.catalogSecureInputStatus, forKey: .type)
-            try container.encode(id, forKey: .id)
+            try container.encode(requestID, forKey: .requestID)
         case let .catalogRequestWriteAccess(request):
             try container.encode(RequestType.catalogRequestWriteAccess, forKey: .type)
             try container.encode(request, forKey: .request)

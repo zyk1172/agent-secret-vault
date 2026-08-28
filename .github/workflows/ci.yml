@@ -79,13 +79,44 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # The PR may contain several commits; the security check compares
+          # the complete PR range against origin/main.
+          fetch-depth: 0
       - name: Check shell scripts and executable release E2E entrypoint
         run: |
           bash -n scripts/*.sh
           test -x scripts/release-e2e.sh
       - name: Check whitespace
-        run: git diff --check HEAD^ HEAD
+        run: |
+          # Select the complete event range instead of checking only the
+          # latest commit.  origin/main is not a reliable PR base when the
+          # checkout is a merge ref or the workflow runs from a fork.
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+              ;;
+            push)
+              base="${{ github.event.before }}"
+              head="${{ github.sha }}"
+              if [[ "$base" =~ ^0+$ ]]; then
+                base="$(git rev-list --max-parents=0 "$head" | tail -n 1)"
+              fi
+              ;;
+            *)
+              head="$GITHUB_SHA"
+              # Manual runs have no event-provided base.  Prefer the
+              # repository's main merge base so historical whitespace is not
+              # re-reported; fall back to the immediate parent only when the
+              # remote ref is unavailable.
+              if git rev-parse --verify origin/main >/dev/null 2>&1; then
+                base="$(git merge-base origin/main "$head")"
+              else
+                base="$(git rev-parse "$head^" 2>/dev/null || printf '%s' "$head")"
+              fi
+              ;;
+          esac
+          git diff --check "$base...$head"
       - name: Scan generated artifacts for plaintext canary
         env:
           ASV_CANARY: ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST

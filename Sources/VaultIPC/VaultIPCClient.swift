@@ -228,8 +228,8 @@ public actor VaultIPCClient {
         return status
     }
 
-    public func catalogSecureInputStatus(id: UUID) async throws -> CatalogSecureInputStatus {
-        let response = try await send(.catalogSecureInputStatus(id: id))
+    public func catalogSecureInputStatus(requestID: UUID) async throws -> CatalogSecureInputStatus {
+        let response = try await send(.catalogSecureInputStatus(requestID: requestID))
         guard case let .catalogSecureInputStatus(status) = response else {
             throw unexpected(response)
         }

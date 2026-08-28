@@ -346,7 +346,7 @@ export type CatalogSecureInputTargetRequest = z.infer<typeof CatalogSecureInputT
 
 export const CatalogSecureInputStatus = z.object({
   requestID: z.string().uuid(),
-  status: z.enum(["PENDING", "COMPLETED", "CANCELLED", "EXPIRED", "FAILED"]),
+  status: z.enum(["PENDING", "COMPLETED", "CANCELLED", "EXPIRED", "FAILED", "UNKNOWN"]),
   revision: z.number().int().nonnegative().nullable().optional(),
   errorCode: z.string().min(1).max(128).nullable().optional()
 }).strict();

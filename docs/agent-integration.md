@@ -103,7 +103,8 @@ Catalog 的浏览和结构写入应通过 MCP API 完成。下面的
    `secret_catalog_secure_input_status` 轮询终态。`fillPlaceholder`、`replaceSecret`
    和 `convertToSecret` 都由用户在本机 SecureField sheet 中最终选择/输入；SVLT 本机
    加密后在 daemon 单入口事务中完成 final semantic diff、策略检查和 atomic commit，
-   Agent 只收到状态、revision 或稳定 errorCode，永远收不到明文。替换已有密文仍按
+   Agent 只收到状态、revision 或稳定 errorCode，永远收不到明文。若轮询返回
+   `UNKNOWN`，先重新读取 Catalog/revision 做结果对账，禁止自动重新提交明文。替换已有密文仍按
    高风险 semantic diff 走同一笔本机认证，不会被普通 metadata 静默化；请求过期、
    取消、失焦、睡眠或锁定都不会提交。
 

@@ -55,7 +55,7 @@ public protocol WorkbenchServicing: Sendable {
         targets: [CatalogSecureInputTargetRequest],
         expectedRevision: UInt64
     ) async throws -> CatalogSecureInputStatus
-    func catalogSecureInputStatus(id: UUID) async -> CatalogSecureInputStatus
+    func catalogSecureInputStatus(requestID: UUID) async -> CatalogSecureInputStatus
     func validateCatalog() async throws -> CatalogValidationResult
     func catalogFilePreflight() async throws -> CatalogFilePreflight
     func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID]
@@ -187,8 +187,8 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
-    func catalogSecureInputStatus(id: UUID) async -> CatalogSecureInputStatus {
-        CatalogSecureInputStatus(requestID: id, status: .failed, errorCode: "SECURE_INPUT_UNSUPPORTED")
+    func catalogSecureInputStatus(requestID: UUID) async -> CatalogSecureInputStatus {
+        CatalogSecureInputStatus(requestID: requestID, status: .failed, errorCode: "SECURE_INPUT_UNSUPPORTED")
     }
 
     func validateCatalog() async throws -> CatalogValidationResult {
@@ -351,8 +351,8 @@ public struct IPCRequestHandler: Sendable {
             return .catalogPendingSecureInputRequestIDs(
                 await service.pendingCatalogSecureInputRequestIDs()
             )
-        case let .catalogSecureInputStatus(id):
-            return .catalogSecureInputStatus(await service.catalogSecureInputStatus(id: id))
+        case let .catalogSecureInputStatus(requestID):
+            return .catalogSecureInputStatus(await service.catalogSecureInputStatus(requestID: requestID))
         case let .catalogRequestWriteAccess(request):
             try await service.requestCatalogWriteAccess(
                 source: request.source,

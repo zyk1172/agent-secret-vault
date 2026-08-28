@@ -110,6 +110,27 @@ describe("MCP tool contracts", () => {
     expect(client.requests).toEqual([{ type: "catalogSecureInputStatus", requestID }]);
   });
 
+  it("preserves secure input business errors as structured status codes", async () => {
+    const requestID = "00000000-0000-4000-8000-000000000024";
+    const client = new FakeClient([{ type: "failure", code: "CATALOG_REVISION_CONFLICT" }]);
+    const definition = tool(client, "secret_catalog_secure_input_status");
+
+    const result = await definition.handler({ requestID });
+
+    expect(result.structuredContent).toEqual({ status: "CATALOG_REVISION_CONFLICT" });
+    expect(() => definition.outputSchema.parse(result.structuredContent)).not.toThrow();
+  });
+
+  it("accepts UNKNOWN receipts for requests that require Catalog reconciliation", () => {
+    const definition = tool(new FakeClient([]), "secret_catalog_secure_input_status");
+
+    expect(() => definition.outputSchema.parse({
+      requestID: "00000000-0000-4000-8000-000000000024",
+      status: "UNKNOWN",
+      errorCode: "SECURE_INPUT_REQUEST_UNKNOWN"
+    })).not.toThrow();
+  });
+
   it("does not gate normal work on the compatibility locked field", async () => {
     const client = new FakeClient([{
       type: "workbenchStatus",

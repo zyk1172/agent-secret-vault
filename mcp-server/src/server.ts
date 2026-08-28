@@ -239,12 +239,19 @@ const CatalogSecureInputRequestInput = z
   })
   .strict();
 
-const CatalogSecureInputStatusOutput = z.object({
-  requestID: z.string().uuid(),
-  status: z.enum(["PENDING", "COMPLETED", "CANCELLED", "EXPIRED", "FAILED"]),
-  revision: z.number().int().nonnegative().nullable().optional(),
-  errorCode: z.string().min(1).max(128).nullable().optional()
-}).strict();
+const CatalogSecureInputStatusOutput = z
+  .union([
+    z.object({
+      requestID: z.string().uuid(),
+      status: z.enum(["PENDING", "COMPLETED", "CANCELLED", "EXPIRED", "FAILED", "UNKNOWN"]),
+      revision: z.number().int().nonnegative().nullable().optional(),
+      errorCode: z.string().min(1).max(128).nullable().optional()
+    }).strict(),
+    // IPC failures are stable business outcomes, not malformed MCP calls.
+    // Keep them in structuredContent so the caller can branch on the code.
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Secure Input status or a stable Catalog error code");
 
 const CatalogBatchInput = CatalogBatchMutation;
 
@@ -1875,7 +1882,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use secret_catalog_list_indices to browse all Indexes, including empty Indexes; use secret_catalog_list_entries with an indexID returned by MCP, then secret_catalog_get for one Entry. Never read selection JSON, Catalog Markdown, or Application Support sidecars to find IDs.",
       "Use secret_catalog_create_structure for one Index plus multiple safe Entries when appropriate; SVLT generates opaque IDs and returns clientKey mappings, revision, and post-commit validation.",
       "Every Agent Catalog mutation requires one exact operation-bound write request; SVLT raises macOS device-owner authentication directly, and that authentication is the user authorization for that one mutation. There is no extra App confirm button; never invent, extend, reuse, or self-approve authorization.",
-      "When an Entry needs a user-supplied password, API key, token, or another secret value, call secret_catalog_request_secure_inputs. SVLT resolves field labels from the accepted Catalog, shows a local SecureField sheet, and immediately returns PENDING/requestID. Poll secret_catalog_secure_input_status until a terminal status; the agent receives only status/revision/errorCode and never receives plaintext.",
+      "When an Entry needs a user-supplied password, API key, token, or another secret value, call secret_catalog_request_secure_inputs. SVLT resolves field labels from the accepted Catalog, shows a local SecureField sheet, and immediately returns PENDING/requestID. Poll secret_catalog_secure_input_status until a terminal status; the agent receives only status/revision/errorCode and never receives plaintext. If the result is UNKNOWN, re-read the Catalog/revision to reconcile the outcome and never resubmit the secret automatically.",
       "Treat a controlled write as health-confirmed only when validation.status is FOUND and validation.diagnostics is empty. CREATED with CATALOG_UNAVAILABLE or another validation status may mean the commit succeeded but confirmation did not complete; do not blindly repeat the write, and use secret_catalog_validate after service recovery.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
