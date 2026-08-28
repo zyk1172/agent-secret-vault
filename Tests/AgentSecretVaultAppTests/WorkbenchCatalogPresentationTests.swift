@@ -160,6 +160,12 @@ import VaultCore
     )
     #expect(roundTrip == diagnostics)
 
+    let wire = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(diagnostics)) as? [String: Any]
+    )
+    #expect(wire["unreadableRecordCount"] as? Int == 13)
+    #expect(wire["integrityFailureCount"] as? Int == 2)
+
     let legacy = try JSONDecoder().decode(
         AuditReadDiagnostics.self,
         from: Data("{\"unreadableRecordCount\":1,\"integrityFailureCount\":2}".utf8)

@@ -173,9 +173,15 @@ public struct AuditReadDiagnostics: Codable, Equatable, Sendable {
 
     public static let none = Self()
 
-    /// Source-compatible alias for callers written before diagnostics were
-    /// split into concrete failure classes.
-    public var unreadableRecordCount: Int { recordDecodeFailureCount }
+    /// Source-compatible aggregate for callers written before diagnostics
+    /// were split into concrete failure classes. Keep all non-authentication
+    /// omissions visible to an older App that only understands this field.
+    public var unreadableRecordCount: Int {
+        recordDecodeFailureCount
+            + eventDecodeFailureCount
+            + unsupportedMetadataVersionCount
+            + legacyCompatibilityFailureCount
+    }
 
     /// Source-compatible alias for AES-GCM authentication failures.
     public var integrityFailureCount: Int { authenticationFailureCount }
@@ -219,9 +225,9 @@ public struct AuditReadDiagnostics: Codable, Equatable, Sendable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        // Write both names so an older App can still render the aggregate
+        // Write both names so an older App can still render an aggregate
         // warning while a newer App receives the detailed classification.
-        try container.encode(recordDecodeFailureCount, forKey: .unreadableRecordCount)
+        try container.encode(unreadableRecordCount, forKey: .unreadableRecordCount)
         try container.encode(authenticationFailureCount, forKey: .integrityFailureCount)
         try container.encode(recordDecodeFailureCount, forKey: .recordDecodeFailureCount)
         try container.encode(authenticationFailureCount, forKey: .authenticationFailureCount)
