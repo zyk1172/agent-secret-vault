@@ -150,6 +150,13 @@ and WikiLinks; the coordinator applies source-range patches and never
 canonicalizes the whole document for a single edit. Use `secret_catalog_batch`
 for one-lock, one-revision multi-operation changes.
 
+The managed Markdown has three logical zones: preamble, a contiguous Catalog body, and
+trailing unmanaged Markdown. Notes, callouts, ordinary paragraphs, comments, and WikiLinks
+remain unmanaged. New Indexes are inserted after the last managed Index and before trailing
+user content (or after the preamble when there is no Index), never blindly appended to EOF.
+The renderer uses `\n\n---\n\n` between Indexes and a consistent double-blank visual gap between
+Entries; source-range minimal patches preserve unrelated bytes.
+
 ## Obsidian workflow
 
 1. Open SVLT.

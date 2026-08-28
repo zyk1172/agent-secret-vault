@@ -7,6 +7,20 @@ private let v2EntryID = "0123456789ABCDEFGHJKMNPQRT"
 private let v2KomgaEntryID = "0123456789ABCDEFGHJKMNPQRV"
 private let v2PasswordReference = "secret://0123456789ABCDEFGHJKMNPQRW"
 private let v2TokenReference = "secret://0123456789ABCDEFGHJKMNPQRY"
+private let layoutIndexAID = "0123456789ABCDEFGHJKMNPQRS"
+private let layoutIndexBID = "0123456789ABCDEFGHJKMNPQRT"
+private let layoutIndexCID = "0123456789ABCDEFGHJKMNPQRV"
+private let layoutEntryAID = "0123456789ABCDEFGHJKMNPQRW"
+private let layoutEntryBID = "0123456789ABCDEFGHJKMNPQRY"
+
+private func layoutEntry(id: String, indexID: String, title: String) -> SecretCatalogEntry {
+    SecretCatalogEntry(
+        id: id,
+        indexId: indexID,
+        title: title,
+        fields: [SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("user"))]
+    )
+}
 
 private func qnapDocument() -> SecretCatalogDocument {
     let index = SecretCatalogIndex(
@@ -425,7 +439,137 @@ private func qnapDocument() -> SecretCatalogDocument {
         Data(decorated.utf8), from: old, to: next
     ), as: UTF8.self)
 
-    #expect(patched.contains("用户保留的尾注\n<!-- SVLT-INDEX"))
+    let separator = try #require(patched.range(of: "<!-- /SVLT-INDEX -->\n\n---\n\n<!-- SVLT-INDEX"))
+    let trailingNote = try #require(patched.range(of: "用户保留的尾注"))
+    let newHeading = try #require(patched.range(of: "## 新增"))
+    #expect(separator.lowerBound < trailingNote.lowerBound)
+    #expect(newHeading.lowerBound < trailingNote.lowerBound)
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+}
+
+@Test func catalogV3FirstIndexIsAppendedAfterPreambleWithoutAnIndexSeparator() throws {
+    let preamble = "> [!note]- 我的说明\n> 只属于用户的前言"
+    let old = SecretCatalogDocument()
+    let source = try SensitiveCatalogDocumentCodec.encode(old, unmanagedMarkdown: preamble)
+    let index = SecretCatalogIndex(id: layoutIndexAID, title: "第一个分组")
+    let next = SecretCatalogDocument(indexes: [index])
+
+    let patched = String(decoding: try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(source.utf8), from: old, to: next
+    ), as: UTF8.self)
+
+    let note = try #require(patched.range(of: "我的说明"))
+    let heading = try #require(patched.range(of: "## 第一个分组"))
+    #expect(note.lowerBound < heading.lowerBound)
+    #expect(!patched.contains("\n---\n\n<!-- SVLT-INDEX"))
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+}
+
+@Test func catalogV3NewIndexesUseOneManagedHorizontalRuleAndPreserveTrailingMarkdown() throws {
+    let first = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let second = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let third = SecretCatalogIndex(id: layoutIndexCID, title: "分组 C")
+    let old = SecretCatalogDocument(indexes: [first, second])
+    let preamble = "> [!note]- 顶部说明\n> 不属于 Catalog"
+    var decorated = try SensitiveCatalogDocumentCodec.encode(old, unmanagedMarkdown: preamble)
+    decorated = String(decorated.dropLast()) + "\n用户尾部 Markdown\n[[保留链接]]"
+    let next = SecretCatalogDocument(indexes: [first, second, third])
+
+    let patched = String(decoding: try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(decorated.utf8), from: old, to: next
+    ), as: UTF8.self)
+    let separator = try #require(patched.range(of: "<!-- /SVLT-INDEX -->\n\n---\n\n<!-- SVLT-INDEX"))
+    let newHeading = try #require(patched.range(of: "## 分组 C"))
+    let tail = try #require(patched.range(of: "用户尾部 Markdown\n[[保留链接]]"))
+
+    #expect(separator.lowerBound < newHeading.lowerBound)
+    #expect(newHeading.lowerBound < tail.lowerBound)
+    #expect(patched.hasSuffix("用户尾部 Markdown\n[[保留链接]]"))
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+}
+
+@Test func catalogV3CanonicalRenderUsesDoubleBlankEntrySpacingAndRoundTrips() throws {
+    let index = SecretCatalogIndex(id: layoutIndexAID, title: "分组")
+    let first = layoutEntry(id: layoutEntryAID, indexID: index.id, title: "条目 A")
+    let second = layoutEntry(id: layoutEntryBID, indexID: index.id, title: "条目 B")
+    let document = SecretCatalogDocument(indexes: [index], entries: [first, second])
+    let rendered = try SensitiveCatalogDocumentCodec.encode(document)
+
+    #expect(rendered.contains("<!-- /SVLT-ENTRY -->\n\n\n<!-- SVLT-ENTRY"))
+    #expect(try SensitiveCatalogDocumentCodec.decode(rendered) == document)
+    #expect(try SensitiveCatalogDocumentCodec.decode(try SensitiveCatalogDocumentCodec.encode(document)) == document)
+}
+
+@Test func catalogV3FormatRepairNormalizesLegacyIndexAndEntrySpacingOnlyInManagedGaps() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let first = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A")
+    let second = layoutEntry(id: layoutEntryBID, indexID: indexA.id, title: "条目 B")
+    let canonical = try SensitiveCatalogDocumentCodec.encode(
+        SecretCatalogDocument(indexes: [indexA, indexB], entries: [first, second])
+    )
+    let legacy = canonical
+        .replacingOccurrences(of: "\n\n---\n\n", with: "\n\n")
+        .replacingOccurrences(of: "\n\n\n<!-- SVLT-ENTRY", with: "\n<!-- SVLT-ENTRY")
+    let plan = try #require(SensitiveCatalogDocumentCodec.formatRepairPlan(Data(legacy.utf8)))
+
+    #expect(plan.canRepair)
+    let repaired = try SensitiveCatalogDocumentCodec.applyingFormatRepair(to: Data(legacy.utf8))
+    #expect(repaired == Data(canonical.utf8))
+}
+
+@Test func catalogV3FormatRepairNeverMovesAnUnrecognizedUserNote() throws {
+    let indexA = SecretCatalogIndex(id: layoutIndexAID, title: "分组 A")
+    let indexB = SecretCatalogIndex(id: layoutIndexBID, title: "分组 B")
+    let first = layoutEntry(id: layoutEntryAID, indexID: indexA.id, title: "条目 A")
+    let second = layoutEntry(id: layoutEntryBID, indexID: indexA.id, title: "条目 B")
+    let document = SecretCatalogDocument(indexes: [indexA, indexB], entries: [first, second])
+    let canonical = try SensitiveCatalogDocumentCodec.encode(document)
+    let note = "> [!note]\n> 我的私人说明，不是 SVLT 官方 Note"
+    let withUserNote = canonical.replacingOccurrences(
+        of: "\n\n---\n\n",
+        with: "\n\n\(note)\n\n",
+        options: [],
+        range: canonical.range(of: "\n\n---\n\n")
+    ).replacingOccurrences(of: "<!-- /SVLT-ENTRY -->\n\n\n<!-- SVLT-ENTRY", with: "<!-- /SVLT-ENTRY -->\n<!-- SVLT-ENTRY")
+
+    let repaired = try SensitiveCatalogDocumentCodec.applyingFormatRepair(to: Data(withUserNote.utf8))
+    let repairedText = String(decoding: repaired, as: UTF8.self)
+    #expect(repairedText.contains(note))
+    let noteRange = try #require(repairedText.range(of: note))
+    let firstIndexHeading = try #require(repairedText.range(of: "## 分组 A"))
+    #expect(noteRange.lowerBound > firstIndexHeading.upperBound)
+    #expect(try SensitiveCatalogDocumentCodec.decode(repaired) == document)
+}
+
+@Test func catalogV3MinimalPatchAppendsEntriesWithCanonicalSpacing() throws {
+    let index = SecretCatalogIndex(id: layoutIndexAID, title: "分组")
+    let first = layoutEntry(id: layoutEntryAID, indexID: index.id, title: "条目 A")
+    let second = layoutEntry(id: layoutEntryBID, indexID: index.id, title: "条目 B")
+    let old = SecretCatalogDocument(indexes: [index], entries: [first])
+    let next = SecretCatalogDocument(indexes: [index], entries: [first, second])
+    let patched = String(decoding: try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(try SensitiveCatalogDocumentCodec.encode(old).utf8), from: old, to: next
+    ), as: UTF8.self)
+
+    #expect(patched.contains("<!-- /SVLT-ENTRY -->\n\n\n<!-- SVLT-ENTRY"))
+    #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
+}
+
+@Test func catalogV3MinimalPatchGroupsBatchEntriesIntoOneManagedRun() throws {
+    let index = SecretCatalogIndex(id: layoutIndexAID, title: "分组")
+    let first = layoutEntry(id: layoutEntryAID, indexID: index.id, title: "条目 A")
+    let second = layoutEntry(id: layoutEntryBID, indexID: index.id, title: "条目 B")
+    let third = layoutEntry(id: layoutIndexCID, indexID: index.id, title: "条目 C")
+    let old = SecretCatalogDocument(indexes: [index], entries: [first])
+    let next = SecretCatalogDocument(indexes: [index], entries: [first, second, third])
+    let patched = String(decoding: try SensitiveCatalogDocumentCodec.minimalPatch(
+        Data(try SensitiveCatalogDocumentCodec.encode(old).utf8), from: old, to: next
+    ), as: UTF8.self)
+
+    #expect(patched.components(separatedBy: "<!-- SVLT-ENTRY ").count == 4)
+    #expect(patched.components(separatedBy: "<!-- /SVLT-ENTRY -->\n\n\n<!-- SVLT-ENTRY").count == 3)
+    #expect(patched.contains("### 条目 C"))
     #expect(try SensitiveCatalogDocumentCodec.decode(patched) == next)
 }
 

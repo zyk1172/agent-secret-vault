@@ -66,11 +66,26 @@ SVLT 敏感信息目录写入规范：
 36. Agent 不得把密码规范、说明文字、示例当成用户敏感信息。
 37. 不得把 SVLT 解密得到的明文写回 `敏感信息.md`。
 38. 凭据来源标签包括 `SVLT_MANAGED_OPERATION`、`USER_EXPLICIT_PLAINTEXT`、`EXTERNAL_PROVIDER_OPERATION`、`UNMANAGED_CREDENTIAL`；不得因为用户使用其他凭据 provider 而强制接管。
+39. `敏感信息.md` 分为前言区、连续的 Catalog 主体区和尾部非托管区；Note、说明、用户 Markdown、callout 与 WikiLink 不属于 Catalog semantic model。
+40. 新建 Index 必须插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前；当前没有 Index 时，插入 policy 和前言之后，不得追加到用户尾注之后。
+41. Index 之间使用 renderer 生成的标准 Markdown 分隔 `\n\n---\n\n`；`---` 只是视觉边界，不属于 Index/Entry/Field，也不得全局重写用户自己的分隔线。
+42. 同一 Index 内的 Entry 之间使用统一的双空行视觉间距；新增、batch、migration、format repair 和 minimal patch 不得混用一行、两行或三行布局。
+43. Catalog 写入遵守最小修改原则；只改目标 source range 和由 SVLT renderer 明确拥有的边界空白，保留用户普通 Markdown、注释、WikiLink、Note 和尾部内容。
+44. Agent 浏览必须使用 `secret_catalog_list_indices`、`secret_catalog_list_entries`、`secret_catalog_get`、`secret_catalog_create_structure` 等 MCP 响应发现 opaque ID；不得读取 selection sidecar、`敏感信息.md` 或 Application Support 文件解析 ID。
+45. 需要用户输入秘密时使用 `secret_catalog_request_secure_inputs`；若 transport 返回 `PENDING` 与 `requestID`，只能用 `secret_catalog_secure_input_status` 轮询同一请求，Agent 永远只能收到状态/非敏感结果，不能收到 plaintext。
 
 目录状态规则：
 - v3 的外部合法编辑由 SVLT coordinator 重新解析；格式/普通语义变化可以接纳，高风险语义变化进入本机审批，不按编辑器或传输渠道一律拒绝。
 - `SVLT-POLICY` 是 document-level 折叠 callout，不属于分组、条目、字段、搜索结果或计数。
 - v2 仅作为迁移输入。遇到 `LEGACY_CATALOG_UNSUPPORTED` 必须停止；合法 v2 文件只能由 App 的“备份、验证并升级”流程接管，MCP 不得调用接管操作。
+
+## Markdown 结构与写入布局
+
+`敏感信息.md` 的结构分为三个逻辑区：前言区、连续的 Catalog 主体区、尾部非托管 Markdown。policy block、Note、使用说明、用户段落、callout 和 `[[WikiLink]]` 都是 unmanaged，不计入 Index/Entry/Field 的语义、搜索、计数或 App UI。
+
+业务 Index 必须连续排列。新 Index 插入最后一个合法 `SVLT-INDEX` 之后、任何尾部非托管 Markdown 之前；没有 Index 时插入前言之后。Index 之间由 renderer 生成 `\n\n---\n\n`，横线只是视觉边界，不能全局改写用户自有的 `---`。同一 Index 内 Entry 之间使用统一双空行视觉间距。
+
+所有合法 writer（App、MCP、Obsidian、编辑器和脚本）都必须输出 v3 marker/schema；受控写入优先 source-range minimal patch，只调整目标块及 renderer 明确拥有的边界空白，保留用户 Markdown、备注、注释、WikiLink、Note 和尾部内容。format repair 只有在能明确识别官方 legacy Note 时才可移动 Note；无法确认时保持原位。
 
 用户明文覆盖规则：
 1. 用户当前明确提供并要求使用的明文凭据不受 SVLT 强制接管。即使上一轮使用 SVLT 或 Catalog 中可能已有对应 Secret，本次仍按用户明确选择执行。
