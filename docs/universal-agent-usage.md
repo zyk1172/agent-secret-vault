@@ -130,7 +130,7 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 9. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以不触发额外的高风险 secretRef 批准；但每笔 Agent mutation（包括普通批量操作）仍必须使用精确绑定、一次消费的 operation-bound write request。SVLT 直接弹 macOS device-owner authentication；认证本身是授权，没有额外 App 确认按钮。绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。
 10. 受控 MCP write 会返回 post-commit validation；只有 `validation.status == FOUND` 且 `validation.diagnostics` 为空才表示健康确认成功。`CREATED` 搭配 `CATALOG_UNAVAILABLE` 等状态表示写入可能已提交但确认未完成，不要盲目重试写入，服务恢复后再用 `secret_catalog_validate` 显式确认。失败时停止，不要猜测修复结构。
 11. 低风险操作不代表获得明文导出权限；SVLT 派生明文只能留在获批的专用本地操作中，不能写回 Catalog、shell、日志、聊天或外发。
-12. 需要真实密码、API 密钥或 token 时调用 `secret_catalog_request_secure_inputs`；只发送 field metadata 和 revision，用户在本机 SecureField 中选择/输入，Agent 只收到完成状态和 revision。
+12. 需要真实密码、API 密钥或 token 时调用 `secret_catalog_request_secure_inputs`；只发送 `entryID`、field key、模式和 revision，不发送或覆盖字段 label。SVLT 会从 accepted Catalog 重建 label，并立即返回 `PENDING` 与 `requestID`。用户在本机 SecureField 中选择/输入后，Agent 只能轮询 `secret_catalog_secure_input_status` 获取 `COMPLETED`、`CANCELLED`、`EXPIRED` 或 `FAILED`（以及 revision/errorCode）；永远收不到明文。请求过期、取消或 App 失焦/睡眠/锁定时不会提交。若返回 `UNKNOWN`，先重新读取 Catalog/revision 做结果对账，禁止自动重新提交明文。
 
 ## 7. Agent 启动自检
 

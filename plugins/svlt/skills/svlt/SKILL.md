@@ -51,6 +51,13 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `ssh_command_with_secret`、`local_http_request_with_secret`、`api_request_with_token`、`database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret`：仅用于 `secret://` 管理路径。
 - `secret_reveal_request` / `paragraph_reveal_request`：用户明确要在本机 App 查看 SVLT 明文时使用；结果是本地显示状态，不是返回给 Agent 的明文。
 
+## Secure Input 异步事务
+
+- `secret_catalog_request_secure_inputs` 只接受 `entryID`、field key、模式、required 和 accepted revision；不要传入 label。SVLT 会从 accepted Catalog 重建 UI label。
+- 该调用立即返回 `PENDING` 与 opaque `requestID`，因为用户可能需要较长时间完成 Touch ID 或 macOS 密码认证。使用 `secret_catalog_secure_input_status` 按 requestID 轮询，直到 `COMPLETED`、`CANCELLED`、`EXPIRED` 或 `FAILED`。
+- status 只包含状态、revision 和稳定 errorCode，不包含 plaintext、Catalog 内容或 secretRef。不要因 MCP 请求返回 `PENDING` 而重复创建请求。
+- daemon 将本机 device-owner authentication、字段加密、最终 semantic diff、策略检查和 Catalog commit 绑定在同一笔 requestID 事务中；过期、取消、App 失焦/睡眠/锁定后不得重试旧 Sheet 或调用 generic Catalog commit。
+
 如果用户明确选择了其他 MCP/CLI/App 或当前明文，保持 SVLT 沉默，调用该工具并遵守其自身的权限、日志和持久化规则。不要因为 SVLT Catalog 有候选记录而抢占。
 
 ## 失败处理

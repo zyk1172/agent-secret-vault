@@ -3,10 +3,12 @@ import Testing
 import VaultIPC
 @testable import AgentSecretVaultApp
 
+@MainActor
 @Test func menuBarPanelCoversEveryWorkbenchSection() {
     #expect(MenuBarVaultPanel.supportedSections == VaultWorkbenchSection.allCases)
 }
 
+@MainActor
 @Test func menuBarPanelUsesSimpleStatusSymbol() {
     #expect(MenuBarVaultPanel.statusItemSymbol == "lock.fill")
 }

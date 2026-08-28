@@ -126,6 +126,13 @@ describe("IPC response schema", () => {
           validation: { status: "FOUND", revision: 3, diagnostics: [] }
         }
       },
+      {
+        type: "catalogSecureInputStatus",
+        status: {
+          requestID: "00000000-0000-4000-8000-000000000023",
+          status: "PENDING"
+        }
+      },
       { type: "catalogValidation", catalogStatus: "FOUND", revision: 2, diagnostics: [] },
       {
         type: "catalogFilePreflight",
@@ -417,6 +424,21 @@ describe("IPC request schema", () => {
         key: "password",
         secretRef: validReference,
         expectedRevision: 1
+      },
+      {
+        type: "catalogRequestSecureInputs",
+        entryID: validEntryID,
+        targets: [{
+          entryID: validEntryID,
+          fieldKey: "password",
+          mode: "replaceSecret",
+          required: true
+        }],
+        expectedRevision: 1
+      },
+      {
+        type: "catalogSecureInputStatus",
+        requestID: "00000000-0000-4000-8000-000000000024"
       },
       { type: "catalogValidate" },
       { type: "inspectReference", reference: validReference },

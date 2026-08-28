@@ -380,6 +380,24 @@ private final class CatalogReadFileResultBox: @unchecked Sendable {
     }
 }
 
+/// POSIX Catalog probes may block behind a File Provider overlay. Keep them
+/// off both the actor executor and the process-wide utility pool: a slow
+/// provider operation must not starve unrelated Catalog reads or test/IPC
+/// handlers that are waiting for their bounded result.
+private enum CatalogPOSIXIO {
+    // File Provider syscalls cannot always be cancelled after the caller's
+    // three-second deadline. Admit only a small fixed number of probes so a
+    // wedged provider cannot turn repeated health checks into an unbounded
+    // backlog of blocked work items.
+    static let permits = DispatchSemaphore(value: 2)
+    static let queue = DispatchQueue(
+        label: "com.agent-secret-vault.catalog-posix-io",
+        qos: .userInitiated,
+        attributes: .concurrent,
+        autoreleaseFrequency: .workItem
+    )
+}
+
 public struct CatalogExternalChange: Codable, Equatable, Sendable {
     public let rawSHA256: String
     public let semanticSHA256: String
@@ -2005,10 +2023,14 @@ public actor SensitiveCatalogDocumentStore {
 
     private func directoryFsyncStatus(_ path: String) -> Int32 {
         guard !path.isEmpty else { return EINVAL }
+        guard case .success = CatalogPOSIXIO.permits.wait(timeout: .now()) else {
+            return ETIMEDOUT
+        }
         let semaphore = DispatchSemaphore(value: 0)
-        let queue = DispatchQueue.global(qos: .utility)
+        let queue = CatalogPOSIXIO.queue
         let resultBox = CatalogDirectoryFsyncResultBox()
         queue.async {
+            defer { CatalogPOSIXIO.permits.signal() }
             let observed = path.withCString { svlt_fsync_directory($0) }
             _ = resultBox.complete(observed)
             semaphore.signal()
@@ -2020,10 +2042,14 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     private func readFileStatus(_ path: String) -> (status: Int32, bytes: UnsafeMutableRawPointer?, length: Int) {
+        guard CatalogPOSIXIO.permits.wait(timeout: .now()) == .success else {
+            return (ETIMEDOUT, nil, 0)
+        }
         let semaphore = DispatchSemaphore(value: 0)
-        let queue = DispatchQueue.global(qos: .utility)
+        let queue = CatalogPOSIXIO.queue
         let resultBox = CatalogReadFileResultBox()
         queue.async {
+            defer { CatalogPOSIXIO.permits.signal() }
             var observedBytes: UnsafeMutableRawPointer?
             var observedLength = 0
             let status = path.withCString { svlt_read_file($0, &observedBytes, &observedLength) }
@@ -2861,12 +2887,10 @@ public actor SensitiveCatalogDocumentStore {
             return preflightFailure(stage: .preflightRead, errno: EINVAL)
         }
 
-        var bytes: UnsafeMutableRawPointer?
-        var length = 0
-        let status = url.path.withCString { path in
-            svlt_read_file(path, &bytes, &length)
-        }
-        if let bytes {
+        let observed = readFileStatus(url.path)
+        let status = observed.status
+        let length = observed.length
+        if let bytes = observed.bytes {
             svlt_free_file(bytes)
         }
         guard status == 0, length <= svltPosixFileReaderMaximumBytes else {

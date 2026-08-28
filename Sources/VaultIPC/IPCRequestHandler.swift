@@ -52,9 +52,10 @@ public protocol WorkbenchServicing: Sendable {
     ) async throws -> CatalogWriteResult
     func requestCatalogSecureInputs(
         entryID: String,
-        targets: [CatalogSecureInputTarget],
+        targets: [CatalogSecureInputTargetRequest],
         expectedRevision: UInt64
-    ) async throws -> CatalogSecureInputCompletion
+    ) async throws -> CatalogSecureInputStatus
+    func catalogSecureInputStatus(requestID: UUID) async -> CatalogSecureInputStatus
     func validateCatalog() async throws -> CatalogValidationResult
     func catalogFilePreflight() async throws -> CatalogFilePreflight
     func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID]
@@ -180,10 +181,14 @@ public extension WorkbenchServicing {
 
     func requestCatalogSecureInputs(
         entryID _: String,
-        targets _: [CatalogSecureInputTarget],
+        targets _: [CatalogSecureInputTargetRequest],
         expectedRevision _: UInt64
-    ) async throws -> CatalogSecureInputCompletion {
+    ) async throws -> CatalogSecureInputStatus {
         throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func catalogSecureInputStatus(requestID: UUID) async -> CatalogSecureInputStatus {
+        CatalogSecureInputStatus(requestID: requestID, status: .failed, errorCode: "SECURE_INPUT_UNSUPPORTED")
     }
 
     func validateCatalog() async throws -> CatalogValidationResult {
@@ -322,7 +327,7 @@ public struct IPCRequestHandler: Sendable {
                 expectedRevision: expectedRevision
             ))
         case let .catalogRequestSecureInputs(entryID, targets, expectedRevision):
-            return .catalogSecureInputCompleted(try await service.requestCatalogSecureInputs(
+            return .catalogSecureInputStatus(try await service.requestCatalogSecureInputs(
                 entryID: entryID,
                 targets: targets,
                 expectedRevision: expectedRevision
@@ -346,6 +351,8 @@ public struct IPCRequestHandler: Sendable {
             return .catalogPendingSecureInputRequestIDs(
                 await service.pendingCatalogSecureInputRequestIDs()
             )
+        case let .catalogSecureInputStatus(requestID):
+            return .catalogSecureInputStatus(await service.catalogSecureInputStatus(requestID: requestID))
         case let .catalogRequestWriteAccess(request):
             try await service.requestCatalogWriteAccess(
                 source: request.source,

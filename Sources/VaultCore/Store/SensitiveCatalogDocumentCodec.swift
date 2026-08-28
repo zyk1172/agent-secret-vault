@@ -534,16 +534,20 @@ public enum SensitiveCatalogDocumentCodec {
             throw SecretCatalogValidationError.ambiguousLegacyPolicy
         }
 
-        let supportingText = policyEntries
-            .flatMap { entry in
-                [entry.notes ?? ""]
-                    + entry.aliases
-                    + entry.tags
-                    + entry.fields.flatMap { field in
-                        [field.label] + Self.visibleStrings(field.value)
-                    }
+        // Keep each collection operation explicit so the Xcode 26 compiler
+        // does not spend unbounded time inferring the nested heterogeneous
+        // array expression below. The resulting marker text is unchanged.
+        var supportingTextComponents: [String] = []
+        for entry in policyEntries {
+            supportingTextComponents.append(entry.notes ?? "")
+            supportingTextComponents.append(contentsOf: entry.aliases)
+            supportingTextComponents.append(contentsOf: entry.tags)
+            for field in entry.fields {
+                supportingTextComponents.append(field.label)
+                supportingTextComponents.append(contentsOf: Self.visibleStrings(field.value))
             }
-            .joined(separator: "\n")
+        }
+        let supportingText = supportingTextComponents.joined(separator: "\n")
         let hasAgentPolicyMarker = supportingText.localizedCaseInsensitiveContains("agent")
             || supportingText.contains("智能体")
         let hasCatalogPolicyMarker = supportingText.localizedCaseInsensitiveContains("catalog")

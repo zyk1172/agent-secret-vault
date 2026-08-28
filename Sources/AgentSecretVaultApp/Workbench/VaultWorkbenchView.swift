@@ -170,7 +170,6 @@ public struct VaultWorkbenchView: View {
     let auditEntries: [CatalogSecurityAuditEntry]
     let auditError: String?
     let secureInputRequest: CatalogAgentSecureInputRequest?
-    let beginSecureInputCommit: ((UUID) async -> CatalogAgentSecureInputRequest?)?
     let submitSecureInput: ((CatalogAgentSecureInputRequest, [CatalogSecureInputTarget], [String: String]) async -> Void)?
     let cancelSecureInput: ((UUID) async -> Void)?
     let savedReferences: [SecretReferenceMetadata]
@@ -210,7 +209,6 @@ public struct VaultWorkbenchView: View {
         auditEntries: [CatalogSecurityAuditEntry] = [],
         auditError: String? = nil,
         secureInputRequest: CatalogAgentSecureInputRequest? = nil,
-        beginSecureInputCommit: ((UUID) async -> CatalogAgentSecureInputRequest?)? = nil,
         submitSecureInput: ((CatalogAgentSecureInputRequest, [CatalogSecureInputTarget], [String: String]) async -> Void)? = nil,
         cancelSecureInput: ((UUID) async -> Void)? = nil,
         savedReferences: [SecretReferenceMetadata] = [],
@@ -247,7 +245,6 @@ public struct VaultWorkbenchView: View {
         self.auditEntries = auditEntries
         self.auditError = auditError
         self.secureInputRequest = secureInputRequest
-        self.beginSecureInputCommit = beginSecureInputCommit
         self.submitSecureInput = submitSecureInput
         self.cancelSecureInput = cancelSecureInput
         self.savedReferences = savedReferences
@@ -311,7 +308,6 @@ public struct VaultWorkbenchView: View {
             if let request = secureInputRequest {
                 CatalogAgentSecureInputSheet(
                     request: request,
-                    begin: beginSecureInputCommit,
                     submit: submitSecureInput,
                     cancel: cancelSecureInput
                 )
@@ -599,15 +595,16 @@ private struct WorkbenchSidebarRow: View {
 
 private struct CatalogAgentSecureInputSheet: View {
     let request: CatalogAgentSecureInputRequest
-    let begin: ((UUID) async -> CatalogAgentSecureInputRequest?)?
     let submit: ((CatalogAgentSecureInputRequest, [CatalogSecureInputTarget], [String: String]) async -> Void)?
     let cancel: ((UUID) async -> Void)?
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedTargets: Set<String> = []
     @State private var values: [String: String] = [:]
     @State private var revealedFields: Set<String> = []
     @State private var isSubmitting = false
     @State private var startError: String?
+    @State private var didSubmit = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -656,8 +653,26 @@ private struct CatalogAgentSecureInputSheet: View {
         .padding(24)
         .frame(width: 580, height: 540, alignment: .topLeading)
         .onAppear {
-            selectedTargets = Set(request.targets.filter { !$0.required }.map(\.id))
-            Task { await beginRequest() }
+            // Required fields are selected by default. Optional fields remain
+            // opt-in, and the daemon revalidates this exact set on submit.
+            selectedTargets = Set(request.targets.filter(\.required).map(\.id))
+        }
+        .onDisappear {
+            wipePlaintext()
+            if !didSubmit {
+                Task { await cancel?(request.id) }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active else { return }
+            wipePlaintext()
+            guard !didSubmit else { return }
+            Task { await cancel?(request.id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            guard !didSubmit else { return }
+            wipePlaintext()
+            Task { await cancel?(request.id) }
         }
     }
 
@@ -676,16 +691,25 @@ private struct CatalogAgentSecureInputSheet: View {
                     Text(modeText(target.mode))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if target.usesExistingValue {
+                        Text("当前字段值将由 SVLT 在本机加密")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .toggleStyle(.checkbox)
+            .disabled(target.required)
             .accessibilityLabel(target.label)
 
             Spacer()
 
             HStack(spacing: 4) {
                 Group {
-                    if revealedFields.contains(target.id) {
+                    if target.usesExistingValue {
+                        Text("使用当前值")
+                            .foregroundStyle(.secondary)
+                    } else if revealedFields.contains(target.id) {
                         TextField("敏感值", text: binding(for: target))
                     } else {
                         SecureField("敏感值", text: binding(for: target))
@@ -705,6 +729,7 @@ private struct CatalogAgentSecureInputSheet: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(revealedFields.contains(target.id) ? "隐藏密码" : "显示密码")
+                .disabled(target.usesExistingValue)
             }
         }
         .padding(12)
@@ -726,24 +751,31 @@ private struct CatalogAgentSecureInputSheet: View {
         )
     }
 
-    private func beginRequest() async {
-        guard let confirmed = await begin?(request.id) else {
-            startError = "安全输入请求已过期或不可用"
-            return
-        }
-        _ = confirmed
-    }
-
     private func submitSelected() {
         let targets = request.targets.filter { selectedTargets.contains($0.id) }
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else {
+            startError = "请至少选择一个字段"
+            return
+        }
+        guard targets.allSatisfy({ target in
+            target.usesExistingValue || !(values[target.fieldKey] ?? "").isEmpty
+        }) else {
+            startError = "已选字段必须填写内容"
+            return
+        }
+        startError = nil
         isSubmitting = true
+        didSubmit = true
         Task {
             await submit?(request, targets, values)
-            values.removeAll()
-            revealedFields.removeAll()
+            wipePlaintext()
             isSubmitting = false
         }
+    }
+
+    private func wipePlaintext() {
+        values.removeAll(keepingCapacity: false)
+        revealedFields.removeAll()
     }
 }
 
@@ -1746,6 +1778,20 @@ private struct SensitiveCatalogGroupSheet: View {
     @State private var isSelectingEntries = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var secretFieldCount: Int {
+        entries.reduce(into: 0) { count, entry in
+            count += entry.fields.reduce(into: 0) { fieldCount, field in
+                if field.type.isSecret {
+                    fieldCount += 1
+                }
+            }
+        }
+    }
+
+    private var headerSummary: String {
+        "条目 \(entries.count) · 密码字段 \(secretFieldCount)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
@@ -1755,7 +1801,7 @@ private struct SensitiveCatalogGroupSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(index.title)
                         .font(.title2.weight(.semibold))
-                    Text("条目 " + String(entries.count) + " · 密码字段 " + String(entries.flatMap { $0.fields }.filter { $0.type.isSecret }.count))
+                    Text(headerSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

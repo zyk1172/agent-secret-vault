@@ -242,7 +242,9 @@ public actor VaultDaemonCore {
             ),
             credentialAuthorizationTTL: configuration.credentialAuthorizationTTL,
             externalSendAuthorizationTTL: configuration.externalSendAuthorizationTTL,
-            auditLog: auditLog
+            auditLog: auditLog,
+            auditHealthURL: configuration.auditRootURL
+                .appendingPathComponent("audit-health.json", isDirectory: false)
         )
         let server = UnixSocketServer(configuration: configuration.ipcConfiguration)
         let controller = AppIPCController(
@@ -259,9 +261,9 @@ public actor VaultDaemonCore {
             handler: AppControlRequestHandler(service: services)
         )
         let lifecycleMonitor = VaultDaemonLifecycleMonitor {
+            await services.invalidateSecurityState()
             await protectionKeyStore.clearAll()
             await services.clearRevealSessions()
-            await services.invalidateSecurityState()
         }
 
         self.controller = controller
@@ -288,11 +290,17 @@ public actor VaultDaemonCore {
             return
         }
         lifecycleMonitor.stop()
+        // Invalidate the service security state before tearing down the IPC
+        // controllers.  This latches cancellation for Secure Input requests
+        // that are still awaiting authentication or Catalog I/O, while the
+        // service remains available to finish their terminal receipts.  A
+        // request already in `.committing` is intentionally allowed to finish
+        // because that state is the transaction's linearization point.
+        await services.invalidateSecurityState()
         controller.stop()
         appControlController.stop()
         await protectionKeyStore.clearAll()
         await services.clearRevealSessions()
-        await services.invalidateSecurityState()
         started = false
     }
 

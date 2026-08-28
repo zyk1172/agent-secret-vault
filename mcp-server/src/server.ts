@@ -19,7 +19,7 @@ import {
   CatalogDraftRequest,
   CatalogIndexListResult,
   CatalogMetadataPatch,
-  CatalogSecureInputTarget,
+  CatalogSecureInputStatus,
   CatalogWriteResult,
   CatalogValidationResult,
   IpcRequest,
@@ -232,7 +232,6 @@ const CatalogSecureInputRequestInput = z
     entryID: z.string().length(26),
     targets: z.array(z.object({
       fieldKey: z.string().min(1).max(128),
-      label: z.string().min(1).max(128),
       mode: z.enum(["fillPlaceholder", "replaceSecret", "convertToSecret"]),
       required: z.boolean().default(false)
     }).strict()).min(1).max(32),
@@ -240,10 +239,19 @@ const CatalogSecureInputRequestInput = z
   })
   .strict();
 
-const CatalogSecureInputCompletedOutput = z.object({
-  status: z.literal("COMPLETED"),
-  revision: z.number().int().nonnegative()
-}).strict();
+const CatalogSecureInputStatusOutput = z
+  .union([
+    z.object({
+      requestID: z.string().uuid(),
+      status: z.enum(["PENDING", "COMPLETED", "CANCELLED", "EXPIRED", "FAILED", "UNKNOWN"]),
+      revision: z.number().int().nonnegative().nullable().optional(),
+      errorCode: z.string().min(1).max(128).nullable().optional()
+    }).strict(),
+    // IPC failures are stable business outcomes, not malformed MCP calls.
+    // Keep them in structuredContent so the caller can branch on the code.
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Secure Input status or a stable Catalog error code");
 
 const CatalogBatchInput = CatalogBatchMutation;
 
@@ -1101,13 +1109,12 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       description:
         "Asks SVLT to show a local secure-input sheet for an existing Entry. The Agent supplies only field metadata and never sees plaintext. fillPlaceholder fills an empty secret field; replaceSecret replaces an existing binding after local approval; convertToSecret lets the user select an ordinary field to encrypt.",
       inputSchema: CatalogSecureInputRequestInput,
-      outputSchema: CatalogSecureInputCompletedOutput,
+      outputSchema: CatalogSecureInputStatusOutput,
       async handler(input) {
         const parsed = CatalogSecureInputRequestInput.parse(input);
-        const targets: CatalogSecureInputTarget[] = parsed.targets.map(target => ({
+        const targets = parsed.targets.map(target => ({
           entryID: parsed.entryID,
           fieldKey: target.fieldKey,
-          label: target.label,
           mode: target.mode,
           required: target.required
         }));
@@ -1117,8 +1124,27 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           targets,
           expectedRevision: parsed.expectedRevision
         });
-        if (response.type === "catalogSecureInputCompleted") {
-          return structuredResult({ status: "COMPLETED", revision: response.result.revision });
+        if (response.type === "catalogSecureInputStatus") {
+          return structuredResult(secureInputStatusResult(response.status));
+        }
+        return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_catalog_secure_input_status",
+      title: "Get Secure Input Status",
+      description:
+        "Polls a previously requested secure-input transaction by requestID. Returns only status, revision, and a stable error code; it never returns plaintext or Catalog contents.",
+      inputSchema: z.object({ requestID: z.string().uuid() }).strict(),
+      outputSchema: CatalogSecureInputStatusOutput,
+      async handler(input) {
+        const parsed = z.object({ requestID: z.string().uuid() }).strict().parse(input);
+        const response = await client.request({
+          type: "catalogSecureInputStatus",
+          requestID: parsed.requestID
+        });
+        if (response.type === "catalogSecureInputStatus") {
+          return structuredResult(secureInputStatusResult(response.status));
         }
         return structuredResult(statusOnly(response));
       }
@@ -1465,6 +1491,15 @@ function statusOnly(response: IpcResponse): Record<string, string> {
     return { status: response.code };
   }
   return { status: "UNEXPECTED_RESPONSE" };
+}
+
+function secureInputStatusResult(status: CatalogSecureInputStatus): Record<string, unknown> {
+  return {
+    requestID: status.requestID,
+    status: status.status.toUpperCase(),
+    ...(status.revision === undefined || status.revision === null ? {} : { revision: status.revision }),
+    ...(status.errorCode === undefined || status.errorCode === null ? {} : { errorCode: status.errorCode })
+  };
 }
 
 function statusFromError(error: unknown, fallback: string): string {
@@ -1847,7 +1882,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use secret_catalog_list_indices to browse all Indexes, including empty Indexes; use secret_catalog_list_entries with an indexID returned by MCP, then secret_catalog_get for one Entry. Never read selection JSON, Catalog Markdown, or Application Support sidecars to find IDs.",
       "Use secret_catalog_create_structure for one Index plus multiple safe Entries when appropriate; SVLT generates opaque IDs and returns clientKey mappings, revision, and post-commit validation.",
       "Every Agent Catalog mutation requires one exact operation-bound write request; SVLT raises macOS device-owner authentication directly, and that authentication is the user authorization for that one mutation. There is no extra App confirm button; never invent, extend, reuse, or self-approve authorization.",
-      "When an Entry needs a user-supplied password, API key, token, or another secret value, call secret_catalog_request_secure_inputs. SVLT shows a local SecureField sheet; the agent receives only the final revision and never receives plaintext.",
+      "When an Entry needs a user-supplied password, API key, token, or another secret value, call secret_catalog_request_secure_inputs. SVLT resolves field labels from the accepted Catalog, shows a local SecureField sheet, and immediately returns PENDING/requestID. Poll secret_catalog_secure_input_status until a terminal status; the agent receives only status/revision/errorCode and never receives plaintext. If the result is UNKNOWN, re-read the Catalog/revision to reconcile the outcome and never resubmit the secret automatically.",
       "Treat a controlled write as health-confirmed only when validation.status is FOUND and validation.diagnostics is empty. CREATED with CATALOG_UNAVAILABLE or another validation status may mean the commit succeeded but confirmation did not complete; do not blindly repeat the write, and use secret_catalog_validate after service recovery.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",

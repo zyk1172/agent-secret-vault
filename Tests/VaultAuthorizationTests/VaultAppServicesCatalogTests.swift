@@ -315,6 +315,51 @@ private actor CatalogApprovalRecorder: OperationApproving {
     }
 }
 
+private actor CatalogApprovalGate: OperationApproving {
+    private var started = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func approve(summary: String) async throws {
+        _ = summary
+        started = true
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !started {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private final class TestDateBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) {
+        self.value = value
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        value.addTimeInterval(interval)
+        lock.unlock()
+    }
+}
+
 private func catalogMetadataRecord(id: String, label: String = "QNAP credential") -> EncryptedRecord {
     EncryptedRecord(
         formatVersion: 2,
@@ -449,6 +494,7 @@ private struct CatalogFixture {
         directoryURL: FileManager.default.temporaryDirectory
             .appendingPathComponent("svlt-audit-health-\(UUID().uuidString)")
     )
+    let auditHealthURL = fixture.root.appendingPathComponent("audit-health.json")
     let captured = RequestCapture()
     let service = VaultAppServices(
         textEncryptor: CatalogTextEncryptor(),
@@ -458,6 +504,7 @@ private struct CatalogFixture {
         catalogAgentWriteAuthorization: fixture.agentAuthorization,
         operationApprover: CatalogApprovalRecorder(),
         auditLog: auditLog,
+        auditHealthURL: auditHealthURL,
         writeAccessNotifier: CatalogAgentWriteAccessNotifier(present: { request in
             Task { await captured.set(request) }
         })
@@ -473,9 +520,375 @@ private struct CatalogFixture {
     let result = try await task.value
     #expect(result.revision == 2)
     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+
+    // The gap is sticky across a later daemon instance and is not hidden by
+    // a subsequent successful append.
+    let restored = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        auditHealthURL: auditHealthURL
+    )
+    #expect(await restored.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
 }
 
-@Test func agentSecureInputSessionIsOneShotAndCompletesAfterLocalCommit() async throws {
+@Test func agentSecureInputSessionIsAtomicAndUsesOneDeviceOwnerApproval() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let approver = CatalogApprovalRecorder()
+    let recordStore = CatalogMetadataRecordStore(record: catalogMetadataRecord(
+        id: String(servicePasswordRef.dropFirst("secret://".count)),
+        label: "用户名凭据"
+    ))
+    let auditLog = EncryptedAuditLog(
+        directoryURL: fixture.root.appendingPathComponent("audit"),
+        auditKeyProvider: { SymmetricKey(data: Data(repeating: 0x62, count: 32)) }
+    )
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver,
+        auditLog: auditLog
+    )
+
+    let pending = try await AuditContext.$current.withValue(AuditContext(source: .agent)) {
+        try await service.requestCatalogSecureInputs(
+            entryID: serviceEntryID,
+            targets: [
+                CatalogSecureInputTargetRequest(
+                    entryID: serviceEntryID,
+                    fieldKey: "password",
+                    mode: .fillPlaceholder,
+                    required: true
+                )
+            ],
+            expectedRevision: 1
+        )
+    }
+    #expect(pending.status == .pending)
+    let id = try #require((await service.pendingCatalogSecureInputRequestIDs()).first)
+    let request = try await service.catalogSecureInputRequest(id: id)
+    #expect(request.targets.first?.label == "密码")
+    #expect(await service.catalogSecureInputStatus(requestID: id).status == .pending)
+
+    let completed = try await service.submitCatalogSecureInput(
+        id: id,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: [request.targets[0].id],
+            plaintextByFieldKey: ["password": "admin-updated"]
+        )
+    )
+    #expect(completed.status == .completed)
+    #expect(completed.revision == 2)
+    #expect(await approver.count == 1)
+    #expect(await service.pendingCatalogSecureInputRequestIDs().isEmpty)
+    #expect(await service.catalogSecureInputStatus(requestID: id).revision == 2)
+    let snapshot = try await fixture.store.snapshot()
+    let field = try #require(snapshot.document.entries[0].fields.first(where: { $0.key == "password" }))
+    #expect(field.type.isSecret)
+    #expect(field.value == nil)
+    #expect(field.secretRef == servicePasswordRef)
+    let auditEvents = try await auditLog.export()
+    #expect(Set(auditEvents.compactMap(\.requestID)) == [id])
+    await #expect(throws: SecretCatalogAgentError.invalidOperation) {
+        _ = try await service.submitCatalogSecureInput(
+            id: id,
+            submission: CatalogSecureInputSubmission(
+                selectedTargetIDs: [request.targets[0].id],
+                plaintextByFieldKey: ["username": "second"]
+            )
+        )
+    }
+}
+
+@Test func secureInputTerminalReceiptsSurviveRestartAndExpireAsUnknown() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let clock = TestDateBox(Date(timeIntervalSince1970: 1_800_000_000))
+    let receiptURL = fixture.root.appendingPathComponent("secure-input-receipts.json")
+    let recordStore = CatalogMetadataRecordStore(record: catalogMetadataRecord(
+        id: String(servicePasswordRef.dropFirst("secret://".count))
+    ))
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: CatalogApprovalRecorder(),
+        now: { clock.now() },
+        secureInputReceiptURL: receiptURL
+    )
+
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(
+            entryID: serviceEntryID,
+            fieldKey: "password",
+            mode: .fillPlaceholder,
+            required: true
+        )],
+        expectedRevision: 1
+    )
+    let request = try await service.catalogSecureInputRequest(id: pending.requestID)
+    _ = try await service.submitCatalogSecureInput(
+        id: pending.requestID,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: [request.targets[0].id],
+            plaintextByFieldKey: ["password": "persisted-receipt"]
+        )
+    )
+
+    let restored = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        now: { clock.now() },
+        secureInputReceiptURL: receiptURL
+    )
+    let restoredStatus = await restored.catalogSecureInputStatus(requestID: pending.requestID)
+    #expect(restoredStatus.status == .completed)
+    #expect(restoredStatus.revision == 2)
+
+    clock.advance(by: 15 * 60 + 1)
+    let expiredStatus = await service.catalogSecureInputStatus(requestID: pending.requestID)
+    #expect(expiredStatus.status == .unknown)
+    #expect(expiredStatus.errorCode == "SECURE_INPUT_REQUEST_UNKNOWN")
+    #expect((await restored.catalogSecureInputStatus(requestID: pending.requestID)).status == .unknown)
+}
+
+@Test func secureInputReceiptLoaderKeepsNewestDuplicateWithoutTrapping() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let clock = TestDateBox(Date(timeIntervalSince1970: 1_800_000_000))
+    let receiptURL = fixture.root.appendingPathComponent("secure-input-receipts.json")
+    let requestID = UUID()
+    let terminalAt = clock.now().timeIntervalSinceReferenceDate
+    let records: [[String: Any]] = [
+        [
+            "schemaVersion": 1,
+            "requestID": requestID.uuidString,
+            "status": "COMPLETED",
+            "revision": 1,
+            "terminalAt": terminalAt - 1
+        ],
+        [
+            "schemaVersion": 1,
+            "requestID": requestID.uuidString,
+            "status": "COMPLETED",
+            "revision": 2,
+            "terminalAt": terminalAt
+        ]
+    ]
+    try JSONSerialization.data(withJSONObject: records, options: [.sortedKeys]).write(to: receiptURL)
+
+    let restored = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        now: { clock.now() },
+        secureInputReceiptURL: receiptURL
+    )
+    let status = await restored.catalogSecureInputStatus(requestID: requestID)
+    #expect(status.status == .completed)
+    #expect(status.revision == 2)
+}
+
+@Test func agentSecureInputConvertsExistingCatalogValueWithoutDroppingIt() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let recordStore = CatalogMetadataRecordStore(record: catalogMetadataRecord(
+        id: String(servicePasswordRef.dropFirst("secret://".count)),
+        label: "本机转换测试"
+    ))
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: CatalogApprovalRecorder()
+    )
+
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [
+            CatalogSecureInputTargetRequest(
+                entryID: serviceEntryID,
+                fieldKey: "username",
+                mode: .convertToSecret,
+                required: true
+            )
+        ],
+        expectedRevision: 1
+    )
+    let request = try await service.catalogSecureInputRequest(id: pending.requestID)
+    let target = try #require(request.targets.first)
+    #expect(target.required)
+    #expect(target.usesExistingValue)
+
+    let completed = try await service.submitCatalogSecureInput(
+        id: pending.requestID,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: [target.id],
+            plaintextByFieldKey: [:]
+        )
+    )
+    #expect(completed.status == .completed)
+    let snapshot = try await fixture.store.snapshot()
+    let field = try #require(snapshot.document.entries[0].fields.first(where: { $0.key == "username" }))
+    #expect(field.type == .secret)
+    #expect(field.value == nil)
+    #expect(field.secretRef == servicePasswordRef)
+}
+
+@Test func agentSecureInputAuthorizesFinalReplaceSecretDiffAfterNewReferenceExists() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let original = serviceDocument()
+    let originalEntry = try #require(original.entries.first)
+    let entryWithSecret = SecretCatalogEntry(
+        id: originalEntry.id,
+        indexId: originalEntry.indexId,
+        title: originalEntry.title,
+        type: originalEntry.type,
+        aliases: originalEntry.aliases,
+        endpoints: originalEntry.endpoints,
+        fields: originalEntry.fields.map { field in
+            guard field.key == "password" else { return field }
+            return SecretCatalogFieldValue(
+                key: field.key,
+                label: field.label,
+                type: field.type,
+                agentVisible: field.agentVisible,
+                searchable: field.searchable,
+                value: nil,
+                secretRef: servicePasswordRef
+            )
+        },
+        notes: originalEntry.notes,
+        tags: originalEntry.tags,
+        schema: originalEntry.schema
+    )
+    _ = try await fixture.store.canonicalWrite(
+        SecretCatalogDocument(indexes: original.indexes, entries: [entryWithSecret]),
+        expectedRevision: 1
+    )
+
+    let approver = CatalogApprovalRecorder()
+    let recordStore = CatalogMetadataRecordStore(records: [
+        catalogMetadataRecord(id: String(servicePasswordRef.dropFirst("secret://".count))),
+        catalogMetadataRecord(id: String(servicePrivateKeyRef.dropFirst("secret://".count)), label: "新密码")
+    ])
+    let service = VaultAppServices(
+        textEncryptor: CatalogReplacementEncryptor(reference: servicePrivateKeyRef),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(
+            entryID: serviceEntryID,
+            fieldKey: "password",
+            mode: .replaceSecret,
+            required: true
+        )],
+        expectedRevision: 2
+    )
+    let request = try await service.catalogSecureInputRequest(id: pending.requestID)
+    let completed = try await service.submitCatalogSecureInput(
+        id: pending.requestID,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: [request.targets[0].id],
+            plaintextByFieldKey: ["password": "rotated-password"]
+        )
+    )
+    #expect(completed.status == .completed)
+    #expect(await approver.count == 1)
+    let snapshot = try await fixture.store.snapshot()
+    #expect(snapshot.document.entries[0].fields.first(where: { $0.key == "password" })?.secretRef == servicePrivateKeyRef)
+}
+
+@Test func concurrentSecureInputRequestsForSameEntryAreRevisionBound() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let approver = CatalogApprovalRecorder()
+    let recordStore = CatalogMetadataRecordStore(record: catalogMetadataRecord(
+        id: String(servicePasswordRef.dropFirst("secret://".count))
+    ))
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approver
+    )
+    let first = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(entryID: serviceEntryID, fieldKey: "password", mode: .fillPlaceholder)],
+        expectedRevision: 1
+    )
+    let second = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(entryID: serviceEntryID, fieldKey: "password", mode: .fillPlaceholder)],
+        expectedRevision: 1
+    )
+    let firstRequest = try await service.catalogSecureInputRequest(id: first.requestID)
+    let secondRequest = try await service.catalogSecureInputRequest(id: second.requestID)
+
+    async let firstResult = service.submitCatalogSecureInput(
+        id: first.requestID,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: [firstRequest.targets[0].id],
+            plaintextByFieldKey: ["password": "first"]
+        )
+    )
+    async let secondResult = service.submitCatalogSecureInput(
+        id: second.requestID,
+        submission: CatalogSecureInputSubmission(
+            selectedTargetIDs: [secondRequest.targets[0].id],
+            plaintextByFieldKey: ["password": "second"]
+        )
+    )
+    var results: [Result<CatalogSecureInputStatus, Error>] = []
+    do {
+        results.append(.success(try await firstResult))
+    } catch {
+        results.append(.failure(error))
+    }
+    do {
+        results.append(.success(try await secondResult))
+    } catch {
+        results.append(.failure(error))
+    }
+    let completedCount = results.compactMap { result -> CatalogSecureInputStatus? in
+        guard case let .success(status) = result else { return nil }
+        return status.status == .completed ? status : nil
+    }.count
+    #expect(completedCount == 1)
+    #expect(await approver.count == 2)
+    let snapshot = try await fixture.store.snapshot()
+    #expect(snapshot.revision == 2)
+}
+
+@Test func staleGenericCatalogEditorCannotCommitWhileSecureInputIsPending() async throws {
     let fixture = try await CatalogFixture()
     defer { fixture.cleanup() }
     let service = VaultAppServices(
@@ -485,44 +898,98 @@ private struct CatalogFixture {
         catalogSelectionManifestURL: fixture.selectionURL,
         catalogAgentWriteAuthorization: fixture.agentAuthorization
     )
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(entryID: serviceEntryID, fieldKey: "password", mode: .fillPlaceholder)],
+        expectedRevision: 1
+    )
+    let snapshot = try await fixture.store.snapshot()
+    let entry = try #require(snapshot.document.entries.first)
 
-    let agentTask = Task {
-        try await AuditContext.$current.withValue(AuditContext(source: .agent)) {
-            try await service.requestCatalogSecureInputs(
-                entryID: serviceEntryID,
-                targets: [
-                    CatalogSecureInputTarget(
-                        entryID: serviceEntryID,
-                        fieldKey: "username",
-                        label: "用户名",
-                        mode: .convertToSecret
-                    )
-                ],
-                expectedRevision: 1
-            )
-        }
-    }
-
-    var requestID: UUID?
-    for _ in 0..<100 {
-        let ids = await service.pendingCatalogSecureInputRequestIDs()
-        if let id = ids.first {
-            requestID = id
-            break
-        }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    let id = try #require(requestID)
-    let request = try await service.beginCatalogSecureInputCommit(id: id)
-    #expect(request.entryID == serviceEntryID)
     await #expect(throws: SecretCatalogAgentError.invalidOperation) {
-        _ = try await service.beginCatalogSecureInputCommit(id: id)
+        _ = try await service.catalogCommitEntryEdit(
+            entry,
+            secretInputs: [CatalogSecretInput(key: "password", label: "密码", plaintext: "stale")],
+            expectedRevision: 1
+        )
     }
+    #expect(await service.catalogSecureInputStatus(requestID: pending.requestID).status == .pending)
+    #expect(try await fixture.store.snapshot().revision == 1)
+}
 
-    await service.completeCatalogSecureInput(id: id, completion: CatalogSecureInputCompletion(revision: 2))
-    let completion = try await agentTask.value
-    #expect(completion.revision == 2)
+@Test func cancellingSecureInputDuringAuthenticationPreventsLateCommit() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let approvalGate = CatalogApprovalGate()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        operationApprover: approvalGate
+    )
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(
+            entryID: serviceEntryID,
+            fieldKey: "password",
+            mode: .fillPlaceholder,
+            required: true
+        )],
+        expectedRevision: 1
+    )
+
+    let submitTask = Task {
+        try await service.submitCatalogSecureInput(
+            id: pending.requestID,
+            submission: CatalogSecureInputSubmission(
+                selectedTargetIDs: [serviceEntryID + ":password"],
+                plaintextByFieldKey: ["password": "late-input"]
+            )
+        )
+    }
+    await approvalGate.waitUntilStarted()
+    await service.cancelCatalogSecureInput(id: pending.requestID)
+    await approvalGate.release()
+
+    do {
+        _ = try await submitTask.value
+        Issue.record("cancelled Secure Input unexpectedly committed")
+    } catch {
+        #expect(error is SecretCatalogAgentError)
+    }
+    #expect(await service.catalogSecureInputStatus(requestID: pending.requestID).status == .cancelled)
+    #expect(try await fixture.store.snapshot().revision == 1)
+}
+
+@Test func invalidatingSecurityStateCancelsAwaitingSecureInput() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization
+    )
+    let pending = try await service.requestCatalogSecureInputs(
+        entryID: serviceEntryID,
+        targets: [CatalogSecureInputTargetRequest(
+            entryID: serviceEntryID,
+            fieldKey: "password",
+            mode: .fillPlaceholder,
+            required: true
+        )],
+        expectedRevision: 1
+    )
+
+    await service.invalidateSecurityState()
+
     #expect(await service.pendingCatalogSecureInputRequestIDs().isEmpty)
+    let status = await service.catalogSecureInputStatus(requestID: pending.requestID)
+    #expect(status.status == .cancelled)
+    #expect(status.errorCode == "SECURE_INPUT_CANCELLED")
 }
 
 private struct ExternalCatalogAdoptionFixture {

@@ -77,8 +77,11 @@ git diff --check
 Create a distributable zip:
 
 ```bash
-./scripts/package-release.sh
+SVLT_SIGNING_IDENTITY='Developer ID Application: ...' ./scripts/package-release.sh
 ```
+
+Release signing deliberately requires `SVLT_SIGNING_IDENTITY` from the local
+keychain; the project does not embed an individual developer certificate.
 
 To inspect the idle background process after installation:
 

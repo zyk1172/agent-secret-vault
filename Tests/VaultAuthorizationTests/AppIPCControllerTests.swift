@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 import VaultAuthorization
 import VaultCore
@@ -35,6 +36,22 @@ import VaultService
     #expect(json.contains("/tmp/asv.sock"))
     #expect(!json.contains("capability"))
     #expect(!json.contains("token"))
+}
+
+@Test func appControlPeerAuthenticatorPinsTheExpectedBundleAndTeam() throws {
+    #expect(AppControlPeerAuthenticator.svltBundleIdentifier == "com.agent-secret-vault.SVLT")
+    #expect(AppControlPeerAuthenticator.svltTeamIdentifier == "9KXSB4HR69")
+    #expect(AppControlPeerAuthenticator.svltDesignatedRequirement.contains(AppControlPeerAuthenticator.svltBundleIdentifier))
+    #expect(AppControlPeerAuthenticator.svltDesignatedRequirement.contains(AppControlPeerAuthenticator.svltTeamIdentifier))
+
+    var requirement: SecRequirement?
+    #expect(
+        SecRequirementCreateWithString(
+            AppControlPeerAuthenticator.svltDesignatedRequirement as CFString,
+            SecCSFlags(),
+            &requirement
+        ) == errSecSuccess
+    )
 }
 
 @Test func appIPCControllerHandlesAuthenticatedFrames() async throws {
@@ -107,7 +124,11 @@ import VaultService
 }
 
 @Test func appControlIPCUsesRealCatalogStoreAndHMACPathForEntryCreation() async throws {
-    let root = URL(fileURLWithPath: "/tmp/svlt-app-control-\(UUID().uuidString.prefix(8))")
+    // Use the runner-provided per-user temporary volume rather than the
+    // shared /tmp mount; hosted macOS runners can service the latter through
+    // a provider overlay and trip the Catalog bounded-read timeout.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-app-control-\(UUID().uuidString.prefix(8))", isDirectory: true)
     let ipcRoot = root.appendingPathComponent("ipc", isDirectory: true)
     let documentURL = root.appendingPathComponent("敏感信息.md")
     let selectionURL = root.appendingPathComponent("selection.json")

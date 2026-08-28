@@ -13,6 +13,12 @@ public enum AppControlIPCControllerError: Error, Equatable, Sendable {
 /// peer PID and macOS code-signing identity rather than the shared MCP token.
 public struct AppControlPeerAuthenticator: @unchecked Sendable {
     public static let svltBundleIdentifier = "com.agent-secret-vault.SVLT"
+    /// The Team ID is part of the designated requirement. Checking only the
+    /// bundle identifier would allow another developer-signed binary with the
+    /// same identifier to connect to the privileged App-control socket.
+    public static let svltTeamIdentifier = "9KXSB4HR69"
+    public static let svltDesignatedRequirement =
+        #"identifier "com.agent-secret-vault.SVLT" and anchor apple generic and certificate leaf[subject.OU] = "9KXSB4HR69""#
 
     private let validator: @Sendable (Int32) -> Bool
 
@@ -86,6 +92,18 @@ public struct AppControlPeerAuthenticator: @unchecked Sendable {
         var staticCode: SecStaticCode?
         guard SecCodeCopyStaticCode(guestCode, SecCSFlags(), &staticCode) == errSecSuccess,
               let staticCode
+        else {
+            return false
+        }
+
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(
+            svltDesignatedRequirement as CFString,
+            SecCSFlags(),
+            &requirement
+        ) == errSecSuccess,
+        let requirement,
+        SecStaticCodeCheckValidity(staticCode, SecCSFlags(), requirement) == errSecSuccess
         else {
             return false
         }

@@ -15,7 +15,14 @@ ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh buil
 git diff --check
 git status --short
 ./scripts/check-agent-resources.sh # after installing/running the release
+# Real release-installed Secure Input E2E (manual Touch ID/password; no plaintext output)
+SVLT_RELEASE_APP=/Applications/SVLT.app ./scripts/release-e2e.sh
 ```
+
+For a signed release package, provide the identity explicitly, for example:
+`SVLT_SIGNING_IDENTITY='Developer ID Application: ...' ./scripts/package-release.sh`.
+The project keeps the Team ID pin for AppControl verification but never stores
+an individual certificate identity in source control.
 
 ## Acceptance criteria
 
@@ -37,6 +44,9 @@ git status --short
 16. Obsidian search does not index revealed plaintext.
 17. Context-leak warnings trigger for password, token, API key, and 银行卡 candidates.
 18. Plaintext canary scans include the shipped Obsidian plugin bundle at `obsidian-plugin/svlt/main.js`.
+19. Secure Input starts as `PENDING/requestID`, uses one device-owner authentication, and reaches a terminal status only after final semantic diff/policy and atomic Catalog commit.
+20. Audit append health is sticky across a later successful append and daemon restart (`lastFailureAt`, `gapDetected`, and `lastSuccessfulSequence` remain observable through the safe health code).
+21. The release-installed App and embedded `SVLTAgent` verify against the pinned Team ID before the manual E2E begins.
 
 ## Manual checks
 
@@ -47,3 +57,5 @@ git status --short
   observation, compromised signed binaries, or compromised developer signing
   identity.
 - Verify no feature exposes bulk plaintext export.
+- Complete `docs/testing/catalog-v3-obsidian-e2e.md`, including the isolated
+  `test-artifacts/release-e2e/` run and explicit Touch ID/password evidence.

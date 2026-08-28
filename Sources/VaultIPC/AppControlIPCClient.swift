@@ -57,15 +57,13 @@ public actor AppControlIPCClient {
         return request
     }
 
-    public func beginCatalogSecureInputCommit(id: UUID) async throws -> CatalogAgentSecureInputRequest {
-        let response = try await send(.catalogBeginSecureInputCommit(id: id))
-        guard case let .catalogSecureInputRequest(request) = response else { throw unexpected(response) }
-        return request
-    }
-
-    public func completeCatalogSecureInput(id: UUID, completion: CatalogSecureInputCompletion) async throws {
-        let response = try await send(.catalogCompleteSecureInput(id: id, completion: completion))
-        guard case .operationCompleted = response else { throw unexpected(response) }
+    public func submitCatalogSecureInput(
+        id: UUID,
+        submission: CatalogSecureInputSubmission
+    ) async throws -> CatalogSecureInputStatus {
+        let response = try await send(.catalogSubmitSecureInput(id: id, submission: submission))
+        guard case let .catalogSecureInputStatus(status) = response else { throw unexpected(response) }
+        return status
     }
 
     public func cancelCatalogSecureInput(id: UUID) async throws {
