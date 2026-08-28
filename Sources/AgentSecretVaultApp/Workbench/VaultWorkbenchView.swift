@@ -2728,6 +2728,11 @@ private struct SensitiveCatalogEntryRow: View {
         }
         .padding(.horizontal, Metrics.horizontalPadding)
         .padding(.vertical, Metrics.verticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            showingDetails = true
+        }
     }
 
     private var entryDetails: some View {

@@ -31,6 +31,7 @@ import Testing
     #expect(source.contains("填写密码"))
     #expect(!source.contains("minHeight: 132"))
     #expect(source.contains("contentShape(Rectangle())"))
+    #expect(source.contains(".contentShape(Rectangle())\n        .onTapGesture {\n            showingDetails = true\n        }"))
     #expect(!source.contains("复制 Entry ID"))
     #expect(!source.contains("entryAdvancedMenu"))
     #expect(source.contains("Image(systemName: \"pencil\")"))
