@@ -329,6 +329,17 @@ import VaultCore
     #expect(source.contains("Button(\"关闭\")"))
     #expect(!source.contains(".toolbar"))
     #expect(source.contains("prompt: Text(\"输入密码\").foregroundStyle(.orange)"))
+
+    guard let pendingStart = source.range(of: "struct PendingSecretFillCard"),
+          let auditPreviewStart = source.range(of: "struct CompactAuditPreviewCard")
+    else {
+        Issue.record("pending secret fill card not found")
+        return
+    }
+    let pendingCard = source[pendingStart.lowerBound..<auditPreviewStart.lowerBound]
+    #expect(pendingCard.contains("@State private var isPlaintextVisible = true"))
+    #expect(pendingCard.contains("TextField("))
+    #expect(pendingCard.contains("Image(systemName: isPlaintextVisible ? \"eye.slash\" : \"eye\")"))
 }
 
 @MainActor @Test func overviewHostingFitsMinimumAndDefaultWindowWithAndWithoutPendingSecret() throws {

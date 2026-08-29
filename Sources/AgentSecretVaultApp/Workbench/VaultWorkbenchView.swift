@@ -1715,6 +1715,7 @@ struct PendingSecretFillCard: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var plaintext = ""
+    @State private var isPlaintextVisible = true
     @State private var isSubmitting = false
     @State private var errorMessage: String?
 
@@ -1745,13 +1746,37 @@ struct PendingSecretFillCard: View {
                 }
 
                 HStack(spacing: 10) {
-                    SecureField(
-                        text: $plaintext,
-                        prompt: Text("输入密码").foregroundStyle(.orange)
-                    ) {
-                        Text("密码")
+                    Group {
+                        if isPlaintextVisible {
+                            TextField(
+                                text: $plaintext,
+                                prompt: Text("输入密码").foregroundStyle(.orange)
+                            ) {
+                                Text("密码")
+                            }
+                        } else {
+                            SecureField(
+                                text: $plaintext,
+                                prompt: Text("输入密码").foregroundStyle(.orange)
+                            ) {
+                                Text("密码")
+                            }
+                        }
                     }
                         .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("待填写密码")
+
+                    Button {
+                        isPlaintextVisible.toggle()
+                    } label: {
+                        Image(systemName: isPlaintextVisible ? "eye.slash" : "eye")
+                            .frame(width: 20, height: 20)
+                    }
+                        .buttonStyle(.borderless)
+                        .help(isPlaintextVisible ? "隐藏明文" : "显示明文")
+                        .accessibilityLabel(isPlaintextVisible ? "隐藏密码" : "显示密码")
+                        .disabled(isSubmitting)
+
                     Button(isSubmitting ? "加密中…" : "填写并加密") { submit() }
                         .buttonStyle(.borderedProminent)
                         .disabled(isSubmitting || plaintext.isEmpty || commit == nil)
