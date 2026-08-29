@@ -924,6 +924,7 @@ struct WorkbenchOverviewContent: View {
                 )
                 .layoutPriority(1)
                 .workbenchOverviewSection(.pending)
+                .padding(.bottom, 12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

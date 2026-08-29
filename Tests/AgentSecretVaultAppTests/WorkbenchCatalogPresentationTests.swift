@@ -302,6 +302,7 @@ import VaultCore
     #expect(overview.contains("idealHeight: 140"))
     #expect(overview.contains(".layoutPriority(1)"))
     #expect(!overview.contains("CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)\n                .layoutPriority(1)"))
+    #expect(overview.contains(".workbenchOverviewSection(.pending)\n                .padding(.bottom, 12)"))
     #expect(!overview.contains("PendingSecretFillCard(\n                    pending: pending,\n                    entry: pendingEntry,\n                    commit: commitCatalogEntryEdit\n                )\n                .fixedSize"))
 }
 
@@ -413,6 +414,7 @@ import VaultCore
             let pendingFrame = try #require(probe.frames[.pending])
             #expect(pendingFrame.height >= 119)
             #expect(pendingFrame.height <= 171)
+            #expect(pendingFrame.maxY <= configuration.size.height - 11)
         }
         let activityFrame = try #require(probe.frames[.activity])
         #expect(activityFrame.height >= 159)
