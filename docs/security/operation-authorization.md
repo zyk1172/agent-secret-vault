@@ -12,7 +12,10 @@ opaque descriptor
   -> SecretOperationPolicyEngine
   -> max(agentRisk, localRisk)
   -> silent | approvalRequired | denied
-  -> only then resolve and execute
+  -> capability preflight
+  -> exact device-owner approval or scoped execution lease
+  -> latest policy check
+  -> resolve and execute
 ```
 
 `AgentRiskAssessment` 只有审计和辅助作用。它可以把风险提高，不能把本地判断出的审批或拒绝降级。
@@ -46,9 +49,16 @@ Secret metadata 支持 `allowedDestinations` 和 `allowedProtocols`。目的地�
 
 批准完成后，服务只消费与原描述符完全匹配的票据。修改 Secret、目标、命令、URL、HTTP method 或文件目标都会使旧票据失效；消费后不能 replay。
 
+对可执行的 `approvalRequired` 操作，设备认证完成后最多建立一个固定 300 秒的
+内存 lease。Lease 绑定调用主体、完整的 `secret://` 引用集合、规范化目标和端口、
+协议、执行动作类型以及 security generation；它不是全局授权。每个后续请求仍会
+先做 executor capability preflight，再重新读取 metadata 和执行策略；策略拒绝、
+不支持、失败或安全状态失效都不会留下可复用 lease。Lease 有效期使用 monotonic
+clock，墙上时间只用于审计展示。
+
 ## 明文边界
 
-低风险解密发生在 `SVLTAgent` 的进程内。MCP 只发送 `SecretOperationDescriptor`，其中包含不透明 `secret://` 引用和非敏感参数；MCP 不使用 `restoreReferences` 获取明文。专用 executor 只返回脱敏结果，并拒绝把 SVLT 派生 Secret 传入通用 shell、CLI 参数、环境变量、URL query 和日志。用户独立提供的明文不由 SVLT 与 `secret://` 做值比较，但仍受选定工具、仓库和工作区安全规则约束。
+低风险解密发生在 `SVLTAgent` 的进程内。MCP 只发送 `SecretOperationDescriptor`，其中包含不透明 `secret://` 引用和非敏感参数；普通 Agent IPC 的类型和响应中不存在 `restoreReferences`、`RestoredParagraph` 或其他明文返回形状。需要本地 UI 明文的 session reveal、Catalog 字段 reveal 和 restore 只通过额外的、经过代码签名身份校验的 App-control socket 传输。专用 executor 只返回脱敏结果，并拒绝把 SVLT 派生 Secret 传入通用 shell、CLI 参数、环境变量、URL query 和日志。用户独立提供的明文不由 SVLT 与 `secret://` 做值比较，但仍受选定工具、仓库和工作区安全规则约束。
 
 危险操作的认证使用 macOS `deviceOwnerAuthentication`，由系统选择 Touch ID 或登录密码 fallback。审批提示只显示动作、目标、Secret label 和风险原因，不显示 Secret 内容。
 

@@ -78,8 +78,6 @@ public protocol WorkbenchServicing: Sendable {
     func deleteRecord(_ reference: String) async throws
     func authorizeHighRisk(reason: String) async throws
     func openRevealSession(references: [String], context: RevealContext) async throws -> String
-    func revealSessionData(sessionID: String) async throws -> RestoredParagraph
-    func restoreReferences(references: [String], context: RevealContext) async throws -> String
     func exportResolvedText(references: [String], context: RevealContext, destinationPath: String) async throws -> String
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult
     func clearRevealSessions() async
@@ -229,10 +227,6 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
-    func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
-        throw IPCRequestHandlerError.unsupportedRequest
-    }
-
     func deleteRecord(_ reference: String) async throws {
         throw IPCRequestHandlerError.unsupportedRequest
     }
@@ -256,8 +250,11 @@ public struct IPCRequestHandler: Sendable {
         self.service = service
     }
 
-    public func handle(_ request: IPCRequest) async throws -> IPCResponse {
-        let context = AuditContext(source: .agent)
+    public func handle(
+        _ request: IPCRequest,
+        principal: String = AuditSource.agent.rawValue
+    ) async throws -> IPCResponse {
+        let context = AuditContext(source: .agent, principal: principal)
         return try await AuditContext.$current.withValue(context) {
             await service.recordPluginActivity()
             return try await handleInContext(request)
@@ -370,10 +367,6 @@ public struct IPCRequestHandler: Sendable {
         case let .authorizeHighRisk(reason):
             try await service.authorizeHighRisk(reason: reason)
             return .authorizationApproved
-        case let .revealSessionData(sessionID):
-            // Native App UI control-plane request. MCP/Obsidian schemas do not
-            // expose this case; their reveal path receives only a session ID.
-            return .revealSessionData(try await service.revealSessionData(sessionID: sessionID))
         case .lock:
             await service.invalidateSecurityState()
             return .operationCompleted
@@ -400,8 +393,6 @@ public struct IPCRequestHandler: Sendable {
         case let .revealReferences(references, context):
             let sessionID = try await service.openRevealSession(references: references, context: context)
             return .revealSessionOpened(sessionID: sessionID)
-        case let .restoreReferences(references, context):
-            return .restoredText(try await service.restoreReferences(references: references, context: context))
         case let .exportResolvedText(references, context, destinationPath):
             let path = try await service.exportResolvedText(
                 references: references,

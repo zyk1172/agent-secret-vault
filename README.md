@@ -226,9 +226,14 @@ must never be returned to the agent.
 - Bound read-only SSH/HTTP/database/SFTP operations can run silently. An
   eligible purpose-built Agent execution whose policy result is
   `approvalRequired` may use one fresh device-owner approval to open a fixed,
-  non-sliding 300-second in-memory execution window. Every request still
-  re-evaluates the current local policy; destinations that remain denied stay
-  denied.
+  non-sliding 300-second in-memory execution window. The window is scoped to
+  the calling Agent process, exact secret references, normalized destination
+  and port, protocol, action family, and security generation; it is not a
+  global execution gate. Every request still re-evaluates the current local
+  policy; destinations that remain denied stay denied.
+- The ordinary Agent IPC type and transport contain no plaintext-bearing
+  response. Session reveal and Catalog plaintext responses are available only
+  through the separately authenticated, code-signed App-control socket.
 - Plaintext reveal/copy/export, deletes, security-setting changes, and Catalog
   Agent writes never use the execution window. They retain their own exact,
   one-shot `ApprovalTicket` authorization boundary.

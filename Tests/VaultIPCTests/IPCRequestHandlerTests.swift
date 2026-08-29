@@ -38,7 +38,6 @@ private func handlerCatalogMatch() -> SecretCatalogMatch {
 private actor SpyWorkbenchService: WorkbenchServicing {
     var encryptCalls: [String] = []
     var revealCalls: [[String]] = []
-    var restoreCalls: [[String]] = []
     var exportCalls: [(references: [String], destinationPath: String)] = []
     var searchCalls: [(query: String, field: SecretCatalogField?, limit: Int)] = []
 
@@ -66,11 +65,6 @@ private actor SpyWorkbenchService: WorkbenchServicing {
         return "session-1"
     }
 
-    func restoreReferences(references: [String], context: RevealContext) async throws -> String {
-        restoreCalls.append(references)
-        return "restored plaintext"
-    }
-
     func exportResolvedText(
         references: [String],
         context: RevealContext,
@@ -95,22 +89,6 @@ private actor SpyWorkbenchService: WorkbenchServicing {
             matches: [handlerCatalogMatch()]
         )
     }
-}
-
-@Test func handlerReturnsRestoredTextOnlyForExplicitRestoreRequests() async throws {
-    let service = SpyWorkbenchService()
-    let handler = IPCRequestHandler(service: service)
-
-    let response = try await handler.handle(.restoreReferences(
-        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
-        context: RevealContext(
-            reason: "Restore current paragraph",
-            template: "Token: {{0}}",
-            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
-        )
-    ))
-
-    #expect(response == .restoredText("restored plaintext"))
 }
 
 @Test func handlerReturnsOnlyExportPathForLocalFileExports() async throws {

@@ -112,7 +112,6 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .authorizeHighRisk(reason: "delete record"),
         .lock,
         .clearRevealSessions,
-        .revealSessionData(sessionID: "session-1"),
         .reveal(reference: "secret://0123456789ABCDEFGHJKMNPQRS", reason: "show to user"),
         .encrypt(label: "api token", policy: .externalSend),
         .encryptBound(
@@ -120,14 +119,6 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             policy: .credential,
             allowedDestinations: ["qnap.local", "192.168.2.240"],
             allowedProtocols: ["ssh", "https"]
-        ),
-        .restoreReferences(
-            references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
-            context: RevealContext(
-                reason: "restore",
-                template: "{{0}}",
-                ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
-            )
         ),
         .exportResolvedText(
             references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
@@ -186,6 +177,28 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
     #expect(encoded?["id"] == nil)
 }
 
+@Test func normalIPCRejectsLegacyPlaintextWireCases() throws {
+    let legacyRequests = [
+        Data(#"{"type":"revealSessionData","sessionID":"session-1"}"#.utf8),
+        Data(#"{"type":"restoreReferences","references":["secret://0123456789ABCDEFGHJKMNPQRS"],"context":{"reason":"restore","template":"{{0}}","ranges":[]}}"#.utf8)
+    ]
+    for payload in legacyRequests {
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(IPCRequest.self, from: payload)
+        }
+    }
+
+    let legacyResponses = [
+        Data(#"{"type":"revealSessionData","paragraph":{"text":"legacy","values":["legacy"]}}"#.utf8),
+        Data(#"{"type":"restoredText","text":"legacy"}"#.utf8)
+    ]
+    for payload in legacyResponses {
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(IPCResponse.self, from: payload)
+        }
+    }
+}
+
 @Test func responseJSONRoundTripsEveryCase() throws {
     let responses: [IPCResponse] = [
         .status(locked: false),
@@ -234,7 +247,6 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         )),
         .displayedToUser,
         .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
-        .restoredText("restored value"),
         .exported(path: "/Users/example/Desktop/token.md"),
         .execution(.completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "")),
         .execution(.quarantined(reason: .binaryOutput)),
@@ -407,8 +419,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .operationCompleted,
         .authorizationApproved,
         .savedReferences([]),
-        .revealSessionIDs(["session-1"]),
-        .revealSessionData(RestoredParagraph(text: "redacted", values: []))
+        .revealSessionIDs(["session-1"])
     ]
     for response in responses {
         let encoded = try JSONEncoder().encode(response)

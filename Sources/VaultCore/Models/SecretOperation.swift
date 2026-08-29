@@ -87,6 +87,7 @@ public enum SecretOperationError: Error, Equatable, Sendable {
     case authorizationDenied
     case authorizationTimeout
     case authorizationUnavailable
+    case actionExecutorUnavailable
     case actionExecutionFailed
     case redirectRequiresReview
     case outputQuarantined
@@ -103,6 +104,8 @@ public enum SecretOperationError: Error, Equatable, Sendable {
             return "AUTHORIZATION_TIMEOUT"
         case .authorizationUnavailable:
             return "AUTHORIZATION_UNAVAILABLE"
+        case .actionExecutorUnavailable:
+            return "ACTION_EXECUTOR_UNAVAILABLE"
         case .actionExecutionFailed:
             return "ACTION_EXECUTION_FAILED"
         case .redirectRequiresReview:

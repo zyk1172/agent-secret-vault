@@ -30,11 +30,25 @@ import VaultIPC
     #expect(statuses.map(\.approvalPending) == [true, false])
 }
 
+@Test func executionApprovalExplainsItsScopedReuseWindow() async throws {
+    let fixture = try await OperationServiceFixture(approval: .allow)
+    defer { fixture.remove() }
+
+    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+
+    let summary = await fixture.approver.summaries.first ?? ""
+    #expect(summary.contains("复用最多 300 秒"))
+    #expect(summary.contains("不会授权其他凭据、目标或协议"))
+}
+
 @Test func eligibleSecretOperationsReuseExecutionAuthorizationUntilExpiry() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 3_000)
     let clock = ServiceTestClock(start)
+    let monotonicStart: UInt64 = 20_000_000_000
+    clock.monotonicNow = monotonicStart
     let authorizationSession = AuthorizationSession(
         executionTTL: 300,
+        monotonicNow: { clock.monotonicNow },
         now: { clock.now }
     )
     let fixture = try await OperationServiceFixture(
@@ -44,9 +58,11 @@ import VaultIPC
     defer { fixture.remove() }
 
     _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
-    let firstExpiration = await authorizationSession.executionAuthorizationExpiresAt()
+    let scope = fixture.executionScope()
+    let firstExpiration = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
 
     clock.now = start.addingTimeInterval(299.999)
+    clock.monotonicNow = monotonicStart + 299_999_000_000
     _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "systemctl restart app"))
 
     #expect(firstExpiration == start.addingTimeInterval(300))
@@ -57,11 +73,12 @@ import VaultIPC
     #expect(authorizationModes.contains(.executionWindowReuse))
 
     clock.now = start.addingTimeInterval(300)
+    clock.monotonicNow = monotonicStart + 300_000_000_000
     _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
 
     #expect(await fixture.approver.count == 2)
     #expect(await fixture.executor.count == 3)
-    #expect(await authorizationSession.executionAuthorizationExpiresAt() == start.addingTimeInterval(600))
+    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == start.addingTimeInterval(600))
 }
 
 @Test func concurrentEligibleOperationsShareOneApproval() async throws {
@@ -87,6 +104,87 @@ import VaultIPC
     #expect(outputs.count == 3)
     #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 3)
+}
+
+@Test func concurrentOperationsWithDisabledExecutionWindowDoNotShareApproval() async throws {
+    let fixture = try await OperationServiceFixture(
+        approval: .delayed,
+        authorizationSession: AuthorizationSession(executionTTL: 0)
+    )
+    defer { fixture.remove() }
+
+    let outputs = try await withThrowingTaskGroup(of: SecretOperationOutput.self) { group in
+        for command in ["reboot", "systemctl restart app", "docker restart api"] {
+            group.addTask {
+                try await fixture.service.performSecretOperation(fixture.ssh(command: command))
+            }
+        }
+
+        var outputs: [SecretOperationOutput] = []
+        for try await output in group {
+            outputs.append(output)
+        }
+        return outputs
+    }
+
+    #expect(outputs.count == 3)
+    #expect(await fixture.approver.count == 3)
+    #expect(await fixture.executor.count == 3)
+}
+
+@Test func executionAuthorizationIsBoundToTheCallingAgentPrincipal() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    _ = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: "agent-peer-one")
+    ) {
+        try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+    }
+    _ = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: "agent-peer-two")
+    ) {
+        try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+    }
+
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+}
+
+@Test func unavailableExecutorIsRejectedBeforeApprovalAndCannotPrimeLease() async throws {
+    let fixture = try await OperationServiceFixture(
+        executorCapability: .unavailable
+    )
+    defer { fixture.remove() }
+
+    do {
+        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        Issue.record("Expected unavailable executor, but operation succeeded.")
+    } catch let error as SecretOperationError {
+        #expect(error == .actionExecutorUnavailable)
+    }
+
+    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.executor.count == 0)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+}
+
+@Test func legacyUnavailableExecutorStatusIsNotAuditedAsCompleted() async throws {
+    let fixture = try await OperationServiceFixture(
+        executorStatus: "ACTION_EXECUTOR_UNAVAILABLE"
+    )
+    defer { fixture.remove() }
+
+    do {
+        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        Issue.record("Expected unavailable executor, but operation succeeded.")
+    } catch let error as SecretOperationError {
+        #expect(error == .actionExecutorUnavailable)
+    }
+
+    let entries = await fixture.auditEntries()
+    #expect(entries.last?.result == "不可用")
+    #expect(entries.last?.authorizationMode == .freshLocalApproval)
 }
 
 @Test func securityInvalidationCancelsPendingExecutionApproval() async throws {
@@ -115,7 +213,7 @@ import VaultIPC
     await fixture.service.invalidateSecurityState()
 
     #expect(await operation.value == .authorizationCancelled)
-    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization() == false)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
     #expect(await fixture.executor.count == 0)
 }
 
@@ -177,6 +275,36 @@ import VaultIPC
 
     #expect(await operation.value == .operationDenied)
     #expect(await fixture.executor.count == 0)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+}
+
+@Test func securityInvalidationCancelsAnInFlightSecretExecutor() async throws {
+    let fixture = try await OperationServiceFixture(blockExecution: true)
+    defer { fixture.remove() }
+
+    let operation = Task { () -> SecretOperationError? in
+        do {
+            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+            return nil
+        } catch let error as SecretOperationError {
+            return error
+        } catch {
+            return .actionExecutionFailed
+        }
+    }
+
+    for _ in 0..<100 {
+        if await fixture.executor.count == 1 {
+            break
+        }
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(await fixture.executor.count == 1)
+
+    await fixture.service.invalidateSecurityState()
+
+    #expect(await operation.value == .authorizationCancelled)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
 }
 
 @Test func cancelledApprovalIsReturnedAsStableStatus() async throws {
@@ -234,14 +362,16 @@ private actor ApprovalRecorder: OperationApproving {
     let mode: ApprovalMode
     let gate: ApprovalGate?
     private(set) var count = 0
+    private(set) var summaries: [String] = []
 
     init(mode: ApprovalMode, gate: ApprovalGate? = nil) {
         self.mode = mode
         self.gate = gate
     }
 
-    func approve(summary _: String) async throws {
+    func approve(summary: String) async throws {
         count += 1
+        summaries.append(summary)
         switch mode {
         case .allow:
             return
@@ -280,7 +410,24 @@ private actor ApprovalGate {
 }
 
 private actor ExecutorRecorder: SecretOperationExecuting {
+    let capability: SecretOperationExecutionCapability
+    let outputStatus: String
+    let blockExecution: Bool
     private(set) var count = 0
+
+    init(
+        capability: SecretOperationExecutionCapability = .supported,
+        outputStatus: String = "COMPLETED",
+        blockExecution: Bool = false
+    ) {
+        self.capability = capability
+        self.outputStatus = outputStatus
+        self.blockExecution = blockExecution
+    }
+
+    nonisolated func preflight(_: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
+        capability
+    }
 
     func execute(
         _: SecretOperationDescriptor,
@@ -288,7 +435,10 @@ private actor ExecutorRecorder: SecretOperationExecuting {
         resolve _: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput {
         count += 1
-        return SecretOperationOutput(status: "COMPLETED", exitCode: 0, stdout: "hostname", stderr: "")
+        if blockExecution {
+            try await Task.sleep(for: .seconds(10))
+        }
+        return SecretOperationOutput(status: outputStatus, exitCode: 0, stdout: "hostname", stderr: "")
     }
 }
 
@@ -332,6 +482,9 @@ private final class OperationServiceFixture: @unchecked Sendable {
         authorizationSession: AuthorizationSession = AuthorizationSession(),
         approvalGate: ApprovalGate? = nil,
         auditRecorder: AuditRecorder? = nil,
+        executorCapability: SecretOperationExecutionCapability = .supported,
+        executorStatus: String = "COMPLETED",
+        blockExecution: Bool = false,
         now: @escaping @Sendable () -> Date = Date.init
     ) async throws {
         root = FileManager.default.temporaryDirectory
@@ -356,7 +509,11 @@ private final class OperationServiceFixture: @unchecked Sendable {
         let statuses = StatusRecorder()
         statusRecorder = statuses
         approver = ApprovalRecorder(mode: approval, gate: approvalGate)
-        executor = ExecutorRecorder()
+        executor = ExecutorRecorder(
+            capability: executorCapability,
+            outputStatus: executorStatus,
+            blockExecution: blockExecution
+        )
         self.authorizationSession = authorizationSession
         let auditRecorder = auditRecorder ?? AuditRecorder()
         self.auditRecorder = auditRecorder
@@ -400,6 +557,21 @@ private final class OperationServiceFixture: @unchecked Sendable {
         await auditRecorder.entries
     }
 
+    func executionScope(
+        principal: String = AuditSource.agent.rawValue,
+        generation: UInt64 = 0
+    ) -> ExecutionAuthorizationScope {
+        ExecutionAuthorizationScope(
+            principal: principal,
+            secretReferenceIDs: [reference.description],
+            normalizedDestination: "qnap.local",
+            port: 22,
+            protocolType: SecretOperationProtocol.ssh.rawValue,
+            actionFamily: SecretOperationAction.sshCommand.rawValue,
+            generation: generation
+        )
+    }
+
     func replaceWithReadOnlyRecord() async throws {
         let record = try VaultCipher().encrypt(
             Data("ASV_CANARY_OPERATION_SECRET_V2".utf8),
@@ -422,6 +594,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
 private final class ServiceTestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var storedNow: Date
+    private var storedMonotonicNow: UInt64 = 0
 
     init(_ now: Date) {
         storedNow = now
@@ -430,5 +603,10 @@ private final class ServiceTestClock: @unchecked Sendable {
     var now: Date {
         get { lock.withLock { storedNow } }
         set { lock.withLock { storedNow = newValue } }
+    }
+
+    var monotonicNow: UInt64 {
+        get { lock.withLock { storedMonotonicNow } }
+        set { lock.withLock { storedMonotonicNow = newValue } }
     }
 }

@@ -260,26 +260,36 @@ public struct AuditReadResult: Equatable, Sendable {
 }
 
 /// Trusted caller metadata installed at the IPC handler boundary. Production
-/// AppControl requests use `.app`; Agent/MCP requests use `.agent`. The task
-/// local survives actor hops without mutable shared state, so concurrent
+/// AppControl requests use `.app`; Agent/MCP requests use `.agent` plus a
+/// kernel-derived principal for the calling process. The principal is kept in
+/// memory for authorization scoping and is not persisted in audit events. The
+/// task local survives actor hops without mutable shared state, so concurrent
 /// requests cannot overwrite one another's audit source or correlation.
 public struct AuditContext: Equatable, Sendable {
     public let source: AuditSource
+    public let principal: String
     public let correlationID: UUID
     public let requestID: UUID?
 
     public init(
         source: AuditSource,
         correlationID: UUID = UUID(),
-        requestID: UUID? = nil
+        requestID: UUID? = nil,
+        principal: String? = nil
     ) {
         self.source = source
+        self.principal = principal ?? source.rawValue
         self.correlationID = correlationID
         self.requestID = requestID
     }
 
     public func withRequestID(_ requestID: UUID?) -> Self {
-        Self(source: source, correlationID: correlationID, requestID: requestID)
+        Self(
+            source: source,
+            correlationID: correlationID,
+            requestID: requestID,
+            principal: principal
+        )
     }
 
     @TaskLocal public static var current: AuditContext?

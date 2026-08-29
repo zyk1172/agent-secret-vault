@@ -3,6 +3,7 @@ import VaultAuthorization
 import VaultCore
 
 public enum SecretOperationExecutionError: Error, Equatable, Sendable {
+    case unavailable
     case unsupportedAction
     case missingSecretReference
     case invalidSecretUTF8
@@ -10,6 +11,11 @@ public enum SecretOperationExecutionError: Error, Equatable, Sendable {
     case processFailed
     case outputQuarantined
     case redirectRequiresReview
+}
+
+public enum SecretOperationExecutionCapability: String, Codable, Equatable, Sendable {
+    case supported
+    case unavailable
 }
 
 /// The only result shape returned from an Agent secret action.  It contains
@@ -61,11 +67,24 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
 }
 
 public protocol SecretOperationExecuting: Sendable {
+    /// A side-effect-free capability check. It must not resolve a secret or
+    /// perform any network/process operation. The service uses it before
+    /// device-owner approval so an unavailable runner cannot prime a lease.
+    func preflight(_ descriptor: SecretOperationDescriptor) -> SecretOperationExecutionCapability
+
     func execute(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput
+}
+
+public extension SecretOperationExecuting {
+    /// Preserve the protocol for purpose-built test or future executors that
+    /// are known to support every descriptor they receive.
+    func preflight(_: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
+        .supported
+    }
 }
 
 /// Runs only purpose-built actions.  It intentionally has no generic command
@@ -100,9 +119,20 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         case .httpRequest, .apiRequest:
             return try await executeHTTP(descriptor, resolve: resolve)
         case .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill:
-            return SecretOperationOutput(status: "ACTION_EXECUTOR_UNAVAILABLE")
+            throw SecretOperationExecutionError.unavailable
         default:
             throw SecretOperationExecutionError.unsupportedAction
+        }
+    }
+
+    public func preflight(_ descriptor: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
+        switch descriptor.actionType {
+        case .sshCommand, .httpRequest, .apiRequest:
+            return .supported
+        case .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill:
+            return .unavailable
+        default:
+            return .unavailable
         }
     }
 

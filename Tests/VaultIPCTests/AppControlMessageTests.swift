@@ -140,6 +140,16 @@ private struct ControlService: AppControlServicing {
         return "ASV_REVEAL_TEST_VALUE"
     }
 
+    func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
+        _ = sessionID
+        return RestoredParagraph(text: "ASV_SIGNED_APP_REVEAL", values: ["ASV_FIELD_VALUE"])
+    }
+
+    func restoreReferences(references: [String], context: RevealContext) async throws -> String {
+        _ = (references, context)
+        return "ASV_SIGNED_APP_RESTORE"
+    }
+
     func catalogApplyBatch(
         _ mutation: CatalogBatchMutation,
         expectedRevision: UInt64
@@ -227,6 +237,47 @@ private struct ControlService: AppControlServicing {
     let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
     #expect(!encoded.contains("ASV_APP_CONTROL_CANARY"))
     #expect(response == .secretBound(reference: "secret://0123456789ABCDEFGHJKMNPQRS", revision: 4))
+}
+
+@Test func plaintextRevealOperationsRoundTripOnlyOnAppControlChannel() async throws {
+    let revealRequest = AppControlRequest.revealSessionData(sessionID: "session-1")
+    let decodedRevealRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(revealRequest)
+    )
+    #expect(decodedRevealRequest == revealRequest)
+
+    let restoreRequest = AppControlRequest.restoreReferences(
+        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+        context: RevealContext(
+            reason: "restore",
+            template: "Token: {{0}}",
+            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+        )
+    )
+    let decodedRestoreRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(restoreRequest)
+    )
+    #expect(decodedRestoreRequest == restoreRequest)
+
+    let handler = AppControlRequestHandler(service: ControlService())
+    let revealResponse = await handler.handle(revealRequest)
+    #expect(revealResponse == .revealSessionData(RestoredParagraph(
+        text: "ASV_SIGNED_APP_REVEAL",
+        values: ["ASV_FIELD_VALUE"]
+    )))
+
+    let restoreResponse = await handler.handle(restoreRequest)
+    #expect(restoreResponse == .restoredText("ASV_SIGNED_APP_RESTORE"))
+
+    for response in [revealResponse, restoreResponse] {
+        let decodedResponse = try JSONDecoder().decode(
+            AppControlResponse.self,
+            from: JSONEncoder().encode(response)
+        )
+        #expect(decodedResponse == response)
+    }
 }
 
 @Test func appControlPeerIdentityIsInjectedForTests() {

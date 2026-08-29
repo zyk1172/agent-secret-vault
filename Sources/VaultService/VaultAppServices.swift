@@ -147,6 +147,19 @@ private enum SecretOperationAuthorizationPath: Sendable {
     }
 }
 
+private struct ExecutionApprovalFlight {
+    let id: UUID
+    let generation: UInt64
+    let task: Task<Void, Error>
+}
+
+private enum ExecutionAuthorizationCommit: Equatable, Sendable {
+    case leaseEstablished
+    case leaseReused
+    case approvedWithoutLease
+    case needsFreshApproval
+}
+
 /// Non-sensitive, sticky audit-channel health. This is deliberately kept
 /// outside the encrypted event stream so the daemon can report an audit gap
 /// without acquiring a vault or audit key. The record contains no paths,
@@ -240,9 +253,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
     private var approvalPending = false
-    private var executionApprovalTask: Task<Void, Error>?
-    private var executionApprovalID: UUID?
-    private var executionApprovalGeneration: UInt64?
+    private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
+    private var pendingExecutionApprovalIDs: Set<UUID> = []
+    private var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
     private var securityGeneration: UInt64 = 0
     private var pendingWriteAccessRequests: [UUID: CatalogAgentWriteAccessRequest] = [:]
     private var writeAccessContinuations: [UUID: CatalogWriteAccessContinuationBox] = [:]
@@ -476,10 +489,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // requests that have not crossed the commit linearization point cannot
         // outlive the security-state invalidation.
         securityGeneration &+= 1
-        executionApprovalTask?.cancel()
-        executionApprovalTask = nil
-        executionApprovalID = nil
-        executionApprovalGeneration = nil
+        for flight in executionApprovalFlights.values {
+            flight.task.cancel()
+        }
+        executionApprovalFlights.removeAll()
+        pendingExecutionApprovalIDs.removeAll()
+        for operation in inFlightSecretOperations.values {
+            operation.cancel()
+        }
+        inFlightSecretOperations.removeAll()
         approvalPending = false
         await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
@@ -584,15 +602,39 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.operationDenied
         }
 
+        let executorAction = isExecutionLeaseEligible(descriptor.actionType)
+        if executorAction,
+           operationExecutor.preflight(descriptor) == .unavailable {
+            await emitAudit(
+                action: "智能体操作执行器不可用",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "不可用",
+                operation: .secureExecute,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutorUnavailable
+        }
+
         guard operationGeneration == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
         }
 
-        let authorizationPath = try await authorizeIfNeeded(
+        let executionWindowEnabled: Bool
+        if executorAction {
+            executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
+        } else {
+            executionWindowEnabled = false
+        }
+        let executionScope: ExecutionAuthorizationScope? = decision.risk == .approvalRequired && executionWindowEnabled
+            ? executionAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+        var authorizationPath = try await authorizeIfNeeded(
             descriptor,
             metadata: metadata,
             decision: decision,
-            expectedGeneration: operationGeneration
+            expectedGeneration: operationGeneration,
+            executionScope: executionScope
         )
 
         guard operationGeneration == securityGeneration else {
@@ -603,13 +645,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // approval (or an execution-window hit). The actor can be reentrant
         // while LocalAuthentication is suspended, so a previously approved
         // decision must never be reused after a binding or policy mutation.
-        let currentMetadata: [SecretPolicyMetadata]
+        var currentMetadata: [SecretPolicyMetadata]
         do {
             currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
         } catch {
+            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.actionExecutionFailed
         }
-        let currentDecision = operationPolicyEngine.evaluate(
+        var currentDecision = operationPolicyEngine.evaluate(
             descriptor,
             metadata: currentMetadata
         )
@@ -624,17 +667,20 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationMode: authorizationPath.auditMode,
                 status: .failure
             )
+            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.operationDenied
         }
         guard operationGeneration == securityGeneration else {
+            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
         }
 
         guard let recordResolver else {
+            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.actionExecutionFailed
         }
 
-        let key: SymmetricKey
+        var key: SymmetricKey
         do {
             key = try await resolvedMasterKey(
                 for: authorizationPolicy(for: currentMetadata.map(\.policy)),
@@ -643,15 +689,107 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 destination: currentDecision.normalizedDestination
             )
         } catch {
+            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.actionExecutionFailed
         }
 
         guard operationGeneration == securityGeneration else {
+            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
         }
 
-        do {
-            let output = try await operationExecutor.execute(
+        var shouldEmitExecutionWindowReuseAudit = false
+        if let executionScope {
+            var commit = try await commitExecutionAuthorization(
+                scope: executionScope,
+                generation: operationGeneration
+            )
+
+            if commit == .needsFreshApproval {
+                authorizationPath = try await authorizeAgentExecution(
+                    descriptor,
+                    metadata: currentMetadata,
+                    decision: currentDecision,
+                    generation: operationGeneration,
+                    scope: executionScope
+                )
+                guard operationGeneration == securityGeneration else {
+                    await abandonExecutionAuthorization(scope: executionScope)
+                    throw SecretOperationError.authorizationCancelled
+                }
+
+                let refreshedMetadata: [SecretPolicyMetadata]
+                do {
+                    refreshedMetadata = try await policyMetadata(for: descriptor.secretReferences)
+                } catch {
+                    await abandonExecutionAuthorization(scope: executionScope)
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                let refreshedDecision = operationPolicyEngine.evaluate(
+                    descriptor,
+                    metadata: refreshedMetadata
+                )
+                guard refreshedDecision.risk != .denied else {
+                    await abandonExecutionAuthorization(scope: executionScope)
+                    throw SecretOperationError.operationDenied
+                }
+                guard operationGeneration == securityGeneration else {
+                    await abandonExecutionAuthorization(scope: executionScope)
+                    throw SecretOperationError.authorizationCancelled
+                }
+
+                currentMetadata = refreshedMetadata
+                currentDecision = refreshedDecision
+
+                do {
+                    key = try await resolvedMasterKey(
+                        for: authorizationPolicy(for: refreshedMetadata.map(\.policy)),
+                        reason: operationReason(for: descriptor),
+                        allowsAgentDecryptReuse: false,
+                        destination: refreshedDecision.normalizedDestination
+                    )
+                } catch {
+                    await abandonExecutionAuthorization(scope: executionScope)
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                guard operationGeneration == securityGeneration else {
+                    await abandonExecutionAuthorization(scope: executionScope)
+                    throw SecretOperationError.authorizationCancelled
+                }
+
+                commit = try await commitExecutionAuthorization(
+                    scope: executionScope,
+                    generation: operationGeneration
+                )
+                guard commit != .needsFreshApproval else {
+                    await abandonExecutionAuthorization(scope: executionScope)
+                    throw SecretOperationError.authorizationCancelled
+                }
+            }
+
+            switch commit {
+            case .leaseEstablished, .approvedWithoutLease:
+                authorizationPath = .freshLocalApproval
+            case .leaseReused:
+                authorizationPath = .executionWindowReuse
+                shouldEmitExecutionWindowReuseAudit = true
+            case .needsFreshApproval:
+                await abandonExecutionAuthorization(scope: executionScope)
+                throw SecretOperationError.authorizationCancelled
+            }
+        }
+
+        // This is the execution linearization point. All awaits that can
+        // suspend across a security-state invalidation are above it; once this
+        // guard passes, task creation and registration below are synchronous
+        // on this actor so a lock cannot slip between the check and tracking.
+        guard operationGeneration == securityGeneration else {
+            await abandonExecutionAuthorization(scope: executionScope)
+            throw SecretOperationError.authorizationCancelled
+        }
+        let executionID = UUID()
+        let executionTask = Task { [operationExecutor, descriptor, currentMetadata, recordResolver, key] in
+            try await operationExecutor.execute(
                 descriptor,
                 metadata: currentMetadata,
                 resolve: { reference in
@@ -661,6 +799,25 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     )
                 }
             )
+        }
+        inFlightSecretOperations[executionID] = executionTask
+        defer {
+            inFlightSecretOperations.removeValue(forKey: executionID)
+        }
+        if shouldEmitExecutionWindowReuseAudit {
+            await emitExecutionWindowReuseAudit(
+                descriptor: descriptor,
+                decision: currentDecision
+            )
+        }
+        do {
+            let output = try await executionTask.value
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            guard output.status != "ACTION_EXECUTOR_UNAVAILABLE" else {
+                throw SecretOperationError.actionExecutorUnavailable
+            }
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -672,7 +829,34 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 status: .completed
             )
             return output
+        } catch SecretOperationExecutionError.unavailable {
+            await abandonExecutionAuthorization(scope: executionScope)
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "不可用",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutorUnavailable
+        } catch SecretOperationError.actionExecutorUnavailable {
+            await abandonExecutionAuthorization(scope: executionScope)
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "不可用",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutorUnavailable
         } catch SecretOperationExecutionError.redirectRequiresReview {
+            await abandonExecutionAuthorization(scope: executionScope)
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -685,6 +869,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw SecretOperationError.redirectRequiresReview
         } catch SecretOperationExecutionError.outputQuarantined {
+            await abandonExecutionAuthorization(scope: executionScope)
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -697,6 +882,20 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw SecretOperationError.outputQuarantined
         } catch {
+            await abandonExecutionAuthorization(scope: executionScope)
+            if operationGeneration != securityGeneration {
+                await emitAudit(
+                    action: authorizationPath.operationAuditAction,
+                    target: currentDecision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已取消",
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .cancelled
+                )
+                throw SecretOperationError.authorizationCancelled
+            }
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -3228,7 +3427,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
-        expectedGeneration: UInt64? = nil
+        expectedGeneration: UInt64? = nil,
+        executionScope: ExecutionAuthorizationScope? = nil
     ) async throws -> SecretOperationAuthorizationPath {
         let generation = expectedGeneration ?? securityGeneration
         guard generation == securityGeneration else {
@@ -3244,12 +3444,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             break
         }
 
-        if isExecutionLeaseEligible(descriptor.actionType) {
+        if let executionScope {
             return try await authorizeAgentExecution(
                 descriptor,
                 metadata: metadata,
                 decision: decision,
-                generation: generation
+                generation: generation,
+                scope: executionScope
             )
         }
 
@@ -3360,37 +3561,48 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
-        generation: UInt64
+        generation: UInt64,
+        scope: ExecutionAuthorizationScope
     ) async throws -> SecretOperationAuthorizationPath {
         guard generation == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
         }
 
-        if await authorizationSession.hasActiveExecutionAuthorization() {
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
             guard generation == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
             }
-            await emitExecutionWindowReuseAudit(
-                descriptor: descriptor,
-                decision: decision
-            )
             return .executionWindowReuse
         }
 
-        if let executionApprovalTask {
-            do {
-                try await executionApprovalTask.value
-            } catch {
-                throw mappedSecretOperationError(error)
-            }
+        if let flight = executionApprovalFlights[scope] {
+            return try await waitForExecutionApprovalFlight(
+                flight,
+                scope: scope,
+                generation: generation
+            )
+        }
+
+        // The actor may have been re-entered while the first active-lease
+        // check was awaiting AuthorizationSession. Recheck immediately before
+        // creating a new flight so a concurrent commit cannot be followed by
+        // a redundant Touch ID prompt.
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
             guard generation == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
             }
-            await emitExecutionWindowReuseAudit(
-                descriptor: descriptor,
-                decision: decision
-            )
             return .executionWindowReuse
+        }
+
+        // The second await above can resume multiple callers in turn. A
+        // caller that observed no lease must still join a flight created by a
+        // peer before it attempts to create its own flight.
+        if let flight = executionApprovalFlights[scope] {
+            return try await waitForExecutionApprovalFlight(
+                flight,
+                scope: scope,
+                generation: generation
+            )
         }
 
         let approvalID = UUID()
@@ -3405,26 +3617,53 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 generation: generation
             )
         }
-        executionApprovalTask = task
-        executionApprovalID = approvalID
-        executionApprovalGeneration = generation
+        executionApprovalFlights[scope] = ExecutionApprovalFlight(
+            id: approvalID,
+            generation: generation,
+            task: task
+        )
+        pendingExecutionApprovalIDs.insert(approvalID)
         approvalPending = true
         await statusObserver?(status())
 
         do {
             try await task.value
         } catch {
-            await finishExecutionApprovalWait(
+            await finishExecutionApprovalFlight(
+                scope: scope,
                 approvalID: approvalID,
                 generation: generation
             )
             throw mappedSecretOperationError(error)
         }
 
-        await finishExecutionApprovalWait(
-            approvalID: approvalID,
-            generation: generation
-        )
+        await markExecutionApprovalCompleted(approvalID)
+        return .freshLocalApproval
+    }
+
+    private func waitForExecutionApprovalFlight(
+        _ flight: ExecutionApprovalFlight,
+        scope: ExecutionAuthorizationScope,
+        generation: UInt64
+    ) async throws -> SecretOperationAuthorizationPath {
+        do {
+            try await flight.task.value
+        } catch {
+            await finishExecutionApprovalFlight(
+                scope: scope,
+                approvalID: flight.id,
+                generation: flight.generation
+            )
+            throw mappedSecretOperationError(error)
+        }
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+        await markExecutionApprovalCompleted(flight.id)
+        // The approval is kept as a completed flight until one request
+        // reaches the final execution commit. This closes the gap where the
+        // first request is still rechecking policy while a later request
+        // would otherwise start a second Touch ID prompt.
         return .freshLocalApproval
     }
 
@@ -3439,10 +3678,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw OperationAuthorizationError.cancelled
             }
             let ticket = await approvalTicketStore.issue(for: descriptor, now: now())
+            let executionWindowDuration = await authorizationSession.executionAuthorizationWindowDuration()
             let summary = approvalSummary(
                 descriptor: descriptor,
                 metadata: metadata,
-                decision: decision
+                decision: decision,
+                executionWindowDuration: executionWindowDuration
             )
             await emitAudit(
                 action: "本机授权请求",
@@ -3471,11 +3712,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw OperationAuthorizationError.cancelled
             }
 
-            _ = await authorizationSession.authorizeExecution()
-            guard generation == securityGeneration else {
-                await authorizationSession.invalidate()
-                throw OperationAuthorizationError.cancelled
-            }
             await emitAudit(
                 action: "本机授权完成",
                 target: decision.normalizedDestination ?? "local",
@@ -3528,7 +3764,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     authorizationOutcome: .denied,
                     status: .failure
                 )
-            case .operationDenied, .actionExecutionFailed, .redirectRequiresReview, .outputQuarantined:
+            case .operationDenied, .actionExecutorUnavailable, .actionExecutionFailed,
+                 .redirectRequiresReview, .outputQuarantined:
                 await emitAudit(
                     action: "本机授权失败",
                     target: decision.normalizedDestination ?? "local",
@@ -3543,20 +3780,133 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
-    private func finishExecutionApprovalWait(
+    private func executionAuthorizationScope(
+        for descriptor: SecretOperationDescriptor,
+        generation: UInt64
+    ) -> ExecutionAuthorizationScope {
+        ExecutionAuthorizationScope(
+            principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
+            secretReferenceIDs: descriptor.secretReferences.map(\.description),
+            normalizedDestination: descriptor.normalizedDestination,
+            port: descriptor.port,
+            protocolType: descriptor.protocolType?.rawValue,
+            actionFamily: descriptor.actionType.rawValue,
+            generation: generation
+        )
+    }
+
+    private func finishExecutionApprovalFlight(
+        scope: ExecutionAuthorizationScope,
         approvalID: UUID,
         generation: UInt64
     ) async {
-        guard executionApprovalID == approvalID,
-              executionApprovalGeneration == generation
+        guard let flight = executionApprovalFlights[scope],
+              flight.id == approvalID,
+              flight.generation == generation
         else {
+            pendingExecutionApprovalIDs.remove(approvalID)
             return
         }
-        executionApprovalTask = nil
-        executionApprovalID = nil
-        executionApprovalGeneration = nil
-        approvalPending = false
+        flight.task.cancel()
+        executionApprovalFlights.removeValue(forKey: scope)
+        pendingExecutionApprovalIDs.remove(approvalID)
+        approvalPending = !pendingExecutionApprovalIDs.isEmpty
         await statusObserver?(status())
+    }
+
+    private func markExecutionApprovalCompleted(_ approvalID: UUID) async {
+        guard pendingExecutionApprovalIDs.remove(approvalID) != nil else {
+            return
+        }
+        approvalPending = !pendingExecutionApprovalIDs.isEmpty
+        await statusObserver?(status())
+    }
+
+    private func commitExecutionAuthorization(
+        scope: ExecutionAuthorizationScope,
+        generation: UInt64
+    ) async throws -> ExecutionAuthorizationCommit {
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            if let flight = executionApprovalFlights.removeValue(forKey: scope) {
+                if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+                    approvalPending = !pendingExecutionApprovalIDs.isEmpty
+                    await statusObserver?(status())
+                }
+            }
+            return .leaseReused
+        }
+
+        guard let flight = executionApprovalFlights[scope],
+              flight.generation == generation
+        else {
+            return .needsFreshApproval
+        }
+
+        do {
+            try await flight.task.value
+        } catch {
+            await finishExecutionApprovalFlight(
+                scope: scope,
+                approvalID: flight.id,
+                generation: flight.generation
+            )
+            throw mappedSecretOperationError(error)
+        }
+
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        // A concurrent request may have won the commit while this flight was
+        // suspended. Reuse that exact scoped lease instead of authorizing it
+        // again.
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            if executionApprovalFlights[scope]?.id == flight.id {
+                executionApprovalFlights.removeValue(forKey: scope)
+                if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+                    approvalPending = !pendingExecutionApprovalIDs.isEmpty
+                    await statusObserver?(status())
+                }
+            }
+            return .leaseReused
+        }
+
+        guard executionApprovalFlights[scope]?.id == flight.id else {
+            return .needsFreshApproval
+        }
+
+        let expiresAt = await authorizationSession.authorizeExecution(for: scope)
+        guard generation == securityGeneration else {
+            await authorizationSession.invalidateExecutionAuthorization(for: scope)
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        executionApprovalFlights.removeValue(forKey: scope)
+        if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+            approvalPending = !pendingExecutionApprovalIDs.isEmpty
+            await statusObserver?(status())
+        }
+        return expiresAt == nil ? .approvedWithoutLease : .leaseEstablished
+    }
+
+    private func abandonExecutionAuthorization(
+        scope: ExecutionAuthorizationScope?
+    ) async {
+        guard let scope else {
+            return
+        }
+        if let flight = executionApprovalFlights.removeValue(forKey: scope) {
+            flight.task.cancel()
+            if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+                approvalPending = !pendingExecutionApprovalIDs.isEmpty
+                await statusObserver?(status())
+            }
+        }
+        await authorizationSession.invalidateExecutionAuthorization(for: scope)
     }
 
     private func emitExecutionWindowReuseAudit(
@@ -3677,7 +4027,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func approvalSummary(
         descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
-        decision: PolicyDecision
+        decision: PolicyDecision,
+        executionWindowDuration: TimeInterval? = nil
     ) -> String {
         let labels = metadata.compactMap(\.label)
             .map(safeDisplayLabel)
@@ -3685,7 +4036,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let labelText = labels.isEmpty ? "未命名凭据" : labels.prefix(3).joined(separator: "、")
         let target = safeDisplayLabel(decision.normalizedDestination ?? "本机")
         let detail = safeDisplayLabel(operationDetail(for: descriptor))
-        return "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+        guard let executionWindowDuration else {
+            return base
+        }
+        let seconds = executionWindowDuration.formatted(.number.precision(.fractionLength(0...3)))
+        return "\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒；不会授权其他凭据、目标或协议"
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {

@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 
 /// In-memory authorization state owned by one running Agent. It is cleared by
 /// the daemon on sleep, screen lock, session changes, explicit lock, and
@@ -9,13 +10,18 @@ public actor AuthorizationSession {
     private let externalSendTTL: TimeInterval
     private let executionTTL: TimeInterval
     private let now: @Sendable () -> Date
+    private let monotonicNow: @Sendable () -> UInt64
 
     private var readAuthorized = false
     private var readExpiresAt: Date?
     private var credentialAuthorized = false
     private var credentialExpiresAt: Date?
     private var externalSendExpiresAt: [String: Date] = [:]
-    private var executionExpiresAt: Date?
+    private struct ExecutionAuthorizationLease: Sendable {
+        let monotonicDeadline: UInt64
+        let expiresAt: Date
+    }
+    private var executionLeases: [ExecutionAuthorizationScope: ExecutionAuthorizationLease] = [:]
     private var singleUseAuthorizations: Set<RiskClass> = []
 
     public init(
@@ -23,12 +29,14 @@ public actor AuthorizationSession {
         credentialTTL: TimeInterval = 600,
         externalSendTTL: TimeInterval = 60,
         executionTTL: TimeInterval = 300,
+        monotonicNow: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.readTTL = readTTL
         self.credentialTTL = credentialTTL
         self.externalSendTTL = externalSendTTL
         self.executionTTL = executionTTL
+        self.monotonicNow = monotonicNow
         self.now = now
     }
 
@@ -57,32 +65,60 @@ public actor AuthorizationSession {
     /// Opens a fixed, in-memory authorization window for purpose-built Agent
     /// execution. The expiry is absolute: using the window never extends it.
     @discardableResult
-    public func authorizeExecution() -> Date? {
-        guard executionTTL > 0 else {
-            executionExpiresAt = nil
+    public func authorizeExecution(for scope: ExecutionAuthorizationScope) -> Date? {
+        guard let durationNanoseconds = executionDurationNanoseconds() else {
+            executionLeases.removeValue(forKey: scope)
             return nil
         }
+
+        let (deadline, overflow) = monotonicNow().addingReportingOverflow(durationNanoseconds)
+        guard !overflow else {
+            executionLeases.removeValue(forKey: scope)
+            return nil
+        }
+
         let expiresAt = now().addingTimeInterval(executionTTL)
-        executionExpiresAt = expiresAt
+        executionLeases[scope] = ExecutionAuthorizationLease(
+            monotonicDeadline: deadline,
+            expiresAt: expiresAt
+        )
         return expiresAt
     }
 
-    public func hasActiveExecutionAuthorization() -> Bool {
-        guard let executionExpiresAt else {
+    public func executionAuthorizationWindowEnabled() -> Bool {
+        executionDurationNanoseconds() != nil
+    }
+
+    /// Returns the configured duration for the user-facing approval notice.
+    /// The lease itself still uses the monotonic deadline above; this value is
+    /// only descriptive and must never be used for authorization decisions.
+    public func executionAuthorizationWindowDuration() -> TimeInterval? {
+        guard executionAuthorizationWindowEnabled() else {
+            return nil
+        }
+        return executionTTL
+    }
+
+    public func hasActiveExecutionAuthorization(for scope: ExecutionAuthorizationScope) -> Bool {
+        guard let lease = executionLeases[scope] else {
             return false
         }
-        guard now() < executionExpiresAt else {
-            self.executionExpiresAt = nil
+        guard monotonicNow() < lease.monotonicDeadline else {
+            executionLeases.removeValue(forKey: scope)
             return false
         }
         return true
     }
 
-    public func executionAuthorizationExpiresAt() -> Date? {
-        guard hasActiveExecutionAuthorization() else {
+    public func executionAuthorizationExpiresAt(for scope: ExecutionAuthorizationScope) -> Date? {
+        guard hasActiveExecutionAuthorization(for: scope) else {
             return nil
         }
-        return executionExpiresAt
+        return executionLeases[scope]?.expiresAt
+    }
+
+    public func invalidateExecutionAuthorization(for scope: ExecutionAuthorizationScope) {
+        executionLeases.removeValue(forKey: scope)
     }
 
     public func authorizeSingleUse(for risk: RiskClass) async {
@@ -136,7 +172,7 @@ public actor AuthorizationSession {
         credentialAuthorized = false
         credentialExpiresAt = nil
         externalSendExpiresAt.removeAll()
-        executionExpiresAt = nil
+        executionLeases.removeAll()
         singleUseAuthorizations.removeAll()
     }
 
@@ -150,5 +186,19 @@ public actor AuthorizationSession {
             return false
         }
         return true
+    }
+
+    private func executionDurationNanoseconds() -> UInt64? {
+        guard executionTTL.isFinite, executionTTL > 0 else {
+            return nil
+        }
+        let durationNanoseconds = executionTTL * 1_000_000_000
+        guard durationNanoseconds.isFinite,
+              durationNanoseconds >= 1,
+              durationNanoseconds < Double(UInt64.max)
+        else {
+            return nil
+        }
+        return UInt64(durationNanoseconds)
     }
 }

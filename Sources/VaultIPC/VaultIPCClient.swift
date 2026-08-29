@@ -349,27 +349,6 @@ public actor VaultIPCClient {
         }
     }
 
-    public func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
-        let response = try await send(.revealSessionData(sessionID: sessionID))
-        guard case let .revealSessionData(paragraph) = response else {
-            throw unexpected(response)
-        }
-        return paragraph
-    }
-
-    public func restoreReferences(
-        references: [String],
-        context: RevealContext
-    ) async throws -> RestoredParagraph {
-        let response = try await send(.restoreReferences(references: references, context: context))
-        guard case let .restoredText(text) = response else {
-            throw unexpected(response)
-        }
-        // The Agent deliberately returns text only to this explicit trusted
-        // GUI operation. MCP reveal requests use revealSessionOpened instead.
-        return RestoredParagraph(text: text, values: [])
-    }
-
     public func send(_ request: IPCRequest) async throws -> IPCResponse {
         try validateEndpoint()
         let token = try readCapabilityToken()

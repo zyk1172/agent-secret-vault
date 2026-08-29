@@ -54,6 +54,11 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         policy: SecretPolicy
     )
     case catalogRevealField(entryID: String, key: String)
+    /// Plaintext-bearing reveal operations are available only through the
+    /// signed App-control socket. They are intentionally absent from
+    /// `IPCRequest`/`IPCResponse`, which are shared with local Agents.
+    case revealSessionData(sessionID: String)
+    case restoreReferences(references: [String], context: RevealContext)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -80,6 +85,9 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case id
         case approved
         case plan
+        case sessionID
+        case references
+        case context
     }
 
     private enum RequestType: String, Codable {
@@ -109,6 +117,8 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
         case catalogRevealField
         case catalogWriteAccessRequest
         case respondToCatalogWriteAccessRequest
+        case revealSessionData
+        case restoreReferences
     }
 
     public init(from decoder: any Decoder) throws {
@@ -218,6 +228,15 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
                 entryID: try container.decode(String.self, forKey: .entryID),
                 key: try container.decode(String.self, forKey: .key)
             )
+        case .revealSessionData:
+            self = .revealSessionData(
+                sessionID: try container.decode(String.self, forKey: .sessionID)
+            )
+        case .restoreReferences:
+            self = .restoreReferences(
+                references: try container.decode([String].self, forKey: .references),
+                context: try container.decode(RevealContext.self, forKey: .context)
+            )
         }
     }
 
@@ -317,6 +336,13 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.catalogRevealField, forKey: .type)
             try container.encode(entryID, forKey: .entryID)
             try container.encode(key, forKey: .key)
+        case let .revealSessionData(sessionID):
+            try container.encode(RequestType.revealSessionData, forKey: .type)
+            try container.encode(sessionID, forKey: .sessionID)
+        case let .restoreReferences(references, context):
+            try container.encode(RequestType.restoreReferences, forKey: .type)
+            try container.encode(references, forKey: .references)
+            try container.encode(context, forKey: .context)
         }
     }
 }
@@ -333,6 +359,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
     case catalogWriteResult(CatalogWriteResult)
     case secretBound(reference: String, revision: UInt64)
     case catalogFieldPlaintext(String)
+    case revealSessionData(RestoredParagraph)
+    case restoredText(String)
     case operationCompleted
     case failure(code: String)
 
@@ -342,6 +370,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case reference
         case revision
         case plaintext
+        case paragraph
+        case text
         case plan
         case entries
         case diagnostics
@@ -361,6 +391,8 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case catalogWriteResult
         case secretBound
         case catalogFieldPlaintext
+        case revealSessionData
+        case restoredText
         case operationCompleted
         case failure
     }
@@ -399,6 +431,10 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
             )
         case .catalogFieldPlaintext:
             self = .catalogFieldPlaintext(try container.decode(String.self, forKey: .plaintext))
+        case .revealSessionData:
+            self = .revealSessionData(try container.decode(RestoredParagraph.self, forKey: .paragraph))
+        case .restoredText:
+            self = .restoredText(try container.decode(String.self, forKey: .text))
         case .operationCompleted:
             self = .operationCompleted
         case .failure:
@@ -444,6 +480,12 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case let .catalogFieldPlaintext(plaintext):
             try container.encode(ResponseType.catalogFieldPlaintext, forKey: .type)
             try container.encode(plaintext, forKey: .plaintext)
+        case let .revealSessionData(paragraph):
+            try container.encode(ResponseType.revealSessionData, forKey: .type)
+            try container.encode(paragraph, forKey: .paragraph)
+        case let .restoredText(text):
+            try container.encode(ResponseType.restoredText, forKey: .type)
+            try container.encode(text, forKey: .text)
         case .operationCompleted:
             try container.encode(ResponseType.operationCompleted, forKey: .type)
         case let .failure(code):
@@ -524,4 +566,6 @@ public protocol AppControlServicing: Sendable {
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64)
     func catalogRevealField(entryID: String, key: String) async throws -> String
+    func revealSessionData(sessionID: String) async throws -> RestoredParagraph
+    func restoreReferences(references: [String], context: RevealContext) async throws -> String
 }

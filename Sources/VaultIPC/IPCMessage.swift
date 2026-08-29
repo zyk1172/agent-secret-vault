@@ -117,7 +117,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case authorizeHighRisk(reason: String)
     case lock
     case clearRevealSessions
-    case revealSessionData(sessionID: String)
     case reveal(reference: String, reason: String)
     case encrypt(label: String?, policy: SecretPolicy)
     case encryptText(plaintext: String, label: String?, policy: SecretPolicy)
@@ -128,7 +127,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         allowedProtocols: [String]
     )
     case revealReferences(references: [String], context: RevealContext)
-    case restoreReferences(references: [String], context: RevealContext)
     case exportResolvedText(references: [String], context: RevealContext, destinationPath: String)
     case scanOrphans(markdownReferences: [String])
     case execute(ExecutionRequest)
@@ -140,7 +138,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case reference
         case references
         case reason
-        case sessionID
         case query
         case field
         case limit
@@ -201,13 +198,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case authorizeHighRisk
         case lock
         case clearRevealSessions
-        case revealSessionData
         case reveal
         case encrypt
         case encryptText
         case encryptBound
         case revealReferences
-        case restoreReferences
         case exportResolvedText
         case scanOrphans
         case execute
@@ -329,10 +324,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .lock
         case .clearRevealSessions:
             self = .clearRevealSessions
-        case .revealSessionData:
-            self = .revealSessionData(
-                sessionID: try container.decode(String.self, forKey: .sessionID)
-            )
         case .reveal:
             self = .reveal(
                 reference: try container.decode(String.self, forKey: .reference),
@@ -358,11 +349,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             )
         case .revealReferences:
             self = .revealReferences(
-                references: try container.decode([String].self, forKey: .references),
-                context: try container.decode(RevealContext.self, forKey: .context)
-            )
-        case .restoreReferences:
-            self = .restoreReferences(
                 references: try container.decode([String].self, forKey: .references),
                 context: try container.decode(RevealContext.self, forKey: .context)
             )
@@ -485,9 +471,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.lock, forKey: .type)
         case .clearRevealSessions:
             try container.encode(RequestType.clearRevealSessions, forKey: .type)
-        case let .revealSessionData(sessionID):
-            try container.encode(RequestType.revealSessionData, forKey: .type)
-            try container.encode(sessionID, forKey: .sessionID)
         case let .reveal(reference, reason):
             try container.encode(RequestType.reveal, forKey: .type)
             try container.encode(reference, forKey: .reference)
@@ -509,10 +492,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(allowedProtocols, forKey: .allowedProtocols)
         case let .revealReferences(references, context):
             try container.encode(RequestType.revealReferences, forKey: .type)
-            try container.encode(references, forKey: .references)
-            try container.encode(context, forKey: .context)
-        case let .restoreReferences(references, context):
-            try container.encode(RequestType.restoreReferences, forKey: .type)
             try container.encode(references, forKey: .references)
             try container.encode(context, forKey: .context)
         case let .exportResolvedText(references, context, destinationPath):
@@ -709,10 +688,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case displayedToUser
     case operationCompleted
     case authorizationApproved
-    case revealSessionData(RestoredParagraph)
     case created(reference: String)
     case revealSessionOpened(sessionID: String)
-    case restoredText(String)
     case exported(path: String)
     case orphanScan(OrphanScanResult)
     case execution(SanitizedExecutionResult)
@@ -736,8 +713,6 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case metadata
         case reference
         case sessionID
-        case paragraph
-        case text
         case path
         case output
         case code
@@ -763,10 +738,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case displayedToUser
         case operationCompleted
         case authorizationApproved
-        case revealSessionData
         case created
         case revealSessionOpened
-        case restoredText
         case exported
         case orphanScan
         case execution
@@ -825,14 +798,10 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .operationCompleted
         case .authorizationApproved:
             self = .authorizationApproved
-        case .revealSessionData:
-            self = .revealSessionData(try container.decode(RestoredParagraph.self, forKey: .paragraph))
         case .created:
             self = .created(reference: try container.decode(String.self, forKey: .reference))
         case .revealSessionOpened:
             self = .revealSessionOpened(sessionID: try container.decode(String.self, forKey: .sessionID))
-        case .restoredText:
-            self = .restoredText(try container.decode(String.self, forKey: .text))
         case .exported:
             self = .exported(path: try container.decode(String.self, forKey: .path))
         case .orphanScan:
@@ -907,18 +876,12 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             try container.encode(ResponseType.operationCompleted, forKey: .type)
         case .authorizationApproved:
             try container.encode(ResponseType.authorizationApproved, forKey: .type)
-        case let .revealSessionData(paragraph):
-            try container.encode(ResponseType.revealSessionData, forKey: .type)
-            try container.encode(paragraph, forKey: .paragraph)
         case let .created(reference):
             try container.encode(ResponseType.created, forKey: .type)
             try container.encode(reference, forKey: .reference)
         case let .revealSessionOpened(sessionID):
             try container.encode(ResponseType.revealSessionOpened, forKey: .type)
             try container.encode(sessionID, forKey: .sessionID)
-        case let .restoredText(text):
-            try container.encode(ResponseType.restoredText, forKey: .type)
-            try container.encode(text, forKey: .text)
         case let .exported(path):
             try container.encode(ResponseType.exported, forKey: .type)
             try container.encode(path, forKey: .path)
