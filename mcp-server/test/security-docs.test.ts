@@ -68,4 +68,17 @@ describe("security documentation", () => {
     expect(integration).not.toContain("/Users/zhengyunkai/");
     expect(integration).not.toMatch(/qnap/i);
   });
+
+  it("does not ship executable examples with fabricated references or shell chaining", async () => {
+    const usage = await readFile(
+      path.join(repositoryRoot, "docs/universal-agent-usage.md"),
+      "utf8"
+    );
+
+    expect(usage).toContain("不能整段直接执行");
+    expect(usage).toContain('"command": "hostname"');
+    expect(usage).not.toContain('"command": "hostname && whoami && uptime"');
+    expect(usage).not.toContain('"passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
+    expect(usage).not.toContain('"tokenRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
+  });
 });
