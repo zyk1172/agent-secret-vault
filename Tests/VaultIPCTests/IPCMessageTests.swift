@@ -49,6 +49,9 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
     let requests: [IPCRequest] = [
         .status,
         .workbenchStatus,
+        .sshSessionStatus(sessionID: nil),
+        .sshSessionStatus(sessionID: "ssh_session_test"),
+        .sshSessionClose(sessionID: "ssh_session_test"),
         .savedReferences,
         .searchCatalog(query: "QNAP", field: .password, limit: 10),
         .catalogSearch(query: "Komga", field: nil, limit: 20),
@@ -251,6 +254,13 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .execution(.completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "")),
         .execution(.quarantined(reason: .binaryOutput)),
         .secretOperation(SecretOperationOutput(status: "COMPLETED", httpStatus: 200, contentType: "application/json", bodyPreview: "{\"ok\":true}")),
+        .sshSessionStatus([SSHSessionStatus(
+            sessionID: "ssh_session_test",
+            host: "qnap.local",
+            port: 22,
+            status: .active,
+            idleExpiresIn: 299
+        )]),
         .failure(code: "APP_UNAVAILABLE")
     ]
 
@@ -355,6 +365,23 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
     let decoded = try JSONDecoder().decode(AuthenticatedIPCRequest.self, from: encoded)
 
     #expect(decoded == request)
+}
+
+@Test func authenticatedRequestCarriesOptionalSelfDeclaredCallerWithoutChangingAuthentication() throws {
+    let token = try CapabilityToken(base64Encoded: Data(repeating: 0x6A, count: 32).base64EncodedString())
+    let caller = AgentCallerIdentity(name: "Pi", version: "1.2.3", transport: "mcp")
+    let request = AuthenticatedIPCRequest(
+        capabilityToken: token,
+        request: .status,
+        caller: caller
+    )
+
+    let decoded = try JSONDecoder().decode(
+        AuthenticatedIPCRequest.self,
+        from: JSONEncoder().encode(request)
+    )
+    #expect(decoded.caller == caller)
+    #expect(try IPCAuthenticator(expectedToken: token).authenticate(decoded) == .status)
 }
 
 @Test func authenticatorReturnsRequestOnlyForMatchingCapabilityToken() throws {

@@ -1882,6 +1882,10 @@ struct CompactAuditPreviewCard: View {
                                     Text(entry.operation.displayName).font(.callout.weight(.semibold)).lineLimit(1)
                                     Text(entry.target).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                     Spacer()
+                                    Text(entry.caller?.displayLabel ?? entry.source.displayName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
                                     Text(entry.result.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                                 }
                                 .padding(.vertical, 6)
@@ -4226,7 +4230,7 @@ struct AgentAutomationAuditCard: View {
                                             Text(entry.result.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                                         }
                                         Text(entry.target).font(.callout).foregroundStyle(.secondary).lineLimit(2)
-                                        Text("\(entry.source.displayName) · \(entry.authorizationMode?.displayName ?? entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
+                                        Text("\(entry.caller?.displayLabel ?? entry.source.displayName) · \(entry.authorizationMode?.displayName ?? entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
                                             .font(.caption).foregroundStyle(.tertiary)
                                     }
                                 }

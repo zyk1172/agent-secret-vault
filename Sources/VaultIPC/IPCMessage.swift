@@ -119,7 +119,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case clearRevealSessions
     case reveal(reference: String, reason: String)
     case encrypt(label: String?, policy: SecretPolicy)
-    case encryptText(plaintext: String, label: String?, policy: SecretPolicy)
     case encryptBound(
         label: String?,
         policy: SecretPolicy,
@@ -131,10 +130,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case scanOrphans(markdownReferences: [String])
     case execute(ExecutionRequest)
     case executeSecretOperation(SecretOperationDescriptor)
+    case sshSessionStatus(sessionID: String?)
+    case sshSessionClose(sessionID: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
-        case plaintext
         case reference
         case references
         case reason
@@ -165,6 +165,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case mutation
         case targets
         case requestID
+        case sessionID
     }
 
     private enum RequestType: String, Codable {
@@ -200,13 +201,14 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case clearRevealSessions
         case reveal
         case encrypt
-        case encryptText
         case encryptBound
         case revealReferences
         case exportResolvedText
         case scanOrphans
         case execute
         case executeSecretOperation
+        case sshSessionStatus
+        case sshSessionClose
     }
 
     public init(from decoder: any Decoder) throws {
@@ -334,12 +336,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
                 label: try container.decodeIfPresent(String.self, forKey: .label),
                 policy: try container.decode(SecretPolicy.self, forKey: .policy)
             )
-        case .encryptText:
-            self = .encryptText(
-                plaintext: try container.decode(String.self, forKey: .plaintext),
-                label: try container.decodeIfPresent(String.self, forKey: .label),
-                policy: try container.decode(SecretPolicy.self, forKey: .policy)
-            )
         case .encryptBound:
             self = .encryptBound(
                 label: try container.decodeIfPresent(String.self, forKey: .label),
@@ -366,6 +362,14 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .execute(try container.decode(ExecutionRequest.self, forKey: .request))
         case .executeSecretOperation:
             self = .executeSecretOperation(try container.decode(SecretOperationDescriptor.self, forKey: .descriptor))
+        case .sshSessionStatus:
+            self = .sshSessionStatus(
+                sessionID: try container.decodeIfPresent(String.self, forKey: .sessionID)
+            )
+        case .sshSessionClose:
+            self = .sshSessionClose(
+                sessionID: try container.decode(String.self, forKey: .sessionID)
+            )
         }
     }
 
@@ -479,11 +483,6 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.encrypt, forKey: .type)
             try container.encodeIfPresent(label, forKey: .label)
             try container.encode(policy, forKey: .policy)
-        case let .encryptText(plaintext, label, policy):
-            try container.encode(RequestType.encryptText, forKey: .type)
-            try container.encode(plaintext, forKey: .plaintext)
-            try container.encodeIfPresent(label, forKey: .label)
-            try container.encode(policy, forKey: .policy)
         case let .encryptBound(label, policy, allowedDestinations, allowedProtocols):
             try container.encode(RequestType.encryptBound, forKey: .type)
             try container.encodeIfPresent(label, forKey: .label)
@@ -508,6 +507,12 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .executeSecretOperation(descriptor):
             try container.encode(RequestType.executeSecretOperation, forKey: .type)
             try container.encode(descriptor, forKey: .descriptor)
+        case let .sshSessionStatus(sessionID):
+            try container.encode(RequestType.sshSessionStatus, forKey: .type)
+            try container.encodeIfPresent(sessionID, forKey: .sessionID)
+        case let .sshSessionClose(sessionID):
+            try container.encode(RequestType.sshSessionClose, forKey: .type)
+            try container.encode(sessionID, forKey: .sessionID)
         }
     }
 }
@@ -694,6 +699,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case orphanScan(OrphanScanResult)
     case execution(SanitizedExecutionResult)
     case secretOperation(SecretOperationOutput)
+    case sshSessionStatus([SSHSessionStatus])
     case failure(code: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -716,6 +722,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case path
         case output
         case code
+        case sessions
     }
 
     private enum ResponseType: String, Codable {
@@ -744,6 +751,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case orphanScan
         case execution
         case secretOperation
+        case sshSessionStatus
         case failure
     }
 
@@ -810,6 +818,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .execution(try container.decode(SanitizedExecutionResult.self, forKey: .result))
         case .secretOperation:
             self = .secretOperation(try container.decode(SecretOperationOutput.self, forKey: .output))
+        case .sshSessionStatus:
+            self = .sshSessionStatus(try container.decode([SSHSessionStatus].self, forKey: .sessions))
         case .failure:
             self = .failure(code: try container.decode(String.self, forKey: .code))
         }
@@ -894,6 +904,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .secretOperation(output):
             try container.encode(ResponseType.secretOperation, forKey: .type)
             try container.encode(output, forKey: .output)
+        case let .sshSessionStatus(sessions):
+            try container.encode(ResponseType.sshSessionStatus, forKey: .type)
+            try container.encode(sessions, forKey: .sessions)
         case let .failure(code):
             try container.encode(ResponseType.failure, forKey: .type)
             try container.encode(code, forKey: .code)
@@ -901,13 +914,33 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// Self-declared display metadata from an MCP connection. It is never used as
+/// the security principal; AppIPCController still derives that from the peer.
+public struct AgentCallerIdentity: Codable, Equatable, Sendable {
+    public let name: String
+    public let version: String?
+    public let transport: String
+
+    public init(name: String, version: String? = nil, transport: String = "mcp") {
+        self.name = name
+        self.version = version
+        self.transport = transport
+    }
+}
+
 public struct AuthenticatedIPCRequest: Codable, Equatable, Sendable {
     public let capabilityToken: CapabilityToken
     public let request: IPCRequest
+    public let caller: AgentCallerIdentity?
 
-    public init(capabilityToken: CapabilityToken, request: IPCRequest) {
+    public init(
+        capabilityToken: CapabilityToken,
+        request: IPCRequest,
+        caller: AgentCallerIdentity? = nil
+    ) {
         self.capabilityToken = capabilityToken
         self.request = request
+        self.caller = caller
     }
 }
 

@@ -34,7 +34,7 @@ import VaultIPC
     let fixture = try await OperationServiceFixture(approval: .allow)
     defer { fixture.remove() }
 
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
 
     let summary = await fixture.approver.summaries.first ?? ""
     #expect(summary.contains("复用最多 300 秒"))
@@ -99,7 +99,7 @@ import VaultIPC
     let fixture = try await OperationServiceFixture(executorStatus: "FAILED")
     defer { fixture.remove() }
 
-    let output = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+    let output = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
 
     #expect(output.status == "FAILED")
     #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
@@ -122,13 +122,13 @@ import VaultIPC
     )
     defer { fixture.remove() }
 
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
     let scope = fixture.executionScope()
     let firstExpiration = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
 
     clock.now = start.addingTimeInterval(299.999)
     clock.monotonicNow = monotonicStart + 299_999_000_000
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "systemctl restart app"))
+    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "touch /share/svlt-test"))
 
     #expect(firstExpiration == start.addingTimeInterval(300))
     #expect(await fixture.approver.count == 1)
@@ -139,11 +139,43 @@ import VaultIPC
 
     clock.now = start.addingTimeInterval(300)
     clock.monotonicNow = monotonicStart + 300_000_000_000
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test-2"))
 
     #expect(await fixture.approver.count == 2)
     #expect(await fixture.executor.count == 3)
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == start.addingTimeInterval(600))
+}
+
+@Test func destructiveSSHRequiresFreshApprovalWithoutExtendingReusableLease() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 4_000)
+    let clock = ServiceTestClock(start)
+    let monotonicStart: UInt64 = 40_000_000_000
+    clock.monotonicNow = monotonicStart
+    let authorizationSession = AuthorizationSession(
+        executionTTL: 300,
+        monotonicNow: { clock.monotonicNow },
+        now: { clock.now }
+    )
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
+    let scope = fixture.executionScope()
+    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
+
+    clock.now = start.addingTimeInterval(100)
+    clock.monotonicNow = monotonicStart + 100_000_000_000
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "rm -rf /share/svlt-test")
+    )
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
 @Test func concurrentEligibleOperationsShareOneApproval() async throws {
@@ -151,7 +183,10 @@ import VaultIPC
     defer { fixture.remove() }
 
     let outputs = try await withThrowingTaskGroup(of: SecretOperationOutput.self) { group in
-        for command in ["reboot", "systemctl restart app", "docker restart api"] {
+        // Only commands classified as reusableApproval should share the
+        // scoped single-flight approval. Broad copy/move/permission commands
+        // intentionally take the fresh-approval path.
+        for command in ["mkdir /share/svlt-a", "touch /share/svlt-b", "mkdir /share/svlt-c"] {
             group.addTask {
                 try await fixture.service.performSecretOperation(
                     fixture.ssh(command: command)
@@ -179,7 +214,7 @@ import VaultIPC
     defer { fixture.remove() }
 
     let outputs = try await withThrowingTaskGroup(of: SecretOperationOutput.self) { group in
-        for command in ["reboot", "systemctl restart app", "docker restart api"] {
+        for command in ["mkdir /share/svlt-a", "touch /share/svlt-b", "cp /share/svlt-a /share/svlt-c"] {
             group.addTask {
                 try await fixture.service.performSecretOperation(fixture.ssh(command: command))
             }
@@ -204,12 +239,12 @@ import VaultIPC
     _ = try await AuditContext.$current.withValue(
         AuditContext(source: .agent, principal: "agent-peer-one")
     ) {
-        try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
     }
     _ = try await AuditContext.$current.withValue(
         AuditContext(source: .agent, principal: "agent-peer-two")
     ) {
-        try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
     }
 
     #expect(await fixture.approver.count == 2)
@@ -223,7 +258,7 @@ import VaultIPC
     defer { fixture.remove() }
 
     do {
-        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
         Issue.record("Expected unavailable executor, but operation succeeded.")
     } catch let error as SecretOperationError {
         #expect(error == .actionExecutorUnavailable)
@@ -241,7 +276,7 @@ import VaultIPC
     defer { fixture.remove() }
 
     do {
-        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
         Issue.record("Expected unavailable executor, but operation succeeded.")
     } catch let error as SecretOperationError {
         #expect(error == .actionExecutorUnavailable)
@@ -258,7 +293,7 @@ import VaultIPC
 
     let operation = Task { () -> SecretOperationError? in
         do {
-            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
             return nil
         } catch let error as SecretOperationError {
             return error
@@ -286,11 +321,11 @@ import VaultIPC
     let fixture = try await OperationServiceFixture()
     defer { fixture.remove() }
 
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
 
     do {
         _ = try await fixture.service.performSecretOperation(
-            fixture.ssh(command: "reboot").replacingDestination("8.8.8.8")
+            fixture.ssh(command: "mkdir /share/svlt-test").replacingDestination("8.8.8.8")
         )
         Issue.record("Expected an unbound public destination to remain denied.")
     } catch let error as SecretOperationError {
@@ -318,7 +353,7 @@ import VaultIPC
 
     let operation = Task { () -> SecretOperationError? in
         do {
-            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
             return nil
         } catch let error as SecretOperationError {
             return error
@@ -349,7 +384,7 @@ import VaultIPC
 
     let operation = Task { () -> SecretOperationError? in
         do {
-            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
             return nil
         } catch let error as SecretOperationError {
             return error
@@ -392,7 +427,7 @@ private func expectApprovalFailure(
     defer { fixture.remove() }
 
     do {
-        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
         Issue.record("Expected \(expected), but operation succeeded.")
     } catch let error as SecretOperationError {
         #expect(error == expected)
@@ -405,7 +440,7 @@ private func expectApprovalFailure(
     defer { fixture.remove() }
 
     do {
-        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
         Issue.record("Expected authorization timeout, but operation succeeded.")
     } catch let error as SecretOperationError {
         #expect(error == .authorizationTimeout)
@@ -650,7 +685,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
             protocolType: .ssh,
             command: command,
             requestedEffects: [command == "hostname" ? "read-only" : "remote-write"],
-            parameters: ["passwordRef": reference.description]
+            parameters: ["passwordRef": reference.description, "username": "admin"]
         )
     }
 
@@ -671,6 +706,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
             secretReferenceIDs: [reference.description],
             normalizedDestination: "qnap.local",
             port: 22,
+            username: "admin",
             protocolType: SecretOperationProtocol.ssh.rawValue,
             actionFamily: SecretOperationAction.sshCommand.rawValue,
             generation: generation

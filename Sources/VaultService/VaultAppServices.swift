@@ -42,6 +42,7 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
     public let referenceCount: Int
     public let result: String
     public let authorizationMode: AuditAuthorizationMode?
+    public let caller: AuditCaller?
 
     public init(
         id: UUID = UUID(),
@@ -50,7 +51,8 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
         target: String,
         referenceCount: Int,
         result: String,
-        authorizationMode: AuditAuthorizationMode? = nil
+        authorizationMode: AuditAuthorizationMode? = nil,
+        caller: AuditCaller? = nil
     ) {
         self.id = id
         self.occurredAt = occurredAt
@@ -59,6 +61,7 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
         self.referenceCount = referenceCount
         self.result = result
         self.authorizationMode = authorizationMode
+        self.caller = caller
     }
 }
 
@@ -528,6 +531,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approvalPending = false
         await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
+        await operationExecutor.invalidateSecurityState()
         clearScopedMasterKeyAuthorizations()
         for authorization in agentDecryptAuthorizations.values {
             var keyData = authorization.key.withUnsafeBytes { Data($0) }
@@ -643,8 +647,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         let executorAction = isExecutionLeaseEligible(descriptor.actionType)
-        if executorAction,
-           operationExecutor.preflight(descriptor) == .unavailable {
+        let executorCapability = executorAction
+            ? operationExecutor.preflight(descriptor)
+            : .supported
+        if executorCapability == .unavailable {
             await emitAudit(
                 action: "智能体操作执行器不可用",
                 target: decision.normalizedDestination ?? "local",
@@ -654,6 +660,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 status: .failure
             )
             throw SecretOperationError.actionExecutorUnavailable
+        }
+        if executorCapability == .invalidParameters {
+            await emitAudit(
+                action: "智能体操作参数无效",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "参数无效",
+                operation: .secureExecute,
+                status: .failure
+            )
+            throw descriptor.sshCommandBatch == nil
+                ? SecretOperationError.invalidOperationParameters
+                : SecretOperationError.batchValidationFailed
         }
 
         guard operationGeneration == securityGeneration else {
@@ -666,7 +685,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } else {
             executionWindowEnabled = false
         }
-        let executionScope: ExecutionAuthorizationScope? = decision.risk == .approvalRequired && executionWindowEnabled
+        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
             ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
             : nil
         var authorizationPath = try await authorizeIfNeeded(
@@ -713,6 +732,44 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         guard operationGeneration == securityGeneration else {
             await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
+        }
+
+        // A re-evaluation may promote a previously reusable operation to a
+        // fresh-approval requirement while the first approval was suspended.
+        // Do not let the original scope commit a reusable lease in that case:
+        // discard the in-flight/active scoped authorization, obtain the
+        // exact one-shot decision, and re-read policy once more before key
+        // resolution or execution.
+        if executionScope != nil,
+           currentDecision.authorizationRequirement != .reusableApproval {
+            let staleScope = executionScope
+            executionScope = nil
+            await abandonExecutionAuthorization(scope: staleScope)
+            authorizationPath = try await authorizeIfNeeded(
+                descriptor,
+                metadata: currentMetadata,
+                decision: currentDecision,
+                expectedGeneration: operationGeneration,
+                executionScope: nil
+            )
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            do {
+                currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+            } catch {
+                throw SecretOperationError.actionExecutionFailed
+            }
+            currentDecision = operationPolicyEngine.evaluate(
+                descriptor,
+                metadata: currentMetadata
+            )
+            guard currentDecision.risk != .denied else {
+                throw SecretOperationError.operationDenied
+            }
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
         }
 
         guard let recordResolver else {
@@ -831,11 +888,31 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
         }
+        if shouldEmitExecutionWindowReuseAudit {
+            await emitExecutionWindowReuseAudit(
+                descriptor: descriptor,
+                decision: currentDecision
+            )
+        }
+
+        // The audit append above is an await point. Re-check the generation
+        // before creating the task so a lock/sleep during that append cannot
+        // start a secret-bearing executor after security invalidation.
+        guard operationGeneration == securityGeneration else {
+            await abandonExecutionAuthorization(scope: executionScope)
+            throw SecretOperationError.authorizationCancelled
+        }
+
         let executionID = UUID()
-        let executionTask = Task { [operationExecutor, descriptor, currentMetadata, recordResolver, key] in
+        let executionContext = SecretOperationExecutionContext(
+            principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
+            securityGeneration: operationGeneration
+        )
+        let executionTask = Task { [operationExecutor, descriptor, currentMetadata, recordResolver, key, executionContext] in
             try await operationExecutor.execute(
                 descriptor,
                 metadata: currentMetadata,
+                context: executionContext,
                 resolve: { reference in
                     try await recordResolver.resolve(
                         reference: reference.description,
@@ -847,12 +924,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         inFlightSecretOperations[executionID] = executionTask
         defer {
             inFlightSecretOperations.removeValue(forKey: executionID)
-        }
-        if shouldEmitExecutionWindowReuseAudit {
-            await emitExecutionWindowReuseAudit(
-                descriptor: descriptor,
-                decision: currentDecision
-            )
         }
         do {
             let output = try await executionTask.value
@@ -939,6 +1010,20 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 status: .quarantined
             )
             throw SecretOperationError.outputQuarantined
+        } catch let error as SecretOperationExecutionError {
+            let mappedError = mapExecutionError(error)
+            await abandonExecutionAuthorization(scope: executionScope)
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: mappedError.responseCode,
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw mappedError
         } catch {
             await abandonExecutionAuthorization(scope: executionScope)
             if operationGeneration != securityGeneration {
@@ -966,6 +1051,52 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw SecretOperationError.actionExecutionFailed
         }
+    }
+
+    /// Agent-facing transport management is intentionally narrower than the
+    /// execution API. The caller can inspect only its own opaque session
+    /// projections, and closing a session never exposes its ControlPath or
+    /// secret reference.
+    public func sshSessionStatuses(sessionID: String?) async throws -> [SSHSessionStatus] {
+        do {
+            return try await operationExecutor.sshSessionStatuses(
+                sessionID: sessionID,
+                context: currentExecutionContext()
+            )
+        } catch SecretOperationExecutionError.unavailable {
+            throw SecretOperationError.actionExecutorUnavailable
+        } catch let error as SecretOperationExecutionError {
+            throw mapExecutionError(error)
+        } catch let error as SecretOperationError {
+            throw error
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+    }
+
+    public func closeSSHSession(sessionID: String) async throws {
+        do {
+            try await operationExecutor.closeSSHSession(
+                sessionID: sessionID,
+                context: currentExecutionContext()
+            )
+        } catch SecretOperationExecutionError.unavailable {
+            throw SecretOperationError.actionExecutorUnavailable
+        } catch let error as SecretOperationExecutionError {
+            throw mapExecutionError(error)
+        } catch let error as SecretOperationError {
+            throw error
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+        await emitAudit(
+            action: "关闭 SSH transport session",
+            target: "SSH session",
+            referenceCount: 0,
+            result: "已关闭",
+            operation: .secureExecute,
+            status: .completed
+        )
     }
 
     public func deleteRecord(_ reference: String) async throws {
@@ -3404,7 +3535,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             reason: context.reason,
             template: context.template,
             ranges: context.ranges,
-            destination: destination.path
+            destination: destination.path,
+            agentAssessment: context.agentAssessment
         )
         let (descriptor, metadata) = try await plaintextOperation(
             action: .exportPlaintext,
@@ -3414,7 +3546,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         let executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
-        let scope: ExecutionAuthorizationScope? = decision.risk == .approvalRequired && executionWindowEnabled
+        var scope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
             ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
             : nil
         var authorizationPath = try await authorizeIfNeeded(
@@ -3445,6 +3577,42 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         guard operationGeneration == securityGeneration else {
             await abandonExecutionAuthorization(scope: scope)
             throw SecretOperationError.authorizationCancelled
+        }
+
+        // Export has its own reusable scope, but it must obey the same
+        // post-approval promotion rule as execution. If fresh approval is
+        // now required, discard the export lease candidate and perform an
+        // exact one-shot approval without creating/extending a reusable lease.
+        if scope != nil,
+           currentDecision.authorizationRequirement != .reusableApproval {
+            let staleScope = scope
+            scope = nil
+            await abandonExecutionAuthorization(scope: staleScope)
+            authorizationPath = try await authorizeIfNeeded(
+                descriptor,
+                metadata: currentMetadata,
+                decision: currentDecision,
+                expectedGeneration: operationGeneration,
+                executionScope: nil
+            )
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            do {
+                currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+            } catch {
+                throw SecretOperationError.actionExecutionFailed
+            }
+            currentDecision = operationPolicyEngine.evaluate(
+                descriptor,
+                metadata: currentMetadata
+            )
+            guard currentDecision.risk != .denied else {
+                throw SecretOperationError.operationDenied
+            }
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
         }
 
         var key: SymmetricKey
@@ -3629,16 +3797,17 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        switch decision.risk {
-        case .silent:
+        switch decision.authorizationRequirement {
+        case .none:
             return .notRequired
         case .denied:
             throw SecretOperationError.operationDenied
-        case .approvalRequired:
+        case .reusableApproval, .freshApprovalRequired:
             break
         }
 
-        if let executionScope {
+        if decision.authorizationRequirement == .reusableApproval,
+           let executionScope {
             return try await authorizeAgentExecution(
                 descriptor,
                 metadata: metadata,
@@ -3959,7 +4128,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     status: .failure
                 )
             case .operationDenied, .actionExecutorUnavailable, .actionExecutionFailed,
-                 .redirectRequiresReview, .outputQuarantined:
+                 .invalidOperationParameters, .sessionNotFound, .sessionExpired,
+                 .sessionScopeMismatch, .sessionControlUnavailable, .sessionLimitReached,
+                 .batchValidationFailed, .redirectRequiresReview, .outputQuarantined:
                 await emitAudit(
                     action: "本机授权失败",
                     target: decision.normalizedDestination ?? "local",
@@ -3980,6 +4151,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     ) -> ExecutionAuthorizationScope {
         let destination: String?
         let port: Int?
+        let username: String?
         let protocolType: String?
         if descriptor.actionType == .exportPlaintext {
             // The export root is the validated security boundary. The leaf
@@ -3987,10 +4159,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // files within the same root can reuse the same authorization.
             destination = exportDirectory.standardizedFileURL.path
             port = nil
+            username = nil
             protocolType = SecretOperationProtocol.file.rawValue
         } else {
             destination = descriptor.normalizedDestination
             port = descriptor.port
+            username = descriptor.actionType == .sshCommand ? descriptor.parameters["username"] : nil
             protocolType = descriptor.protocolType?.rawValue
         }
         return ExecutionAuthorizationScope(
@@ -3998,6 +4172,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             secretReferenceIDs: descriptor.secretReferences.map(\.description),
             normalizedDestination: destination,
             port: port,
+            username: username,
             protocolType: protocolType,
             actionFamily: descriptor.actionType.rawValue,
             generation: generation
@@ -4201,6 +4376,39 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .authorizationCancelled
         }
         return .authorizationDenied
+    }
+
+    private func mapExecutionError(_ error: SecretOperationExecutionError) -> SecretOperationError {
+        switch error {
+        case .invalidParameter:
+            return .invalidOperationParameters
+        case .batchValidationFailed:
+            return .batchValidationFailed
+        case .sessionNotFound:
+            return .sessionNotFound
+        case .sessionExpired:
+            return .sessionExpired
+        case .sessionScopeMismatch:
+            return .sessionScopeMismatch
+        case .sessionControlUnavailable:
+            return .sessionControlUnavailable
+        case .sessionLimitReached:
+            return .sessionLimitReached
+        case .outputQuarantined, .outputLimitExceeded:
+            return .outputQuarantined
+        case .redirectRequiresReview:
+            return .redirectRequiresReview
+        case .unavailable, .unsupportedAction, .missingSecretReference,
+             .invalidSecretUTF8, .timedOut, .processFailed:
+            return .actionExecutionFailed
+        }
+    }
+
+    private func currentExecutionContext() -> SecretOperationExecutionContext {
+        SecretOperationExecutionContext(
+            principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
+            securityGeneration: securityGeneration
+        )
     }
 
     private func approveWithTimeout(summary: String) async throws {
@@ -4809,18 +5017,20 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         authorizationMode: AuditAuthorizationMode? = nil,
         status: AuditStatus? = nil
     ) async {
+        let auditContext = context ?? AuditContext.current
         let entry = AgentAutomationAuditEntry(
             action: action,
             target: target,
             referenceCount: referenceCount,
             result: result,
-            authorizationMode: authorizationMode
+            authorizationMode: authorizationMode,
+            caller: auditContext?.caller
         )
         await auditObserver?(entry)
         // A production request always arrives through one of the two IPC
         // handlers, which installs AuditContext.current. Do not infer `.agent`
         // here: an unscoped event cannot be safely attributed to a caller.
-        guard let auditContext = context ?? AuditContext.current else {
+        guard let auditContext else {
             return
         }
         guard let auditLog else {
@@ -4840,7 +5050,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             declaredTarget: sanitizedAuditTarget(entry.target),
             status: status ?? auditStatus(for: result),
             exitCode: nil,
-            authorizationMode: authorizationMode
+            authorizationMode: authorizationMode,
+            caller: auditContext.caller
         )
         do {
             // The production daemon supplies an independent Keychain audit key.
@@ -5084,7 +5295,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             result: event.status,
             target: safeAuditTarget(event.declaredTarget),
             referenceCount: event.referenceCount,
-            authorizationMode: event.authorizationMode
+            authorizationMode: event.authorizationMode,
+            caller: event.caller
         )
     }
 

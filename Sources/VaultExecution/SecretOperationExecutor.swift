@@ -8,6 +8,14 @@ public enum SecretOperationExecutionError: Error, Equatable, Sendable {
     case missingSecretReference
     case invalidSecretUTF8
     case invalidParameter
+    case batchValidationFailed
+    case sessionNotFound
+    case sessionExpired
+    case sessionScopeMismatch
+    case sessionControlUnavailable
+    case sessionLimitReached
+    case timedOut
+    case outputLimitExceeded
     case processFailed
     case outputQuarantined
     case redirectRequiresReview
@@ -16,6 +24,7 @@ public enum SecretOperationExecutionError: Error, Equatable, Sendable {
 public enum SecretOperationExecutionCapability: String, Codable, Equatable, Sendable {
     case supported
     case unavailable
+    case invalidParameters
 }
 
 public enum SecretOperationStage: String, Codable, Equatable, Sendable {
@@ -24,8 +33,45 @@ public enum SecretOperationStage: String, Codable, Equatable, Sendable {
     case argumentValidation = "ARGUMENT_VALIDATION"
     case authentication = "AUTHENTICATION"
     case timeout = "TIMEOUT"
+    case connection = "CONNECTION"
+    case hostKey = "HOST_KEY"
     case sshWrapper = "SSH_WRAPPER"
     case remoteCommand = "REMOTE_COMMAND"
+}
+
+public struct SecretOperationExecutionContext: Equatable, Sendable {
+    public let principal: String
+    public let securityGeneration: UInt64
+
+    public init(principal: String, securityGeneration: UInt64) {
+        self.principal = principal
+        self.securityGeneration = securityGeneration
+    }
+}
+
+public struct SSHCommandResult: Codable, Equatable, Sendable {
+    public let index: Int
+    public let status: String
+    public let exitCode: Int32?
+    public let stage: SecretOperationStage?
+    public let stdout: String?
+    public let stderr: String?
+
+    public init(
+        index: Int,
+        status: String,
+        exitCode: Int32? = nil,
+        stage: SecretOperationStage? = nil,
+        stdout: String? = nil,
+        stderr: String? = nil
+    ) {
+        self.index = index
+        self.status = status
+        self.exitCode = exitCode
+        self.stage = stage
+        self.stdout = stdout
+        self.stderr = stderr
+    }
 }
 
 /// The only result shape returned from an Agent secret action.  It contains
@@ -44,6 +90,9 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
     public let listingPreview: String?
     public let localPath: String?
     public let remotePath: String?
+    public let sessionID: String?
+    public let failedIndex: Int?
+    public let results: [SSHCommandResult]?
     public let redacted: Bool
 
     public init(
@@ -60,6 +109,9 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         listingPreview: String? = nil,
         localPath: String? = nil,
         remotePath: String? = nil,
+        sessionID: String? = nil,
+        failedIndex: Int? = nil,
+        results: [SSHCommandResult]? = nil,
         redacted: Bool = true
     ) {
         self.status = status
@@ -75,6 +127,9 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         self.listingPreview = listingPreview
         self.localPath = localPath
         self.remotePath = remotePath
+        self.sessionID = sessionID
+        self.failedIndex = failedIndex
+        self.results = results
         self.redacted = redacted
     }
 }
@@ -99,6 +154,25 @@ public protocol SecretOperationExecuting: Sendable {
         metadata: [SecretPolicyMetadata],
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput
+
+    func execute(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        context: SecretOperationExecutionContext,
+        resolve: @escaping @Sendable (SecretReference) async throws -> Data
+    ) async throws -> SecretOperationOutput
+
+    func sshSessionStatuses(
+        sessionID: String?,
+        context: SecretOperationExecutionContext
+    ) async throws -> [SSHSessionStatus]
+
+    func closeSSHSession(
+        sessionID: String,
+        context: SecretOperationExecutionContext
+    ) async throws
+
+    func invalidateSecurityState() async
 }
 
 public extension SecretOperationExecuting {
@@ -107,6 +181,31 @@ public extension SecretOperationExecuting {
     func preflight(_: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
         .supported
     }
+
+    func execute(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        context _: SecretOperationExecutionContext,
+        resolve: @escaping @Sendable (SecretReference) async throws -> Data
+    ) async throws -> SecretOperationOutput {
+        try await execute(descriptor, metadata: metadata, resolve: resolve)
+    }
+
+    func sshSessionStatuses(
+        sessionID _: String?,
+        context _: SecretOperationExecutionContext
+    ) async throws -> [SSHSessionStatus] {
+        throw SecretOperationExecutionError.unavailable
+    }
+
+    func closeSSHSession(
+        sessionID _: String,
+        context _: SecretOperationExecutionContext
+    ) async throws {
+        throw SecretOperationExecutionError.unavailable
+    }
+
+    func invalidateSecurityState() async {}
 }
 
 /// Runs only purpose-built actions.  It intentionally has no generic command
@@ -116,29 +215,55 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     private static let expectExecutablePath = "/usr/bin/expect"
     private let processRunner: any ProcessRunning
     private let outputSanitizer: OutputSanitizer
+    private let sshSessionManager: SSHSessionManager
     private let timeout: Duration
     private let outputLimitBytes: Int
+    private let batchOutputLimitBytes: Int
+    private let batchTotalTimeout: Duration
 
     public init(
         processRunner: any ProcessRunning = FoundationProcessRunner(),
         outputSanitizer: OutputSanitizer = OutputSanitizer(),
         timeout: Duration = .seconds(30),
-        outputLimitBytes: Int = 1_048_576
+        outputLimitBytes: Int = 1_048_576,
+        batchOutputLimitBytes: Int = 4_194_304,
+        batchTotalTimeout: Duration = .seconds(60),
+        sshSessionManager: SSHSessionManager? = nil
     ) {
         self.processRunner = processRunner
         self.outputSanitizer = outputSanitizer
         self.timeout = timeout
         self.outputLimitBytes = outputLimitBytes
+        self.batchOutputLimitBytes = max(outputLimitBytes, batchOutputLimitBytes)
+        self.batchTotalTimeout = batchTotalTimeout
+        self.sshSessionManager = sshSessionManager ?? SSHSessionManager(processRunner: processRunner)
     }
 
     public func execute(
         _ descriptor: SecretOperationDescriptor,
-        metadata _: [SecretPolicyMetadata],
+        metadata: [SecretPolicyMetadata],
+        resolve: @escaping @Sendable (SecretReference) async throws -> Data
+    ) async throws -> SecretOperationOutput {
+        try await execute(
+            descriptor,
+            metadata: metadata,
+            context: SecretOperationExecutionContext(
+                principal: "unscoped-agent",
+                securityGeneration: 0
+            ),
+            resolve: resolve
+        )
+    }
+
+    public func execute(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        context: SecretOperationExecutionContext,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput {
         switch descriptor.actionType {
         case .sshCommand:
-            return try await executeSSH(descriptor, resolve: resolve)
+            return try await executeSSH(descriptor, context: context, resolve: resolve)
         case .httpRequest, .apiRequest:
             return try await executeHTTP(descriptor, resolve: resolve)
         case .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill:
@@ -148,11 +273,74 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         }
     }
 
+    public func invalidateSecurityState() async {
+        await sshSessionManager.invalidateAll()
+    }
+
+    public func sshSessionStatuses(
+        sessionID: String?,
+        context: SecretOperationExecutionContext
+    ) async throws -> [SSHSessionStatus] {
+        if let sessionID {
+            return [try await sshSessionManager.status(
+                sessionID: sessionID,
+                principal: context.principal,
+                securityGeneration: context.securityGeneration
+            )]
+        }
+        return try await sshSessionManager.statuses(
+            for: context.principal,
+            securityGeneration: context.securityGeneration
+        )
+    }
+
+    public func closeSSHSession(
+        sessionID: String,
+        context: SecretOperationExecutionContext
+    ) async throws {
+        do {
+            try await sshSessionManager.close(
+                sessionID: sessionID,
+                principal: context.principal,
+                securityGeneration: context.securityGeneration
+            )
+        } catch let error as SSHSessionManagerError {
+            throw Self.mapSessionError(error)
+        }
+    }
+
     public func preflight(_ descriptor: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
         switch descriptor.actionType {
         case .sshCommand:
             if !FileManager.default.isExecutableFile(atPath: Self.expectExecutablePath) {
                 return .unavailable
+            }
+            let port = descriptor.port ?? 22
+            guard descriptor.destination?.isEmpty == false,
+                  (1...65_535).contains(port),
+                  reference(for: "passwordRef", in: descriptor) != nil,
+                  reference(for: "usernameRef", in: descriptor) == nil,
+                  let username = descriptor.parameters["username"],
+                  Self.isSafeSSHUsername(username)
+            else {
+                return .invalidParameters
+            }
+            do {
+                if let batch = descriptor.sshCommandBatch {
+                    try batch.validate()
+                } else if let command = descriptor.command {
+                    _ = try SSHRemoteCommandEncoder.parseLegacy(command)
+                } else {
+                    return .invalidParameters
+                }
+            } catch {
+                return .invalidParameters
+            }
+            if let rawTimeout = descriptor.parameters["timeoutMs"],
+               let milliseconds = Int64(rawTimeout) {
+                guard (100...30_000).contains(milliseconds) else { return .invalidParameters }
+            } else if descriptor.parameters["timeoutMs"] != nil {
+                return .invalidParameters
             }
             return .supported
         case .httpRequest, .apiRequest:
@@ -166,91 +354,312 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
 
     private func executeSSH(
         _ descriptor: SecretOperationDescriptor,
+        context: SecretOperationExecutionContext,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput {
         guard let host = descriptor.destination,
-              let command = descriptor.command,
               let passwordReference = reference(for: "passwordRef", in: descriptor)
         else {
             throw SecretOperationExecutionError.invalidParameter
         }
 
-        var secretBuffers: [Data] = []
-        defer {
-            for index in secretBuffers.indices {
-                secretBuffers[index].resetBytes(in: 0..<secretBuffers[index].count)
-            }
-        }
-
-        // OpenSSH requires the login name in its own argv. A username stored
-        // as secret:// would therefore cross the SVLT boundary into a child
-        // process command line. Keep that invariant explicit instead of
-        // pretending the outer Expect stdin transport protects the child.
-        guard reference(for: "usernameRef", in: descriptor) == nil else {
+        guard Self.isSafeSSHHost(host),
+              reference(for: "usernameRef", in: descriptor) == nil,
+              let username = descriptor.parameters["username"],
+              Self.isSafeSSHUsername(username)
+        else {
             throw SecretOperationExecutionError.invalidParameter
-        }
-
-        let username: String
-        if let plainUsername = descriptor.parameters["username"],
-           Self.isSafeSSHUsername(plainUsername) {
-            username = plainUsername
-        } else {
-            throw SecretOperationExecutionError.invalidParameter
-        }
-
-        let passwordData = try await resolve(passwordReference)
-        secretBuffers.append(passwordData)
-        guard let password = String(data: passwordData, encoding: .utf8), !password.isEmpty else {
-            throw SecretOperationExecutionError.invalidSecretUTF8
         }
 
         let port = descriptor.port ?? 22
+        guard (1...65_535).contains(port) else {
+            throw SecretOperationExecutionError.invalidParameter
+        }
+
+        let commands: [SSHCommandSpec]
+        let stopOnFailure: Bool
+        do {
+            if let batch = descriptor.sshCommandBatch {
+                try batch.validate()
+                commands = batch.commands
+                stopOnFailure = batch.stopOnFailure
+            } else if let command = descriptor.command {
+                commands = [try SSHRemoteCommandEncoder.parseLegacy(command)]
+                stopOnFailure = true
+            } else {
+                throw SSHCommandBatchValidationError.empty
+            }
+        } catch SSHRemoteCommandEncodingError.unsupportedLegacySyntax {
+            throw SecretOperationExecutionError.batchValidationFailed
+        } catch {
+            throw SecretOperationExecutionError.batchValidationFailed
+        }
+
         let operationTimeout = try timeout(for: descriptor)
-        let script = Self.expectSSHScript()
-        // `expect -c` executes only the static script. Every runtime field is
-        // hex framing on stdin, so Tcl never reads argv and no
-        // secret reaches the Expect command line or environment.
+        let scope = SSHSessionScope(
+            principal: context.principal,
+            host: host,
+            port: port,
+            username: username,
+            passwordReferenceID: passwordReference.description,
+            securityGeneration: context.securityGeneration
+        )
+
+        var commandResults: [SSHCommandResult] = []
+        commandResults.reserveCapacity(commands.count)
+        var sessionID = descriptor.sessionID
+        var firstFailureIndex: Int?
+        var totalOutputBytes = 0
+        let batchDeadline = ContinuousClock.now.advanced(by: batchTotalTimeout)
+
+        for (index, command) in commands.enumerated() {
+            let commandStart = ContinuousClock.now
+            guard commandStart < batchDeadline else {
+                throw SecretOperationExecutionError.timedOut
+            }
+            let remainingBatchTime = commandStart.duration(to: batchDeadline)
+            let commandTimeout = min(operationTimeout, remainingBatchTime)
+            let remoteCommand: String
+            do {
+                remoteCommand = try SSHRemoteCommandEncoder.encode(command)
+            } catch {
+                throw SecretOperationExecutionError.batchValidationFailed
+            }
+
+            let requestedSessionID = index == 0 ? descriptor.sessionID : sessionID
+            let execution: SSHSessionCommandExecution
+            do {
+                execution = try await sshSessionManager.execute(
+                    scope: scope,
+                    requestedSessionID: requestedSessionID
+                ) { [self] access in
+                    try await executeSSHChannel(
+                        access: access,
+                        host: host,
+                        port: port,
+                        username: username,
+                        passwordReference: passwordReference,
+                        remoteCommand: remoteCommand,
+                        timeout: commandTimeout,
+                        resolve: resolve
+                    )
+                }
+            } catch let error as SSHSessionManagerError {
+                throw Self.mapSessionError(error)
+            } catch ProcessRunError.timedOut {
+                throw SecretOperationExecutionError.timedOut
+            } catch ProcessRunError.outputLimitExceeded {
+                throw SecretOperationExecutionError.outputLimitExceeded
+            }
+
+            sessionID = execution.sessionID ?? sessionID
+            totalOutputBytes += execution.processResult.stdout.count + execution.processResult.stderr.count
+            guard totalOutputBytes <= batchOutputLimitBytes else {
+                throw SecretOperationExecutionError.outputLimitExceeded
+            }
+
+            let sanitized: ProcessResult
+            switch outputSanitizer.sanitize(
+                execution.processResult,
+                fingerprints: execution.outputFingerprints
+            ) {
+            case .quarantined:
+                throw SecretOperationExecutionError.outputQuarantined
+            case let .sanitized(result):
+                sanitized = result
+            }
+            guard let stdout = String(data: sanitized.stdout, encoding: .utf8),
+                  let stderr = String(data: sanitized.stderr, encoding: .utf8)
+            else {
+                throw SecretOperationExecutionError.outputQuarantined
+            }
+
+            let outcome = Self.sshOutcome(
+                for: sanitized.exitCode,
+                stderr: stderr
+            )
+            let commandResult = SSHCommandResult(
+                index: index,
+                status: outcome.status,
+                exitCode: sanitized.exitCode,
+                stage: outcome.stage,
+                stdout: stdout,
+                stderr: stderr
+            )
+            commandResults.append(commandResult)
+            if outcome.status != "COMPLETED" {
+                firstFailureIndex = firstFailureIndex ?? index
+                if stopOnFailure {
+                    for notExecutedIndex in (index + 1)..<commands.count {
+                        commandResults.append(
+                            SSHCommandResult(index: notExecutedIndex, status: "NOT_EXECUTED")
+                        )
+                    }
+                    break
+                }
+            }
+        }
+
+        if descriptor.sshCommandBatch != nil {
+            return SecretOperationOutput(
+                status: firstFailureIndex == nil ? "COMPLETED" : "PARTIAL_FAILED",
+                sessionID: sessionID,
+                failedIndex: firstFailureIndex,
+                results: commandResults,
+                redacted: true
+            )
+        }
+
+        guard let result = commandResults.first else {
+            throw SecretOperationExecutionError.processFailed
+        }
+        return SecretOperationOutput(
+            status: result.status,
+            exitCode: result.exitCode,
+            stage: result.stage,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            sessionID: sessionID,
+            redacted: true
+        )
+    }
+
+    private func executeSSHChannel(
+        access: SSHSessionAccess,
+        host: String,
+        port: Int,
+        username: String,
+        passwordReference: SecretReference,
+        remoteCommand: String,
+        timeout operationTimeout: Duration,
+        resolve: @escaping @Sendable (SecretReference) async throws -> Data
+    ) async throws -> SSHSessionCommandExecution {
+        let timeoutSeconds = Self.expectTimeoutSeconds(for: operationTimeout)
+        if access.requiresAuthentication {
+            var passwordData = try await resolve(passwordReference)
+            defer { passwordData.resetBytes(in: 0..<passwordData.count) }
+            guard let password = String(data: passwordData, encoding: .utf8), !password.isEmpty else {
+                throw SecretOperationExecutionError.invalidSecretUTF8
+            }
+
+            let rawResult: ProcessResult
+            do {
+                rawResult = try await processRunner.run(
+                    ProcessInvocation(
+                        executable: Self.expectExecutablePath,
+                        arguments: ["-c", Self.expectSSHScript()]
+                    ),
+                    stdin: Self.expectSSHInput(
+                        host: host,
+                        port: port,
+                        command: remoteCommand,
+                        controlPath: access.controlPath,
+                        username: username,
+                        password: password,
+                        timeoutSeconds: timeoutSeconds
+                    ),
+                    timeout: operationTimeout,
+                    outputLimitBytes: outputLimitBytes
+                )
+            } catch ProcessRunError.timedOut {
+                return SSHSessionCommandExecution(
+                    processResult: ProcessResult(exitCode: SSHWrapperExitCode.timedOut, stdout: Data(), stderr: Data()),
+                    transportReady: false,
+                    outputFingerprints: OutputSanitizer.fingerprints(for: passwordData)
+                )
+            }
+
+            let sanitized: ProcessResult
+            switch outputSanitizer.sanitize(rawResult, secrets: [passwordData]) {
+            case .quarantined:
+                throw SecretOperationExecutionError.outputQuarantined
+            case let .sanitized(result):
+                sanitized = result
+            }
+            return SSHSessionCommandExecution(
+                processResult: sanitized,
+                transportReady: Self.transportReady(for: sanitized, authenticationAttempt: true),
+                outputFingerprints: OutputSanitizer.fingerprints(for: passwordData)
+            )
+        }
+
         let result: ProcessResult
         do {
             result = try await processRunner.run(
                 ProcessInvocation(
-                    executable: Self.expectExecutablePath,
-                    arguments: ["-c", script]
+                    executable: "/usr/bin/ssh",
+                    arguments: [
+                        "-o", "BatchMode=yes",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "ControlMaster=auto",
+                        "-o", "ControlPersist=300",
+                        "-o", "ControlPath=\(access.controlPath)",
+                        "-o", "ConnectTimeout=\(timeoutSeconds)",
+                        "-p", String(port),
+                        "--",
+                        "\(username)@\(host)",
+                        remoteCommand
+                    ]
                 ),
-                stdin: Self.expectSSHInput(
-                    host: host,
-                    port: port,
-                    command: command,
-                    username: username,
-                    password: password,
-                    timeoutSeconds: Self.expectTimeoutSeconds(for: operationTimeout)
-                ),
+                stdin: Data(),
                 timeout: operationTimeout,
                 outputLimitBytes: outputLimitBytes
             )
         } catch ProcessRunError.timedOut {
-            return SecretOperationOutput(status: "TIMED_OUT", stage: .timeout, redacted: true)
-        }
-
-        switch outputSanitizer.sanitize(result, secrets: secretBuffers) {
-        case .quarantined:
-            throw SecretOperationExecutionError.outputQuarantined
-        case let .sanitized(result):
-            guard let stdout = String(data: result.stdout, encoding: .utf8),
-                  let stderr = String(data: result.stderr, encoding: .utf8)
-            else {
-                throw SecretOperationExecutionError.outputQuarantined
-            }
-            let outcome = Self.sshOutcome(for: result.exitCode)
-            return SecretOperationOutput(
-                status: outcome.status,
-                exitCode: result.exitCode,
-                stage: outcome.stage,
-                stdout: stdout,
-                stderr: stderr,
-                redacted: true
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 124, stdout: Data(), stderr: Data()),
+                transportReady: false,
+                outputFingerprints: access.outputFingerprints
             )
         }
+        return SSHSessionCommandExecution(
+            processResult: result,
+            transportReady: Self.transportReady(for: result, authenticationAttempt: false),
+            outputFingerprints: access.outputFingerprints
+        )
+    }
+
+    private static func mapSessionError(_ error: SSHSessionManagerError) -> SecretOperationExecutionError {
+        switch error {
+        case .sessionNotFound: return .sessionNotFound
+        case .sessionExpired: return .sessionExpired
+        case .scopeMismatch: return .sessionScopeMismatch
+        case .controlUnavailable: return .sessionControlUnavailable
+        case .controlDirectoryUnavailable: return .sessionControlUnavailable
+        case .sessionLimitReached: return .sessionLimitReached
+        }
+    }
+
+    private static func transportReady(
+        for result: ProcessResult,
+        authenticationAttempt: Bool
+    ) -> Bool {
+        if authenticationAttempt {
+            return ![SSHWrapperExitCode.frameRead, SSHWrapperExitCode.frameDecode,
+                     SSHWrapperExitCode.argumentValidation, SSHWrapperExitCode.timedOut,
+                     SSHWrapperExitCode.wrapperFailed, SSHWrapperExitCode.authenticationFailed]
+                .contains(result.exitCode)
+                && !containsHostKeyFailure(result)
+        }
+        return result.exitCode != 255 && !containsHostKeyFailure(result)
+    }
+
+    private static func containsHostKeyFailure(_ result: ProcessResult) -> Bool {
+        let text = String(decoding: result.stderr + result.stdout, as: UTF8.self).lowercased()
+        return text.contains("remote host identification has changed")
+            || text.contains("host key verification failed")
+    }
+
+    private static func isSafeSSHHost(_ host: String) -> Bool {
+        guard (1...255).contains(host.utf8.count),
+              !host.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }),
+              !host.contains(where: { $0.isWhitespace }),
+              !host.contains("/"),
+              !host.contains("@")
+        else {
+            return false
+        }
+        return true
     }
 
     private func executeHTTP(
@@ -403,10 +812,31 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         password: String,
         timeoutSeconds: Int
     ) -> Data {
+        expectSSHInput(
+            host: host,
+            port: port,
+            command: command,
+            controlPath: "/svlt-test-control-path",
+            username: username,
+            password: password,
+            timeoutSeconds: timeoutSeconds
+        )
+    }
+
+    static func expectSSHInput(
+        host: String,
+        port: Int,
+        command: String,
+        controlPath: String,
+        username: String,
+        password: String,
+        timeoutSeconds: Int
+    ) -> Data {
         let fields = [
             host,
             String(port),
             command,
+            controlPath,
             username,
             password,
             String(timeoutSeconds)
@@ -424,7 +854,15 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         data.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func sshOutcome(for exitCode: Int32) -> (status: String, stage: SecretOperationStage?) {
+    private static func sshOutcome(
+        for exitCode: Int32,
+        stderr: String
+    ) -> (status: String, stage: SecretOperationStage?) {
+        let lowercasedStderr = stderr.lowercased()
+        if lowercasedStderr.contains("remote host identification has changed")
+            || lowercasedStderr.contains("host key verification failed") {
+            return ("HOST_KEY_FAILED", .hostKey)
+        }
         switch exitCode {
         case 0:
             return ("COMPLETED", nil)
@@ -473,15 +911,16 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         set host [readHexField]
         set port [readHexField]
         set command [readHexField]
+        set controlPath [readHexField]
         set username [readHexField]
         set password [readHexField]
         set timeoutSeconds [readHexField]
-        if {$host eq "" || $command eq "" || $username eq "" || $password eq ""} { exit \(SSHWrapperExitCode.argumentValidation) }
+        if {$host eq "" || $command eq "" || $controlPath eq "" || $username eq "" || $password eq ""} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
         set timeout $timeoutSeconds
         log_user 1
-        if {[catch {spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" $command}]} {
+        if {[catch {spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ControlMaster=yes -o ControlPersist=300 -o ControlPath=$controlPath -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" $command}]} {
             exit \(SSHWrapperExitCode.wrapperFailed)
         }
         expect {

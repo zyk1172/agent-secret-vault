@@ -5,7 +5,6 @@ import VaultIPC
 @Test func workbenchRequestsRoundTripWithoutPlaintextResponseFields() throws {
     let requests: [IPCRequest] = [
         .workbenchStatus,
-        .encryptText(plaintext: "local-only plaintext", label: nil, policy: .credential),
         .revealReferences(
             references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
             context: RevealContext(
@@ -54,6 +53,14 @@ import VaultIPC
         #expect(!json.contains("secretValue"))
         let decoded = try JSONDecoder().decode(IPCResponse.self, from: encoded)
         #expect(decoded == response)
+    }
+}
+
+@Test func agentIPCRejectsPlaintextEncryptRequestsAtTheWireBoundary() throws {
+    let data = Data(#"{"type":"encryptText","plaintext":"AGENT_IPC_CANARY","policy":"credential"}"#.utf8)
+
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(IPCRequest.self, from: data)
     }
 }
 

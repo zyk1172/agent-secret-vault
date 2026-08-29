@@ -281,18 +281,6 @@ public actor VaultIPCClient {
         return sessionIDs
     }
 
-    public func encryptText(
-        _ plaintext: String,
-        label: String?,
-        policy: SecretPolicy
-    ) async throws -> String {
-        let response = try await send(.encryptText(plaintext: plaintext, label: label, policy: policy))
-        guard case let .created(reference) = response else {
-            throw unexpected(response)
-        }
-        return reference
-    }
-
     public func performSecretOperation(
         _ descriptor: SecretOperationDescriptor
     ) async throws -> SecretOperationOutput {
@@ -301,6 +289,21 @@ public actor VaultIPCClient {
             throw unexpected(response)
         }
         return output
+    }
+
+    public func sshSessionStatuses(sessionID: String? = nil) async throws -> [SSHSessionStatus] {
+        let response = try await send(.sshSessionStatus(sessionID: sessionID))
+        guard case let .sshSessionStatus(sessions) = response else {
+            throw unexpected(response)
+        }
+        return sessions
+    }
+
+    public func closeSSHSession(sessionID: String) async throws {
+        let response = try await send(.sshSessionClose(sessionID: sessionID))
+        guard case .operationCompleted = response else {
+            throw unexpected(response)
+        }
     }
 
     public func encryptSelection(

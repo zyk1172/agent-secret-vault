@@ -154,6 +154,13 @@ public struct AppControlRequestHandler: Sendable {
         case .authorizationUnavailable: return "CATALOG_AUTHORIZATION_UNAVAILABLE"
         case .actionExecutorUnavailable: return "ACTION_EXECUTOR_UNAVAILABLE"
         case .actionExecutionFailed: return "ACTION_EXECUTION_FAILED"
+        case .invalidOperationParameters: return "ARGUMENT_VALIDATION"
+        case .sessionNotFound: return "SESSION_NOT_FOUND"
+        case .sessionExpired: return "SESSION_EXPIRED"
+        case .sessionScopeMismatch: return "SESSION_SCOPE_MISMATCH"
+        case .sessionControlUnavailable: return "SESSION_CONTROL_UNAVAILABLE"
+        case .sessionLimitReached: return "SESSION_LIMIT_REACHED"
+        case .batchValidationFailed: return "BATCH_VALIDATION_FAILED"
         case .redirectRequiresReview: return "REDIRECT_REQUIRES_REVIEW"
         case .outputQuarantined: return "ACTION_OUTPUT_QUARANTINED"
         }

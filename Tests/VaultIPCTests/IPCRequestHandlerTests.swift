@@ -36,7 +36,6 @@ private func handlerCatalogMatch() -> SecretCatalogMatch {
 }
 
 private actor SpyWorkbenchService: WorkbenchServicing {
-    var encryptCalls: [String] = []
     var revealCalls: [[String]] = []
     var exportCalls: [(references: [String], destinationPath: String)] = []
     var searchCalls: [(query: String, field: SecretCatalogField?, limit: Int)] = []
@@ -53,11 +52,6 @@ private actor SpyWorkbenchService: WorkbenchServicing {
             createdAt: Date(timeIntervalSinceReferenceDate: 1),
             updatedAt: Date(timeIntervalSinceReferenceDate: 2)
         )
-    }
-
-    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String {
-        encryptCalls.append(plaintext)
-        return "secret://0123456789ABCDEFGHJKMNPQRS"
     }
 
     func openRevealSession(references: [String], context: RevealContext) async throws -> String {
@@ -139,7 +133,7 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     ))) == .failure(code: "EXECUTE_UNAVAILABLE"))
 }
 
-@Test func handlerReturnsStatusAndNeverPlaintextInEncryptResponse() async throws {
+@Test func handlerDoesNotExposePlaintextEncryptionThroughAgentIPC() async throws {
     let service = SpyWorkbenchService()
     let handler = IPCRequestHandler(service: service)
 
@@ -151,14 +145,10 @@ private actor SpyWorkbenchService: WorkbenchServicing {
         pluginConnected: true
     )))
 
-    let encrypted = try await handler.handle(.encryptText(
-        plaintext: "ASV_CANARY_HANDLER",
-        label: nil,
-        policy: .credential
-    ))
-    #expect(encrypted == .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"))
-    let encoded = try JSONEncoder().encode(encrypted)
-    #expect(!String(decoding: encoded, as: UTF8.self).contains("ASV_CANARY_HANDLER"))
+    let legacyPlaintextRequest = Data(#"{"type":"encryptText","plaintext":"ASV_CANARY_HANDLER","policy":"credential"}"#.utf8)
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(IPCRequest.self, from: legacyPlaintextRequest)
+    }
 }
 
 @Test func handlerRoutesCatalogSearchAsOpaqueMetadataOnly() async throws {

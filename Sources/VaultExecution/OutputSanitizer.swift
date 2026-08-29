@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum OutputQuarantineReason: String, Codable, Equatable, Sendable {
@@ -10,6 +11,19 @@ public enum OutputQuarantineReason: String, Codable, Equatable, Sendable {
 public enum SanitizedProcessResult: Equatable, Sendable {
     case sanitized(ProcessResult)
     case quarantined(reason: OutputQuarantineReason)
+}
+
+/// A non-reversible guard retained by a live SSH transport so a reused
+/// ControlMaster channel can still be checked for secret leakage without
+/// resolving the password again. It contains only a digest and byte length.
+public struct SecretOutputFingerprint: Equatable, Sendable {
+    public let byteCount: Int
+    public let digest: Data
+
+    public init(byteCount: Int, digest: Data) {
+        self.byteCount = byteCount
+        self.digest = digest
+    }
 }
 
 public struct OutputSanitizer: Sendable {
@@ -63,6 +77,67 @@ public struct OutputSanitizer: Sendable {
         ))
     }
 
+    /// Checks output using digests retained by an SSH session. A match is
+    /// quarantined because the plaintext is intentionally unavailable for
+    /// in-place redaction on a reused transport.
+    public func sanitize(
+        _ result: ProcessResult,
+        fingerprints: [SecretOutputFingerprint]
+    ) -> SanitizedProcessResult {
+        guard let stdout = String(data: result.stdout, encoding: .utf8),
+              let stderr = String(data: result.stderr, encoding: .utf8)
+        else {
+            return .quarantined(reason: .invalidUTF8)
+        }
+        guard !Self.containsBinaryControlCharacters(stdout),
+              !Self.containsBinaryControlCharacters(stderr)
+        else {
+            return .quarantined(reason: .binaryOutput)
+        }
+        guard !containsFingerprint(in: stdout, fingerprints: fingerprints),
+              !containsFingerprint(in: stderr, fingerprints: fingerprints)
+        else {
+            return .quarantined(reason: .encodedSecretVariantDetected)
+        }
+        return .sanitized(result)
+    }
+
+    public static func fingerprints(for secret: Data) -> [SecretOutputFingerprint] {
+        fingerprints(for: [secret])
+    }
+
+    private static func fingerprints(for secrets: [Data]) -> [SecretOutputFingerprint] {
+        var values: [SecretOutputFingerprint] = []
+        for secret in secrets where !secret.isEmpty {
+            appendFingerprint(for: secret, to: &values)
+            if let string = String(data: secret, encoding: .utf8) {
+                let variants = [
+                    Data(secret.base64EncodedString().utf8),
+                    Data(string.addingPercentEncoding(withAllowedCharacters: .alphanumerics)?.utf8 ?? string.utf8),
+                    Data(secret.map { String(format: "%02x", $0) }.joined().utf8),
+                    Data(secret.map { String(format: "%02X", $0) }.joined().utf8)
+                ]
+                for variant in variants where variant != secret {
+                    appendFingerprint(for: variant, to: &values)
+                }
+            }
+        }
+        return values
+    }
+
+    private static func appendFingerprint(
+        for value: Data,
+        to values: inout [SecretOutputFingerprint]
+    ) {
+        let fingerprint = SecretOutputFingerprint(
+            byteCount: value.count,
+            digest: Data(SHA256.hash(data: value))
+        )
+        if !values.contains(fingerprint) {
+            values.append(fingerprint)
+        }
+    }
+
     private func redact(_ secrets: [String], in output: String) -> String {
         secrets.reduce(output) { partial, secret in
             partial.replacingOccurrences(of: secret, with: redaction)
@@ -79,6 +154,24 @@ public struct OutputSanitizer: Sendable {
                 output.contains($0)
             }
         }
+    }
+
+    private func containsFingerprint(
+        in output: String,
+        fingerprints: [SecretOutputFingerprint]
+    ) -> Bool {
+        guard !fingerprints.isEmpty else { return false }
+        let bytes = Data(output.utf8)
+        for fingerprint in fingerprints {
+            guard fingerprint.byteCount > 0, fingerprint.byteCount <= bytes.count else { continue }
+            for start in 0...(bytes.count - fingerprint.byteCount) {
+                let end = start + fingerprint.byteCount
+                if Data(SHA256.hash(data: bytes[start..<end])) == fingerprint.digest {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private func encodedVariants(for secretData: Data, secretString: String) -> [String] {

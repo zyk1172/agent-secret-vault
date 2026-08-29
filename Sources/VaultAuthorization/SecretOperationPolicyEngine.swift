@@ -22,9 +22,11 @@ public struct SecretOperationPolicyEngine: Sendable {
     }
 
     private let configuration: Configuration
+    private let sshCommandClassifier: SSHCommandRiskClassifier
 
     public init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
+        self.sshCommandClassifier = SSHCommandRiskClassifier(maxCommandLength: configuration.maxCommandLength)
     }
 
     public func evaluate(
@@ -38,7 +40,17 @@ public struct SecretOperationPolicyEngine: Sendable {
             normalizedDestination: normalizedDestination
         )
         let agentRisk = descriptor.agentAssessment.declaredRisk
-        let effectiveRisk = OperationRisk.max(local.risk, agentRisk)
+        let effectiveRequirement = AuthorizationRequirement.max(
+            local.authorizationRequirement,
+            Self.agentAuthorizationRequirement(for: agentRisk)
+        )
+        let effectiveRisk: OperationRisk = {
+            switch effectiveRequirement {
+            case .none: return .silent
+            case .reusableApproval, .freshApprovalRequired: return .approvalRequired
+            case .denied: return .denied
+            }
+        }()
 
         var reasons = local.reasons
         if agentRisk != .silent {
@@ -49,9 +61,27 @@ public struct SecretOperationPolicyEngine: Sendable {
             risk: effectiveRisk,
             reasons: reasons.map(Self.sanitizeReason),
             normalizedDestination: normalizedDestination,
-            requiredApproval: effectiveRisk == .approvalRequired,
-            policyRuleID: local.policyRuleID
+            requiredApproval: effectiveRequirement.requiresApproval,
+            policyRuleID: local.policyRuleID,
+            authorizationRequirement: effectiveRequirement
         )
+    }
+
+    /// The Agent can request more scrutiny, but its coarse risk hint must not
+    /// be able to create a reusable lease from a locally silent operation. A
+    /// self-declared `approvalRequired` therefore maps to a fresh decision;
+    /// only the local classifier grants reusable-lease semantics.
+    private static func agentAuthorizationRequirement(
+        for risk: OperationRisk
+    ) -> AuthorizationRequirement {
+        switch risk {
+        case .silent:
+            return .none
+        case .approvalRequired:
+            return .freshApprovalRequired
+        case .denied:
+            return .denied
+        }
     }
 
     private func localDecision(
@@ -64,6 +94,7 @@ public struct SecretOperationPolicyEngine: Sendable {
         }
 
         let localRisk: OperationRisk
+        let localRequirement: AuthorizationRequirement
         var reasons: [String]
         let ruleID: String
 
@@ -78,34 +109,45 @@ public struct SecretOperationPolicyEngine: Sendable {
             localRisk = .approvalRequired
             reasons = ["明文暴露、数据删除或安全设置变更必须本机审批"]
             ruleID = "sensitive-control.approval"
+            localRequirement = descriptor.actionType == .exportPlaintext
+                ? .reusableApproval
+                : .freshApprovalRequired
         case .sshCommand:
-            let commandDecision = sshDecision(descriptor.command)
+            let commandDecision = descriptor.sshCommandBatch == nil
+                ? sshCommandClassifier.classify(command: descriptor.command)
+                : sshCommandClassifier.classify(batch: descriptor.sshCommandBatch)
             localRisk = commandDecision.risk
             reasons = commandDecision.reasons
             ruleID = commandDecision.ruleID
+            localRequirement = commandDecision.authorizationRequirement
         case .httpRequest, .apiRequest:
             let httpDecision = httpDecision(descriptor)
             localRisk = httpDecision.risk
             reasons = httpDecision.reasons
             ruleID = httpDecision.ruleID
+            localRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
         case .databaseQuery:
             let databaseDecision = databaseDecision(descriptor.databaseStatement)
             localRisk = databaseDecision.risk
             reasons = databaseDecision.reasons
             ruleID = databaseDecision.ruleID
+            localRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
         case .sftpTransfer:
             let transferDecision = sftpDecision(descriptor)
             localRisk = transferDecision.risk
             reasons = transferDecision.reasons
             ruleID = transferDecision.ruleID
+            localRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
         case .browserLogin, .localAppFill:
             localRisk = .silent
             reasons = ["绑定目标上的普通登录或表单填充"]
             ruleID = "bound-login.silent"
+            localRequirement = .none
         case .localExecution:
             localRisk = .denied
             reasons = ["通用 shell 不得获得 Secret 明文"]
             ruleID = "generic-shell.denied"
+            localRequirement = .denied
         }
 
         let binding = bindingDecision(
@@ -119,7 +161,11 @@ public struct SecretOperationPolicyEngine: Sendable {
             OperationRisk.max(localRisk, binding.risk),
             reasons,
             binding.risk == .denied ? binding.ruleID : ruleID,
-            normalizedDestination
+            normalizedDestination,
+            authorizationRequirement: AuthorizationRequirement.max(
+                localRequirement,
+                binding.risk.authorizationRequirement
+            )
         )
     }
 
@@ -134,6 +180,14 @@ public struct SecretOperationPolicyEngine: Sendable {
         case .sshCommand:
             guard descriptor.protocolType == .ssh else {
                 return ("SSH 操作必须声明 ssh 协议", "ssh.protocol.invalid")
+            }
+            guard !(descriptor.command != nil && descriptor.sshCommandBatch != nil) else {
+                return ("SSH 操作不能同时提供单条命令和批处理", "ssh.command-forms.ambiguous")
+            }
+            if let batch = descriptor.sshCommandBatch {
+                guard (try? batch.validate()) != nil else {
+                    return ("SSH 批处理参数无效", "ssh.batch.invalid")
+                }
             }
             guard let destination = descriptor.destination,
                   !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -297,32 +351,57 @@ public struct SecretOperationPolicyEngine: Sendable {
         return (.silent, [], "destination.bound")
     }
 
-    private func sshDecision(_ command: String?) -> (risk: OperationRisk, reasons: [String], ruleID: String) {
-        guard let command, !command.isEmpty else {
-            return (.denied, ["SSH 命令为空"], "ssh.command.missing")
+    private func authorizationRequirement(
+        for descriptor: SecretOperationDescriptor,
+        risk: OperationRisk
+    ) -> AuthorizationRequirement {
+        guard risk != .denied else { return .denied }
+        switch descriptor.actionType {
+        case .exportPlaintext:
+            return .reusableApproval
+        case .revealPlaintext, .copyPlaintext, .deleteSecret,
+             .changeSecretPolicy, .changeDestinationBinding, .changeAllowlist,
+             .changeAuthorizationRules, .changeKeychain, .migrateMasterKey,
+             .importRecoveryKey, .exportRecoveryKey, .restoreVault, .clearVault,
+             .batchDelete, .resetVault:
+            return .freshApprovalRequired
+        case .httpRequest, .apiRequest:
+            return (descriptor.httpMethod ?? "GET").uppercased() == "DELETE"
+                ? .freshApprovalRequired
+                : risk.authorizationRequirement
+        case .databaseQuery:
+            return databaseRequiresFreshApproval(descriptor.databaseStatement)
+                ? .freshApprovalRequired
+                : risk.authorizationRequirement
+        case .sftpTransfer:
+            switch descriptor.fileOperation {
+            case .delete, .overwrite:
+                return .freshApprovalRequired
+            default:
+                return risk.authorizationRequirement
+            }
+        case .sshCommand:
+            return descriptor.sshCommandBatch == nil
+                ? sshCommandClassifier.classify(command: descriptor.command).authorizationRequirement
+                : sshCommandClassifier.classify(batch: descriptor.sshCommandBatch).authorizationRequirement
+        default:
+            return risk.authorizationRequirement
         }
-        guard command.count <= configuration.maxCommandLength else {
-            return (.denied, ["SSH 命令超过长度限制"], "ssh.command.too-long")
-        }
-        if containsAmbiguousShellSyntax(command) {
-            return (.denied, ["SSH 命令包含无法安全复核的 shell 语法"], "ssh.command.ambiguous-shell")
-        }
+    }
 
-        let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-        guard let commandName = tokens.first?.lowercased() else {
-            return (.denied, ["SSH 命令无法解析"], "ssh.command.unparseable")
+    private func databaseRequiresFreshApproval(_ query: String?) -> Bool {
+        guard let query else { return false }
+        let normalized = query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ";", with: "")
+        if normalized.range(of: #"(?i)\b(drop|truncate)\b"#, options: .regularExpression) != nil {
+            return true
         }
-        let readOnly = Self.readOnlySSHCommands.contains(commandName)
-            || (commandName == "docker" && tokens.dropFirst().first.map { ["ps", "inspect"].contains($0.lowercased()) } == true)
-        if readOnly {
-            return (.silent, ["SSH 命令被本地解析为只读操作"], "ssh.read-only.silent")
+        if normalized.range(of: #"(?i)^\s*delete\b"#, options: .regularExpression) != nil,
+           normalized.range(of: #"(?i)\bwhere\b"#, options: .regularExpression) == nil {
+            return true
         }
-
-        return (
-            .approvalRequired,
-            ["SSH 命令可能修改远程状态，需要本机审批"],
-            "ssh.effect.approval"
-        )
+        return normalized.range(of: #"(?i)\balter\b.*\bdrop\b"#, options: .regularExpression) != nil
     }
 
     private func httpDecision(_ descriptor: SecretOperationDescriptor) -> (risk: OperationRisk, reasons: [String], ruleID: String) {
@@ -467,29 +546,20 @@ public struct SecretOperationPolicyEngine: Sendable {
         } == true
     }
 
-    private func containsAmbiguousShellSyntax(_ command: String) -> Bool {
-        if command.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
-            return true
-        }
-        let disallowed = [";", "&&", "||", "|", ">", "<", "`", "$(", "$" + "{", "&"]
-        if disallowed.contains(where: command.contains) {
-            return true
-        }
-        return command.contains("*") || command.contains("?") || command.contains("[") || command.contains("]")
-    }
-
     private func decision(
         _ risk: OperationRisk,
         _ reasons: [String],
         _ ruleID: String,
-        _ destination: String?
+        _ destination: String?,
+        authorizationRequirement: AuthorizationRequirement? = nil
     ) -> PolicyDecision {
         PolicyDecision(
             risk: risk,
             reasons: reasons,
             normalizedDestination: destination,
-            requiredApproval: risk == .approvalRequired,
-            policyRuleID: ruleID
+            requiredApproval: (authorizationRequirement ?? risk.authorizationRequirement).requiresApproval,
+            policyRuleID: ruleID,
+            authorizationRequirement: authorizationRequirement
         )
     }
 
@@ -497,8 +567,4 @@ public struct SecretOperationPolicyEngine: Sendable {
         String(reason.replacingOccurrences(of: "\n", with: " ").prefix(240))
     }
 
-    private static let readOnlySSHCommands: Set<String> = [
-        "hostname", "uptime", "df", "du", "ps", "uname", "whoami", "id", "date", "free", "w", "last",
-        "ls", "cat", "head", "tail", "grep", "stat"
-    ]
 }

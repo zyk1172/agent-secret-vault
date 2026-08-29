@@ -13,6 +13,7 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
     public let secretReferenceIDs: [String]
     public let normalizedDestination: String?
     public let port: Int?
+    public let username: String?
     public let protocolType: String?
     public let actionFamily: String
     public let generation: UInt64
@@ -22,6 +23,7 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
         secretReferenceIDs: [String],
         normalizedDestination: String?,
         port: Int?,
+        username: String? = nil,
         protocolType: String?,
         actionFamily: String,
         generation: UInt64
@@ -30,6 +32,7 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
         self.secretReferenceIDs = Array(Set(secretReferenceIDs)).sorted()
         self.normalizedDestination = normalizedDestination
         self.port = port
+        self.username = username
         self.protocolType = protocolType
         self.actionFamily = actionFamily
         self.generation = generation

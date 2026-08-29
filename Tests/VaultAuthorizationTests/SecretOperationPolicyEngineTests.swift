@@ -43,7 +43,9 @@ import VaultCore
     )
     let metadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
 
-    #expect(engine().evaluate(descriptor, metadata: [metadata]).risk == .approvalRequired)
+    let decision = engine().evaluate(descriptor, metadata: [metadata])
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
 }
 
 @Test func deniedAgentHintRemainsDenied() throws {
@@ -221,6 +223,158 @@ import VaultCore
 
     #expect(engine().evaluate(reveal, metadata: [metadata]).risk == .approvalRequired)
     #expect(engine().evaluate(generic, metadata: []).risk == .denied)
+}
+
+@Test func destructiveSSHRequiresFreshApprovalEvenWhenAgentClaimsReadOnly() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "rm -rf /share/svlt-test",
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .silent,
+            reason: "maintenance",
+            intendedEffect: "read-only"
+        )
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.policyRuleID == "ssh.destructive.fresh-approval")
+}
+
+@Test func unknownSSHCommandRequiresFreshApprovalRatherThanSilentReuse() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        protocolType: .ssh,
+        command: "custom-maintenance --check",
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .silent,
+            reason: "check",
+            intendedEffect: "inspect status"
+        )
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+}
+
+@Test func structuredSSHBatchUsesHighestRequirementBeforeExecution() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let batch = SSHCommandBatch(commands: [
+        SSHCommandSpec(executable: "whoami"),
+        SSHCommandSpec(executable: "mkdir", arguments: ["/share/svlt-test"]),
+        SSHCommandSpec(executable: "rm", arguments: ["-rf", "/share/svlt-test"]),
+        SSHCommandSpec(executable: "df", arguments: ["-h"])
+    ])
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        sshCommandBatch: batch,
+        requestedEffects: ["ssh-batch"]
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.policyRuleID == "ssh.destructive.fresh-approval")
+}
+
+@Test func shellExecutablesAreDeniedEvenWhenStructured() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        protocolType: .ssh,
+        sshCommandBatch: SSHCommandBatch(commands: [
+            SSHCommandSpec(executable: "/bin/sh", arguments: ["-c", "id"])
+        ])
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.risk == .denied)
+    #expect(decision.authorizationRequirement == .denied)
+}
+
+@Test func commandWrappersAndBroadFilesystemMutationsRequireFreshApproval() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    let commands = [
+        SSHCommandSpec(executable: "/usr/bin/env", arguments: ["/bin/sh", "-c", "rm -rf /"]),
+        SSHCommandSpec(executable: "cp", arguments: ["-f", "/tmp/a", "/etc/passwd"]),
+        SSHCommandSpec(executable: "mv", arguments: ["/tmp/a", "/etc/passwd"]),
+        SSHCommandSpec(executable: "chmod", arguments: ["000", "/etc/passwd"]),
+        SSHCommandSpec(executable: "chown", arguments: ["root", "/etc/passwd"]),
+        SSHCommandSpec(executable: "ln", arguments: ["-sf", "/tmp/a", "/etc/passwd"]),
+        SSHCommandSpec(executable: "install", arguments: ["/tmp/a", "/etc/passwd"]),
+        SSHCommandSpec(executable: "tee", arguments: ["/etc/passwd"])
+    ]
+
+    for command in commands {
+        let descriptor = SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            sshCommandBatch: SSHCommandBatch(commands: [command])
+        )
+        let decision = engine().evaluate(descriptor, metadata: metadata)
+        #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    }
+}
+
+@Test func transportSessionIDDoesNotChangeTheOperationAuthorizationHash() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let base = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "mkdir /share/svlt-test",
+        parameters: ["passwordRef": reference.description, "username": "admin"]
+    )
+    let withSession = SecretOperationDescriptor(
+        actionType: base.actionType,
+        secretReferences: base.secretReferences,
+        destination: base.destination,
+        port: base.port,
+        protocolType: base.protocolType,
+        command: base.command,
+        sessionID: "ssh_session_opaque",
+        requestedEffects: base.requestedEffects,
+        parameters: base.parameters,
+        agentAssessment: base.agentAssessment
+    )
+
+    #expect(base.operationHash == withSession.operationHash)
 }
 
 private func engine() -> SecretOperationPolicyEngine {

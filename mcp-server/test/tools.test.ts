@@ -59,6 +59,9 @@ describe("MCP tool contracts", () => {
       "secret_catalog_file_preflight",
       "secret_inspect_reference",
       "ssh_command_with_secret",
+      "ssh_batch_with_secret",
+      "ssh_session_status",
+      "ssh_session_close",
       "local_http_request_with_secret",
       "api_request_with_token",
       "database_query_with_secret",
@@ -711,6 +714,103 @@ describe("MCP tool contracts", () => {
     });
     expect(() => definition.outputSchema.parse(result.structuredContent)).not.toThrow();
     expect(JSON.stringify(result.structuredContent)).not.toContain("plaintext-secret-value");
+  });
+
+  it("sends structured SSH batches with an opaque session handle", async () => {
+    const client = new FakeClient([operationResponse({
+      sessionID: "ssh_session_test",
+      results: [
+        { index: 0, status: "COMPLETED", exitCode: 0, stdout: "zyk", stderr: "" },
+        { index: 1, status: "COMPLETED", exitCode: 0, stdout: "safe", stderr: "" }
+      ]
+    })]);
+
+    const result = await tool(client, "ssh_batch_with_secret").handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      sessionID: "ssh_session_previous",
+      commands: [
+        { executable: "whoami", arguments: [] },
+        { executable: "printf", arguments: ["a b", "$(id)"] }
+      ]
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "COMPLETED",
+      sessionID: "ssh_session_test",
+      results: [
+        { index: 0, status: "COMPLETED", exitCode: 0, stdoutPreview: "zyk", stderrPreview: "" },
+        { index: 1, status: "COMPLETED", exitCode: 0, stdoutPreview: "safe", stderrPreview: "" }
+      ],
+      redacted: true
+    });
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor).toMatchObject({
+      actionType: "sshCommand",
+      destination: "qnap.local",
+      sessionID: "ssh_session_previous",
+      sshCommandBatch: {
+        stopOnFailure: true,
+        commands: [
+          { executable: "whoami", arguments: [] },
+          { executable: "printf", arguments: ["a b", "$(id)"] }
+        ]
+      }
+    });
+    expect(request.descriptor.command).toBeUndefined();
+    expect(JSON.stringify(request)).not.toContain("ASV_CANARY_BATCH_PASSWORD");
+  });
+
+  it("rejects oversized structured SSH batches before IPC", async () => {
+    const client = new FakeClient([]);
+    const commands = Array.from({ length: 33 }, () => ({ executable: "hostname", arguments: [] }));
+
+    await expect(tool(client, "ssh_batch_with_secret").handler({
+      host: "qnap.local",
+      passwordRef: reference,
+      commands
+    })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("inspects and closes only opaque SSH transport handles", async () => {
+    const client = new FakeClient([
+      {
+        type: "sshSessionStatus",
+        sessions: [{
+          sessionID: "ssh_session_test",
+          host: "qnap.local",
+          port: 22,
+          status: "active",
+          idleExpiresIn: 299
+        }]
+      },
+      { type: "operationCompleted" }
+    ]);
+
+    const statusResult = await tool(client, "ssh_session_status").handler({});
+    expect(statusResult.structuredContent).toEqual({
+      status: "ACTIVE",
+      sessions: [{
+        sessionID: "ssh_session_test",
+        host: "qnap.local",
+        port: 22,
+        status: "active",
+        idleExpiresIn: 299
+      }]
+    });
+
+    const closeResult = await tool(client, "ssh_session_close").handler({
+      sessionID: "ssh_session_test"
+    });
+    expect(closeResult.structuredContent).toEqual({ status: "CLOSED" });
+    expect(client.requests).toEqual([
+      { type: "sshSessionStatus" },
+      { type: "sshSessionClose", sessionID: "ssh_session_test" }
+    ]);
   });
 
   it("does not let a low agent hint hide a dangerous SSH command", async () => {

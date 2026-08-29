@@ -207,7 +207,11 @@ public final class AppIPCController: @unchecked Sendable {
         do {
             let authenticated = try IPCFrameCodec.decode(AuthenticatedIPCRequest.self, from: frame)
             let request = try authenticator.authenticate(authenticated)
-            let response = try await handler.handle(request, principal: principal)
+            let response = try await handler.handle(
+                request,
+                principal: principal,
+                caller: authenticated.caller
+            )
             return try IPCFrameCodec.encode(response)
         } catch IPCAuthenticationError.invalidCapabilityToken {
             Self.log(code: "IPC_AUTH_FAILED")

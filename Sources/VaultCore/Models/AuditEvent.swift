@@ -1,5 +1,92 @@
 import Foundation
 
+public enum AuditCallerTrust: String, Codable, Equatable, Sendable {
+    case selfDeclared = "self-declared"
+}
+
+/// Display-only MCP caller metadata. It is deliberately separate from the
+/// kernel-derived `AuditContext.principal`, which remains the only identity
+/// used for authorization and lease isolation.
+public struct AuditCaller: Codable, Equatable, Sendable {
+    public let displayName: String
+    public let version: String?
+    public let trust: AuditCallerTrust
+
+    public init(name: String?, version: String? = nil) {
+        let sanitizedName = Self.sanitize(name, fallback: "Unknown MCP Client", maxBytes: 64)
+        self.displayName = sanitizedName ?? "Unknown MCP Client"
+        self.version = Self.sanitize(version, fallback: nil, maxBytes: 32)
+        self.trust = .selfDeclared
+    }
+
+    public init(displayName: String, version: String? = nil, trust: AuditCallerTrust = .selfDeclared) {
+        self.displayName = Self.sanitize(displayName, fallback: "Unknown MCP Client", maxBytes: 64)
+            ?? "Unknown MCP Client"
+        self.version = Self.sanitize(version, fallback: nil, maxBytes: 32)
+        self.trust = trust
+    }
+
+    public static let unknownMCPClient = Self(name: nil)
+
+    public var displayLabel: String {
+        if let version, !version.isEmpty {
+            return "\(displayName)（自报 \(version)）"
+        }
+        return "\(displayName)（自报）"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case displayName
+        case version
+        case trust
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            displayName: try container.decode(String.self, forKey: .displayName),
+            version: try container.decodeIfPresent(String.self, forKey: .version),
+            trust: try container.decodeIfPresent(AuditCallerTrust.self, forKey: .trust) ?? .selfDeclared
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encodeIfPresent(version, forKey: .version)
+        try container.encode(trust, forKey: .trust)
+    }
+
+    private static func sanitize(_ value: String?, fallback: String?, maxBytes: Int) -> String? {
+        guard let value else { return fallback }
+        let stripped = value.unicodeScalars
+            .filter {
+                $0.value >= 0x20
+                    && $0.value != 0x7F
+                    && $0.value != 0x2028
+                    && $0.value != 0x2029
+            }
+            .map(String.init)
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stripped.isEmpty,
+              !stripped.localizedCaseInsensitiveContains("secret://"),
+              !stripped.contains("/"),
+              !stripped.contains("\\"),
+              !stripped.contains("://")
+        else {
+            return fallback
+        }
+        var bounded = ""
+        for scalar in stripped.unicodeScalars {
+            let scalarText = String(scalar)
+            guard bounded.utf8.count + scalarText.utf8.count <= maxBytes else { break }
+            bounded.append(contentsOf: scalarText)
+        }
+        return bounded.isEmpty ? fallback : bounded
+    }
+}
+
 public struct AuditEvent: Codable, Equatable, Sendable {
     public static let allowedEncodedKeys: Set<String> = [
         "eventID",
@@ -14,6 +101,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         "risk",
         "authorizationOutcome",
         "authorizationMode",
+        "caller",
         "declaredTarget",
         "status",
         "exitCode"
@@ -37,6 +125,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
     /// `authorizationOutcome` preserves wire compatibility with older App and
     /// Agent builds that only understand approved/not-required.
     public let authorizationMode: AuditAuthorizationMode?
+    public let caller: AuditCaller?
     public let declaredTarget: String?
     public let status: AuditStatus
     public let exitCode: Int32?
@@ -56,7 +145,8 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         declaredTarget: String?,
         status: AuditStatus,
         exitCode: Int32?,
-        authorizationMode: AuditAuthorizationMode? = nil
+        authorizationMode: AuditAuthorizationMode? = nil,
+        caller: AuditCaller? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -70,6 +160,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         self.risk = risk
         self.authorizationOutcome = authorizationOutcome
         self.authorizationMode = authorizationMode
+        self.caller = caller
         self.declaredTarget = declaredTarget
         self.status = status
         self.exitCode = exitCode
@@ -88,6 +179,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         case risk
         case authorizationOutcome
         case authorizationMode
+        case caller
         case declaredTarget
         case status
         case exitCode
@@ -116,6 +208,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         self.risk = try container.decode(Int.self, forKey: .risk)
         self.authorizationOutcome = try container.decode(AuditAuthorizationOutcome.self, forKey: .authorizationOutcome)
         self.authorizationMode = try container.decodeIfPresent(AuditAuthorizationMode.self, forKey: .authorizationMode)
+        self.caller = try container.decodeIfPresent(AuditCaller.self, forKey: .caller)
         self.declaredTarget = try container.decodeIfPresent(String.self, forKey: .declaredTarget)
         self.status = try container.decode(AuditStatus.self, forKey: .status)
         self.exitCode = try container.decodeIfPresent(Int32.self, forKey: .exitCode)
@@ -135,6 +228,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         try container.encode(risk, forKey: .risk)
         try container.encode(authorizationOutcome, forKey: .authorizationOutcome)
         try container.encodeIfPresent(authorizationMode, forKey: .authorizationMode)
+        try container.encodeIfPresent(caller, forKey: .caller)
         try container.encodeIfPresent(declaredTarget, forKey: .declaredTarget)
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(exitCode, forKey: .exitCode)
@@ -270,17 +364,20 @@ public struct AuditContext: Equatable, Sendable {
     public let principal: String
     public let correlationID: UUID
     public let requestID: UUID?
+    public let caller: AuditCaller?
 
     public init(
         source: AuditSource,
         correlationID: UUID = UUID(),
         requestID: UUID? = nil,
-        principal: String? = nil
+        principal: String? = nil,
+        caller: AuditCaller? = nil
     ) {
         self.source = source
         self.principal = principal ?? source.rawValue
         self.correlationID = correlationID
         self.requestID = requestID
+        self.caller = caller
     }
 
     public func withRequestID(_ requestID: UUID?) -> Self {
@@ -288,7 +385,8 @@ public struct AuditContext: Equatable, Sendable {
             source: source,
             correlationID: correlationID,
             requestID: requestID,
-            principal: principal
+            principal: principal,
+            caller: caller
         )
     }
 
@@ -406,6 +504,7 @@ public struct CatalogSecurityAuditEntry: Codable, Equatable, Identifiable, Senda
     public let operation: AuditOperation
     public let authorizationOutcome: AuditAuthorizationOutcome
     public let authorizationMode: AuditAuthorizationMode?
+    public let caller: AuditCaller?
     public let result: AuditStatus
     public let target: String
     public let referenceCount: Int
@@ -419,7 +518,8 @@ public struct CatalogSecurityAuditEntry: Codable, Equatable, Identifiable, Senda
         result: AuditStatus,
         target: String,
         referenceCount: Int,
-        authorizationMode: AuditAuthorizationMode? = nil
+        authorizationMode: AuditAuthorizationMode? = nil,
+        caller: AuditCaller? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -427,6 +527,7 @@ public struct CatalogSecurityAuditEntry: Codable, Equatable, Identifiable, Senda
         self.operation = operation
         self.authorizationOutcome = authorizationOutcome
         self.authorizationMode = authorizationMode
+        self.caller = caller
         self.result = result
         self.target = target
         self.referenceCount = max(0, referenceCount)

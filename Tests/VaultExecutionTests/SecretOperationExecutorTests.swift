@@ -177,6 +177,104 @@ import VaultCore
     }
 }
 
+@Test func sshBatchUsesOneAuthenticatedTransportAndIndependentResults() async throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let password = Data("ASV_CANARY_BATCH_PASSWORD".utf8)
+    let runner = BatchProcessRunner(
+        firstResult: ProcessResult(exitCode: 0, stdout: Data("nas\n".utf8), stderr: Data()),
+        commandResults: [
+            ProcessResult(exitCode: 0, stdout: Data("zyk\n".utf8), stderr: Data()),
+            ProcessResult(exitCode: 0, stdout: Data("/share\n".utf8), stderr: Data()),
+            ProcessResult(exitCode: 0, stdout: Data("Filesystem\n".utf8), stderr: Data())
+        ]
+    )
+    let resolveCount = AsyncCount()
+    let executor = LocalSecretOperationExecutor(processRunner: runner)
+    let batch = SSHCommandBatch(commands: [
+        SSHCommandSpec(executable: "whoami"),
+        SSHCommandSpec(executable: "pwd"),
+        SSHCommandSpec(executable: "df", arguments: ["-h", "/share/external/DEV3303_1"])
+    ])
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        sshCommandBatch: batch,
+        parameters: ["passwordRef": reference.description, "username": "admin"]
+    )
+
+    let output = try await executor.execute(
+        descriptor,
+        metadata: [],
+        resolve: { _ in
+            await resolveCount.increment()
+            return password
+        }
+    )
+
+    #expect(output.status == "COMPLETED")
+    #expect(output.results?.map(\.status) == ["COMPLETED", "COMPLETED", "COMPLETED"])
+    #expect(output.results?.map(\.index) == [0, 1, 2])
+    #expect(output.sessionID?.hasPrefix("ssh_session_") == true)
+    #expect(await resolveCount.value == 1)
+
+    let invocations = await runner.invocations
+    #expect(invocations.filter { $0.executable == "/usr/bin/expect" }.count == 1)
+    #expect(invocations.filter { $0.executable == "/usr/bin/ssh" && $0.arguments.contains("check") }.count == 3)
+    // The first channel is opened by the Expect-backed authentication call;
+    // subsequent channels use direct ControlMaster requests.
+    #expect(invocations.filter { $0.executable == "/usr/bin/ssh" && !$0.arguments.contains("check") }.count == 2)
+    #expect(!invocations.flatMap(\.arguments).contains("ASV_CANARY_BATCH_PASSWORD"))
+
+    let directCommands = invocations
+        .filter { $0.executable == "/usr/bin/ssh" && !$0.arguments.contains("check") }
+        .compactMap(\.arguments.last)
+    #expect(directCommands == [
+        try SSHRemoteCommandEncoder.encode(SSHCommandSpec(executable: "pwd")),
+        try SSHRemoteCommandEncoder.encode(SSHCommandSpec(executable: "df", arguments: ["-h", "/share/external/DEV3303_1"]))
+    ])
+}
+
+@Test func sshBatchStopsAfterFirstFailureAndMarksRemainingCommandsNotExecuted() async throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let runner = BatchProcessRunner(
+        firstResult: ProcessResult(exitCode: 0, stdout: Data("ok\n".utf8), stderr: Data()),
+        commandResults: [
+            ProcessResult(exitCode: 1, stdout: Data(), stderr: Data("remote failed".utf8))
+        ]
+    )
+    let executor = LocalSecretOperationExecutor(processRunner: runner)
+    let output = try await executor.execute(
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            sshCommandBatch: SSHCommandBatch(commands: [
+                SSHCommandSpec(executable: "pwd"),
+                SSHCommandSpec(executable: "false"),
+                SSHCommandSpec(executable: "hostname")
+            ]),
+            parameters: ["passwordRef": reference.description, "username": "admin"]
+        ),
+        metadata: [],
+        resolve: { _ in Data("ASV_CANARY_BATCH_PASSWORD".utf8) }
+    )
+
+    #expect(output.status == "PARTIAL_FAILED")
+    #expect(output.failedIndex == 1)
+    #expect(output.results?.map(\.status) == ["COMPLETED", "FAILED", "NOT_EXECUTED"])
+    #expect(output.results?[1].stage == .remoteCommand)
+    let invocations = await runner.invocations
+    #expect(invocations.filter { $0.executable == "/usr/bin/ssh" && $0.arguments.contains("check") }.count == 2)
+    // The first command is the Expect-backed authenticated channel and the
+    // failing second command is the only direct channel that should run.
+    #expect(invocations.filter { $0.executable == "/usr/bin/ssh" && !$0.arguments.contains("check") }.count == 1)
+}
+
 private func sshDescriptor(
     reference: SecretReference,
     parameters: [String: String]? = nil
@@ -211,9 +309,14 @@ private actor CapturingProcessRunner: ProcessRunning {
         timeout: Duration,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
-        self.invocation = invocation
-        self.stdin = stdin
-        self.timeout = timeout
+        if self.invocation == nil {
+            self.invocation = invocation
+            self.stdin = stdin
+            self.timeout = timeout
+        }
+        if invocation.arguments.contains("check") {
+            return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+        }
         return result
     }
 }
@@ -229,5 +332,43 @@ private actor TimeoutProcessRunner: ProcessRunning {
     ) async throws -> ProcessResult {
         self.timeout = timeout
         throw ProcessRunError.timedOut
+    }
+}
+
+private actor BatchProcessRunner: ProcessRunning {
+    private let firstResult: ProcessResult
+    private var commandResults: [ProcessResult]
+    private(set) var invocations: [ProcessInvocation] = []
+
+    init(firstResult: ProcessResult, commandResults: [ProcessResult]) {
+        self.firstResult = firstResult
+        self.commandResults = commandResults
+    }
+
+    func run(
+        _ invocation: ProcessInvocation,
+        stdin _: Data,
+        timeout _: Duration,
+        outputLimitBytes _: Int
+    ) async throws -> ProcessResult {
+        invocations.append(invocation)
+        if invocation.executable == "/usr/bin/expect" {
+            return firstResult
+        }
+        if invocation.arguments.contains("check") {
+            return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+        }
+        guard !commandResults.isEmpty else {
+            return ProcessResult(exitCode: 99, stdout: Data(), stderr: Data("unexpected command".utf8))
+        }
+        return commandResults.removeFirst()
+    }
+}
+
+private actor AsyncCount {
+    private(set) var value = 0
+
+    func increment() {
+        value += 1
     }
 }

@@ -42,6 +42,18 @@ export const AgentRiskAssessment = z
   .strict();
 export type AgentRiskAssessment = z.infer<typeof AgentRiskAssessment>;
 
+// This is display-only metadata supplied by the MCP client. The Swift IPC
+// layer derives the security principal from the peer process and never uses
+// this value for authorization or lease isolation.
+export const AgentCallerIdentity = z
+  .object({
+    name: z.string().trim().min(1).max(64),
+    version: z.string().trim().min(1).max(32).optional(),
+    transport: z.string().trim().min(1).max(32).default("mcp")
+  })
+  .strict();
+export type AgentCallerIdentity = z.infer<typeof AgentCallerIdentity>;
+
 export const WorkbenchStatus = z.object({
   locked: z.boolean(),
   ipcAvailable: z.boolean(),
@@ -587,6 +599,46 @@ export const SecretOperationProtocol = z.enum([
 ]);
 export type SecretOperationProtocol = z.infer<typeof SecretOperationProtocol>;
 
+export const SSHCommandSpec = z
+  .object({
+    executable: z.string().min(1).max(128),
+    arguments: z.array(z.string().max(4_096)).max(32).default([])
+  })
+  .strict();
+export type SSHCommandSpec = z.infer<typeof SSHCommandSpec>;
+
+export const SSHCommandBatch = z
+  .object({
+    commands: z.array(SSHCommandSpec).min(1).max(32),
+    stopOnFailure: z.boolean().default(true)
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const encodedBytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    if (encodedBytes > 256 * 1024) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        origin: "string",
+        maximum: 256 * 1024,
+        type: "string",
+        inclusive: true,
+        message: "SSH command batch exceeds the encoded size limit"
+      });
+    }
+  });
+export type SSHCommandBatch = z.infer<typeof SSHCommandBatch>;
+
+export const SSHSessionStatus = z
+  .object({
+    sessionID: z.string().min(1).max(128),
+    host: z.string().min(1).max(253),
+    port: z.number().int().min(1).max(65_535),
+    status: z.literal("active"),
+    idleExpiresIn: z.number().finite().min(0).max(1_800)
+  })
+  .strict();
+export type SSHSessionStatus = z.infer<typeof SSHSessionStatus>;
+
 export const SecretFileOperation = z.enum([
   "list",
   "read",
@@ -613,6 +665,8 @@ export const SecretOperationDescriptor = z
     fileOperation: SecretFileOperation.nullable().optional(),
     fileTarget: z.string().nullable().optional(),
     localAppBundleID: z.string().nullable().optional(),
+    sessionID: z.string().min(1).max(128).nullable().optional(),
+    sshCommandBatch: SSHCommandBatch.nullable().optional(),
     requestedEffects: z.array(z.string()),
     parameters: z.record(z.string(), z.string()),
     agentAssessment: AgentRiskAssessment
@@ -623,6 +677,18 @@ export type SecretOperationDescriptor = z.infer<typeof SecretOperationDescriptor
 export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("status") }).strict(),
   z.object({ type: z.literal("workbenchStatus") }).strict(),
+  z
+    .object({
+      type: z.literal("sshSessionStatus"),
+      sessionID: z.string().min(1).max(128).optional()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("sshSessionClose"),
+      sessionID: z.string().min(1).max(128)
+    })
+    .strict(),
   z
     .object({
       type: z.literal("searchCatalog"),
@@ -789,6 +855,7 @@ export type IpcRequest = z.infer<typeof IpcRequest>;
 export const AuthenticatedIpcRequest = z
   .object({
     capabilityToken: CapabilityToken,
+    caller: AgentCallerIdentity.optional(),
     request: IpcRequest
   })
   .strict();
@@ -800,6 +867,8 @@ export const SecretOperationStage = z.enum([
   "ARGUMENT_VALIDATION",
   "AUTHENTICATION",
   "TIMEOUT",
+  "CONNECTION",
+  "HOST_KEY",
   "SSH_WRAPPER",
   "REMOTE_COMMAND"
 ]);
@@ -820,6 +889,16 @@ export const SecretOperationOutput = z
     listingPreview: z.string().optional(),
     localPath: z.string().optional(),
     remotePath: z.string().optional(),
+    sessionID: z.string().min(1).max(128).optional(),
+    failedIndex: z.number().int().min(0).optional(),
+    results: z.array(z.object({
+      index: z.number().int().min(0),
+      status: z.string().min(1),
+      exitCode: z.number().int().optional(),
+      stage: SecretOperationStage.optional(),
+      stdout: z.string().optional(),
+      stderr: z.string().optional()
+    }).strict()).max(32).optional(),
     redacted: z.boolean()
   })
   .strict();
@@ -897,6 +976,12 @@ export const IpcResponse = z.discriminatedUnion("type", [
     .object({
       type: z.literal("secretOperation"),
       output: SecretOperationOutput
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("sshSessionStatus"),
+      sessions: z.array(SSHSessionStatus).max(32)
     })
     .strict(),
   z.object({ type: z.literal("operationCompleted") }).strict(),

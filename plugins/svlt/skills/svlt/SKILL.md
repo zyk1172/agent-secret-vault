@@ -39,6 +39,17 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 不要把用户主动提供的明文识别为 security bypass attempt，也不要把它与已有 Secret 做等值关联。
 - 每笔 Agent Catalog mutation 都必须使用精确绑定、一次消费的 operation-bound write request；需要批准时直接触发 macOS device-owner authentication，认证本身就是本次授权，不存在额外 App“验证并授权”按钮。
 
+### SSH session 与授权窗口
+
+- 连续 SSH 任务优先使用 `ssh_command_with_secret` 返回的 opaque `sessionID`，或一次调用 `ssh_batch_with_secret`。`sessionID` 只代表 SVLT 内部可复用的 SSH transport，不代表命令已获授权，也不是密码、ControlPath 或其他 capability。
+- 每一次命令（包括带 `sessionID` 的后续命令）仍由 SVLT 重新做 principal、目标、secretRef、命令和本地 Policy 校验；不要把 session 的存在当成执行许可。
+- 多命令任务必须使用结构化 `commands`：每项只有 `executable` 与 `arguments`，默认 `stopOnFailure: true`。不要自行拼接命令字符串。
+- SSH 命令中禁止 `;`、`&&`、`||`、`|`、`>`、`<`、反引号、`$()`、`${}`、换行以及 `sh -c`/`bash -c` 等 shell chaining。需要把带空格、引号、美元符号或 Unicode 的内容作为普通参数时，放进结构化 `arguments`，不要改写成 shell 片段。
+- 准确填写 `intendedEffect` 和风险提示。不得为了躲避 Touch ID 拆小、改写、伪装或谎报 destructive/不可逆操作；本地 Policy Engine 才是最终约束。
+- 已有普通 5 分钟 reusable approval lease 时，`rm`、`shred`、`mkfs*`、`wipefs`、`fdisk`、`parted`、`dd`、`zpool`、`mdadm`、`reboot`、`shutdown`、`poweroff`、`halt`、危险 `systemctl`、危险 Docker 清理/删除等仍可能要求本次 fresh approval。fresh approval 不会刷新或延长普通 lease，transport 可以复用但授权不能偷渡。
+- MCP 连接建立后应声明客户端名称与版本；Audit/UI 只显示 `Codex（自报）`、`Pi（自报）` 等 display metadata。该 identity 不是可信 security principal，也不能改变 lease 隔离。
+- 以上是行为指导，不是安全边界；即使 Agent 不遵守，Swift Policy Engine、IPC principal 校验和 SVLT 执行器也必须拒绝越界请求。
+
 ## Catalog Markdown 布局
 
 - SVLT 自己生成或受控插入的 `敏感信息.md` 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局。Note、说明、callout、用户段落和 WikiLink 是 unmanaged，不属于 Index/Entry/Field semantic model，也不计入搜索、计数或 App UI；已有未知用户 Markdown 即使位于两个 Index 之间也保持原位。
@@ -62,7 +73,9 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `secret_catalog_add_secret_placeholder`：向已存在 Entry 添加空 `secret` placeholder；不要提交 plaintext 或自造 `secretRef`。
 - `secret_catalog_request_secure_inputs`：请求本机 SecureField 填写秘密；只发送 field metadata 和 revision，Agent 永远不接收 plaintext。当前同步 transport 返回完成状态/revision；若兼容 transport 返回 `PENDING` + `requestID`，只能用 `secret_catalog_secure_input_status` 轮询同一请求。
 - `secret_action_router`：用户明确选择 SVLT 且需要在本机/内网执行受控动作时使用；明文只在 SVLT 专用边界内处理。
-- `ssh_command_with_secret`、`local_http_request_with_secret`、`api_request_with_token`、`database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret`：仅用于 `secret://` 管理路径。
+- `ssh_command_with_secret`：适合单条结构受限 SSH 命令；连续任务优先复用返回的 opaque `sessionID`。
+- `ssh_batch_with_secret`：适合巡检和批量任务；传入结构化 `commands`，让 SVLT 在执行前完整评估整批风险，并返回独立、已脱敏的结果。
+- `local_http_request_with_secret`、`api_request_with_token`、`database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret`：仅用于 `secret://` 管理路径。
 - `secret_reveal_request` / `paragraph_reveal_request`：用户明确要在本机 App 查看 SVLT 明文时使用；结果是本地显示状态，不是返回给 Agent 的明文。
 
 ## Secure Input 异步事务
