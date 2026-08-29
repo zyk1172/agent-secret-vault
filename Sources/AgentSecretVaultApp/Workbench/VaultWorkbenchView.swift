@@ -686,6 +686,7 @@ public struct VaultWorkbenchView: View {
                 .id(selectedSection)
                 .transition(pageTransition)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: Binding(
             get: { secureInputRequest != nil },
             set: { isPresented in
@@ -780,6 +781,7 @@ public struct VaultWorkbenchView: View {
                 title: "控制台",
                 subtitle: "",
                 systemImage: selectedSection.systemImage,
+                bottomPadding: 12,
                 showsOverviewActions: true,
                 showTemplate: showSensitiveCatalogTemplate
             ) {
@@ -788,20 +790,20 @@ public struct VaultWorkbenchView: View {
         case .secrets:
             WorkbenchPage(title: "敏感信息", subtitle: "分组卡片 → 条目 → 字段；Markdown 保留为可正常编辑的 Obsidian 文件。", systemImage: selectedSection.systemImage) {
                 VStack(spacing: 14) {
-                    if sensitiveIndexURL != nil || sensitiveCatalogSnapshot != nil || sensitiveCatalogError != nil {
+                    if sensitiveIndexURL != nil || sensitiveCatalogSnapshot != nil {
                         SensitiveCatalogEditorCard(
                             snapshot: sensitiveCatalogSnapshot,
-                        errorMessage: sensitiveCatalogError,
-                        canAdoptExternalV2: sensitiveCatalogCanAdoptV2,
-                        adoptExternalV2: adoptExternalV2Catalog,
-                        canAdoptExternalV3: sensitiveCatalogCanAdoptV3,
-                        adoptExternalV3: adoptExternalV3Catalog,
-                        approveExternalChange: approveExternalCatalogChange,
-                        refresh: refreshSensitiveCatalog,
-                        createIndex: createCatalogIndex,
-                        createEntry: createCatalogEntry,
-                        commitEntryEdit: commitCatalogEntryEdit,
-                        revealCatalogField: revealCatalogField,
+                            errorMessage: sensitiveCatalogError,
+                            canAdoptExternalV2: sensitiveCatalogCanAdoptV2,
+                            adoptExternalV2: adoptExternalV2Catalog,
+                            canAdoptExternalV3: sensitiveCatalogCanAdoptV3,
+                            adoptExternalV3: adoptExternalV3Catalog,
+                            approveExternalChange: approveExternalCatalogChange,
+                            refresh: refreshSensitiveCatalog,
+                            createIndex: createCatalogIndex,
+                            createEntry: createCatalogEntry,
+                            commitEntryEdit: commitCatalogEntryEdit,
+                            revealCatalogField: revealCatalogField,
                             replaceCatalogSecret: replaceCatalogSecret,
                             applyBatch: applyCatalogBatch,
                             indexURL: sensitiveIndexURL,
@@ -810,11 +812,11 @@ public struct VaultWorkbenchView: View {
                             checkFormat: checkSensitiveCatalogFormat,
                             repairFormat: repairSensitiveCatalogFormat
                         )
-                    }
-                    if sensitiveIndexURL == nil && sensitiveCatalogSnapshot == nil {
+                    } else {
                         SensitiveIndexLibraryCard(
                             indexURL: nil,
-                            chooseIndex: chooseSensitiveIndex
+                            chooseIndex: chooseSensitiveIndex,
+                            errorMessage: sensitiveCatalogError
                         )
                     }
                 }
@@ -823,7 +825,6 @@ public struct VaultWorkbenchView: View {
             WorkbenchPage(title: "智能体自动化", subtitle: "", systemImage: selectedSection.systemImage) {
                 AgentAutomationAuditCard(entries: auditEntries, errorMessage: auditError)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .layoutPriority(1)
             }
         case .tutorial:
             WorkbenchPage(title: "使用教程", subtitle: "", systemImage: selectedSection.systemImage) {
@@ -924,7 +925,6 @@ struct WorkbenchOverviewContent: View {
                 )
                 .layoutPriority(1)
                 .workbenchOverviewSection(.pending)
-                .padding(.bottom, 12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -996,11 +996,12 @@ private struct WorkbenchBackground: View {
     }
 }
 
-private struct WorkbenchPage<Content: View>: View {
+struct WorkbenchPage<Content: View>: View {
     let title: String
     let subtitle: String
     let systemImage: String
     let compact: Bool
+    let bottomPadding: CGFloat
     let showsOverviewActions: Bool
     let showTemplate: (() async -> Void)?
     @ViewBuilder let content: Content
@@ -1010,6 +1011,7 @@ private struct WorkbenchPage<Content: View>: View {
         subtitle: String,
         systemImage: String,
         compact: Bool = false,
+        bottomPadding: CGFloat = 22,
         showsOverviewActions: Bool = false,
         showTemplate: (() async -> Void)? = nil,
         @ViewBuilder content: () -> Content
@@ -1018,46 +1020,53 @@ private struct WorkbenchPage<Content: View>: View {
         self.subtitle = subtitle
         self.systemImage = systemImage
         self.compact = compact
+        self.bottomPadding = bottomPadding
         self.showsOverviewActions = showsOverviewActions
         self.showTemplate = showTemplate
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .center, spacing: 12) {
-                Text(title)
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                Spacer()
-                if showsOverviewActions {
-                    Button {
-                        NSWorkspace.shared.open(VaultWorkbenchCopy.documentationURL)
-                    } label: {
-                        Image("GitHubMark")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 18, height: 18)
-                            .foregroundStyle(.primary)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("打开 GitHub 文档")
+        GeometryReader { proxy in
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .center, spacing: 12) {
+                    Text(title)
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                    Spacer()
+                    if showsOverviewActions {
+                        Button {
+                            NSWorkspace.shared.open(VaultWorkbenchCopy.documentationURL)
+                        } label: {
+                            Image("GitHubMark")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 18, height: 18)
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("打开 GitHub 文档")
 
-                    Button {
-                        Task { await showTemplate?() }
-                    } label: {
-                        Image(systemName: "doc.text.magnifyingglass")
+                        Button {
+                            Task { await showTemplate?() }
+                        } label: {
+                            Image(systemName: "doc.text.magnifyingglass")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("查看敏感信息模板")
                     }
-                    .buttonStyle(.borderless)
-                    .help("查看敏感信息模板")
                 }
-            }
+                .fixedSize(horizontal: false, vertical: true)
 
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
+            }
+            .padding(.horizontal, 30)
+            .padding(.top, 22)
+            .padding(.bottom, bottomPadding)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 22)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -1441,7 +1450,7 @@ private struct OverviewAgentControl: View {
     }
 }
 
-private struct TutorialPage: View {
+struct TutorialPage: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 22) {
@@ -1476,6 +1485,7 @@ private struct TutorialPage: View {
         }
         .scrollIndicators(.automatic)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
     }
 }
 
@@ -1504,7 +1514,7 @@ private struct TutorialSection: View {
     }
 }
 
-private struct FAQPage: View {
+struct FAQPage: View {
     private let questions = [
         ("为什么看不到密码？", "这是默认行为。密码字段只有在本机授权后才会短暂显示，MCP 和插件永远不会收到明文。"),
         ("我可以在 Obsidian 里编辑目录吗？", "可以。Obsidian 负责编辑合法的 v3 Markdown，SVLT 负责校验、授权和本机密文记录。"),
@@ -1532,6 +1542,7 @@ private struct FAQPage: View {
         }
         .scrollIndicators(.automatic)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
     }
 }
 
@@ -1791,6 +1802,7 @@ struct PendingSecretFillCard: View {
                 }
             }
             .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onDisappear(perform: wipePlaintext)
         .onChange(of: scenePhase) { _, phase in
@@ -1915,6 +1927,7 @@ struct CompactAuditPreviewCard: View {
 private struct SensitiveIndexLibraryCard: View {
     let indexURL: URL?
     let chooseIndex: (() -> Void)?
+    let errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1922,6 +1935,15 @@ private struct SensitiveIndexLibraryCard: View {
                 Label("目录文件选择", systemImage: "doc.badge.lock")
                     .font(.title3.weight(.semibold))
                 Spacer()
+            }
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
 
             if let indexURL {
@@ -2051,6 +2073,37 @@ private struct CatalogDeletionRequest: Identifiable {
     let itemCount: Int
     let entryCount: Int
     let secretFieldCount: Int
+}
+
+struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let originalKey: String?
+    var field: SecretCatalogFieldValue
+    var secretInput: String
+
+    init(
+        id: UUID = UUID(),
+        originalKey: String? = nil,
+        field: SecretCatalogFieldValue,
+        secretInput: String = ""
+    ) {
+        self.id = id
+        self.originalKey = originalKey
+        self.field = field
+        self.secretInput = secretInput
+    }
+
+    static func make(from fields: [SecretCatalogFieldValue]) -> [Self] {
+        fields.map { field in
+            Self(originalKey: field.key, field: field)
+        }
+    }
+
+    static func newField(key: String) -> Self {
+        Self(field: SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
+    }
+
+    var selectionID: String { id.uuidString }
 }
 
 private struct SensitiveCatalogEditorCard: View {
@@ -2266,7 +2319,7 @@ private struct SensitiveCatalogEditorCard: View {
                         systemImage: "folder.badge.plus",
                         description: Text("先创建一个分组；条目和字段会在右侧工作区管理。")
                     )
-                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     GeometryReader { geometry in
                         HStack(alignment: .top, spacing: 0) {
@@ -2353,7 +2406,8 @@ private struct SensitiveCatalogEditorCard: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
                     }
-                    .frame(minHeight: selectedIndexID == nil ? 250 : 520)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
                     .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                     if let deletionError {
@@ -2563,7 +2617,7 @@ private struct SensitiveCatalogEditorCard: View {
     }
 }
 
-private struct SensitiveCatalogGroupSheet: View {
+struct SensitiveCatalogGroupSheet: View {
     let index: SecretCatalogIndex
     let entries: [SecretCatalogEntry]
     let createEntry: ((String, String, String) async -> CatalogMutationUIResult)?
@@ -2727,10 +2781,12 @@ private struct SensitiveCatalogGroupSheet: View {
                         }
                     }
                 }
-                .frame(maxHeight: 520)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .layoutPriority(1)
             }
         }
         .padding(22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: entries.map(\.id)) { _, ids in
             entrySelection.retainVisibleIDs(ids)
@@ -2762,9 +2818,8 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var draftTags: String
     @State private var draftEndpoints: String
     @State private var draftNotes: String
-    @State private var draftFields: [SecretCatalogFieldValue]
+    @State private var draftFields: [CatalogFieldDraft]
     @State private var fieldSelection = CatalogBatchSelectionState()
-    @State private var pendingSecretInputs: [String: String] = [:]
     @State private var isSaving = false
     @State private var editorError: String?
     @State private var showingDetails: Bool
@@ -2810,7 +2865,7 @@ private struct SensitiveCatalogEntryRow: View {
         _draftTags = State(initialValue: entry.tags.joined(separator: ", "))
         _draftEndpoints = State(initialValue: entry.endpoints.map(Self.endpointLine).joined(separator: "\n"))
         _draftNotes = State(initialValue: entry.notes ?? "")
-        _draftFields = State(initialValue: entry.fields)
+        _draftFields = State(initialValue: CatalogFieldDraft.make(from: entry.fields))
         _editing = State(initialValue: autoEdit)
         _showingDetails = State(initialValue: autoEdit)
     }
@@ -2876,7 +2931,7 @@ private struct SensitiveCatalogEntryRow: View {
             clearSensitiveOutput()
         }
         .onChange(of: showingDetails) { _, isPresented in
-            if !isPresented { clearSensitiveOutput() }
+            if !isPresented { cancelEditing() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .inactive || phase == .background { clearSensitiveOutput() }
@@ -3028,10 +3083,11 @@ private struct SensitiveCatalogEntryRow: View {
                 .buttonStyle(.borderedProminent)
             }
             Button("关闭") {
-                showingDetails = false
+                closeDetails()
             }
             .buttonStyle(.bordered)
             .keyboardShortcut(.cancelAction)
+            .disabled(isSaving)
         }
         .padding(.horizontal, CatalogDetailMetrics.horizontalPadding)
         .padding(.vertical, 12)
@@ -3213,7 +3269,7 @@ private struct SensitiveCatalogEntryRow: View {
                         if fieldSelection.selectedIDs.count == draftFields.count {
                             fieldSelection.clear()
                         } else {
-                            fieldSelection.selectAll(draftFields.map(\.key))
+                            fieldSelection.selectAll(draftFields.map(\.selectionID))
                         }
                     }
                     .buttonStyle(.plain)
@@ -3233,11 +3289,11 @@ private struct SensitiveCatalogEntryRow: View {
                     Button("新增自定义字段") {
                         var number = draftFields.count + 1
                         var key = "field\(number)"
-                        while draftFields.contains(where: { $0.key == key }) {
+                        while draftFields.contains(where: { $0.field.key == key }) {
                             number += 1
                             key = "field\(number)"
                         }
-                        draftFields.append(SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
+                        draftFields.append(CatalogFieldDraft.newField(key: key))
                     }
                     .buttonStyle(.bordered)
                     Button("批量编辑") {
@@ -3248,29 +3304,20 @@ private struct SensitiveCatalogEntryRow: View {
                 }
             }
 
-            ForEach($draftFields, id: \.key) { $field in
-                let fieldKey = field.key
+            ForEach($draftFields) { $draft in
+                let draftID = draft.id
+                let selectionID = draft.selectionID
                 SensitiveCatalogFieldEditorRow(
-                    field: $field,
-                    secretInput: Binding(
-                        get: { pendingSecretInputs[fieldKey] ?? "" },
-                        set: { value in
-                            if value.isEmpty {
-                                pendingSecretInputs.removeValue(forKey: fieldKey)
-                            } else {
-                                pendingSecretInputs[fieldKey] = value
-                            }
-                        }
-                    ),
+                    draft: $draft,
                     isSelecting: fieldSelection.isSelecting,
-                    isSelected: fieldSelection.selectedIDs.contains(fieldKey),
-                    toggleSelection: { fieldSelection.toggle(fieldKey) },
+                    isSelected: fieldSelection.selectedIDs.contains(selectionID),
+                    toggleSelection: { fieldSelection.toggle(selectionID) },
                     replaceSecret: replaceCatalogSecret,
                     entryID: entry.id,
                     onReplacementSuccess: { newReference in
-                        let current = field
-                        pendingSecretInputs.removeValue(forKey: current.key)
-                        $field.wrappedValue = SecretCatalogFieldValue(
+                        let current = $draft.wrappedValue.field
+                        $draft.wrappedValue.secretInput = ""
+                        $draft.wrappedValue.field = SecretCatalogFieldValue(
                             key: current.key,
                             label: current.label,
                             type: current.type,
@@ -3281,30 +3328,22 @@ private struct SensitiveCatalogEntryRow: View {
                         )
                         editorError = nil
                     },
-                    onKeyChange: { oldKey, newKey in
-                        guard oldKey != newKey,
-                              let pending = pendingSecretInputs.removeValue(forKey: oldKey)
-                        else {
-                            return
-                        }
-                        pendingSecretInputs[newKey] = pending
-                    },
                     onDelete: {
-                        deleteField(withKey: fieldKey)
+                        deleteField(withID: draftID)
                     },
                     onMoveUp: {
-                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == fieldKey }), currentIndex > 0 else { return }
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.id == draftID }), currentIndex > 0 else { return }
                         draftFields.swapAt(currentIndex, currentIndex - 1)
                     },
                     onMoveDown: {
-                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == fieldKey }), currentIndex + 1 < draftFields.count else { return }
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.id == draftID }), currentIndex + 1 < draftFields.count else { return }
                         draftFields.swapAt(currentIndex, currentIndex + 1)
                     }
                 )
             }
 
-            .onChange(of: draftFields.map(\.key)) { _, keys in
-                fieldSelection.retainVisibleIDs(keys)
+            .onChange(of: draftFields.map(\.selectionID)) { _, ids in
+                fieldSelection.retainVisibleIDs(ids)
             }
 
             if let editorError {
@@ -3318,14 +3357,12 @@ private struct SensitiveCatalogEntryRow: View {
     private func deleteSelectedFields() {
         let ids = fieldSelection.selectedIDs
         guard !ids.isEmpty else { return }
-        draftFields.removeAll { ids.contains($0.key) }
-        pendingSecretInputs = pendingSecretInputs.filter { !ids.contains($0.key) }
+        draftFields.removeAll { ids.contains($0.selectionID) }
         fieldSelection.finish()
     }
 
-    private func deleteField(withKey key: String) {
-        pendingSecretInputs.removeValue(forKey: key)
-        draftFields.removeAll { $0.key == key }
+    private func deleteField(withID id: UUID) {
+        draftFields.removeAll { $0.id == id }
     }
 
     private func saveEntry() {
@@ -3338,7 +3375,8 @@ private struct SensitiveCatalogEntryRow: View {
             editorError = "服务地址格式应为 type|host|port"
             return
         }
-        if let fieldError = draftFields.compactMap(CatalogFieldDraftValidation.message(for:)).first {
+        let fields = draftFields.map(\.field)
+        if let fieldError = fields.compactMap(CatalogFieldDraftValidation.message(for:)).first {
             editorError = fieldError
             return
         }
@@ -3349,7 +3387,7 @@ private struct SensitiveCatalogEntryRow: View {
             type: entry.type,
             aliases: Self.csv(draftAliases),
             endpoints: endpoints,
-            fields: draftFields,
+            fields: fields,
             notes: draftNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftNotes,
             tags: Self.csv(draftTags),
             schema: entry.schema
@@ -3365,13 +3403,16 @@ private struct SensitiveCatalogEntryRow: View {
         }
         Task {
             isSaving = true
-            let secretInputs = draftFields.compactMap { field -> CatalogSecretInput? in
-                guard field.type.isSecret,
-                      field.secretRef == nil,
-                      let plaintext = pendingSecretInputs[field.key],
-                      !plaintext.isEmpty
+            let secretInputs = draftFields.compactMap { draft -> CatalogSecretInput? in
+                guard draft.field.type.isSecret,
+                      draft.field.secretRef == nil,
+                      !draft.secretInput.isEmpty
                 else { return nil }
-                return CatalogSecretInput(key: field.key, label: field.label, plaintext: plaintext)
+                return CatalogSecretInput(
+                    key: draft.field.key,
+                    label: draft.field.label,
+                    plaintext: draft.secretInput
+                )
             }
             let result = await commitEntryEdit?(updated, secretInputs)
             isSaving = false
@@ -3379,7 +3420,7 @@ private struct SensitiveCatalogEntryRow: View {
             case .success:
                 editing = false
                 editorError = nil
-                pendingSecretInputs.removeAll()
+                draftFields = CatalogFieldDraft.make(from: updated.fields)
             case .failure(let error):
                 editorError = error.displayText
             case nil:
@@ -3397,9 +3438,23 @@ private struct SensitiveCatalogEntryRow: View {
         draftTags = value.tags.joined(separator: ", ")
         draftEndpoints = value.endpoints.map(Self.endpointLine).joined(separator: "\n")
         draftNotes = value.notes ?? ""
-        draftFields = value.fields
+        draftFields = CatalogFieldDraft.make(from: value.fields)
         fieldSelection.finish()
-        pendingSecretInputs.removeAll()
+    }
+
+    private func cancelEditing() {
+        if editing {
+            load(entry)
+        }
+        editing = false
+        editorError = nil
+        clearSensitiveOutput()
+    }
+
+    private func closeDetails() {
+        guard !isSaving else { return }
+        cancelEditing()
+        showingDetails = false
     }
 
     private static func csv(_ value: String) -> [String] {
@@ -3430,15 +3485,13 @@ private struct SensitiveCatalogEntryRow: View {
 }
 
 private struct SensitiveCatalogFieldEditorRow: View {
-    @Binding var field: SecretCatalogFieldValue
-    @Binding var secretInput: String
+    @Binding var draft: CatalogFieldDraft
     let isSelecting: Bool
     let isSelected: Bool
     let toggleSelection: () -> Void
     let replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let entryID: String
     let onReplacementSuccess: (String) -> Void
-    let onKeyChange: (String, String) -> Void
     let onDelete: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
@@ -3449,31 +3502,37 @@ private struct SensitiveCatalogFieldEditorRow: View {
     @State private var errorMessage: String?
 
     init(
-        field: Binding<SecretCatalogFieldValue>,
-        secretInput: Binding<String>,
+        draft: Binding<CatalogFieldDraft>,
         isSelecting: Bool = false,
         isSelected: Bool = false,
         toggleSelection: @escaping () -> Void = {},
         replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?,
         entryID: String,
         onReplacementSuccess: @escaping (String) -> Void = { _ in },
-        onKeyChange: @escaping (String, String) -> Void = { _, _ in },
         onDelete: @escaping () -> Void,
         onMoveUp: @escaping () -> Void,
         onMoveDown: @escaping () -> Void
     ) {
-        self._field = field
-        self._secretInput = secretInput
+        self._draft = draft
         self.isSelecting = isSelecting
         self.isSelected = isSelected
         self.toggleSelection = toggleSelection
         self.replaceSecret = replaceSecret
         self.entryID = entryID
         self.onReplacementSuccess = onReplacementSuccess
-        self.onKeyChange = onKeyChange
         self.onDelete = onDelete
         self.onMoveUp = onMoveUp
         self.onMoveDown = onMoveDown
+    }
+
+    private var field: SecretCatalogFieldValue {
+        get { draft.field }
+        nonmutating set { draft.field = newValue }
+    }
+
+    private var secretInput: String {
+        get { draft.secretInput }
+        nonmutating set { draft.secretInput = newValue }
     }
 
     var body: some View {
@@ -3591,12 +3650,12 @@ private struct SensitiveCatalogFieldEditorRow: View {
     @ViewBuilder
     private func secretInputEditor(prompt: String) -> some View {
         if showsSecret {
-            TextField(text: $secretInput, prompt: Text(prompt).foregroundStyle(.orange)) {
+            TextField(text: $draft.secretInput, prompt: Text(prompt).foregroundStyle(.orange)) {
                 Text("密码")
             }
             .textFieldStyle(.roundedBorder)
         } else {
-            SecureField(text: $secretInput, prompt: Text(prompt).foregroundStyle(.orange)) {
+            SecureField(text: $draft.secretInput, prompt: Text(prompt).foregroundStyle(.orange)) {
                 Text("密码")
             }
             .textFieldStyle(.roundedBorder)
@@ -3625,9 +3684,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
         Binding(
             get: { field.key },
             set: { newKey in
-                let oldKey = field.key
                 field = updatedField(from: field, key: newKey)
-                onKeyChange(oldKey, newKey)
             }
         )
     }
@@ -4044,7 +4101,7 @@ private struct SecurityBoundaryPanel: View {
     }
 }
 
-private struct AgentAutomationAuditCard: View {
+struct AgentAutomationAuditCard: View {
     let entries: [CatalogSecurityAuditEntry]
     let errorMessage: String?
 
@@ -4059,6 +4116,7 @@ private struct AgentAutomationAuditCard: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 if let errorMessage {
                     Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -4067,6 +4125,7 @@ private struct AgentAutomationAuditCard: View {
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 ScrollView(.vertical, showsIndicators: true) {
@@ -4105,7 +4164,8 @@ private struct AgentAutomationAuditCard: View {
                     }
                 }
                 .scrollIndicators(.automatic)
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .layoutPriority(1)
             }
             .padding(20)
         }

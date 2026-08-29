@@ -27,7 +27,7 @@ import Testing
     #expect(source.contains("commitEntryEdit"))
     #expect(source.contains("revealCatalogField"))
     #expect(source.contains("\"解密\""))
-    #expect(source.contains("pendingSecretInputs.removeAll()"))
+    #expect(source.contains("draftFields = CatalogFieldDraft.make(from: updated.fields)"))
     #expect(source.contains("填写密码"))
     #expect(!source.contains("minHeight: 132"))
     #expect(source.contains("contentShape(Rectangle())"))
@@ -78,7 +78,8 @@ import Testing
     #expect(!source.contains(".alert(item: $pendingIndexDeletion)"))
     #expect(!source.contains(".alert(item: $pendingEntryDeletion)"))
     #expect(source.contains("switch request.kind"))
-    #expect(source.contains("frame(maxHeight: 520)"))
+    #expect(source.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"))
+    #expect(source.contains(".layoutPriority(1)"))
     #expect(source.contains("删除 \\(request.itemCount) 个分组？"))
     #expect(source.contains("删除 \\(request.itemCount) 个条目？"))
 }

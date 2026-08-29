@@ -42,6 +42,17 @@ import VaultCore
     #expect(PendingCatalogSecretResolver.resolve(in: advanced)?.remainingCount == 1)
 }
 
+@Test func catalogFieldDraftKeepsStableIdentityWhenEditableKeyChanges() {
+    let field = SecretCatalogFieldValue(key: "username", label: "用户名", type: .text)
+    let draft = CatalogFieldDraft.make(from: [field])[0]
+    var edited = draft
+    edited.field = SecretCatalogFieldValue(key: "account", label: "用户名", type: .text)
+
+    #expect(edited.id == draft.id)
+    #expect(edited.originalKey == "username")
+    #expect(edited.selectionID == draft.selectionID)
+}
+
 @Test func batchSelectionHasExplicitBeginSelectAllAndFinishState() {
     var state = CatalogBatchSelectionState()
     state.begin()
@@ -301,8 +312,11 @@ import VaultCore
     #expect(overview.contains("minHeight: 120"))
     #expect(overview.contains("idealHeight: 140"))
     #expect(overview.contains(".layoutPriority(1)"))
+    #expect(source.contains("bottomPadding: 12"))
+    #expect(source.contains("GeometryReader { proxy in"))
+    #expect(source.contains(".frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)"))
     #expect(!overview.contains("CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)\n                .layoutPriority(1)"))
-    #expect(overview.contains(".workbenchOverviewSection(.pending)\n                .padding(.bottom, 12)"))
+    #expect(!overview.contains(".workbenchOverviewSection(.pending)\n                .padding(.bottom, 12)"))
     #expect(!overview.contains("PendingSecretFillCard(\n                    pending: pending,\n                    entry: pendingEntry,\n                    commit: commitCatalogEntryEdit\n                )\n                .fixedSize"))
 }
 
@@ -319,7 +333,9 @@ import VaultCore
     #expect(card.contains("Button { showingDetails = true }"))
     #expect(card.contains("Button(\"删除\", role: .destructive, action: requestDelete)"))
 
-    #expect(source.contains("ForEach($draftFields, id: \\.key)"))
+    #expect(source.contains("ForEach($draftFields)"))
+    #expect(source.contains("CatalogFieldDraft"))
+    #expect(!source.contains("ForEach($draftFields, id: \\.key)"))
     #expect(source.contains("fieldSelection"))
     #expect(source.contains("deleteSelectedFields()"))
     #expect(!source.contains("应用字段"))
@@ -328,6 +344,10 @@ import VaultCore
     #expect(source.contains("private var detailActionBar"))
     #expect(source.contains("Button(isSaving ? \"保存中…\" : \"保存条目\")"))
     #expect(source.contains("Button(\"关闭\")"))
+    #expect(source.contains("closeDetails()"))
+    #expect(source.contains("private func cancelEditing()"))
+    #expect(!source.contains("@State private var pendingSecretInputs"))
+    #expect(!source.contains("onKeyChange:"))
     #expect(!source.contains(".toolbar"))
     #expect(source.contains("prompt: Text(\"输入密码\").foregroundStyle(.orange)"))
 
@@ -341,6 +361,7 @@ import VaultCore
     #expect(pendingCard.contains("@State private var isPlaintextVisible = true"))
     #expect(pendingCard.contains("TextField("))
     #expect(pendingCard.contains("Image(systemName: isPlaintextVisible ? \"eye.slash\" : \"eye\")"))
+    #expect(pendingCard.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"))
 }
 
 @MainActor @Test func overviewHostingFitsMinimumAndDefaultWindowWithAndWithoutPendingSecret() throws {
@@ -410,14 +431,133 @@ import VaultCore
             #expect(frame.maxX <= configuration.size.width + 1)
             #expect(frame.maxY <= configuration.size.height + 1)
         }
+        let heroFrame = try #require(probe.frames[.hero])
+        let activityFrame = try #require(probe.frames[.activity])
+        #expect(activityFrame.minY >= heroFrame.maxY + 11)
         if configuration.pending != nil {
             let pendingFrame = try #require(probe.frames[.pending])
             #expect(pendingFrame.height >= 119)
             #expect(pendingFrame.height <= 171)
-            #expect(pendingFrame.maxY <= configuration.size.height - 11)
+            #expect(pendingFrame.minY >= activityFrame.maxY + 11)
+            #expect(abs(pendingFrame.maxY - configuration.size.height) <= 1)
         }
-        let activityFrame = try #require(probe.frames[.activity])
         #expect(activityFrame.height >= 159)
+    }
+}
+
+@MainActor @Test func allWorkbenchPagesFitFixedViewports() throws {
+    let status = WorkbenchStatus(
+        locked: false,
+        ipcAvailable: true,
+        activeKnowledgeBaseRoot: nil,
+        pluginConnected: true
+    )
+    let index = SecretCatalogIndex(id: "index", title: String(repeating: "长分组标题 ", count: 5))
+    let entries = (0..<13).map { number in
+        SecretCatalogEntry(
+            id: "entry-\(number)",
+            indexId: index.id,
+            title: String(repeating: "长条目标题 ", count: 4) + "\(number)",
+            fields: [
+                SecretCatalogFieldValue(key: "username", label: "用户名", type: .text, value: .string("user")),
+                SecretCatalogFieldValue(key: "password", label: "密码", type: .secret)
+            ]
+        )
+    }
+    let pending = PendingCatalogSecret(
+        indexID: index.id,
+        indexTitle: index.title,
+        entryID: entries[0].id,
+        entryTitle: entries[0].title,
+        fieldKey: "password",
+        fieldLabel: "密码",
+        fieldType: .secret,
+        remainingCount: 13
+    )
+    let activity = (0..<100).map { fixtureAuditEntry(target: "activity-\($0)") }
+
+    let pageFactories: [(String, () -> AnyView)] = [
+        ("overview", {
+            AnyView(WorkbenchPage(title: "控制台", subtitle: "", systemImage: "square.grid.2x2", bottomPadding: 12) {
+                WorkbenchViewportMeasuredContent(id: "content") {
+                    WorkbenchOverviewContent(
+                        status: status,
+                        agentServiceStatus: .running,
+                        agentServiceActionInFlight: false,
+                        agentServiceActionErrorMessage: nil,
+                        enableAgentService: nil,
+                        disableAgentService: nil,
+                        restartAgentService: nil,
+                        auditEntries: activity,
+                        auditError: "部分安全活动记录异常",
+                        pending: pending,
+                        pendingEntry: entries[0],
+                        commitCatalogEntryEdit: nil
+                    )
+                }
+            })
+        }),
+        ("secrets", {
+            AnyView(WorkbenchPage(title: "敏感信息", subtitle: "", systemImage: "list.bullet.indent") {
+                WorkbenchViewportMeasuredContent(id: "content") {
+                    SensitiveCatalogGroupSheet(
+                        index: index,
+                        entries: entries,
+                        createEntry: nil,
+                        commitEntryEdit: nil,
+                        revealCatalogField: nil,
+                        replaceCatalogSecret: nil,
+                        entrySelection: .constant(CatalogBatchSelectionState()),
+                        requestEntryDeletion: { _ in }
+                    )
+                }
+            })
+        }),
+        ("automation", {
+            AnyView(WorkbenchPage(title: "智能体自动化", subtitle: "", systemImage: "sparkles.rectangle.stack") {
+                WorkbenchViewportMeasuredContent(id: "content") {
+                    AgentAutomationAuditCard(entries: activity, errorMessage: "部分安全活动记录异常")
+                }
+            })
+        }),
+        ("tutorial", {
+            AnyView(WorkbenchPage(title: "使用教程", subtitle: "", systemImage: "book") {
+                WorkbenchViewportMeasuredContent(id: "content") {
+                    TutorialPage()
+                }
+            })
+        }),
+        ("faq", {
+            AnyView(WorkbenchPage(title: "常见问题", subtitle: "", systemImage: "questionmark.circle") {
+                WorkbenchViewportMeasuredContent(id: "content") {
+                    FAQPage()
+                }
+            })
+        })
+    ]
+
+    for size in [CGSize(width: 1_180, height: 760), CGSize(width: 1_280, height: 820)] {
+        for (name, makePage) in pageFactories {
+            let probe = WorkbenchViewportProbe()
+            let root = makePage()
+                .coordinateSpace(name: "workbench-layout-regression")
+                .onPreferenceChange(WorkbenchViewportFramesKey.self) { frames in
+                    probe.frames = frames
+                }
+            let hostingView = NSHostingView(rootView: root)
+            hostingView.frame = NSRect(origin: .zero, size: size)
+            hostingView.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            hostingView.layoutSubtreeIfNeeded()
+
+            let contentFrame = try #require(probe.frames["content"], "missing frame for \(name)")
+            #expect(contentFrame.minX >= -1)
+            #expect(contentFrame.minY >= -1)
+            #expect(contentFrame.maxX <= size.width + 1)
+            #expect(contentFrame.maxY <= size.height + 1)
+            #expect(hostingView.fittingSize.width.isFinite)
+            #expect(hostingView.fittingSize.height.isFinite)
+        }
     }
 }
 
@@ -462,4 +602,38 @@ private func fixtureAuditEntry(target: String) -> CatalogSecurityAuditEntry {
 @MainActor
 private final class OverviewLayoutProbe {
     var frames: [WorkbenchOverviewSectionID: CGRect] = [:]
+}
+
+private struct WorkbenchViewportFramesKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct WorkbenchViewportMeasuredContent<Content: View>: View {
+    let id: String
+    let content: Content
+
+    init(id: String, @ViewBuilder content: () -> Content) {
+        self.id = id
+        self.content = content()
+    }
+
+    var body: some View {
+        content.background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: WorkbenchViewportFramesKey.self,
+                    value: [id: proxy.frame(in: .named("workbench-layout-regression"))]
+                )
+            }
+        }
+    }
+}
+
+@MainActor
+private final class WorkbenchViewportProbe {
+    var frames: [String: CGRect] = [:]
 }
