@@ -110,6 +110,7 @@ struct AgentSecretVaultApplication: App {
                     await runtime.showSensitiveCatalogTemplate()
                 }
             )
+                .frame(width: 1280, height: 820)
                 .task {
                     await runtime.start()
                 }
@@ -178,7 +179,7 @@ struct AgentSecretVaultApplication: App {
                 }
             }
             .defaultSize(width: 1280, height: 820)
-            .windowResizability(.contentMinSize)
+            .windowResizability(.contentSize)
             .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra("SVLT", systemImage: MenuBarPresentation.statusItemSymbol) {
