@@ -56,6 +56,13 @@ Secret metadata 支持 `allowedDestinations` 和 `allowedProtocols`。目的地�
 不支持、失败或安全状态失效都不会留下可复用 lease。Lease 有效期使用 monotonic
 clock，墙上时间只用于审计展示。
 
+本地明文导出使用独立但同样固定 300 秒的 scope：调用主体、完整引用集合、
+`exportPlaintext` 动作、经验证的 export root 和 security generation。叶文件名不属于
+scope，因此同一导出目录中的不同新文件可以复用；不同引用、调用主体、根目录或安全
+代际不能复用。活跃 lease 只保留该 scope 专用的内存解密 capability，不能借用更宽的
+credential key cache 延长 Agent 侧 user-presence 授权。明文显示和复制仍保持 exact、
+one-shot 认证。
+
 ## 明文边界
 
 低风险解密发生在 `SVLTAgent` 的进程内。MCP 只发送 `SecretOperationDescriptor`，其中包含不透明 `secret://` 引用和非敏感参数；普通 Agent IPC 的类型和响应中不存在 `restoreReferences`、`RestoredParagraph` 或其他明文返回形状。需要本地 UI 明文的 session reveal、Catalog 字段 reveal 和 restore 只通过额外的、经过代码签名身份校验的 App-control socket 传输。专用 executor 只返回脱敏结果，并拒绝把 SVLT 派生 Secret 传入通用 shell、CLI 参数、环境变量、URL query 和日志。用户独立提供的明文不由 SVLT 与 `secret://` 做值比较，但仍受选定工具、仓库和工作区安全规则约束。

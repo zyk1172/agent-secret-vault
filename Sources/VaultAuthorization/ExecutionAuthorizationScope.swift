@@ -1,6 +1,9 @@
 import Foundation
 
-/// The non-secret identity of one reusable Agent execution authorization.
+/// The non-secret identity of one reusable, purpose-bound Agent authorization.
+/// It covers purpose-built execution and the separately constrained local
+/// export path; plaintext reveal/copy and other high-risk controls remain
+/// exact one-shot approvals.
 ///
 /// A lease is deliberately bound to the complete set of opaque references,
 /// normalized destination, protocol, operation family, caller principal and

@@ -234,9 +234,14 @@ must never be returned to the agent.
 - The ordinary Agent IPC type and transport contain no plaintext-bearing
   response. Session reveal and Catalog plaintext responses are available only
   through the separately authenticated, code-signed App-control socket.
-- Plaintext reveal/copy/export, deletes, security-setting changes, and Catalog
-  Agent writes never use the execution window. They retain their own exact,
-  one-shot `ApprovalTicket` authorization boundary.
+- Plaintext reveal/copy, deletes, security-setting changes, and Catalog Agent
+  writes retain their exact, one-shot `ApprovalTicket` authorization boundary.
+  Local plaintext export has a separate, fixed 300-second in-memory lease:
+  it is scoped to the calling Agent, exact references, the validated export
+  root (not the leaf filename), the export action, and security generation.
+  While that lease is active, only its matching in-memory decrypt capability
+  can be reused; the broader credential-key cache cannot extend Agent export
+  authorization.
 - Execution authorization is cleared on screen lock, sleep, session changes,
   explicit lock, and Agent restart. Audit records distinguish fresh local
   approval from execution-window reuse without storing plaintext or headers.

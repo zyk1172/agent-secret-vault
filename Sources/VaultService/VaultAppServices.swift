@@ -153,11 +153,27 @@ private struct ExecutionApprovalFlight {
     let task: Task<Void, Error>
 }
 
+private struct ScopedMasterKeyFlight {
+    let task: Task<SymmetricKey, Error>
+}
+
+private struct ScopedMasterKeyExpiry {
+    let id: UUID
+    let task: Task<Void, Never>
+}
+
 private enum ExecutionAuthorizationCommit: Equatable, Sendable {
     case leaseEstablished
     case leaseReused
     case approvedWithoutLease
     case needsFreshApproval
+}
+
+/// A decrypted master-key capability may exist only while its matching
+/// in-memory scoped authorization lease is active. It is never persisted and
+/// is cleared alongside the lease on any security-state invalidation.
+private struct ScopedMasterKeyAuthorization: Sendable {
+    let key: SymmetricKey
 }
 
 /// Non-sensitive, sticky audit-channel health. This is deliberately kept
@@ -254,6 +270,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
     private var approvalPending = false
     private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
+    private var scopedMasterKeyAuthorizations: [ExecutionAuthorizationScope: ScopedMasterKeyAuthorization] = [:]
+    private var scopedMasterKeyFlights: [ExecutionAuthorizationScope: ScopedMasterKeyFlight] = [:]
+    private var scopedMasterKeyExpiryTasks: [ExecutionAuthorizationScope: ScopedMasterKeyExpiry] = [:]
     private var pendingExecutionApprovalIDs: Set<UUID> = []
     private var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
     private var securityGeneration: UInt64 = 0
@@ -493,6 +512,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             flight.task.cancel()
         }
         executionApprovalFlights.removeAll()
+        for flight in scopedMasterKeyFlights.values {
+            flight.task.cancel()
+        }
+        scopedMasterKeyFlights.removeAll()
+        for expiry in scopedMasterKeyExpiryTasks.values {
+            expiry.task.cancel()
+        }
+        scopedMasterKeyExpiryTasks.removeAll()
         pendingExecutionApprovalIDs.removeAll()
         for operation in inFlightSecretOperations.values {
             operation.cancel()
@@ -501,6 +528,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approvalPending = false
         await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
+        clearScopedMasterKeyAuthorizations()
         for authorization in agentDecryptAuthorizations.values {
             var keyData = authorization.key.withUnsafeBytes { Data($0) }
             keyData.resetBytes(in: 0..<keyData.count)
@@ -508,6 +536,18 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         agentDecryptAuthorizations.removeAll()
         await clearProtectedKeyState?()
         await statusObserver?(status())
+    }
+
+    private func clearScopedMasterKeyAuthorizations() {
+        for expiry in scopedMasterKeyExpiryTasks.values {
+            expiry.task.cancel()
+        }
+        scopedMasterKeyExpiryTasks.removeAll()
+        for authorization in scopedMasterKeyAuthorizations.values {
+            var keyData = authorization.key.withUnsafeBytes { Data($0) }
+            keyData.resetBytes(in: 0..<keyData.count)
+        }
+        scopedMasterKeyAuthorizations.removeAll()
     }
 
     private func cancelAllSecureInputRequests() async {
@@ -627,7 +667,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             executionWindowEnabled = false
         }
         let executionScope: ExecutionAuthorizationScope? = decision.risk == .approvalRequired && executionWindowEnabled
-            ? executionAuthorizationScope(for: descriptor, generation: operationGeneration)
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
             : nil
         var authorizationPath = try await authorizeIfNeeded(
             descriptor,
@@ -682,11 +722,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         var key: SymmetricKey
         do {
-            key = try await resolvedMasterKey(
+            key = try await masterKeyForScopedAuthorization(
+                scope: executionScope,
                 for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                 reason: operationReason(for: descriptor),
-                allowsAgentDecryptReuse: false,
-                destination: currentDecision.normalizedDestination
+                destination: currentDecision.normalizedDestination,
+                forceFreshWhenUnscoped: false
             )
         } catch {
             await abandonExecutionAuthorization(scope: executionScope)
@@ -702,7 +743,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         if let executionScope {
             var commit = try await commitExecutionAuthorization(
                 scope: executionScope,
-                generation: operationGeneration
+                generation: operationGeneration,
+                masterKey: key
             )
 
             if commit == .needsFreshApproval {
@@ -742,11 +784,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 currentDecision = refreshedDecision
 
                 do {
-                    key = try await resolvedMasterKey(
+                    key = try await masterKeyForScopedAuthorization(
+                        scope: executionScope,
                         for: authorizationPolicy(for: refreshedMetadata.map(\.policy)),
                         reason: operationReason(for: descriptor),
-                        allowsAgentDecryptReuse: false,
-                        destination: refreshedDecision.normalizedDestination
+                        destination: refreshedDecision.normalizedDestination,
+                        forceFreshWhenUnscoped: false
                     )
                 } catch {
                     await abandonExecutionAuthorization(scope: executionScope)
@@ -759,7 +802,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
                 commit = try await commitExecutionAuthorization(
                     scope: executionScope,
-                    generation: operationGeneration
+                    generation: operationGeneration,
+                    masterKey: key
                 )
                 guard commit != .needsFreshApproval else {
                     await abandonExecutionAuthorization(scope: executionScope)
@@ -817,6 +861,20 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
             guard output.status != "ACTION_EXECUTOR_UNAVAILABLE" else {
                 throw SecretOperationError.actionExecutorUnavailable
+            }
+            guard output.status == "COMPLETED" else {
+                await abandonExecutionAuthorization(scope: executionScope)
+                await emitAudit(
+                    action: authorizationPath.operationAuditAction,
+                    target: currentDecision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: output.status,
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .failure
+                )
+                return output
             }
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
@@ -3341,6 +3399,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         destinationPath: String
     ) async throws -> String {
         let destination = try validatedExportDestination(destinationPath)
+        let operationGeneration = securityGeneration
         let operationContext = RevealContext(
             reason: context.reason,
             template: context.template,
@@ -3354,18 +3413,153 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             effects: ["write-local-file"]
         )
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-        try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
-        let resolvedText = try await resolveReferences(
-            references: references,
-            context: operationContext,
-            forceFreshAuthorization: true
+        let executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
+        let scope: ExecutionAuthorizationScope? = decision.risk == .approvalRequired && executionWindowEnabled
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+        var authorizationPath = try await authorizeIfNeeded(
+            descriptor,
+            metadata: metadata,
+            decision: decision,
+            expectedGeneration: operationGeneration,
+            executionScope: scope
         )
-        try resolvedText.write(to: destination, atomically: true, encoding: .utf8)
+
+        guard operationGeneration == securityGeneration else {
+            await abandonExecutionAuthorization(scope: scope)
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        var currentMetadata: [SecretPolicyMetadata]
+        do {
+            currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+        } catch {
+            await abandonExecutionAuthorization(scope: scope)
+            throw SecretOperationError.actionExecutionFailed
+        }
+        var currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
+        guard currentDecision.risk != .denied else {
+            await abandonExecutionAuthorization(scope: scope)
+            throw SecretOperationError.operationDenied
+        }
+        guard operationGeneration == securityGeneration else {
+            await abandonExecutionAuthorization(scope: scope)
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        var key: SymmetricKey
+        do {
+            key = try await masterKeyForScopedAuthorization(
+                scope: scope,
+                for: authorizationPolicy(for: currentMetadata.map(\.policy)),
+                reason: operationContext.reason,
+                destination: exportDirectory.standardizedFileURL.path,
+                forceFreshWhenUnscoped: true
+            )
+        } catch {
+            await abandonExecutionAuthorization(scope: scope)
+            throw SecretOperationError.actionExecutionFailed
+        }
+        guard operationGeneration == securityGeneration else {
+            await abandonExecutionAuthorization(scope: scope)
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        var reusedScopedAuthorization = false
+        if let scope {
+            var commit = try await commitExecutionAuthorization(
+                scope: scope,
+                generation: operationGeneration,
+                masterKey: key
+            )
+            if commit == .needsFreshApproval {
+                authorizationPath = try await authorizeAgentExecution(
+                    descriptor,
+                    metadata: currentMetadata,
+                    decision: currentDecision,
+                    generation: operationGeneration,
+                    scope: scope
+                )
+                guard operationGeneration == securityGeneration else {
+                    await abandonExecutionAuthorization(scope: scope)
+                    throw SecretOperationError.authorizationCancelled
+                }
+                do {
+                    currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+                } catch {
+                    await abandonExecutionAuthorization(scope: scope)
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
+                guard currentDecision.risk != .denied else {
+                    await abandonExecutionAuthorization(scope: scope)
+                    throw SecretOperationError.operationDenied
+                }
+                guard operationGeneration == securityGeneration else {
+                    await abandonExecutionAuthorization(scope: scope)
+                    throw SecretOperationError.authorizationCancelled
+                }
+                do {
+                    key = try await masterKeyForScopedAuthorization(
+                        scope: scope,
+                        for: authorizationPolicy(for: currentMetadata.map(\.policy)),
+                        reason: operationContext.reason,
+                        destination: exportDirectory.standardizedFileURL.path,
+                        forceFreshWhenUnscoped: true
+                    )
+                } catch {
+                    await abandonExecutionAuthorization(scope: scope)
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                commit = try await commitExecutionAuthorization(
+                    scope: scope,
+                    generation: operationGeneration,
+                    masterKey: key
+                )
+                guard commit != .needsFreshApproval else {
+                    await abandonExecutionAuthorization(scope: scope)
+                    throw SecretOperationError.authorizationCancelled
+                }
+            }
+
+            switch commit {
+            case .leaseEstablished, .approvedWithoutLease:
+                authorizationPath = .freshLocalApproval
+            case .leaseReused:
+                authorizationPath = .executionWindowReuse
+                reusedScopedAuthorization = true
+            case .needsFreshApproval:
+                await abandonExecutionAuthorization(scope: scope)
+                throw SecretOperationError.authorizationCancelled
+            }
+        }
+
+        do {
+            let resolvedText = try await resolveReferencesWithValues(
+                references: references,
+                context: operationContext,
+                masterKeyOverride: key
+            ).text
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            try resolvedText.write(to: destination, atomically: true, encoding: .utf8)
+        } catch {
+            await abandonExecutionAuthorization(scope: scope)
+            throw error
+        }
+
+        if reusedScopedAuthorization {
+            await emitExecutionWindowReuseAudit(descriptor: descriptor, decision: currentDecision)
+        }
         await emitAudit(
             action: "写入本地文件",
             target: "local-export",
             referenceCount: references.count,
-            result: "成功"
+            result: "成功",
+            operation: .credentialUse,
+            authorizationOutcome: authorizationPath.auditOutcome,
+            authorizationMode: authorizationPath.auditMode
         )
         return destination.path
     }
@@ -3780,16 +3974,31 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
-    private func executionAuthorizationScope(
+    private func scopedAuthorizationScope(
         for descriptor: SecretOperationDescriptor,
         generation: UInt64
     ) -> ExecutionAuthorizationScope {
-        ExecutionAuthorizationScope(
+        let destination: String?
+        let port: Int?
+        let protocolType: String?
+        if descriptor.actionType == .exportPlaintext {
+            // The export root is the validated security boundary. The leaf
+            // file name intentionally stays out of the scope so distinct new
+            // files within the same root can reuse the same authorization.
+            destination = exportDirectory.standardizedFileURL.path
+            port = nil
+            protocolType = SecretOperationProtocol.file.rawValue
+        } else {
+            destination = descriptor.normalizedDestination
+            port = descriptor.port
+            protocolType = descriptor.protocolType?.rawValue
+        }
+        return ExecutionAuthorizationScope(
             principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
             secretReferenceIDs: descriptor.secretReferences.map(\.description),
-            normalizedDestination: descriptor.normalizedDestination,
-            port: descriptor.port,
-            protocolType: descriptor.protocolType?.rawValue,
+            normalizedDestination: destination,
+            port: port,
+            protocolType: protocolType,
             actionFamily: descriptor.actionType.rawValue,
             generation: generation
         )
@@ -3824,13 +4033,18 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private func commitExecutionAuthorization(
         scope: ExecutionAuthorizationScope,
-        generation: UInt64
+        generation: UInt64,
+        masterKey: SymmetricKey
     ) async throws -> ExecutionAuthorizationCommit {
         guard generation == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
         }
 
         if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard scopedMasterKeyAuthorizations[scope] != nil else {
+                await authorizationSession.invalidateExecutionAuthorization(for: scope)
+                return .needsFreshApproval
+            }
             if let flight = executionApprovalFlights.removeValue(forKey: scope) {
                 if pendingExecutionApprovalIDs.remove(flight.id) != nil {
                     approvalPending = !pendingExecutionApprovalIDs.isEmpty
@@ -3865,6 +4079,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // suspended. Reuse that exact scoped lease instead of authorizing it
         // again.
         if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard scopedMasterKeyAuthorizations[scope] != nil else {
+                await authorizationSession.invalidateExecutionAuthorization(for: scope)
+                return .needsFreshApproval
+            }
             if executionApprovalFlights[scope]?.id == flight.id {
                 executionApprovalFlights.removeValue(forKey: scope)
                 if pendingExecutionApprovalIDs.remove(flight.id) != nil {
@@ -3884,6 +4102,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             await authorizationSession.invalidateExecutionAuthorization(for: scope)
             throw SecretOperationError.authorizationCancelled
         }
+
+        if expiresAt != nil {
+            scopedMasterKeyAuthorizations[scope] = ScopedMasterKeyAuthorization(key: masterKey)
+            await scheduleScopedMasterKeyExpiry(for: scope)
+        } else {
+            scopedMasterKeyAuthorizations.removeValue(forKey: scope)
+            scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
+        }
+        scopedMasterKeyFlights.removeValue(forKey: scope)
 
         executionApprovalFlights.removeValue(forKey: scope)
         if pendingExecutionApprovalIDs.remove(flight.id) != nil {
@@ -3906,6 +4133,35 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 await statusObserver?(status())
             }
         }
+        scopedMasterKeyFlights.removeValue(forKey: scope)?.task.cancel()
+        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
+        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
+        await authorizationSession.invalidateExecutionAuthorization(for: scope)
+    }
+
+    private func scheduleScopedMasterKeyExpiry(for scope: ExecutionAuthorizationScope) async {
+        guard let duration = await authorizationSession.executionAuthorizationWindowDuration() else {
+            return
+        }
+        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
+        let id = UUID()
+        let task = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard !Task.isCancelled else { return }
+            await self?.expireScopedMasterKeyAuthorization(scope: scope, expiryID: id)
+        }
+        scopedMasterKeyExpiryTasks[scope] = ScopedMasterKeyExpiry(id: id, task: task)
+    }
+
+    private func expireScopedMasterKeyAuthorization(
+        scope: ExecutionAuthorizationScope,
+        expiryID: UUID
+    ) async {
+        guard scopedMasterKeyExpiryTasks[scope]?.id == expiryID else {
+            return
+        }
+        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)
+        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
         await authorizationSession.invalidateExecutionAuthorization(for: scope)
     }
 
@@ -4136,7 +4392,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func resolveReferencesWithValues(
         references: [String],
         context: RevealContext,
-        forceFreshAuthorization: Bool = false
+        forceFreshAuthorization: Bool = false,
+        masterKeyOverride: SymmetricKey? = nil
     ) async throws -> RestoredParagraph {
         guard !references.isEmpty else {
             throw VaultAppServicesRevealError.invalidRevealContext
@@ -4160,14 +4417,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         for reference in validatedReferences {
             metadata.append(try await recordResolver.metadata(reference: reference))
         }
-        let operationPolicy = authorizationPolicy(for: metadata.map(\.policy))
-        let operationMasterKey = try await resolvedMasterKey(
-            for: operationPolicy,
-            reason: context.reason,
-            allowsAgentDecryptReuse: !forceFreshAuthorization,
-            destination: context.destination,
-            forceFresh: forceFreshAuthorization
-        )
+        let operationMasterKey: SymmetricKey
+        if let masterKeyOverride {
+            operationMasterKey = masterKeyOverride
+        } else {
+            let operationPolicy = authorizationPolicy(for: metadata.map(\.policy))
+            operationMasterKey = try await resolvedMasterKey(
+                for: operationPolicy,
+                reason: context.reason,
+                allowsAgentDecryptReuse: !forceFreshAuthorization,
+                destination: context.destination,
+                forceFresh: forceFreshAuthorization
+            )
+        }
 
         var plaintexts: [String] = []
         plaintexts.reserveCapacity(validatedReferences.count)
@@ -4235,6 +4497,62 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         }
         return key
+    }
+
+    /// Scoped Agent operations may reuse only the key material captured when
+    /// that exact scope acquired device-owner authorization. Falling back to
+    /// the broader credential cache here would let its independent TTL extend
+    /// an Agent authorization lease.
+    private func masterKeyForScopedAuthorization(
+        scope: ExecutionAuthorizationScope?,
+        for policy: SecretPolicy,
+        reason: String,
+        destination: String?,
+        forceFreshWhenUnscoped: Bool
+    ) async throws -> SymmetricKey {
+        guard let scope else {
+            return try await resolvedMasterKey(
+                for: policy,
+                reason: reason,
+                allowsAgentDecryptReuse: false,
+                destination: destination,
+                forceFresh: forceFreshWhenUnscoped
+            )
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope),
+           let authorization = scopedMasterKeyAuthorizations[scope] {
+            return authorization.key
+        }
+
+        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
+        await authorizationSession.invalidateExecutionAuthorization(for: scope)
+        if let flight = scopedMasterKeyFlights[scope] {
+            return try await flight.task.value
+        }
+
+        let masterKey = self.masterKey
+        let masterKeyProvider = self.masterKeyProvider
+        let freshMasterKeyProvider = self.freshMasterKeyProvider
+        let task = Task<SymmetricKey, Error> {
+            if let masterKey {
+                return masterKey
+            }
+            if let freshMasterKeyProvider {
+                return try await freshMasterKeyProvider(policy, reason)
+            }
+            guard let masterKeyProvider else {
+                throw VaultAppServicesRevealError.revealUnavailable
+            }
+            return try await masterKeyProvider(policy, reason)
+        }
+        scopedMasterKeyFlights[scope] = ScopedMasterKeyFlight(task: task)
+        do {
+            return try await task.value
+        } catch {
+            scopedMasterKeyFlights.removeValue(forKey: scope)
+            throw error
+        }
     }
 
     private func freshMasterKey(

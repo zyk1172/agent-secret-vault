@@ -157,7 +157,7 @@ Agent 接入后先做：
 | 查看单个秘密给用户本人 | `secret_reveal_request` | `reference` |
 | 本地显示整段解密文本 | `paragraph_reveal_request` | `references` + `template` |
 | 导出填充后的敏感文本到本地文件 | `export_resolved_text_to_local_file` | `references` + `template` + `destinationPath` |
-| SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选 `usernameRef` |
+| SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选非敏感 `username` |
 | 本地/内网 HTTP Basic Auth | `local_http_request_with_secret` | `passwordRef`，可选 `usernameRef` |
 | API token 请求 | `api_request_with_token` | `tokenRef` |
 | 数据库只读查询 | `database_query_with_secret` | `passwordRef`，可选 `usernameRef` |

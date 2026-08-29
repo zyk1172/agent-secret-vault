@@ -7,7 +7,6 @@ import {
 } from "../src/server.js";
 
 const reference = "secret://0123456789ABCDEFGHJKMNPQRS";
-const usernameReference = "secret://0123456789ABCDEFGHJKMNPQT";
 
 class FakeClient implements VaultIpcClient {
   readonly requests: IpcRequest[] = [];
@@ -701,6 +700,28 @@ describe("MCP tool contracts", () => {
 
     expect(result.structuredContent).toEqual({ status: "OPERATION_DENIED" });
     expect(client.requests[0].type).toBe("executeSecretOperation");
+  });
+
+  it("rejects secret-backed SSH usernames before IPC", async () => {
+    const client = new FakeClient([]);
+    await expect(tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      usernameRef: reference,
+      passwordRef: reference,
+      command: "hostname"
+    })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("rejects option-like SSH usernames before IPC", async () => {
+    const client = new FakeClient([]);
+    await expect(tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      username: "-oProxyCommand=echo",
+      passwordRef: reference,
+      command: "hostname"
+    })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
   });
 
   it("carries HTTP method and destination into the operation descriptor", async () => {

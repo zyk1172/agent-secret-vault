@@ -154,15 +154,17 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             }
         }
 
+        // OpenSSH requires the login name in its own argv. A username stored
+        // as secret:// would therefore cross the SVLT boundary into a child
+        // process command line. Keep that invariant explicit instead of
+        // pretending the outer Expect stdin transport protects the child.
+        guard reference(for: "usernameRef", in: descriptor) == nil else {
+            throw SecretOperationExecutionError.invalidParameter
+        }
+
         let username: String
-        if let usernameReference = reference(for: "usernameRef", in: descriptor) {
-            let usernameData = try await resolve(usernameReference)
-            secretBuffers.append(usernameData)
-            guard let value = String(data: usernameData, encoding: .utf8), !value.isEmpty else {
-                throw SecretOperationExecutionError.invalidSecretUTF8
-            }
-            username = value
-        } else if let plainUsername = descriptor.parameters["username"], !plainUsername.isEmpty {
+        if let plainUsername = descriptor.parameters["username"],
+           Self.isSafeSSHUsername(plainUsername) {
             username = plainUsername
         } else {
             throw SecretOperationExecutionError.invalidParameter
@@ -175,19 +177,32 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         }
 
         let port = descriptor.port ?? 22
+        let operationTimeout = try timeout(for: descriptor)
         let script = Self.expectSSHScript()
-        // The expect script is passed as an argument, while secret material is
-        // supplied only through the process stdin.  The command line never
-        // contains username/password data.
-        let result = try await processRunner.run(
-            ProcessInvocation(
-                executable: "/usr/bin/expect",
-                arguments: ["-c", script, "--", host, command, String(port)]
-            ),
-            stdin: Data(username.utf8) + Data([0x0A]) + Data(password.utf8) + Data([0x0A]),
-            timeout: timeout,
-            outputLimitBytes: outputLimitBytes
-        )
+        // `expect -c` executes only the static script. Every runtime field is
+        // length-safe Base64 framing on stdin, so Tcl never reads argv and no
+        // secret reaches the Expect command line or environment.
+        let result: ProcessResult
+        do {
+            result = try await processRunner.run(
+                ProcessInvocation(
+                    executable: "/usr/bin/expect",
+                    arguments: ["-c", script]
+                ),
+                stdin: Self.expectSSHInput(
+                    host: host,
+                    port: port,
+                    command: command,
+                    username: username,
+                    password: password,
+                    timeoutSeconds: Self.expectTimeoutSeconds(for: operationTimeout)
+                ),
+                timeout: operationTimeout,
+                outputLimitBytes: outputLimitBytes
+            )
+        } catch ProcessRunError.timedOut {
+            return SecretOperationOutput(status: "TIMED_OUT", redacted: true)
+        }
 
         switch outputSanitizer.sanitize(result, secrets: secretBuffers) {
         case .quarantined:
@@ -198,8 +213,19 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             else {
                 throw SecretOperationExecutionError.outputQuarantined
             }
+            let status: String
+            switch result.exitCode {
+            case 0:
+                status = "COMPLETED"
+            case 124:
+                status = "TIMED_OUT"
+            case 125:
+                status = "WRAPPER_FAILED"
+            default:
+                status = "FAILED"
+            }
             return SecretOperationOutput(
-                status: "COMPLETED",
+                status: status,
                 exitCode: result.exitCode,
                 stdout: stdout,
                 stderr: stderr,
@@ -227,9 +253,10 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             }
         }
 
+        let operationTimeout = try timeout(for: descriptor)
         var request = URLRequest(url: url)
         request.httpMethod = (descriptor.httpMethod ?? "GET").uppercased()
-        request.timeoutInterval = timeout.timeInterval
+        request.timeoutInterval = operationTimeout.timeInterval
         if let body = descriptor.parameters["body"] {
             guard !body.contains("secret://") else {
                 throw SecretOperationExecutionError.invalidParameter
@@ -337,19 +364,86 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         return descriptor.secretReferences.first { $0.description == rawReference }
     }
 
-    private static func expectSSHScript() -> String {
+    private func timeout(for descriptor: SecretOperationDescriptor) throws -> Duration {
+        guard let rawTimeout = descriptor.parameters["timeoutMs"] else {
+            return timeout
+        }
+        guard let milliseconds = Int64(rawTimeout),
+              (100...30_000).contains(milliseconds)
+        else {
+            throw SecretOperationExecutionError.invalidParameter
+        }
+        return .milliseconds(milliseconds)
+    }
+
+    static func expectSSHInput(
+        host: String,
+        port: Int,
+        command: String,
+        username: String,
+        password: String,
+        timeoutSeconds: Int
+    ) -> Data {
+        let fields = [
+            host,
+            String(port),
+            command,
+            username,
+            password,
+            String(timeoutSeconds)
+        ]
+        return Data(fields.map {
+            Data($0.utf8).base64EncodedString()
+        }.joined(separator: "\n").appending("\n").utf8)
+    }
+
+    static func expectTimeoutSeconds(for timeout: Duration) -> Int {
+        max(1, Int(timeout.timeInterval.rounded(.up)))
+    }
+
+    private static func isSafeSSHUsername(_ username: String) -> Bool {
+        let bytes = username.utf8
+        guard (1...256).contains(bytes.count),
+              let first = bytes.first,
+              (first >= 48 && first <= 57) || (first >= 65 && first <= 90) || (first >= 97 && first <= 122)
+        else {
+            return false
+        }
+        return bytes.allSatisfy { byte in
+            (byte >= 48 && byte <= 57)
+                || (byte >= 65 && byte <= 90)
+                || (byte >= 97 && byte <= 122)
+                || byte == 46 || byte == 95 || byte == 45
+        }
+    }
+
+    static func expectSSHScript() -> String {
         return """
-        set timeout 30
-        if {[llength $argv] != 3} { exit 125 }
-        set host [lindex $argv 0]
-        set command [lindex $argv 1]
-        set port [lindex $argv 2]
-        if {[gets stdin username] < 0} { exit 125 }
-        if {[gets stdin password] < 0} { exit 125 }
+        proc readBase64Field {} {
+            if {[gets stdin encoded] < 0 || $encoded eq ""} { exit 125 }
+            if {[catch {binary decode base64 $encoded} value]} { exit 125 }
+            return $value
+        }
+        set host [readBase64Field]
+        set port [readBase64Field]
+        set command [readBase64Field]
+        set username [readBase64Field]
+        set password [readBase64Field]
+        set timeoutSeconds [readBase64Field]
+        if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit 125 }
+        if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit 125 }
+        set timeout $timeoutSeconds
         log_user 1
-        spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p $port "$username@$host" $command
+        spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" $command
         expect {
-            -re "(?i)(password|passphrase).*:" { send -- "$password\\r"; exp_continue }
+            -re "(?i)(password|passphrase).*:" { send -- "$password\\r" }
+            eof {}
+            timeout { exit 124 }
+        }
+        # After the one authentication response, do not pattern-match remote
+        # PTY output. A remote command that prints "password:" must never
+        # receive the credential a second time.
+        expect {
             eof {}
             timeout { exit 124 }
         }

@@ -41,6 +41,71 @@ import VaultIPC
     #expect(summary.contains("不会授权其他凭据、目标或协议"))
 }
 
+@Test func exportReusesScopedAuthorizationAndFreshKeyAcrossLeafFiles() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 7_000)
+    let clock = ServiceTestClock(start)
+    let monotonicStart: UInt64 = 90_000_000_000
+    clock.monotonicNow = monotonicStart
+    let authorizationSession = AuthorizationSession(
+        executionTTL: 300,
+        monotonicNow: { clock.monotonicNow },
+        now: { clock.now }
+    )
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        usesMasterKeyProvider: true,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    let context = RevealContext(
+        reason: "Export resolved local file",
+        template: "Token: {{0}}",
+        ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
+    )
+    let firstDestination = fixture.exportDirectory.appendingPathComponent("first.md")
+    let secondDestination = fixture.exportDirectory.appendingPathComponent("second.md")
+
+    _ = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: "agent-exporter")
+    ) {
+        try await fixture.service.exportResolvedText(
+            references: [fixture.reference.description],
+            context: context,
+            destinationPath: firstDestination.path
+        )
+    }
+    _ = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: "agent-exporter")
+    ) {
+        try await fixture.service.exportResolvedText(
+            references: [fixture.reference.description],
+            context: context,
+            destinationPath: secondDestination.path
+        )
+    }
+
+    #expect(await fixture.approver.count == 1)
+    let keyProvider = try #require(fixture.keyProvider)
+    #expect(await keyProvider.freshCount == 1)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(
+        for: fixture.exportScope(principal: "agent-exporter")
+    ))
+    #expect(try String(contentsOf: firstDestination, encoding: .utf8).contains("ASV_CANARY_OPERATION_SECRET"))
+    #expect(try String(contentsOf: secondDestination, encoding: .utf8).contains("ASV_CANARY_OPERATION_SECRET"))
+}
+
+@Test func failedScopedOperationClearsItsLeaseBeforeTheNextAttempt() async throws {
+    let fixture = try await OperationServiceFixture(executorStatus: "FAILED")
+    defer { fixture.remove() }
+
+    let output = try await fixture.service.performSecretOperation(fixture.ssh(command: "reboot"))
+
+    #expect(output.status == "FAILED")
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+    #expect((await fixture.auditEntries()).last?.result == "FAILED")
+}
+
 @Test func eligibleSecretOperationsReuseExecutionAuthorizationUntilExpiry() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 3_000)
     let clock = ServiceTestClock(start)
@@ -442,6 +507,26 @@ private actor ExecutorRecorder: SecretOperationExecuting {
     }
 }
 
+private actor ScopedKeyProviderRecorder {
+    private let key: SymmetricKey
+    private(set) var masterCount = 0
+    private(set) var freshCount = 0
+
+    init(key: SymmetricKey) {
+        self.key = key
+    }
+
+    func masterKey() -> SymmetricKey {
+        masterCount += 1
+        return key
+    }
+
+    func freshMasterKey() -> SymmetricKey {
+        freshCount += 1
+        return key
+    }
+}
+
 private actor StatusRecorder {
     private(set) var values: [WorkbenchStatus] = []
 
@@ -475,6 +560,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
     let authorizationSession: AuthorizationSession
     let store: FileRecordStore
     let auditRecorder: AuditRecorder
+    let exportDirectory: URL
+    let keyProvider: ScopedKeyProviderRecorder?
 
     init(
         approval: ApprovalMode = .allow,
@@ -485,11 +572,14 @@ private final class OperationServiceFixture: @unchecked Sendable {
         executorCapability: SecretOperationExecutionCapability = .supported,
         executorStatus: String = "COMPLETED",
         blockExecution: Bool = false,
+        usesMasterKeyProvider: Bool = false,
         now: @escaping @Sendable () -> Date = Date.init
     ) async throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("svlt-operation-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        exportDirectory = root.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
         let store = FileRecordStore(baseDirectory: root)
         self.store = store
         key = SymmetricKey(data: Data(repeating: 0x44, count: 32))
@@ -506,6 +596,18 @@ private final class OperationServiceFixture: @unchecked Sendable {
         )
         try await store.save(record)
 
+        let keyProvider = usesMasterKeyProvider ? ScopedKeyProviderRecorder(key: key) : nil
+        self.keyProvider = keyProvider
+        let masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
+        let freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
+        if let keyProvider {
+            masterKeyProvider = { _, _ in await keyProvider.masterKey() }
+            freshMasterKeyProvider = { _, _ in await keyProvider.freshMasterKey() }
+        } else {
+            masterKeyProvider = nil
+            freshMasterKeyProvider = nil
+        }
+
         let statuses = StatusRecorder()
         statusRecorder = statuses
         approver = ApprovalRecorder(mode: approval, gate: approvalGate)
@@ -521,7 +623,9 @@ private final class OperationServiceFixture: @unchecked Sendable {
             textEncryptor: DummyTextEncryptor(),
             activeRoot: nil,
             recordResolver: VaultRecordResolver(recordStore: store),
-            masterKey: key,
+            masterKey: keyProvider == nil ? key : nil,
+            masterKeyProvider: masterKeyProvider,
+            freshMasterKeyProvider: freshMasterKeyProvider,
             authorizationSession: authorizationSession,
             operationApprover: approver,
             operationExecutor: executor,
@@ -532,7 +636,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
             },
             auditObserver: { entry in
                 await auditRecorder.append(entry)
-            }
+            },
+            exportDirectory: exportDirectory
         )
     }
 
@@ -568,6 +673,21 @@ private final class OperationServiceFixture: @unchecked Sendable {
             port: 22,
             protocolType: SecretOperationProtocol.ssh.rawValue,
             actionFamily: SecretOperationAction.sshCommand.rawValue,
+            generation: generation
+        )
+    }
+
+    func exportScope(
+        principal: String = AuditSource.agent.rawValue,
+        generation: UInt64 = 0
+    ) -> ExecutionAuthorizationScope {
+        ExecutionAuthorizationScope(
+            principal: principal,
+            secretReferenceIDs: [reference.description],
+            normalizedDestination: exportDirectory.standardizedFileURL.path,
+            port: nil,
+            protocolType: SecretOperationProtocol.file.rawValue,
+            actionFamily: SecretOperationAction.exportPlaintext.rawValue,
             generation: generation
         )
     }

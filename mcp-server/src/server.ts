@@ -554,18 +554,14 @@ const SshCommandInput = z
   .object({
     host: z.string().min(1).max(253),
     port: z.number().int().min(1).max(65_535).optional(),
-    username: z.string().min(1).max(256).optional(),
-    usernameRef: SecretReference.optional(),
+    username: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/).optional(),
     passwordRef: SecretReference,
     command: z.string().min(1).max(2_000),
     risk: z.enum(["read"]).optional(),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
-  .strict()
-  .refine((value) => value.username === undefined || value.usernameRef === undefined, {
-    message: "Use either username or usernameRef, not both."
-  });
+  .strict();
 
 const ApiRequestInput = z
   .object({
@@ -1588,13 +1584,9 @@ async function handleSshCommandWithSecret(
   client: VaultIpcClient,
   parsed: z.infer<typeof SshCommandInput>
 ): Promise<CallToolResult> {
-  const refs = [
-    ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
-    parsed.passwordRef
-  ];
+  const refs = [parsed.passwordRef];
   const parameters: Record<string, string> = {
     passwordRef: parsed.passwordRef,
-    ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
     ...(parsed.username === undefined ? {} : { username: parsed.username }),
     ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
