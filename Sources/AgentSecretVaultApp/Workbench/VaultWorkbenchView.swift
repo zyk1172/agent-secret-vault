@@ -287,6 +287,11 @@ public enum CatalogDetailMetrics {
     public static let verticalPadding: CGFloat = 22
     public static let gridHorizontalSpacing: CGFloat = 16
     public static let gridVerticalSpacing: CGFloat = 12
+
+    /// Keep the detail grid between the two shared horizontal content guides.
+    public static func gridAvailableWidth(for sheetWidth: CGFloat) -> CGFloat {
+        max(0, sheetWidth - horizontalPadding * 2)
+    }
 }
 
 public enum CatalogFieldDraftValidation {
@@ -1742,7 +1747,7 @@ struct PendingSecretFillCard: View {
                 HStack(spacing: 10) {
                     SecureField(
                         text: $plaintext,
-                        prompt: Text("输入\(pending.fieldLabel)").foregroundStyle(.orange)
+                        prompt: Text("输入密码").foregroundStyle(.orange)
                     ) {
                         Text("密码")
                     }
@@ -2840,14 +2845,6 @@ private struct SensitiveCatalogEntryRow: View {
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)
         .sheet(isPresented: $showingDetails, onDismiss: clearSensitiveOutput) {
             entryDetails
-                .frame(
-                    minWidth: 760,
-                    idealWidth: 860,
-                    maxWidth: 900,
-                    minHeight: editing ? 520 : 260,
-                    idealHeight: editing ? 640 : min(max(detailContentHeight + 92, 260), 720),
-                    maxHeight: editing ? 720 : min(max(detailContentHeight + 92, 260), 720)
-                )
         }
         .onDisappear {
             clearSensitiveOutput()
@@ -2930,8 +2927,8 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     private var entryDetails: some View {
-        NavigationStack {
-            ScrollView(.vertical, showsIndicators: editing) {
+        VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
@@ -2953,6 +2950,7 @@ private struct SensitiveCatalogEntryRow: View {
                             .foregroundStyle(.orange)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, CatalogDetailMetrics.horizontalPadding)
                 .padding(.vertical, CatalogDetailMetrics.verticalPadding)
                 .background(
@@ -2961,33 +2959,58 @@ private struct SensitiveCatalogEntryRow: View {
                     }
                 )
             }
-            .frame(maxHeight: editing ? .infinity : min(max(detailContentHeight + 92, 260), 720))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: CatalogDetailAvailableWidthKey.self, value: proxy.size.width)
+                }
+            )
             .onPreferenceChange(CatalogDetailContentHeightKey.self) { detailContentHeight = $0 }
             .onPreferenceChange(CatalogDetailAvailableWidthKey.self) { width in
                 guard width > 0 else { return }
                 detailAvailableWidth = width
             }
-            .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    if editing {
-                        Button(isSaving ? "保存中…" : "保存条目") {
-                            saveEntry()
-                        }
-                        .disabled(isSaving || commitEntryEdit == nil)
-                    } else {
-                        Button("编辑") {
-                            load(entry)
-                            editing = true
-                            editorError = nil
-                        }
-                    }
-                    Button("关闭") {
-                        showingDetails = false
-                    }
-                    .keyboardShortcut(.cancelAction)
-                }
-            }
+
+            Divider()
+            detailActionBar
         }
+        .frame(
+            minWidth: 760,
+            idealWidth: 860,
+            maxWidth: 900,
+            minHeight: editing ? 520 : 320,
+            idealHeight: editing ? 640 : min(max(detailContentHeight + 92, 320), 720),
+            maxHeight: editing ? 720 : min(max(detailContentHeight + 92, 320), 720)
+        )
+    }
+
+    private var detailActionBar: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+            if editing {
+                Button(isSaving ? "保存中…" : "保存条目") {
+                    saveEntry()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSaving || commitEntryEdit == nil)
+            } else {
+                Button("编辑") {
+                    load(entry)
+                    editing = true
+                    editorError = nil
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            Button("关闭") {
+                showingDetails = false
+            }
+            .buttonStyle(.bordered)
+            .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, CatalogDetailMetrics.horizontalPadding)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .background(.bar)
     }
 
     private var entryTitleContent: some View {
@@ -3014,8 +3037,10 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     private var displayBody: some View {
+        let sheetWidth = detailAvailableWidth > 0 ? detailAvailableWidth : 760
+        let gridAvailableWidth = CatalogDetailMetrics.gridAvailableWidth(for: sheetWidth)
         let widths = CatalogDetailColumnWidths.calculate(
-            availableWidth: detailAvailableWidth > 0 ? detailAvailableWidth : 760
+            availableWidth: gridAvailableWidth
         )
         return VStack(alignment: .leading, spacing: 16) {
             Grid(
@@ -3035,7 +3060,7 @@ private struct SensitiveCatalogEntryRow: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: gridAvailableWidth, alignment: .leading)
             if let notes = entry.notes, !notes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("备注").font(.body.weight(.semibold))
@@ -3044,11 +3069,6 @@ private struct SensitiveCatalogEntryRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(key: CatalogDetailAvailableWidthKey.self, value: proxy.size.width)
-            }
-        )
     }
 
     @ViewBuilder

@@ -137,6 +137,16 @@ import VaultCore
     #expect(narrow.value >= 0)
 }
 
+@Test func catalogDetailGridWidthLeavesSymmetricHorizontalGuides() {
+    let sheetWidth: CGFloat = 760
+    let gridWidth = CatalogDetailMetrics.gridAvailableWidth(for: sheetWidth)
+    let widths = CatalogDetailColumnWidths.calculate(availableWidth: gridWidth)
+
+    #expect(gridWidth == sheetWidth - CatalogDetailMetrics.horizontalPadding * 2)
+    #expect(abs((widths.name + widths.value + widths.action) + CatalogDetailMetrics.gridHorizontalSpacing * 2 - gridWidth) < 0.001)
+    #expect(CatalogDetailMetrics.gridAvailableWidth(for: 0) == 0)
+}
+
 @Test func catalogGroupPaneWidthUsesRatioWithUsableBounds() {
     #expect(CatalogGroupLayout.paneWidth(availableWidth: 700) == CatalogGroupLayout.minimumPaneWidth)
     #expect(CatalogGroupLayout.paneWidth(availableWidth: 1_000) == 280)
@@ -314,6 +324,11 @@ import VaultCore
     #expect(!source.contains("应用字段"))
     #expect(!source.contains("取消编辑"))
     #expect(source.contains("CatalogDetailMetrics.horizontalPadding"))
+    #expect(source.contains("private var detailActionBar"))
+    #expect(source.contains("Button(isSaving ? \"保存中…\" : \"保存条目\")"))
+    #expect(source.contains("Button(\"关闭\")"))
+    #expect(!source.contains(".toolbar"))
+    #expect(source.contains("prompt: Text(\"输入密码\").foregroundStyle(.orange)"))
 }
 
 @MainActor @Test func overviewHostingFitsMinimumAndDefaultWindowWithAndWithoutPendingSecret() throws {
