@@ -685,6 +685,34 @@ describe("MCP tool contracts", () => {
     expect(JSON.stringify(request)).not.toContain("restoreReferences");
   });
 
+  it("preserves only bounded redacted diagnostics for failed SSH actions", async () => {
+    const client = new FakeClient([operationResponse({
+      status: "WRAPPER_FAILED",
+      exitCode: 122,
+      stage: "FRAME_DECODE",
+      stdout: "safe stdout",
+      stderr: "safe stderr"
+    })]);
+    const definition = tool(client, "ssh_command_with_secret");
+    const result = await definition.handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      command: "hostname"
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "WRAPPER_FAILED",
+      exitCode: 122,
+      stage: "FRAME_DECODE",
+      stdoutPreview: "safe stdout",
+      stderrPreview: "safe stderr",
+      redacted: true
+    });
+    expect(() => definition.outputSchema.parse(result.structuredContent)).not.toThrow();
+    expect(JSON.stringify(result.structuredContent)).not.toContain("plaintext-secret-value");
+  });
+
   it("does not let a low agent hint hide a dangerous SSH command", async () => {
     const client = new FakeClient([{ type: "failure", code: "OPERATION_DENIED" }]);
     const result = await tool(client, "ssh_command_with_secret").handler({

@@ -55,7 +55,8 @@ import VaultCore
             arguments: ["-c", LocalSecretOperationExecutor.expectSSHScript()]
         ),
         // An invalid port exits after every framed field has been decoded, so
-        // the smoke test never launches SSH or contacts a network host.
+        // the smoke test proves Tcl reached argument validation without
+        // launching SSH or contacting a network host.
         stdin: LocalSecretOperationExecutor.expectSSHInput(
             host: "127.0.0.1",
             port: 0,
@@ -69,9 +70,23 @@ import VaultCore
     )
 
     let output = String(decoding: result.stdout + result.stderr, as: UTF8.self)
-    #expect(result.exitCode == 125)
+    #expect(result.exitCode == 123)
     #expect(!output.contains("can't read \"argv\""))
     #expect(!output.contains("couldn't read file"))
+}
+
+@Test func sshExpectTransportReportsInvalidHexBeforeArgumentValidation() async throws {
+    let result = try await FoundationProcessRunner().run(
+        ProcessInvocation(
+            executable: "/usr/bin/expect",
+            arguments: ["-c", LocalSecretOperationExecutor.expectSSHScript()]
+        ),
+        stdin: Data("GG\n".utf8),
+        timeout: .seconds(2),
+        outputLimitBytes: 16_384
+    )
+
+    #expect(result.exitCode == 122)
 }
 
 @Test func sshExecutorReportsNonzeroExitAsFailed() async throws {
@@ -88,6 +103,7 @@ import VaultCore
 
     #expect(output.status == "FAILED")
     #expect(output.exitCode == 2)
+    #expect(output.stage == .remoteCommand)
 }
 
 @Test func sshExecutorReportsProcessTimeoutAndHonorsDescriptorTimeout() async throws {
@@ -107,7 +123,26 @@ import VaultCore
     )
 
     #expect(output.status == "TIMED_OUT")
+    #expect(output.stage == .timeout)
     #expect(await runner.timeout == .milliseconds(1200))
+}
+
+@Test func sshExecutorReportsAuthenticationFailureWithoutRetryingTheSecret() async throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let runner = CapturingProcessRunner(
+        result: ProcessResult(exitCode: 126, stdout: Data(), stderr: Data("Permission denied".utf8))
+    )
+    let executor = LocalSecretOperationExecutor(processRunner: runner)
+
+    let output = try await executor.execute(
+        sshDescriptor(reference: reference),
+        metadata: [],
+        resolve: { _ in Data("ASV_CANARY_AUTH_SECRET".utf8) }
+    )
+
+    #expect(output.status == "AUTH_FAILED")
+    #expect(output.stage == .authentication)
+    #expect(output.exitCode == 126)
 }
 
 @Test func sshExecutorRejectsSecretUsernameAndInvalidTimeout() async throws {

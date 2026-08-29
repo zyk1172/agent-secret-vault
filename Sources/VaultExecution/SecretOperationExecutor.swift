@@ -18,11 +18,22 @@ public enum SecretOperationExecutionCapability: String, Codable, Equatable, Send
     case unavailable
 }
 
+public enum SecretOperationStage: String, Codable, Equatable, Sendable {
+    case frameRead = "FRAME_READ"
+    case frameDecode = "FRAME_DECODE"
+    case argumentValidation = "ARGUMENT_VALIDATION"
+    case authentication = "AUTHENTICATION"
+    case timeout = "TIMEOUT"
+    case sshWrapper = "SSH_WRAPPER"
+    case remoteCommand = "REMOTE_COMMAND"
+}
+
 /// The only result shape returned from an Agent secret action.  It contains
 /// sanitized output and never contains a resolved secret value.
 public struct SecretOperationOutput: Codable, Equatable, Sendable {
     public let status: String
     public let exitCode: Int32?
+    public let stage: SecretOperationStage?
     public let stdout: String?
     public let stderr: String?
     public let httpStatus: Int?
@@ -38,6 +49,7 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
     public init(
         status: String,
         exitCode: Int32? = nil,
+        stage: SecretOperationStage? = nil,
         stdout: String? = nil,
         stderr: String? = nil,
         httpStatus: Int? = nil,
@@ -52,6 +64,7 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
     ) {
         self.status = status
         self.exitCode = exitCode
+        self.stage = stage
         self.stdout = stdout
         self.stderr = stderr
         self.httpStatus = httpStatus
@@ -64,6 +77,15 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         self.remotePath = remotePath
         self.redacted = redacted
     }
+}
+
+private enum SSHWrapperExitCode {
+    static let frameRead: Int32 = 121
+    static let frameDecode: Int32 = 122
+    static let argumentValidation: Int32 = 123
+    static let timedOut: Int32 = 124
+    static let wrapperFailed: Int32 = 125
+    static let authenticationFailed: Int32 = 126
 }
 
 public protocol SecretOperationExecuting: Sendable {
@@ -91,6 +113,7 @@ public extension SecretOperationExecuting {
 /// path that accepts a secret as a CLI argument, environment variable, URL
 /// query, or log field.
 public struct LocalSecretOperationExecutor: SecretOperationExecuting {
+    private static let expectExecutablePath = "/usr/bin/expect"
     private let processRunner: any ProcessRunning
     private let outputSanitizer: OutputSanitizer
     private let timeout: Duration
@@ -127,7 +150,12 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
 
     public func preflight(_ descriptor: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
         switch descriptor.actionType {
-        case .sshCommand, .httpRequest, .apiRequest:
+        case .sshCommand:
+            if !FileManager.default.isExecutableFile(atPath: Self.expectExecutablePath) {
+                return .unavailable
+            }
+            return .supported
+        case .httpRequest, .apiRequest:
             return .supported
         case .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill:
             return .unavailable
@@ -180,13 +208,13 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         let operationTimeout = try timeout(for: descriptor)
         let script = Self.expectSSHScript()
         // `expect -c` executes only the static script. Every runtime field is
-        // length-safe Base64 framing on stdin, so Tcl never reads argv and no
+        // hex framing on stdin, so Tcl never reads argv and no
         // secret reaches the Expect command line or environment.
         let result: ProcessResult
         do {
             result = try await processRunner.run(
                 ProcessInvocation(
-                    executable: "/usr/bin/expect",
+                    executable: Self.expectExecutablePath,
                     arguments: ["-c", script]
                 ),
                 stdin: Self.expectSSHInput(
@@ -201,7 +229,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 outputLimitBytes: outputLimitBytes
             )
         } catch ProcessRunError.timedOut {
-            return SecretOperationOutput(status: "TIMED_OUT", redacted: true)
+            return SecretOperationOutput(status: "TIMED_OUT", stage: .timeout, redacted: true)
         }
 
         switch outputSanitizer.sanitize(result, secrets: secretBuffers) {
@@ -213,20 +241,11 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             else {
                 throw SecretOperationExecutionError.outputQuarantined
             }
-            let status: String
-            switch result.exitCode {
-            case 0:
-                status = "COMPLETED"
-            case 124:
-                status = "TIMED_OUT"
-            case 125:
-                status = "WRAPPER_FAILED"
-            default:
-                status = "FAILED"
-            }
+            let outcome = Self.sshOutcome(for: result.exitCode)
             return SecretOperationOutput(
-                status: status,
+                status: outcome.status,
                 exitCode: result.exitCode,
+                stage: outcome.stage,
                 stdout: stdout,
                 stderr: stderr,
                 redacted: true
@@ -393,12 +412,37 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             String(timeoutSeconds)
         ]
         return Data(fields.map {
-            Data($0.utf8).base64EncodedString()
+            hexEncoded(Data($0.utf8))
         }.joined(separator: "\n").appending("\n").utf8)
     }
 
     static func expectTimeoutSeconds(for timeout: Duration) -> Int {
         max(1, Int(timeout.timeInterval.rounded(.up)))
+    }
+
+    private static func hexEncoded(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func sshOutcome(for exitCode: Int32) -> (status: String, stage: SecretOperationStage?) {
+        switch exitCode {
+        case 0:
+            return ("COMPLETED", nil)
+        case SSHWrapperExitCode.frameRead:
+            return ("WRAPPER_FAILED", .frameRead)
+        case SSHWrapperExitCode.frameDecode:
+            return ("WRAPPER_FAILED", .frameDecode)
+        case SSHWrapperExitCode.argumentValidation:
+            return ("WRAPPER_FAILED", .argumentValidation)
+        case SSHWrapperExitCode.timedOut:
+            return ("TIMED_OUT", .timeout)
+        case SSHWrapperExitCode.wrapperFailed:
+            return ("WRAPPER_FAILED", .sshWrapper)
+        case SSHWrapperExitCode.authenticationFailed:
+            return ("AUTH_FAILED", .authentication)
+        default:
+            return ("FAILED", .remoteCommand)
+        }
     }
 
     private static func isSafeSSHUsername(_ username: String) -> Bool {
@@ -419,35 +463,43 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
 
     static func expectSSHScript() -> String {
         return """
-        proc readBase64Field {} {
-            if {[gets stdin encoded] < 0 || $encoded eq ""} { exit 125 }
-            if {[catch {binary decode base64 $encoded} value]} { exit 125 }
+        proc readHexField {} {
+            if {[gets stdin encoded] < 0 || $encoded eq ""} { exit \(SSHWrapperExitCode.frameRead) }
+            if {[regexp {[^0-9A-Fa-f]} $encoded]} { exit \(SSHWrapperExitCode.frameDecode) }
+            if {([string length $encoded] % 2) != 0} { exit \(SSHWrapperExitCode.frameDecode) }
+            if {[catch {binary format H* $encoded} value]} { exit \(SSHWrapperExitCode.frameDecode) }
             return $value
         }
-        set host [readBase64Field]
-        set port [readBase64Field]
-        set command [readBase64Field]
-        set username [readBase64Field]
-        set password [readBase64Field]
-        set timeoutSeconds [readBase64Field]
-        if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit 125 }
-        if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit 125 }
+        set host [readHexField]
+        set port [readHexField]
+        set command [readHexField]
+        set username [readHexField]
+        set password [readHexField]
+        set timeoutSeconds [readHexField]
+        if {$host eq "" || $command eq "" || $username eq "" || $password eq ""} { exit \(SSHWrapperExitCode.argumentValidation) }
+        if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(SSHWrapperExitCode.argumentValidation) }
+        if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
         set timeout $timeoutSeconds
         log_user 1
-        spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" $command
+        if {[catch {spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" $command}]} {
+            exit \(SSHWrapperExitCode.wrapperFailed)
+        }
         expect {
+            -re "(?i)permission denied" { exit \(SSHWrapperExitCode.authenticationFailed) }
             -re "(?i)(password|passphrase).*:" { send -- "$password\\r" }
             eof {}
-            timeout { exit 124 }
+            timeout { exit \(SSHWrapperExitCode.timedOut) }
         }
-        # After the one authentication response, do not pattern-match remote
-        # PTY output. A remote command that prints "password:" must never
-        # receive the credential a second time.
+        # After the one authentication response, recognize authentication
+        # failure but never send the credential a second time. A remote command
+        # that prints "password:" must not receive the credential again.
         expect {
+            -re "(?i)permission denied" { exit \(SSHWrapperExitCode.authenticationFailed) }
+            -re "(?i)(password|passphrase).*:" { exit \(SSHWrapperExitCode.authenticationFailed) }
             eof {}
-            timeout { exit 124 }
+            timeout { exit \(SSHWrapperExitCode.timedOut) }
         }
-        catch wait result
+        if {[catch {wait} result]} { exit \(SSHWrapperExitCode.wrapperFailed) }
         exit [lindex $result 3]
         """
     }

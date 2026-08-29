@@ -91,6 +91,20 @@ import Testing
     #expect(sanitized == .quarantined(reason: .encodedSecretVariantDetected))
 }
 
+@Test func quarantinesHexSecretVariantsThatAreNotDeclaredSafe() throws {
+    let secret = bytes("secret value")
+    let hexSecret = secret.map { String(format: "%02x", $0) }.joined()
+    let result = ProcessResult(
+        exitCode: 0,
+        stdout: bytes("remote echoed \(hexSecret)"),
+        stderr: Data()
+    )
+
+    let sanitized = OutputSanitizer().sanitize(result, secrets: [secret])
+
+    #expect(sanitized == .quarantined(reason: .encodedSecretVariantDetected))
+}
+
 @Test func quarantinesEmptySecretMaterial() throws {
     let result = ProcessResult(exitCode: 0, stdout: bytes("safe"), stderr: Data())
 

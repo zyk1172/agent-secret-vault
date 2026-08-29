@@ -30,6 +30,7 @@ import {
   SecretPolicy,
   SecretOperationDescriptor,
   SecretOperationOutput,
+  SecretOperationStage,
   SecretOperationProtocol,
   SecretReference,
   SecretReferenceMetadata
@@ -367,6 +368,16 @@ const LocalSshOutput = z
         exitCode: z.number().int(),
         stdout: z.string(),
         stderr: z.string(),
+        redacted: z.literal(true)
+      })
+      .strict(),
+    z
+      .object({
+        status: z.string().min(1),
+        exitCode: z.number().int().optional(),
+        stage: SecretOperationStage.optional(),
+        stdoutPreview: z.string().optional(),
+        stderrPreview: z.string().optional(),
         redacted: z.literal(true)
       })
       .strict(),
@@ -1580,6 +1591,28 @@ function isSecretOperationOutput(
   return "redacted" in value;
 }
 
+const MAX_SSH_DIAGNOSTIC_PREVIEW_CHARS = 16_384;
+
+function sshDiagnosticPreview(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value.length <= MAX_SSH_DIAGNOSTIC_PREVIEW_CHARS
+    ? value
+    : `${value.slice(0, MAX_SSH_DIAGNOSTIC_PREVIEW_CHARS)}…`;
+}
+
+function sshDiagnosticResult(output: z.infer<typeof SecretOperationOutput>): Record<string, unknown> {
+  const stdoutPreview = sshDiagnosticPreview(output.stdout);
+  const stderrPreview = sshDiagnosticPreview(output.stderr);
+  return {
+    status: output.status,
+    ...(output.exitCode === undefined ? {} : { exitCode: output.exitCode }),
+    ...(output.stage === undefined ? {} : { stage: output.stage }),
+    ...(stdoutPreview === undefined ? {} : { stdoutPreview }),
+    ...(stderrPreview === undefined ? {} : { stderrPreview }),
+    redacted: true
+  };
+}
+
 async function handleSshCommandWithSecret(
   client: VaultIpcClient,
   parsed: z.infer<typeof SshCommandInput>
@@ -1601,8 +1634,11 @@ async function handleSshCommandWithSecret(
     parameters,
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
     return structuredResult({ status: output.status });
+  }
+  if (output.status !== "COMPLETED") {
+    return structuredResult(sshDiagnosticResult(output));
   }
   return structuredResult({
     status: "COMPLETED",

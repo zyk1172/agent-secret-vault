@@ -94,6 +94,15 @@ public struct OutputSanitizer: Sendable {
             variants.insert(percentEncoded)
         }
 
+        let hexEncoded = secretData.map { String(format: "%02x", $0) }.joined()
+        if hexEncoded != secretString {
+            variants.insert(hexEncoded)
+        }
+        let uppercaseHexEncoded = hexEncoded.uppercased()
+        if uppercaseHexEncoded != secretString {
+            variants.insert(uppercaseHexEncoded)
+        }
+
         return Array(variants)
     }
 

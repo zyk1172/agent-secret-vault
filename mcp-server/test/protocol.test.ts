@@ -201,6 +201,21 @@ describe("IPC response schema", () => {
     ).toThrow();
   });
 
+  it("accepts a staged, redacted secret operation diagnostic", () => {
+    const fixture = {
+      type: "secretOperation",
+      output: {
+        status: "WRAPPER_FAILED",
+        exitCode: 122,
+        stage: "FRAME_DECODE",
+        stderr: "invalid framed input",
+        redacted: true
+      }
+    };
+
+    expect(IpcResponse.parse(fixture)).toEqual(fixture);
+  });
+
   it("keeps catalog search responses metadata-only", () => {
     const response = IpcResponse.parse({
       type: "catalogSearchResult",

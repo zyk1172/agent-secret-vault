@@ -794,10 +794,22 @@ export const AuthenticatedIpcRequest = z
   .strict();
 export type AuthenticatedIpcRequest = z.infer<typeof AuthenticatedIpcRequest>;
 
+export const SecretOperationStage = z.enum([
+  "FRAME_READ",
+  "FRAME_DECODE",
+  "ARGUMENT_VALIDATION",
+  "AUTHENTICATION",
+  "TIMEOUT",
+  "SSH_WRAPPER",
+  "REMOTE_COMMAND"
+]);
+export type SecretOperationStage = z.infer<typeof SecretOperationStage>;
+
 export const SecretOperationOutput = z
   .object({
     status: z.string().min(1),
     exitCode: z.number().int().optional(),
+    stage: SecretOperationStage.optional(),
     stdout: z.string().optional(),
     stderr: z.string().optional(),
     httpStatus: z.number().int().optional(),
