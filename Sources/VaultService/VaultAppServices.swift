@@ -41,6 +41,7 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
     public let target: String
     public let referenceCount: Int
     public let result: String
+    public let authorizationMode: AuditAuthorizationMode?
 
     public init(
         id: UUID = UUID(),
@@ -48,7 +49,8 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
         action: String,
         target: String,
         referenceCount: Int,
-        result: String
+        result: String,
+        authorizationMode: AuditAuthorizationMode? = nil
     ) {
         self.id = id
         self.occurredAt = occurredAt
@@ -56,6 +58,7 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
         self.target = target
         self.referenceCount = referenceCount
         self.result = result
+        self.authorizationMode = authorizationMode
     }
 }
 
@@ -107,6 +110,41 @@ private enum CatalogSecureInputAbortReason: Equatable, Sendable {
 private enum CatalogSecureInputAbortError: Error, Sendable {
     case cancelled
     case expired
+}
+
+private enum SecretOperationAuthorizationPath: Sendable {
+    case notRequired
+    case freshLocalApproval
+    case executionWindowReuse
+
+    var auditMode: AuditAuthorizationMode? {
+        switch self {
+        case .notRequired:
+            return nil
+        case .freshLocalApproval:
+            return .freshLocalApproval
+        case .executionWindowReuse:
+            return .executionWindowReuse
+        }
+    }
+
+    var auditOutcome: AuditAuthorizationOutcome {
+        switch self {
+        case .notRequired:
+            return .notRequired
+        case .freshLocalApproval, .executionWindowReuse:
+            return .approved
+        }
+    }
+
+    var operationAuditAction: String {
+        switch self {
+        case .executionWindowReuse:
+            return "智能体专用操作（执行授权复用）"
+        case .notRequired, .freshLocalApproval:
+            return "智能体专用操作"
+        }
+    }
 }
 
 /// Non-sensitive, sticky audit-channel health. This is deliberately kept
@@ -202,6 +240,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
     private var approvalPending = false
+    private var executionApprovalTask: Task<Void, Error>?
+    private var executionApprovalID: UUID?
+    private var executionApprovalGeneration: UInt64?
+    private var securityGeneration: UInt64 = 0
     private var pendingWriteAccessRequests: [UUID: CatalogAgentWriteAccessRequest] = [:]
     private var writeAccessContinuations: [UUID: CatalogWriteAccessContinuationBox] = [:]
     private var writeAccessStates: [UUID: CatalogWriteAccessState] = [:]
@@ -433,6 +475,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // I/O then observes the abort reason on its next actor resumption;
         // requests that have not crossed the commit linearization point cannot
         // outlive the security-state invalidation.
+        securityGeneration &+= 1
+        executionApprovalTask?.cancel()
+        executionApprovalTask = nil
+        executionApprovalID = nil
+        executionApprovalGeneration = nil
+        approvalPending = false
         await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
         for authorization in agentDecryptAuthorizations.values {
@@ -523,6 +571,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         }
 
+        let operationGeneration = securityGeneration
         let metadata = try await policyMetadata(for: descriptor.secretReferences)
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         guard decision.risk != .denied else {
@@ -535,11 +584,51 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.operationDenied
         }
 
-        try await authorizeIfNeeded(
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        let authorizationPath = try await authorizeIfNeeded(
             descriptor,
             metadata: metadata,
-            decision: decision
+            decision: decision,
+            expectedGeneration: operationGeneration
         )
+
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        // Policy metadata is intentionally read and evaluated again after
+        // approval (or an execution-window hit). The actor can be reentrant
+        // while LocalAuthentication is suspended, so a previously approved
+        // decision must never be reused after a binding or policy mutation.
+        let currentMetadata: [SecretPolicyMetadata]
+        do {
+            currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+        let currentDecision = operationPolicyEngine.evaluate(
+            descriptor,
+            metadata: currentMetadata
+        )
+        guard currentDecision.risk != .denied else {
+            await emitAudit(
+                action: "智能体操作在执行前被本地策略拒绝",
+                target: currentDecision.policyRuleID,
+                referenceCount: descriptor.secretReferences.count,
+                result: "失败",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.operationDenied
+        }
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
 
         guard let recordResolver else {
             throw SecretOperationError.actionExecutionFailed
@@ -548,19 +637,23 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let key: SymmetricKey
         do {
             key = try await resolvedMasterKey(
-                for: authorizationPolicy(for: metadata.map(\.policy)),
+                for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                 reason: operationReason(for: descriptor),
                 allowsAgentDecryptReuse: false,
-                destination: decision.normalizedDestination
+                destination: currentDecision.normalizedDestination
             )
         } catch {
             throw SecretOperationError.actionExecutionFailed
         }
 
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
         do {
             let output = try await operationExecutor.execute(
                 descriptor,
-                metadata: metadata,
+                metadata: currentMetadata,
                 resolve: { reference in
                     try await recordResolver.resolve(
                         reference: reference.description,
@@ -569,17 +662,51 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 }
             )
             await emitAudit(
-                action: "智能体专用操作",
-                target: decision.normalizedDestination ?? "local",
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
-                result: output.status
+                result: output.status,
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .completed
             )
             return output
         } catch SecretOperationExecutionError.redirectRequiresReview {
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "需要复核",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
             throw SecretOperationError.redirectRequiresReview
         } catch SecretOperationExecutionError.outputQuarantined {
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "已隔离",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .quarantined
+            )
             throw SecretOperationError.outputQuarantined
         } catch {
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "失败",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
             throw SecretOperationError.actionExecutionFailed
         }
     }
@@ -3096,18 +3223,34 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return (descriptor, metadata)
     }
 
+    @discardableResult
     private func authorizeIfNeeded(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
-        decision: PolicyDecision
-    ) async throws {
+        decision: PolicyDecision,
+        expectedGeneration: UInt64? = nil
+    ) async throws -> SecretOperationAuthorizationPath {
+        let generation = expectedGeneration ?? securityGeneration
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
         switch decision.risk {
         case .silent:
-            return
+            return .notRequired
         case .denied:
             throw SecretOperationError.operationDenied
         case .approvalRequired:
             break
+        }
+
+        if isExecutionLeaseEligible(descriptor.actionType) {
+            return try await authorizeAgentExecution(
+                descriptor,
+                metadata: metadata,
+                decision: decision,
+                generation: generation
+            )
         }
 
         await emitAudit(
@@ -3125,9 +3268,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         await statusObserver?(status())
 
         do {
-            try await approveWithTimeout(summary: summary)
+            try await Self.approveWithTimeout(
+                approver: operationApprover,
+                timeout: operationApprovalTimeout,
+                summary: summary
+            )
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
             guard await approvalTicketStore.consume(ticket, for: descriptor, now: now()) else {
                 throw SecretOperationError.operationDenied
+            }
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
             }
             await emitAudit(
                 action: "本机授权完成",
@@ -3135,7 +3288,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 referenceCount: descriptor.secretReferences.count,
                 result: "成功",
                 operation: .authorization,
-                authorizationOutcome: .approved
+                authorizationOutcome: .approved,
+                authorizationMode: .freshLocalApproval
             )
         } catch let error as SecretOperationError {
             approvalPending = false
@@ -3184,11 +3338,278 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         approvalPending = false
         await statusObserver?(status())
+        return .freshLocalApproval
+    }
+
+    private func isExecutionLeaseEligible(_ action: SecretOperationAction) -> Bool {
+        switch action {
+        case .sshCommand,
+             .httpRequest,
+             .apiRequest,
+             .databaseQuery,
+             .sftpTransfer,
+             .browserLogin,
+             .localAppFill:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func authorizeAgentExecution(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        decision: PolicyDecision,
+        generation: UInt64
+    ) async throws -> SecretOperationAuthorizationPath {
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization() {
+            guard generation == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            await emitExecutionWindowReuseAudit(
+                descriptor: descriptor,
+                decision: decision
+            )
+            return .executionWindowReuse
+        }
+
+        if let executionApprovalTask {
+            do {
+                try await executionApprovalTask.value
+            } catch {
+                throw mappedSecretOperationError(error)
+            }
+            guard generation == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            await emitExecutionWindowReuseAudit(
+                descriptor: descriptor,
+                decision: decision
+            )
+            return .executionWindowReuse
+        }
+
+        let approvalID = UUID()
+        let task = Task { [weak self] () throws -> Void in
+            guard let self else {
+                throw OperationAuthorizationError.cancelled
+            }
+            try await self.performFreshExecutionApproval(
+                descriptor: descriptor,
+                metadata: metadata,
+                decision: decision,
+                generation: generation
+            )
+        }
+        executionApprovalTask = task
+        executionApprovalID = approvalID
+        executionApprovalGeneration = generation
+        approvalPending = true
+        await statusObserver?(status())
+
+        do {
+            try await task.value
+        } catch {
+            await finishExecutionApprovalWait(
+                approvalID: approvalID,
+                generation: generation
+            )
+            throw mappedSecretOperationError(error)
+        }
+
+        await finishExecutionApprovalWait(
+            approvalID: approvalID,
+            generation: generation
+        )
+        return .freshLocalApproval
+    }
+
+    private func performFreshExecutionApproval(
+        descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        decision: PolicyDecision,
+        generation: UInt64
+    ) async throws {
+        do {
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+            let ticket = await approvalTicketStore.issue(for: descriptor, now: now())
+            let summary = approvalSummary(
+                descriptor: descriptor,
+                metadata: metadata,
+                decision: decision
+            )
+            await emitAudit(
+                action: "本机授权请求",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "请求中",
+                operation: .authorization,
+                authorizationOutcome: .requested,
+                status: .requested
+            )
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+            try await Self.approveWithTimeout(
+                approver: operationApprover,
+                timeout: operationApprovalTimeout,
+                summary: summary
+            )
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+            guard await approvalTicketStore.consume(ticket, for: descriptor, now: now()) else {
+                throw SecretOperationError.operationDenied
+            }
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+
+            _ = await authorizationSession.authorizeExecution()
+            guard generation == securityGeneration else {
+                await authorizationSession.invalidate()
+                throw OperationAuthorizationError.cancelled
+            }
+            await emitAudit(
+                action: "本机授权完成",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "成功",
+                operation: .authorization,
+                authorizationOutcome: .approved,
+                authorizationMode: .freshLocalApproval
+            )
+        } catch {
+            let mappedError = mappedSecretOperationError(error)
+            switch mappedError {
+            case .authorizationCancelled:
+                await emitAudit(
+                    action: "本机授权取消",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已取消",
+                    operation: .authorization,
+                    authorizationOutcome: .cancelled,
+                    status: .cancelled
+                )
+            case .authorizationTimeout:
+                await emitAudit(
+                    action: "本机授权超时",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已超时",
+                    operation: .authorization,
+                    authorizationOutcome: .expired,
+                    status: .expired
+                )
+            case .authorizationDenied:
+                await emitAudit(
+                    action: "本机授权拒绝",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已拒绝",
+                    operation: .authorization,
+                    authorizationOutcome: .denied,
+                    status: .failure
+                )
+            case .authorizationUnavailable:
+                await emitAudit(
+                    action: "本机授权不可用",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "失败",
+                    operation: .authorization,
+                    authorizationOutcome: .denied,
+                    status: .failure
+                )
+            case .operationDenied, .actionExecutionFailed, .redirectRequiresReview, .outputQuarantined:
+                await emitAudit(
+                    action: "本机授权失败",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "失败",
+                    operation: .authorization,
+                    authorizationOutcome: .denied,
+                    status: .failure
+                )
+            }
+            throw mappedError
+        }
+    }
+
+    private func finishExecutionApprovalWait(
+        approvalID: UUID,
+        generation: UInt64
+    ) async {
+        guard executionApprovalID == approvalID,
+              executionApprovalGeneration == generation
+        else {
+            return
+        }
+        executionApprovalTask = nil
+        executionApprovalID = nil
+        executionApprovalGeneration = nil
+        approvalPending = false
+        await statusObserver?(status())
+    }
+
+    private func emitExecutionWindowReuseAudit(
+        descriptor: SecretOperationDescriptor,
+        decision: PolicyDecision
+    ) async {
+        await emitAudit(
+            action: "执行授权窗口复用",
+            target: decision.normalizedDestination ?? "local",
+            referenceCount: descriptor.secretReferences.count,
+            result: "继续",
+            operation: .authorization,
+            authorizationOutcome: .approved,
+            authorizationMode: .executionWindowReuse,
+            status: .completed
+        )
+    }
+
+    private func mappedSecretOperationError(_ error: Error) -> SecretOperationError {
+        if let error = error as? SecretOperationError {
+            return error
+        }
+        if let error = error as? OperationAuthorizationError {
+            switch error {
+            case .cancelled:
+                return .authorizationCancelled
+            case .denied:
+                return .authorizationDenied
+            case .timeout:
+                return .authorizationTimeout
+            case .unavailable:
+                return .authorizationUnavailable
+            }
+        }
+        if error is CancellationError {
+            return .authorizationCancelled
+        }
+        return .authorizationDenied
     }
 
     private func approveWithTimeout(summary: String) async throws {
-        let approver = operationApprover
-        let timeout = operationApprovalTimeout
+        try await Self.approveWithTimeout(
+            approver: operationApprover,
+            timeout: operationApprovalTimeout,
+            summary: summary
+        )
+    }
+
+    private static func approveWithTimeout(
+        approver: any OperationApproving,
+        timeout: Duration,
+        summary: String
+    ) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 try await approver.approve(summary: summary)
@@ -3711,13 +4132,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         context: AuditContext? = nil,
         operation: AuditOperation? = nil,
         authorizationOutcome: AuditAuthorizationOutcome = .notRequired,
+        authorizationMode: AuditAuthorizationMode? = nil,
         status: AuditStatus? = nil
     ) async {
         let entry = AgentAutomationAuditEntry(
             action: action,
             target: target,
             referenceCount: referenceCount,
-            result: result
+            result: result,
+            authorizationMode: authorizationMode
         )
         await auditObserver?(entry)
         // A production request always arrives through one of the two IPC
@@ -3742,7 +4165,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             authorizationOutcome: authorizationOutcome,
             declaredTarget: sanitizedAuditTarget(entry.target),
             status: status ?? auditStatus(for: result),
-            exitCode: nil
+            exitCode: nil,
+            authorizationMode: authorizationMode
         )
         do {
             // The production daemon supplies an independent Keychain audit key.
@@ -3985,7 +4409,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             authorizationOutcome: event.authorizationOutcome,
             result: event.status,
             target: safeAuditTarget(event.declaredTarget),
-            referenceCount: event.referenceCount
+            referenceCount: event.referenceCount,
+            authorizationMode: event.authorizationMode
         )
     }
 

@@ -7,6 +7,7 @@ public actor AuthorizationSession {
     private let readTTL: TimeInterval?
     private let credentialTTL: TimeInterval
     private let externalSendTTL: TimeInterval
+    private let executionTTL: TimeInterval
     private let now: @Sendable () -> Date
 
     private var readAuthorized = false
@@ -14,17 +15,20 @@ public actor AuthorizationSession {
     private var credentialAuthorized = false
     private var credentialExpiresAt: Date?
     private var externalSendExpiresAt: [String: Date] = [:]
+    private var executionExpiresAt: Date?
     private var singleUseAuthorizations: Set<RiskClass> = []
 
     public init(
         readTTL: TimeInterval? = nil,
         credentialTTL: TimeInterval = 600,
         externalSendTTL: TimeInterval = 60,
+        executionTTL: TimeInterval = 300,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.readTTL = readTTL
         self.credentialTTL = credentialTTL
         self.externalSendTTL = externalSendTTL
+        self.executionTTL = executionTTL
         self.now = now
     }
 
@@ -48,6 +52,37 @@ public actor AuthorizationSession {
             return
         }
         externalSendExpiresAt[destination] = now().addingTimeInterval(externalSendTTL)
+    }
+
+    /// Opens a fixed, in-memory authorization window for purpose-built Agent
+    /// execution. The expiry is absolute: using the window never extends it.
+    @discardableResult
+    public func authorizeExecution() -> Date? {
+        guard executionTTL > 0 else {
+            executionExpiresAt = nil
+            return nil
+        }
+        let expiresAt = now().addingTimeInterval(executionTTL)
+        executionExpiresAt = expiresAt
+        return expiresAt
+    }
+
+    public func hasActiveExecutionAuthorization() -> Bool {
+        guard let executionExpiresAt else {
+            return false
+        }
+        guard now() < executionExpiresAt else {
+            self.executionExpiresAt = nil
+            return false
+        }
+        return true
+    }
+
+    public func executionAuthorizationExpiresAt() -> Date? {
+        guard hasActiveExecutionAuthorization() else {
+            return nil
+        }
+        return executionExpiresAt
     }
 
     public func authorizeSingleUse(for risk: RiskClass) async {
@@ -101,6 +136,7 @@ public actor AuthorizationSession {
         credentialAuthorized = false
         credentialExpiresAt = nil
         externalSendExpiresAt.removeAll()
+        executionExpiresAt = nil
         singleUseAuthorizations.removeAll()
     }
 

@@ -4226,7 +4226,7 @@ struct AgentAutomationAuditCard: View {
                                             Text(entry.result.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                                         }
                                         Text(entry.target).font(.callout).foregroundStyle(.secondary).lineLimit(2)
-                                        Text("\(entry.source.displayName) · \(entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
+                                        Text("\(entry.source.displayName) · \(entry.authorizationMode?.displayName ?? entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
                                             .font(.caption).foregroundStyle(.tertiary)
                                     }
                                 }

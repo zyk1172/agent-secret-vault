@@ -223,10 +223,18 @@ must never be returned to the agent.
   `approvalRequired`, or `denied` by `SecretOperationPolicyEngine`.
 - `effectiveRisk = max(agentRisk, localRisk)`: the Agent hint may raise risk but
   never lowers a local approval or denial.
-- Bound read-only SSH/HTTP/database/SFTP operations can run silently. New or
-  public destinations, writes, plaintext reveal/copy/export, deletes, and
-  security-setting changes require a short-lived one-shot `ApprovalTicket` or
-  are denied.
+- Bound read-only SSH/HTTP/database/SFTP operations can run silently. An
+  eligible purpose-built Agent execution whose policy result is
+  `approvalRequired` may use one fresh device-owner approval to open a fixed,
+  non-sliding 300-second in-memory execution window. Every request still
+  re-evaluates the current local policy; destinations that remain denied stay
+  denied.
+- Plaintext reveal/copy/export, deletes, security-setting changes, and Catalog
+  Agent writes never use the execution window. They retain their own exact,
+  one-shot `ApprovalTicket` authorization boundary.
+- Execution authorization is cleared on screen lock, sleep, session changes,
+  explicit lock, and Agent restart. Audit records distinguish fresh local
+  approval from execution-window reuse without storing plaintext or headers.
 - `locked` remains a compatibility field only. Agent gating uses
   `available`/`ready`/`approvalPending`; quitting the GUI does not stop the
   launchd Agent, while screen lock or session changes still clear protected

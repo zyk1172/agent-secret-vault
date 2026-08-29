@@ -3,6 +3,23 @@ import Testing
 import VaultIPC
 @testable import VaultService
 
+@Test func daemonConfigurationKeepsExecutionAuthorizationTTLIndependent() {
+    let configuration = VaultDaemonConfiguration(
+        vaultRootURL: URL(filePath: "/tmp/svlt-config-vault"),
+        auditRootURL: URL(filePath: "/tmp/svlt-config-audit"),
+        ipcConfiguration: UnixSocketServerConfiguration(
+            directoryURL: URL(filePath: "/tmp/svlt-config-ipc")
+        ),
+        credentialAuthorizationTTL: 600,
+        externalSendAuthorizationTTL: 60,
+        executionAuthorizationTTL: 300
+    )
+
+    #expect(configuration.credentialAuthorizationTTL == 600)
+    #expect(configuration.externalSendAuthorizationTTL == 60)
+    #expect(configuration.executionAuthorizationTTL == 300)
+}
+
 @Test func daemonStartsWithIPCAvailableButVaultLockedWithoutEagerAuthentication() async throws {
     let root = URL(filePath: "/tmp/svlt-vault-\(UUID().uuidString)")
     let audit = URL(filePath: "/tmp/svlt-audit-\(UUID().uuidString)")

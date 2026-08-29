@@ -16,6 +16,7 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
     public let catalogSelectionURL: URL
     public let credentialAuthorizationTTL: TimeInterval
     public let externalSendAuthorizationTTL: TimeInterval
+    public let executionAuthorizationTTL: TimeInterval
     public let readAuthorizationTTL: TimeInterval?
 
     public init(
@@ -25,6 +26,7 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
         catalogSelectionURL: URL? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
+        executionAuthorizationTTL: TimeInterval = 300,
         readAuthorizationTTL: TimeInterval? = nil
     ) {
         let normalizedVaultRootURL = vaultRootURL.standardizedFileURL
@@ -37,6 +39,7 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
             .standardizedFileURL
         self.credentialAuthorizationTTL = credentialAuthorizationTTL
         self.externalSendAuthorizationTTL = externalSendAuthorizationTTL
+        self.executionAuthorizationTTL = executionAuthorizationTTL
         self.readAuthorizationTTL = readAuthorizationTTL
     }
 
@@ -238,7 +241,8 @@ public actor VaultDaemonCore {
             authorizationSession: AuthorizationSession(
                 readTTL: configuration.readAuthorizationTTL,
                 credentialTTL: configuration.credentialAuthorizationTTL,
-                externalSendTTL: configuration.externalSendAuthorizationTTL
+                externalSendTTL: configuration.externalSendAuthorizationTTL,
+                executionTTL: configuration.executionAuthorizationTTL
             ),
             credentialAuthorizationTTL: configuration.credentialAuthorizationTTL,
             externalSendAuthorizationTTL: configuration.externalSendAuthorizationTTL,

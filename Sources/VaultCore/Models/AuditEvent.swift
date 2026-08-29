@@ -13,6 +13,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         "operation",
         "risk",
         "authorizationOutcome",
+        "authorizationMode",
         "declaredTarget",
         "status",
         "exitCode"
@@ -32,6 +33,10 @@ public struct AuditEvent: Codable, Equatable, Sendable {
     public let operation: AuditOperation
     public let risk: Int
     public let authorizationOutcome: AuditAuthorizationOutcome
+    /// Optional detail for an approved operation. Keeping this separate from
+    /// `authorizationOutcome` preserves wire compatibility with older App and
+    /// Agent builds that only understand approved/not-required.
+    public let authorizationMode: AuditAuthorizationMode?
     public let declaredTarget: String?
     public let status: AuditStatus
     public let exitCode: Int32?
@@ -50,7 +55,8 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         authorizationOutcome: AuditAuthorizationOutcome,
         declaredTarget: String?,
         status: AuditStatus,
-        exitCode: Int32?
+        exitCode: Int32?,
+        authorizationMode: AuditAuthorizationMode? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -63,6 +69,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         self.operation = operation
         self.risk = risk
         self.authorizationOutcome = authorizationOutcome
+        self.authorizationMode = authorizationMode
         self.declaredTarget = declaredTarget
         self.status = status
         self.exitCode = exitCode
@@ -80,6 +87,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         case operation
         case risk
         case authorizationOutcome
+        case authorizationMode
         case declaredTarget
         case status
         case exitCode
@@ -107,6 +115,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         self.operation = try container.decode(AuditOperation.self, forKey: .operation)
         self.risk = try container.decode(Int.self, forKey: .risk)
         self.authorizationOutcome = try container.decode(AuditAuthorizationOutcome.self, forKey: .authorizationOutcome)
+        self.authorizationMode = try container.decodeIfPresent(AuditAuthorizationMode.self, forKey: .authorizationMode)
         self.declaredTarget = try container.decodeIfPresent(String.self, forKey: .declaredTarget)
         self.status = try container.decode(AuditStatus.self, forKey: .status)
         self.exitCode = try container.decodeIfPresent(Int32.self, forKey: .exitCode)
@@ -125,6 +134,7 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         try container.encode(operation, forKey: .operation)
         try container.encode(risk, forKey: .risk)
         try container.encode(authorizationOutcome, forKey: .authorizationOutcome)
+        try container.encodeIfPresent(authorizationMode, forKey: .authorizationMode)
         try container.encodeIfPresent(declaredTarget, forKey: .declaredTarget)
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(exitCode, forKey: .exitCode)
@@ -337,6 +347,22 @@ public enum AuditAuthorizationOutcome: String, Codable, Equatable, Sendable {
     }
 }
 
+/// Non-sensitive detail describing how an approved operation was authorized.
+/// This is optional so older audit records and older App/Agent peers remain
+/// readable. It deliberately does not contain operation descriptors or secret
+/// material.
+public enum AuditAuthorizationMode: String, Codable, Equatable, Sendable {
+    case freshLocalApproval = "fresh-local-approval"
+    case executionWindowReuse = "execution-window-reuse"
+
+    public var displayName: String {
+        switch self {
+        case .freshLocalApproval: return "本机新认证"
+        case .executionWindowReuse: return "执行授权窗口复用"
+        }
+    }
+}
+
 public enum AuditStatus: String, Codable, Equatable, Sendable {
     case displayedToUser
     case created
@@ -369,6 +395,7 @@ public struct CatalogSecurityAuditEntry: Codable, Equatable, Identifiable, Senda
     public let source: AuditSource
     public let operation: AuditOperation
     public let authorizationOutcome: AuditAuthorizationOutcome
+    public let authorizationMode: AuditAuthorizationMode?
     public let result: AuditStatus
     public let target: String
     public let referenceCount: Int
@@ -381,13 +408,15 @@ public struct CatalogSecurityAuditEntry: Codable, Equatable, Identifiable, Senda
         authorizationOutcome: AuditAuthorizationOutcome,
         result: AuditStatus,
         target: String,
-        referenceCount: Int
+        referenceCount: Int,
+        authorizationMode: AuditAuthorizationMode? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
         self.source = source
         self.operation = operation
         self.authorizationOutcome = authorizationOutcome
+        self.authorizationMode = authorizationMode
         self.result = result
         self.target = target
         self.referenceCount = max(0, referenceCount)
