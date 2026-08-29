@@ -109,8 +109,8 @@ Short version:
    group headings, `###` entry headings, stable SVLT markers, and opaque
    `secret://` references; encrypted records remain in the local vault.
    Only credentials the user chooses to manage with SVLT belong in this path.
-   A blank packaged template is available from the Security Boundary page;
-   copying it into a vault remains an explicit user action.
+   A validated, secret-free packaged starter template is available from the
+   Security Boundary page; copying it into a vault remains an explicit user action.
 2. Use the generated MCP config:
 
 ```text

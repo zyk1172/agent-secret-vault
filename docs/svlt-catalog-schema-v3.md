@@ -28,8 +28,8 @@ source-range minimal patch，只调整目标块和新写入时由 SVLT renderer 
 Index/Entry ID 只是这个文档 fixture 的合法 opaque ID，实际新增结构应让
 App/MCP 生成 ID。密码字段先使用空 placeholder，不要手造 `secret://` 引用。
 
-App 默认安装的空白模板见 [`Resources/Templates/敏感信息.md`](../Resources/Templates/敏感信息.md)。
-它与下面模板使用同一份 policy block，但不预置示例分组或条目。
+App 默认安装的起步模板见 [`Resources/Templates/敏感信息.md`](../Resources/Templates/敏感信息.md)。
+它与下面模板保持同一份 policy block 和无秘密示例结构。
 
 ```markdown
 <!-- SVLT-CATALOG schema="3" -->
