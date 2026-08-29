@@ -110,6 +110,7 @@ struct AgentSecretVaultApplication: App {
                     await runtime.showSensitiveCatalogTemplate()
                 }
             )
+                .frame(width: 1280, height: 820)
                 .task {
                     await runtime.start()
                 }
@@ -178,6 +179,8 @@ struct AgentSecretVaultApplication: App {
                 }
             }
             .defaultSize(width: 1280, height: 820)
+            .windowResizability(.contentSize)
+            .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra("SVLT", systemImage: MenuBarPresentation.statusItemSymbol) {
             MenuBarVaultPanel(
@@ -500,6 +503,13 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func clearRevealSessions() async {
+        // The Workbench keeps field-level reveal text in view-local state.
+        // Broadcast only the security-state transition so every open detail
+        // view clears its transient plaintext immediately.
+        NotificationCenter.default.post(
+            name: .vaultWorkbenchSecurityStateInvalidated,
+            object: nil
+        )
         RevealSessionLifecycle.clearAll()
         await uiRevealSessionStore.clearAll()
         presentedAgentSessionIDs.removeAll()
@@ -835,23 +845,67 @@ private final class AgentSecretVaultRuntime: ObservableObject {
 
     func refreshAuditEntries() async {
         guard let appControlClient else {
-            auditEntries = []
-            auditError = "本机控制服务不可用，安全活动记录暂时不可用。"
+            let state = AuditRefreshState.reduce(
+                previousEntries: auditEntries,
+                activity: .unavailable
+            )
+            auditEntries = state.entries
+            auditError = state.warning
             return
         }
+        let activity: AuditActivityReadResult
         do {
-            auditEntries = try await appControlClient.catalogRecentAuditEntries(limit: 100)
-            if let auditHealth = try? await appControlClient.catalogAuditHealth(), auditHealth == "AUDIT_APPEND_FAILED" {
-                auditError = "安全活动记录写入异常；近期活动可能不完整。"
+            let result = try await appControlClient.catalogRecentAuditEntries(limit: 100)
+            if result.diagnostics.hasIssues {
+                activity = .partial(entries: result.entries, diagnostics: result.diagnostics)
             } else {
-                auditError = nil
+                activity = .success(result.entries)
+            }
+        } catch let error as VaultIPCClientError {
+            switch error {
+            case .endpointUnavailable, .endpointOwnershipInvalid, .endpointPermissionsInvalid,
+                    .incompleteFrame, .frameTooLarge:
+                activity = .unavailable
+            case let .responseFailure(code)
+                where code == "APP_CONTROL_UNAUTHORIZED"
+                    || code == "INVALID_APP_CONTROL_TOKEN"
+                    || code == "APP_CONTROL_PEER_AUTH_FAILED":
+                activity = .unavailable
+            case let .responseFailure(code):
+                activity = .failure(code: code)
+            default:
+                activity = .failure(code: "AUDIT_READ_FAILED")
             }
         } catch {
-            // A transient AppControl failure should not erase the last known
-            // window; expose a stable safe warning instead of hiding an audit
-            // integrity/decryption failure behind an empty UI state.
-            auditError = "安全活动记录暂时不可用，可能存在完整性异常或本机控制服务不可用。"
+            activity = .failure(code: "AUDIT_READ_FAILED")
         }
+
+        var health: AuditHealthReadResult?
+        switch activity {
+        case .success, .partial:
+            do {
+                let value = try await appControlClient.catalogAuditHealth()
+                if value == "AUDIT_APPEND_FAILED" {
+                    health = .appendFailed
+                } else if value == nil {
+                    health = .normal
+                } else {
+                    health = .unknown
+                }
+            } catch {
+                health = .failure
+            }
+        case .unavailable, .failure:
+            break
+        }
+
+        let state = AuditRefreshState.reduce(
+            previousEntries: auditEntries,
+            activity: activity,
+            health: health
+        )
+        auditEntries = state.entries
+        auditError = state.warning
     }
 
     func refreshSensitiveCatalog() async {
@@ -1312,6 +1366,17 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             await refreshSensitiveCatalog()
             sensitiveIndexError = nil
             return .success(result)
+        } catch VaultIPCClientError.responseFailure("CATALOG_REVISION_CONFLICT") {
+            // Destructive batch operations are never replayed on a newer
+            // revision. Refresh the authoritative snapshot, keep the UI's
+            // still-existing selections, and require a fresh confirmation.
+            await refreshSensitiveCatalog()
+            let error = CatalogMutationUIError(
+                code: "CATALOG_REVISION_CONFLICT",
+                message: "目录已被其他本机客户端更新，已刷新；请重新确认删除"
+            )
+            sensitiveIndexError = error.displayText
+            return .failure(error)
         } catch {
             let uiError = catalogMutationUIError(for: error, operation: "保存批量修改")
             sensitiveIndexError = uiError.displayText

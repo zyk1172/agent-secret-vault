@@ -324,7 +324,7 @@ public enum AppControlRequest: Codable, Equatable, Sendable {
 public enum AppControlResponse: Codable, Equatable, Sendable {
     case catalogStatus(CatalogValidationResult)
     case catalogFormatRepairPlan(CatalogFormatRepairPlan?)
-    case catalogRecentAuditEntries([CatalogSecurityAuditEntry])
+    case catalogRecentAuditEntries(CatalogRecentAuditResult)
     case catalogAuditHealth(String?)
     case catalogSecureInputRequest(CatalogAgentSecureInputRequest)
     case catalogSecureInputStatus(CatalogSecureInputStatus)
@@ -344,6 +344,7 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case plaintext
         case plan
         case entries
+        case diagnostics
         case result
         case code
     }
@@ -372,7 +373,13 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case .catalogFormatRepairPlan:
             self = .catalogFormatRepairPlan(try container.decodeIfPresent(CatalogFormatRepairPlan.self, forKey: .plan))
         case .catalogRecentAuditEntries:
-            self = .catalogRecentAuditEntries(try container.decode([CatalogSecurityAuditEntry].self, forKey: .entries))
+            let entries = try container.decode([CatalogSecurityAuditEntry].self, forKey: .entries)
+            let diagnostics = try container.decodeIfPresent(AuditReadDiagnostics.self, forKey: .diagnostics)
+                ?? .none
+            self = .catalogRecentAuditEntries(CatalogRecentAuditResult(
+                entries: entries,
+                diagnostics: diagnostics
+            ))
         case .catalogAuditHealth:
             self = .catalogAuditHealth(try container.decodeIfPresent(String.self, forKey: .code))
         case .catalogSecureInputRequest:
@@ -408,9 +415,10 @@ public enum AppControlResponse: Codable, Equatable, Sendable {
         case let .catalogFormatRepairPlan(plan):
             try container.encode(ResponseType.catalogFormatRepairPlan, forKey: .type)
             try container.encodeIfPresent(plan, forKey: .plan)
-        case let .catalogRecentAuditEntries(entries):
+        case let .catalogRecentAuditEntries(result):
             try container.encode(ResponseType.catalogRecentAuditEntries, forKey: .type)
-            try container.encode(entries, forKey: .entries)
+            try container.encode(result.entries, forKey: .entries)
+            try container.encode(result.diagnostics, forKey: .diagnostics)
         case let .catalogAuditHealth(health):
             try container.encode(ResponseType.catalogAuditHealth, forKey: .type)
             try container.encodeIfPresent(health, forKey: .code)
@@ -459,7 +467,7 @@ public protocol AppControlServicing: Sendable {
     func catalogStatus() async throws -> CatalogValidationResult
     func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan?
     func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult
-    func catalogRecentAuditEntries(limit: Int) async throws -> [CatalogSecurityAuditEntry]
+    func catalogRecentAuditEntries(limit: Int) async throws -> CatalogRecentAuditResult
     func catalogAuditHealth() async -> String?
     func catalogSecureInputRequest(id: UUID) async throws -> CatalogAgentSecureInputRequest
     func submitCatalogSecureInput(id: UUID, submission: CatalogSecureInputSubmission) async throws -> CatalogSecureInputStatus

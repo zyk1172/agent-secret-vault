@@ -39,10 +39,10 @@ public actor AppControlIPCClient {
         return status
     }
 
-    public func catalogRecentAuditEntries(limit: Int = 100) async throws -> [CatalogSecurityAuditEntry] {
+    public func catalogRecentAuditEntries(limit: Int = 100) async throws -> CatalogRecentAuditResult {
         let response = try await send(.catalogRecentAuditEntries(limit: limit))
-        guard case let .catalogRecentAuditEntries(entries) = response else { throw unexpected(response) }
-        return entries
+        guard case let .catalogRecentAuditEntries(result) = response else { throw unexpected(response) }
+        return result
     }
 
     public func catalogAuditHealth() async throws -> String? {

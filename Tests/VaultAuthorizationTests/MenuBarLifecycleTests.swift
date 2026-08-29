@@ -18,6 +18,15 @@ import Testing
     #expect(!source.contains("WindowGroup(id: MenuBarPresentation.mainWindowID)"))
 }
 
+@Test func appSceneUsesFixedMainWindowSize() throws {
+    let source = try appSource()
+
+    #expect(source.contains(".frame(width: 1280, height: 820)"))
+    #expect(source.contains(".defaultSize(width: 1280, height: 820)"))
+    #expect(source.contains(".windowResizability(.contentSize)"))
+    #expect(!source.contains(".windowResizability(.contentMinSize)"))
+}
+
 @Test func appDelegateKeepsProcessAliveButAllowsSystemTerminationAfterCleanup() throws {
     let source = try appSource()
 

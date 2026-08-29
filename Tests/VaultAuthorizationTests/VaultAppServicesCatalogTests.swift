@@ -3,6 +3,7 @@ import CryptoKit
 import Testing
 import VaultAuthorization
 import VaultCore
+import VaultIPC
 import VaultService
 
 private let serviceIndexID = "0123456789ABCDEFGHJKMNPQRS"
@@ -477,12 +478,25 @@ private struct CatalogFixture {
     _ = try await task.value
 
     let recent = try await service.catalogRecentAuditEntries(limit: 100)
-    #expect(recent.contains { entry in
+    #expect(recent.entries.contains { entry in
         entry.source == .agent
             && entry.operation == .catalogMutation
             && entry.target == "catalog"
     })
+    #expect(recent.diagnostics == .none)
     #expect(try await service.catalogAuditHealth() == nil)
+
+    // Keep the App-control hop in this cross-layer test: the App gets the
+    // bounded encrypted-audit projection through this handler, not through
+    // the mutation response or a View-owned fabricated row.
+    let response = await AppControlRequestHandler(service: service)
+        .handle(.catalogRecentAuditEntries(limit: 100))
+    guard case let .catalogRecentAuditEntries(appControlResult) = response else {
+        Issue.record("AppControl did not return the authoritative audit projection")
+        return
+    }
+    #expect(appControlResult.entries.contains { $0.operation == .catalogMutation && $0.source == .agent })
+    #expect(appControlResult.diagnostics == .none)
 }
 
 @Test func failedAuditAppendExposesSafeHealthWithoutFailingOperation() async throws {
@@ -532,6 +546,51 @@ private struct CatalogFixture {
         auditHealthURL: auditHealthURL
     )
     #expect(await restored.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+}
+
+@Test func appAuditProjectionKeepsHealthyEntriesWhenOneRecordCannotBeRead() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+    let auditDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-audit-partial-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: auditDirectory)
+    }
+    let auditKey = SymmetricKey(data: Data(repeating: 0x62, count: 32))
+    let auditLog = EncryptedAuditLog(
+        directoryURL: auditDirectory,
+        auditKeyProvider: { auditKey }
+    )
+    try await auditLog.append(AuditEvent(
+        timestamp: Date(timeIntervalSince1970: 1_900_000_700),
+        source: .agent,
+        integration: "agent-secret-vault-mcp",
+        referenceID: nil,
+        operation: .status,
+        risk: 0,
+        authorizationOutcome: .notRequired,
+        declaredTarget: "catalog",
+        status: .completed,
+        exitCode: nil
+    ))
+    try Data("{\"truncated\":".utf8).write(
+        to: auditDirectory.appendingPathComponent("broken.audit.json"),
+        options: [.atomic]
+    )
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        auditLog: auditLog
+    )
+
+    let result = try await service.catalogRecentAuditEntries(limit: 100)
+
+    #expect(result.entries.count == 1)
+    #expect(result.diagnostics.unreadableRecordCount == 1)
+    #expect(result.diagnostics.integrityFailureCount == 0)
 }
 
 @Test func agentSecureInputSessionIsAtomicAndUsesOneDeviceOwnerApproval() async throws {

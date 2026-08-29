@@ -163,6 +163,19 @@ targets:
         copy:
           destination: executables
 
+  AgentSecretVaultAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - Tests/AgentSecretVaultAppTests
+    dependencies:
+      - target: AgentSecretVaultApp
+      - target: VaultCore
+
   VaultAuthorizationTests:
     type: bundle.unit-test
     platform: macOS
@@ -254,6 +267,8 @@ schemes:
           - test
         VaultExecutionTests:
           - test
+        AgentSecretVaultAppTests:
+          - test
         LeakTests:
           - test
     test:
@@ -262,6 +277,7 @@ schemes:
         - VaultAuthorizationTests
         - VaultIPCTests
         - VaultExecutionTests
+        - AgentSecretVaultAppTests
         - LeakTests
 
   VaultExecution:

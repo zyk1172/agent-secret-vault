@@ -131,6 +131,124 @@ public struct AuditEvent: Codable, Equatable, Sendable {
     }
 }
 
+/// Non-sensitive diagnostics produced while reading encrypted audit records.
+/// Counts identify how many records were omitted without exposing paths,
+/// ciphertext, payloads, or key material. The two legacy aliases are kept in
+/// the public shape and on the wire for older App/Agent builds.
+public struct AuditReadDiagnostics: Codable, Equatable, Sendable {
+    public let recordDecodeFailureCount: Int
+    public let authenticationFailureCount: Int
+    public let eventDecodeFailureCount: Int
+    public let unsupportedMetadataVersionCount: Int
+    public let legacyCompatibilityFailureCount: Int
+
+    public init(
+        recordDecodeFailureCount: Int = 0,
+        authenticationFailureCount: Int = 0,
+        eventDecodeFailureCount: Int = 0,
+        unsupportedMetadataVersionCount: Int = 0,
+        legacyCompatibilityFailureCount: Int = 0
+    ) {
+        self.recordDecodeFailureCount = max(0, recordDecodeFailureCount)
+        self.authenticationFailureCount = max(0, authenticationFailureCount)
+        self.eventDecodeFailureCount = max(0, eventDecodeFailureCount)
+        self.unsupportedMetadataVersionCount = max(0, unsupportedMetadataVersionCount)
+        self.legacyCompatibilityFailureCount = max(0, legacyCompatibilityFailureCount)
+    }
+
+    /// Source-compatible initializer for the aggregate diagnostics used by
+    /// older App/Agent callers.
+    public init(unreadableRecordCount: Int, integrityFailureCount: Int = 0) {
+        self.init(
+            recordDecodeFailureCount: unreadableRecordCount,
+            authenticationFailureCount: integrityFailureCount
+        )
+    }
+
+    /// Source-compatible initializer for callers that only supplied the old
+    /// integrity aggregate.
+    public init(integrityFailureCount: Int) {
+        self.init(authenticationFailureCount: integrityFailureCount)
+    }
+
+    public static let none = Self()
+
+    /// Source-compatible aggregate for callers written before diagnostics
+    /// were split into concrete failure classes. Keep all non-authentication
+    /// omissions visible to an older App that only understands this field.
+    public var unreadableRecordCount: Int {
+        recordDecodeFailureCount
+            + eventDecodeFailureCount
+            + unsupportedMetadataVersionCount
+            + legacyCompatibilityFailureCount
+    }
+
+    /// Source-compatible alias for AES-GCM authentication failures.
+    public var integrityFailureCount: Int { authenticationFailureCount }
+
+    public var skippedRecordCount: Int {
+        recordDecodeFailureCount
+            + authenticationFailureCount
+            + eventDecodeFailureCount
+            + unsupportedMetadataVersionCount
+            + legacyCompatibilityFailureCount
+    }
+
+    public var hasIssues: Bool {
+        skippedRecordCount > 0
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case unreadableRecordCount
+        case integrityFailureCount
+        case recordDecodeFailureCount
+        case authenticationFailureCount
+        case eventDecodeFailureCount
+        case unsupportedMetadataVersionCount
+        case legacyCompatibilityFailureCount
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let recordDecodeFailureCount = try container.decodeIfPresent(Int.self, forKey: .recordDecodeFailureCount)
+        let legacyRecordDecodeFailureCount = try container.decodeIfPresent(Int.self, forKey: .unreadableRecordCount)
+        let authenticationFailureCount = try container.decodeIfPresent(Int.self, forKey: .authenticationFailureCount)
+        let legacyAuthenticationFailureCount = try container.decodeIfPresent(Int.self, forKey: .integrityFailureCount)
+        self.init(
+            recordDecodeFailureCount: recordDecodeFailureCount ?? legacyRecordDecodeFailureCount ?? 0,
+            authenticationFailureCount: authenticationFailureCount ?? legacyAuthenticationFailureCount ?? 0,
+            eventDecodeFailureCount: try container.decodeIfPresent(Int.self, forKey: .eventDecodeFailureCount) ?? 0,
+            unsupportedMetadataVersionCount: try container.decodeIfPresent(Int.self, forKey: .unsupportedMetadataVersionCount) ?? 0,
+            legacyCompatibilityFailureCount: try container.decodeIfPresent(Int.self, forKey: .legacyCompatibilityFailureCount) ?? 0
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        // Write both names so an older App can still render an aggregate
+        // warning while a newer App receives the detailed classification.
+        try container.encode(unreadableRecordCount, forKey: .unreadableRecordCount)
+        try container.encode(authenticationFailureCount, forKey: .integrityFailureCount)
+        try container.encode(recordDecodeFailureCount, forKey: .recordDecodeFailureCount)
+        try container.encode(authenticationFailureCount, forKey: .authenticationFailureCount)
+        try container.encode(eventDecodeFailureCount, forKey: .eventDecodeFailureCount)
+        try container.encode(unsupportedMetadataVersionCount, forKey: .unsupportedMetadataVersionCount)
+        try container.encode(legacyCompatibilityFailureCount, forKey: .legacyCompatibilityFailureCount)
+    }
+}
+
+/// A bounded audit read returns every record that could be authenticated and
+/// decoded, together with safe diagnostics for records that were skipped.
+public struct AuditReadResult: Equatable, Sendable {
+    public let events: [AuditEvent]
+    public let diagnostics: AuditReadDiagnostics
+
+    public init(events: [AuditEvent], diagnostics: AuditReadDiagnostics = .none) {
+        self.events = events
+        self.diagnostics = diagnostics
+    }
+}
+
 /// Trusted caller metadata installed at the IPC handler boundary. Production
 /// AppControl requests use `.app`; Agent/MCP requests use `.agent`. The task
 /// local survives actor hops without mutable shared state, so concurrent
@@ -273,5 +391,19 @@ public struct CatalogSecurityAuditEntry: Codable, Equatable, Identifiable, Senda
         self.result = result
         self.target = target
         self.referenceCount = max(0, referenceCount)
+    }
+}
+
+/// The bounded, non-sensitive AppControl projection of a recent audit read.
+public struct CatalogRecentAuditResult: Codable, Equatable, Sendable {
+    public let entries: [CatalogSecurityAuditEntry]
+    public let diagnostics: AuditReadDiagnostics
+
+    public init(
+        entries: [CatalogSecurityAuditEntry],
+        diagnostics: AuditReadDiagnostics = .none
+    ) {
+        self.entries = entries
+        self.diagnostics = diagnostics
     }
 }

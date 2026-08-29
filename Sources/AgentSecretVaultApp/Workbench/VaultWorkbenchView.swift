@@ -87,6 +87,375 @@ public typealias CatalogMutationUIResult = Result<CatalogWriteResult, CatalogMut
 public typealias CatalogEntryCreationError = CatalogMutationUIError
 public typealias CatalogEntryCreationResult = CatalogMutationUIResult
 
+/// The next authoritative empty secret field in Catalog source order.  This
+/// model deliberately carries display metadata only; plaintext never enters
+/// the resolver or the view-model it returns.
+public struct PendingCatalogSecret: Equatable, Sendable {
+    public let indexID: String
+    public let indexTitle: String
+    public let entryID: String
+    public let entryTitle: String
+    public let fieldKey: String
+    public let fieldLabel: String
+    public let fieldType: SecretCatalogFieldType
+    public let remainingCount: Int
+
+    public init(
+        indexID: String,
+        indexTitle: String,
+        entryID: String,
+        entryTitle: String,
+        fieldKey: String,
+        fieldLabel: String,
+        fieldType: SecretCatalogFieldType,
+        remainingCount: Int
+    ) {
+        self.indexID = indexID
+        self.indexTitle = indexTitle
+        self.entryID = entryID
+        self.entryTitle = entryTitle
+        self.fieldKey = fieldKey
+        self.fieldLabel = fieldLabel
+        self.fieldType = fieldType
+        self.remainingCount = remainingCount
+    }
+}
+
+public enum PendingCatalogSecretResolver {
+    public static func resolve(in document: SecretCatalogDocument) -> PendingCatalogSecret? {
+        var placeholders: [(SecretCatalogIndex, SecretCatalogEntry, SecretCatalogFieldValue)] = []
+        for index in document.indexes {
+            for entry in document.entries where entry.indexId == index.id {
+                for field in entry.fields where field.type.isSecret && field.secretRef == nil {
+                    placeholders.append((index, entry, field))
+                }
+            }
+        }
+        guard let first = placeholders.first else { return nil }
+        return PendingCatalogSecret(
+            indexID: first.0.id,
+            indexTitle: first.0.title,
+            entryID: first.1.id,
+            entryTitle: first.1.title,
+            fieldKey: first.2.key,
+            fieldLabel: first.2.label,
+            fieldType: first.2.type,
+            remainingCount: placeholders.count
+        )
+    }
+}
+
+/// Small, shared selection state used by both Catalog batch-delete surfaces.
+public struct CatalogBatchSelectionState: Equatable, Sendable {
+    public private(set) var selectedIDs: Set<String> = []
+    public private(set) var isSelecting = false
+
+    public init() {}
+
+    public mutating func begin() { isSelecting = true; selectedIDs.removeAll() }
+    public mutating func toggle(_ id: String) {
+        if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
+    }
+    public mutating func selectAll(_ ids: [String]) { selectedIDs = Set(ids) }
+    public mutating func clear() { selectedIDs.removeAll() }
+    public mutating func finish() { selectedIDs.removeAll(); isSelecting = false }
+    public mutating func deleteSucceeded(_ ids: [String]) {
+        selectedIDs.subtract(ids)
+        if selectedIDs.isEmpty { isSelecting = false }
+    }
+
+    /// Reconcile selection after an authoritative Catalog refresh. This is
+    /// intentionally not a successful delete: batch mode stays visible so the
+    /// user must re-confirm a destructive operation after a revision change.
+    public mutating func retainVisibleIDs(_ ids: [String]) {
+        selectedIDs.formIntersection(Set(ids))
+    }
+}
+
+public struct CatalogDeletionSummary: Equatable, Sendable {
+    public let itemCount: Int
+    public let entryCount: Int
+    public let secretFieldCount: Int
+
+    public static func indexes(ids: [String], in document: SecretCatalogDocument) -> Self {
+        let entries = document.entries.filter { ids.contains($0.indexId) }
+        return Self(
+            itemCount: ids.count,
+            entryCount: entries.count,
+            secretFieldCount: entries.flatMap(\.fields).filter { $0.type.isSecret }.count
+        )
+    }
+
+    public static func entries(ids: [String], in entries: [SecretCatalogEntry]) -> Self {
+        let selected = entries.filter { ids.contains($0.id) }
+        return Self(
+            itemCount: ids.count,
+            entryCount: 0,
+            secretFieldCount: selected.flatMap(\.fields).filter { $0.type.isSecret }.count
+        )
+    }
+}
+
+/// The presentation state for one Catalog field. Authorization, IPC, and
+/// plaintext acquisition stay outside this pure resolver.
+public enum CatalogFieldActionKind: String, Equatable, Sendable {
+    case copy
+    case reveal
+    case fillSecret
+}
+
+public struct CatalogFieldPresentation: Equatable, Sendable {
+    public let displayText: String
+    public let isSecret: Bool
+    public let isRevealed: Bool
+    public let actionKind: CatalogFieldActionKind
+    public let allowsCopy: Bool
+
+    public init(
+        displayText: String,
+        isSecret: Bool,
+        isRevealed: Bool,
+        actionKind: CatalogFieldActionKind,
+        allowsCopy: Bool
+    ) {
+        self.displayText = displayText
+        self.isSecret = isSecret
+        self.isRevealed = isRevealed
+        self.actionKind = actionKind
+        self.allowsCopy = allowsCopy
+    }
+
+    public static func resolve(
+        field: SecretCatalogFieldValue,
+        revealedPlaintext: String? = nil
+    ) -> Self {
+        if field.type.isSecret {
+            if field.secretRef != nil {
+                if let revealedPlaintext {
+                    return Self(
+                        displayText: revealedPlaintext,
+                        isSecret: true,
+                        isRevealed: true,
+                        actionKind: .copy,
+                        allowsCopy: !revealedPlaintext.isEmpty
+                    )
+                }
+                return Self(
+                    displayText: "已加密",
+                    isSecret: true,
+                    isRevealed: false,
+                    actionKind: .reveal,
+                    allowsCopy: false
+                )
+            }
+            return Self(
+                displayText: "未填写",
+                isSecret: true,
+                isRevealed: false,
+                actionKind: .fillSecret,
+                allowsCopy: false
+            )
+        }
+
+        let displayText = displayValue(for: field)
+        return Self(
+            displayText: displayText,
+            isSecret: false,
+            isRevealed: false,
+            actionKind: .copy,
+            allowsCopy: !displayText.isEmpty && displayText != "未填写" && displayText != "已隐藏"
+        )
+    }
+
+    public static func displayValue(for field: SecretCatalogFieldValue) -> String {
+        guard field.agentVisible else { return "已隐藏" }
+        guard let value = field.value else { return "未填写" }
+        switch value {
+        case .string(let value): return value
+        case .number(let value): return String(value)
+        case .boolean(let value): return value ? "是" : "否"
+        case .list(let value): return value.joined(separator: ", ")
+        }
+    }
+}
+
+/// Column widths for the three-column detail table. The helper receives only
+/// available width, so layout behavior can be tested without rendering a
+/// view. The value column receives the remaining space after Grid gaps.
+public enum CatalogDetailMetrics {
+    public static let horizontalPadding: CGFloat = 22
+    public static let verticalPadding: CGFloat = 22
+    public static let gridHorizontalSpacing: CGFloat = 16
+    public static let gridVerticalSpacing: CGFloat = 12
+
+    /// Keep the detail grid between the two shared horizontal content guides.
+    public static func gridAvailableWidth(for sheetWidth: CGFloat) -> CGFloat {
+        max(0, sheetWidth - horizontalPadding * 2)
+    }
+}
+
+public enum CatalogFieldDraftValidation {
+    public static func message(for field: SecretCatalogFieldValue) -> String? {
+        guard let value = field.value else { return nil }
+        switch field.type {
+        case .url:
+            guard case .string(let text) = value, text.isEmpty || isValidURL(text) else {
+                return "URL 格式不正确"
+            }
+        case .date:
+            guard case .string(let text) = value, text.isEmpty || isValidDate(text) else {
+                return "日期应为 YYYY-MM-DD 或 ISO 8601 格式"
+            }
+        default:
+            break
+        }
+        return nil
+    }
+
+    private static func isValidURL(_ value: String) -> Bool {
+        guard let url = URL(string: value),
+              let scheme = url.scheme,
+              !scheme.isEmpty,
+              let host = url.host,
+              !host.isEmpty
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func isValidDate(_ value: String) -> Bool {
+        if ISO8601DateFormatter().date(from: value) != nil {
+            return true
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: value) != nil
+    }
+}
+
+public struct CatalogDetailColumnWidths: Equatable, Sendable {
+    public let name: CGFloat
+    public let value: CGFloat
+    public let action: CGFloat
+
+    public init(name: CGFloat, value: CGFloat, action: CGFloat) {
+        self.name = name
+        self.value = value
+        self.action = action
+    }
+
+    public static func calculate(
+        availableWidth: CGFloat,
+        horizontalSpacing: CGFloat = CatalogDetailMetrics.gridHorizontalSpacing
+    ) -> Self {
+        let usable = max(0, availableWidth - horizontalSpacing * 2)
+        let name = min(max(usable * 0.20, 90), 180)
+        let action = min(max(usable * 0.15, 72), 120)
+        return Self(
+            name: name,
+            value: max(0, usable - name - action),
+            action: action
+        )
+    }
+}
+
+public enum AuditActivityReadResult: Equatable, Sendable {
+    case unavailable
+    case success([CatalogSecurityAuditEntry])
+    case partial(entries: [CatalogSecurityAuditEntry], diagnostics: AuditReadDiagnostics)
+    case failure(code: String)
+}
+
+public enum AuditHealthReadResult: Equatable, Sendable {
+    case normal
+    case appendFailed
+    case failure
+    case unknown
+}
+
+/// Pure reducer for the two independent AppControl reads used by the recent
+/// activity cards. A failed read never erases the last verified entries.
+public struct AuditRefreshState: Equatable, Sendable {
+    public let entries: [CatalogSecurityAuditEntry]
+    public let warning: String?
+
+    public init(entries: [CatalogSecurityAuditEntry], warning: String?) {
+        self.entries = entries
+        self.warning = warning
+    }
+
+    public static func reduce(
+        previousEntries: [CatalogSecurityAuditEntry],
+        activity: AuditActivityReadResult,
+        health: AuditHealthReadResult? = nil
+    ) -> Self {
+        switch activity {
+        case .unavailable:
+            return Self(
+                entries: previousEntries,
+                warning: "本机控制服务不可用（APP_CONTROL_UNAVAILABLE）；已保留最近一次可用记录。"
+            )
+        case let .failure(code):
+            return Self(
+                entries: previousEntries,
+                warning: "安全活动记录读取失败（\(code)）；已保留最近一次可用记录。"
+            )
+        case let .success(entries):
+            return Self(entries: entries, warning: healthWarning(for: health))
+        case let .partial(entries, diagnostics):
+            return Self(
+                entries: entries,
+                warning: combinedWarnings(
+                    readWarning(for: diagnostics),
+                    healthWarning(for: health)
+                )
+            )
+        }
+    }
+
+    private static func combinedWarnings(_ warnings: String?...) -> String? {
+        let values = warnings.compactMap { $0 }
+        return values.isEmpty ? nil : values.joined(separator: " ")
+    }
+
+    private static func healthWarning(for health: AuditHealthReadResult?) -> String? {
+        switch health ?? .failure {
+        case .normal:
+            return nil
+        case .appendFailed:
+            return "安全活动记录写入异常；近期活动可能不完整。"
+        case .failure:
+            return "无法确认安全活动记录完整性（AUDIT_HEALTH_READ_FAILED）；当前可读取记录仍予以显示。"
+        case .unknown:
+            return "无法确认安全活动记录完整性（AUDIT_HEALTH_UNKNOWN）；当前可读取记录仍予以显示。"
+        }
+    }
+
+    private static func readWarning(for diagnostics: AuditReadDiagnostics) -> String? {
+        guard diagnostics.hasIssues else { return nil }
+        var details: [String] = []
+        if diagnostics.recordDecodeFailureCount > 0 {
+            details.append("无法解析 \(diagnostics.recordDecodeFailureCount) 条")
+        }
+        if diagnostics.unsupportedMetadataVersionCount > 0 {
+            details.append("不支持的格式版本 \(diagnostics.unsupportedMetadataVersionCount) 条")
+        }
+        if diagnostics.authenticationFailureCount > 0 {
+            details.append("认证失败 \(diagnostics.authenticationFailureCount) 条")
+        }
+        if diagnostics.eventDecodeFailureCount > 0 {
+            details.append("事件解码失败 \(diagnostics.eventDecodeFailureCount) 条")
+        }
+        if diagnostics.legacyCompatibilityFailureCount > 0 {
+            details.append("旧格式不兼容 \(diagnostics.legacyCompatibilityFailureCount) 条")
+        }
+        return "部分安全活动记录异常（\(details.joined(separator: "、"))）；已显示其余正常记录。"
+    }
+}
+
 public enum VaultWorkbenchRenderingPolicy {
     public static let usesStableRendering = true
     public static let usesRepeatingAnimations = false
@@ -98,6 +467,22 @@ public enum VaultWorkbenchRenderingPolicy {
 public enum VaultWorkbenchMotion {
     public static let interactive = Animation.easeInOut(duration: 0.18)
     public static let authorization = Animation.spring(response: 0.28, dampingFraction: 0.86)
+}
+
+private struct CatalogDetailContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct CatalogDetailAvailableWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable {
@@ -157,6 +542,9 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable 
 
 public extension Notification.Name {
     static let vaultWorkbenchNavigate = Notification.Name("AgentSecretVaultWorkbenchNavigate")
+    static let vaultWorkbenchSecurityStateInvalidated = Notification.Name(
+        "AgentSecretVaultWorkbenchSecurityStateInvalidated"
+    )
 }
 
 public struct VaultWorkbenchView: View {
@@ -298,6 +686,7 @@ public struct VaultWorkbenchView: View {
                 .id(selectedSection)
                 .transition(pageTransition)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: Binding(
             get: { secureInputRequest != nil },
             set: { isPresented in
@@ -392,6 +781,7 @@ public struct VaultWorkbenchView: View {
                 title: "控制台",
                 subtitle: "",
                 systemImage: selectedSection.systemImage,
+                bottomPadding: 12,
                 showsOverviewActions: true,
                 showTemplate: showSensitiveCatalogTemplate
             ) {
@@ -400,20 +790,20 @@ public struct VaultWorkbenchView: View {
         case .secrets:
             WorkbenchPage(title: "敏感信息", subtitle: "分组卡片 → 条目 → 字段；Markdown 保留为可正常编辑的 Obsidian 文件。", systemImage: selectedSection.systemImage) {
                 VStack(spacing: 14) {
-                    if sensitiveIndexURL != nil || sensitiveCatalogSnapshot != nil || sensitiveCatalogError != nil {
+                    if sensitiveIndexURL != nil || sensitiveCatalogSnapshot != nil {
                         SensitiveCatalogEditorCard(
                             snapshot: sensitiveCatalogSnapshot,
-                        errorMessage: sensitiveCatalogError,
-                        canAdoptExternalV2: sensitiveCatalogCanAdoptV2,
-                        adoptExternalV2: adoptExternalV2Catalog,
-                        canAdoptExternalV3: sensitiveCatalogCanAdoptV3,
-                        adoptExternalV3: adoptExternalV3Catalog,
-                        approveExternalChange: approveExternalCatalogChange,
-                        refresh: refreshSensitiveCatalog,
-                        createIndex: createCatalogIndex,
-                        createEntry: createCatalogEntry,
-                        commitEntryEdit: commitCatalogEntryEdit,
-                        revealCatalogField: revealCatalogField,
+                            errorMessage: sensitiveCatalogError,
+                            canAdoptExternalV2: sensitiveCatalogCanAdoptV2,
+                            adoptExternalV2: adoptExternalV2Catalog,
+                            canAdoptExternalV3: sensitiveCatalogCanAdoptV3,
+                            adoptExternalV3: adoptExternalV3Catalog,
+                            approveExternalChange: approveExternalCatalogChange,
+                            refresh: refreshSensitiveCatalog,
+                            createIndex: createCatalogIndex,
+                            createEntry: createCatalogEntry,
+                            commitEntryEdit: commitCatalogEntryEdit,
+                            revealCatalogField: revealCatalogField,
                             replaceCatalogSecret: replaceCatalogSecret,
                             applyBatch: applyCatalogBatch,
                             indexURL: sensitiveIndexURL,
@@ -422,20 +812,19 @@ public struct VaultWorkbenchView: View {
                             checkFormat: checkSensitiveCatalogFormat,
                             repairFormat: repairSensitiveCatalogFormat
                         )
-                    }
-                    if sensitiveIndexURL == nil && sensitiveCatalogSnapshot == nil {
+                    } else {
                         SensitiveIndexLibraryCard(
                             indexURL: nil,
-                            chooseIndex: chooseSensitiveIndex
+                            chooseIndex: chooseSensitiveIndex,
+                            errorMessage: sensitiveCatalogError
                         )
                     }
                 }
             }
         case .automation:
             WorkbenchPage(title: "智能体自动化", subtitle: "", systemImage: selectedSection.systemImage) {
-                VStack(spacing: 14) {
-                    AgentAutomationAuditCard(entries: auditEntries, errorMessage: auditError)
-                }
+                AgentAutomationAuditCard(entries: auditEntries, errorMessage: auditError)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         case .tutorial:
             WorkbenchPage(title: "使用教程", subtitle: "", systemImage: selectedSection.systemImage) {
@@ -449,6 +838,56 @@ public struct VaultWorkbenchView: View {
     }
 
     private var overviewPage: some View {
+        let pending = sensitiveCatalogSnapshot.flatMap { snapshot -> (PendingCatalogSecret, SecretCatalogEntry)? in
+            guard let pending = PendingCatalogSecretResolver.resolve(in: snapshot.document),
+                  let entry = snapshot.document.entries.first(where: { $0.id == pending.entryID })
+            else {
+                return nil
+            }
+            return (pending, entry)
+        }
+
+        return WorkbenchOverviewContent(
+            status: status,
+            agentServiceStatus: agentServiceStatus,
+            agentServiceActionInFlight: agentServiceActionInFlight,
+            agentServiceActionErrorMessage: agentServiceActionErrorMessage,
+            enableAgentService: enableAgentService,
+            disableAgentService: disableAgentService,
+            restartAgentService: restartAgentService,
+            auditEntries: auditEntries,
+            auditError: auditError,
+            pending: pending?.0,
+            pendingEntry: pending?.1,
+            commitCatalogEntryEdit: commitCatalogEntryEdit
+        )
+    }
+
+    private func selectSection(_ section: VaultWorkbenchSection) {
+        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+            selectedSection = section
+        }
+    }
+}
+
+/// Shared overview layout used by the production page and the macOS hosting
+/// regression harness. Only the activity card receives flexible height; the
+/// pending-secret card remains inside a bounded, high-priority region.
+struct WorkbenchOverviewContent: View {
+    let status: WorkbenchStatus
+    let agentServiceStatus: AgentServiceStatus
+    let agentServiceActionInFlight: Bool
+    let agentServiceActionErrorMessage: String?
+    let enableAgentService: (() async -> Void)?
+    let disableAgentService: (() async -> Void)?
+    let restartAgentService: (() async -> Void)?
+    let auditEntries: [CatalogSecurityAuditEntry]
+    let auditError: String?
+    let pending: PendingCatalogSecret?
+    let pendingEntry: SecretCatalogEntry?
+    let commitCatalogEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             OverviewHero(
                 status: status,
@@ -459,14 +898,70 @@ public struct VaultWorkbenchView: View {
                 disableAgentService: disableAgentService,
                 restartAgentService: restartAgentService
             )
+            .fixedSize(horizontal: false, vertical: true)
+            .workbenchOverviewSection(.hero)
 
             CompactAuditPreviewCard(entries: auditEntries, errorMessage: auditError)
-        }
-    }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: 160,
+                    maxHeight: .infinity,
+                    alignment: .topLeading
+                )
+                .workbenchOverviewSection(.activity)
 
-    private func selectSection(_ section: VaultWorkbenchSection) {
-        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-            selectedSection = section
+            if let pending, let pendingEntry {
+                PendingSecretFillCard(
+                    pending: pending,
+                    entry: pendingEntry,
+                    commit: commitCatalogEntryEdit
+                )
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: 120,
+                    idealHeight: 140,
+                    maxHeight: 170,
+                    alignment: .topLeading
+                )
+                .layoutPriority(1)
+                .workbenchOverviewSection(.pending)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .coordinateSpace(name: WorkbenchOverviewCoordinateSpace.name)
+    }
+}
+
+enum WorkbenchOverviewSectionID: Hashable {
+    case hero
+    case activity
+    case pending
+}
+
+enum WorkbenchOverviewCoordinateSpace {
+    static let name = "workbench-overview"
+}
+
+struct WorkbenchOverviewSectionFramesKey: PreferenceKey {
+    static let defaultValue: [WorkbenchOverviewSectionID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [WorkbenchOverviewSectionID: CGRect],
+        nextValue: () -> [WorkbenchOverviewSectionID: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private extension View {
+    func workbenchOverviewSection(_ id: WorkbenchOverviewSectionID) -> some View {
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: WorkbenchOverviewSectionFramesKey.self,
+                    value: [id: proxy.frame(in: .named(WorkbenchOverviewCoordinateSpace.name))]
+                )
+            }
         }
     }
 }
@@ -501,11 +996,12 @@ private struct WorkbenchBackground: View {
     }
 }
 
-private struct WorkbenchPage<Content: View>: View {
+struct WorkbenchPage<Content: View>: View {
     let title: String
     let subtitle: String
     let systemImage: String
     let compact: Bool
+    let bottomPadding: CGFloat
     let showsOverviewActions: Bool
     let showTemplate: (() async -> Void)?
     @ViewBuilder let content: Content
@@ -515,6 +1011,7 @@ private struct WorkbenchPage<Content: View>: View {
         subtitle: String,
         systemImage: String,
         compact: Bool = false,
+        bottomPadding: CGFloat = 22,
         showsOverviewActions: Bool = false,
         showTemplate: (() async -> Void)? = nil,
         @ViewBuilder content: () -> Content
@@ -523,45 +1020,53 @@ private struct WorkbenchPage<Content: View>: View {
         self.subtitle = subtitle
         self.systemImage = systemImage
         self.compact = compact
+        self.bottomPadding = bottomPadding
         self.showsOverviewActions = showsOverviewActions
         self.showTemplate = showTemplate
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .center, spacing: 12) {
-                Text(title)
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                Spacer()
-                if showsOverviewActions {
-                    Button {
-                        NSWorkspace.shared.open(VaultWorkbenchCopy.documentationURL)
-                    } label: {
-                        Image("GitHubMark")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 18, height: 18)
-                            .foregroundStyle(.primary)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("打开 GitHub 文档")
+        GeometryReader { proxy in
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .center, spacing: 12) {
+                    Text(title)
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                    Spacer()
+                    if showsOverviewActions {
+                        Button {
+                            NSWorkspace.shared.open(VaultWorkbenchCopy.documentationURL)
+                        } label: {
+                            Image("GitHubMark")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 18, height: 18)
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("打开 GitHub 文档")
 
-                    Button {
-                        Task { await showTemplate?() }
-                    } label: {
-                        Image(systemName: "doc.text.magnifyingglass")
+                        Button {
+                            Task { await showTemplate?() }
+                        } label: {
+                            Image(systemName: "doc.text.magnifyingglass")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("查看敏感信息模板")
                     }
-                    .buttonStyle(.borderless)
-                    .help("查看敏感信息模板")
                 }
-            }
+                .fixedSize(horizontal: false, vertical: true)
 
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
+            }
+            .padding(.horizontal, 30)
+            .padding(.top, 22)
+            .padding(.bottom, bottomPadding)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
-        .padding(30)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -842,7 +1347,7 @@ private struct OverviewStatusRow: View {
     }
 }
 
-private struct OverviewHero: View {
+struct OverviewHero: View {
     let status: WorkbenchStatus
     let agentServiceStatus: AgentServiceStatus
     let agentServiceActionInFlight: Bool
@@ -945,7 +1450,7 @@ private struct OverviewAgentControl: View {
     }
 }
 
-private struct TutorialPage: View {
+struct TutorialPage: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 22) {
@@ -980,6 +1485,7 @@ private struct TutorialPage: View {
         }
         .scrollIndicators(.automatic)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
     }
 }
 
@@ -1008,7 +1514,7 @@ private struct TutorialSection: View {
     }
 }
 
-private struct FAQPage: View {
+struct FAQPage: View {
     private let questions = [
         ("为什么看不到密码？", "这是默认行为。密码字段只有在本机授权后才会短暂显示，MCP 和插件永远不会收到明文。"),
         ("我可以在 Obsidian 里编辑目录吗？", "可以。Obsidian 负责编辑合法的 v3 Markdown，SVLT 负责校验、授权和本机密文记录。"),
@@ -1036,6 +1542,7 @@ private struct FAQPage: View {
         }
         .scrollIndicators(.automatic)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
     }
 }
 
@@ -1112,86 +1619,291 @@ private struct QuickMenuCard: View {
     }
 }
 
-private struct CompactAuditPreviewCard: View {
+private struct WorkbenchPanelSurface<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .background(
+                LinearGradient(
+                    colors: [Color.cyan.opacity(0.16), Color.blue.opacity(0.08), Color.indigo.opacity(0.06)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.cyan.opacity(0.16), lineWidth: 1)
+            }
+    }
+}
+
+public enum CatalogGroupLayout {
+    /// Shared content guide for the group header and the visible group cards.
+    public static let horizontalInset: CGFloat = 6
+    public static let minimumPaneWidth: CGFloat = 230
+    public static let maximumPaneWidth: CGFloat = 310
+
+    /// Keep the group pane near 28% of the available content while preserving
+    /// usable hit targets at the minimum window width.
+    public static func paneWidth(availableWidth: CGFloat) -> CGFloat {
+        min(max(availableWidth * 0.28, minimumPaneWidth), maximumPaneWidth)
+    }
+}
+
+private struct SectionActionBar: View {
+    let title: String
+    let actionTitle: String
+    let action: () -> Void
+    let disabled: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            Spacer(minLength: 0)
+            Button(actionTitle, action: action)
+                .buttonStyle(.plain)
+                .disabled(disabled)
+        }
+        .padding(.horizontal, CatalogGroupLayout.horizontalInset)
+    }
+}
+
+private struct CatalogBatchActionBar: View {
+    let selectedCount: Int
+    let totalCount: Int
+    let toggleAll: () -> Void
+    let deleteSelected: () -> Void
+    let finish: () -> Void
+    let deleteDisabled: Bool
+    let horizontalInset: CGFloat
+
+    init(
+        selectedCount: Int,
+        totalCount: Int,
+        toggleAll: @escaping () -> Void,
+        deleteSelected: @escaping () -> Void,
+        finish: @escaping () -> Void,
+        deleteDisabled: Bool,
+        horizontalInset: CGFloat = 0
+    ) {
+        self.selectedCount = selectedCount
+        self.totalCount = totalCount
+        self.toggleAll = toggleAll
+        self.deleteSelected = deleteSelected
+        self.finish = finish
+        self.deleteDisabled = deleteDisabled
+        self.horizontalInset = horizontalInset
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("已选 \(selectedCount) 项")
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button(selectedCount == totalCount ? "取消全选" : "全选", action: toggleAll)
+                .buttonStyle(.plain)
+            Button("删除所选", role: .destructive, action: deleteSelected)
+                .buttonStyle(.plain)
+                .disabled(deleteDisabled)
+            Button("完成", action: finish)
+                .buttonStyle(.plain)
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, horizontalInset)
+    }
+}
+
+struct PendingSecretFillCard: View {
+    let pending: PendingCatalogSecret
+    let entry: SecretCatalogEntry
+    let commit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
+
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var plaintext = ""
+    @State private var isPlaintextVisible = true
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        WorkbenchPanelSurface {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("待填写密文", systemImage: "lock.badge.plus")
+                        .font(.headline.weight(.semibold))
+                    Spacer()
+                    Text("待填写 \(pending.remainingCount) 项")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pending.indexTitle).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(pending.entryTitle).font(.body.weight(.semibold))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                    Text("\(pending.fieldLabel) · \(pending.fieldType == .secret ? "密文（secret）" : pending.fieldType.rawValue)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                HStack(spacing: 10) {
+                    Group {
+                        if isPlaintextVisible {
+                            TextField(
+                                text: $plaintext,
+                                prompt: Text("输入密码").foregroundStyle(.orange)
+                            ) {
+                                Text("密码")
+                            }
+                        } else {
+                            SecureField(
+                                text: $plaintext,
+                                prompt: Text("输入密码").foregroundStyle(.orange)
+                            ) {
+                                Text("密码")
+                            }
+                        }
+                    }
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("待填写密码")
+
+                    Button {
+                        isPlaintextVisible.toggle()
+                    } label: {
+                        Image(systemName: isPlaintextVisible ? "eye.slash" : "eye")
+                            .frame(width: 20, height: 20)
+                    }
+                        .buttonStyle(.borderless)
+                        .help(isPlaintextVisible ? "隐藏明文" : "显示明文")
+                        .accessibilityLabel(isPlaintextVisible ? "隐藏密码" : "显示密码")
+                        .disabled(isSubmitting)
+
+                    Button(isSubmitting ? "加密中…" : "填写并加密") { submit() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSubmitting || plaintext.isEmpty || commit == nil)
+                }
+
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .onDisappear(perform: wipePlaintext)
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { wipePlaintext() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            wipePlaintext()
+        }
+    }
+
+    private func submit() {
+        let value = plaintext
+        guard !value.isEmpty, let commit else { return }
+        isSubmitting = true
+        errorMessage = nil
+        Task { @MainActor in
+            let result = await commit(
+                entry,
+                [CatalogSecretInput(key: pending.fieldKey, label: pending.fieldLabel, plaintext: value)]
+            )
+            wipePlaintext()
+            isSubmitting = false
+            switch result {
+            case .success:
+                errorMessage = nil
+            case let .failure(error):
+                errorMessage = error.displayText
+            }
+        }
+    }
+
+    private func wipePlaintext() { plaintext = "" }
+}
+
+struct CompactAuditPreviewCard: View {
     let entries: [CatalogSecurityAuditEntry]
     let errorMessage: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("最近自动化", systemImage: "sparkles.rectangle.stack")
-                    .font(.headline.weight(.semibold))
-                Spacer()
-            Text(entries.isEmpty ? "暂无记录" : "最近 \(entries.count) 条")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            if entries.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "clock.badge.questionmark")
+        WorkbenchPanelSurface {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("最近自动化", systemImage: "sparkles.rectangle.stack")
+                        .font(.headline.weight(.semibold))
+                    Spacer()
+                    Text(summaryText)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
-                    Text("暂无活动")
-                        .font(.body)
                 }
-                .foregroundStyle(.secondary)
-            } else {
+
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
+
                 ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 6) {
-                        ForEach(entries) { entry in
-                            HStack(spacing: 8) {
-                            Image(systemName: iconName(for: entry.operation))
-                                .foregroundStyle(.blue)
-                                .frame(width: 18)
-                            Text(entry.operation.displayName)
-                                .font(.callout.weight(.semibold))
-                                .lineLimit(1)
-                            Text(entry.target)
-                                .font(.caption)
+                    if entries.isEmpty, errorMessage == nil {
+                        VStack {
+                            Spacer(minLength: 24)
+                            Label("暂无活动", systemImage: "clock.badge.questionmark")
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
                             Spacer()
-                            Text(entry.result.displayName)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
                         }
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 10)
-                            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .transition(
-                                reduceMotion
-                                    ? .opacity
-                                    : .opacity.combined(with: .offset(y: -4))
-                            )
+                        .frame(maxWidth: .infinity, minHeight: 160)
+                    } else if entries.isEmpty {
+                        Label("最近活动暂不可用", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 100)
+                    } else {
+                        VStack(spacing: 6) {
+                            ForEach(entries) { entry in
+                                HStack(spacing: 8) {
+                                    Image(systemName: iconName(for: entry.operation)).foregroundStyle(.blue).frame(width: 18)
+                                    Text(entry.operation.displayName).font(.callout.weight(.semibold)).lineLimit(1)
+                                    Text(entry.target).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    Spacer()
+                                    Text(entry.result.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 10)
+                                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -4)))
+                            }
                         }
                     }
                 }
                 .scrollIndicators(.automatic)
-                .frame(minHeight: 240, maxHeight: 300)
+                .frame(maxHeight: .infinity)
             }
+            .padding(14)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [Color.cyan.opacity(0.16), Color.blue.opacity(0.06)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.cyan.opacity(0.14), lineWidth: 1)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: entries.map(\.id))
+    }
+
+    private var summaryText: String {
+        if !entries.isEmpty { return "最近 \(entries.count) 条" }
+        return errorMessage == nil ? "暂无记录" : "读取异常"
     }
 
     private func iconName(for operation: AuditOperation) -> String {
@@ -1215,6 +1927,7 @@ private struct CompactAuditPreviewCard: View {
 private struct SensitiveIndexLibraryCard: View {
     let indexURL: URL?
     let chooseIndex: (() -> Void)?
+    let errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1222,6 +1935,15 @@ private struct SensitiveIndexLibraryCard: View {
                 Label("目录文件选择", systemImage: "doc.badge.lock")
                     .font(.title3.weight(.semibold))
                 Spacer()
+            }
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
 
             if let indexURL {
@@ -1353,6 +2075,37 @@ private struct CatalogDeletionRequest: Identifiable {
     let secretFieldCount: Int
 }
 
+struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let originalKey: String?
+    var field: SecretCatalogFieldValue
+    var secretInput: String
+
+    init(
+        id: UUID = UUID(),
+        originalKey: String? = nil,
+        field: SecretCatalogFieldValue,
+        secretInput: String = ""
+    ) {
+        self.id = id
+        self.originalKey = originalKey
+        self.field = field
+        self.secretInput = secretInput
+    }
+
+    static func make(from fields: [SecretCatalogFieldValue]) -> [Self] {
+        fields.map { field in
+            Self(originalKey: field.key, field: field)
+        }
+    }
+
+    static func newField(key: String) -> Self {
+        Self(field: SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
+    }
+
+    var selectionID: String { id.uuidString }
+}
+
 private struct SensitiveCatalogEditorCard: View {
     let snapshot: SensitiveCatalogSnapshot?
     let errorMessage: String?
@@ -1379,7 +2132,9 @@ private struct SensitiveCatalogEditorCard: View {
     @State private var createIndexError: CatalogMutationUIError?
     @State private var selectedIndexID: String?
     @State private var hoveredIndexID: String?
-    @State private var pendingIndexDeletion: CatalogDeletionRequest?
+    @State private var indexSelection = CatalogBatchSelectionState()
+    @State private var entrySelection = CatalogBatchSelectionState()
+    @State private var pendingDeletion: CatalogDeletionRequest?
     @State private var deletionError: CatalogMutationUIError?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1564,17 +2319,47 @@ private struct SensitiveCatalogEditorCard: View {
                         systemImage: "folder.badge.plus",
                         description: Text("先创建一个分组；条目和字段会在右侧工作区管理。")
                     )
-                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    HStack(alignment: .top, spacing: 0) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("分组")
-                                    .font(.headline)
-                                Spacer()
+                    GeometryReader { geometry in
+                        HStack(alignment: .top, spacing: 0) {
+                            VStack(alignment: .leading, spacing: 10) {
+                            if indexSelection.isSelecting {
+                                CatalogBatchActionBar(
+                                    selectedCount: indexSelection.selectedIDs.count,
+                                    totalCount: snapshot.document.indexes.count,
+                                    toggleAll: {
+                                        if indexSelection.selectedIDs.count == snapshot.document.indexes.count {
+                                            indexSelection.clear()
+                                        } else {
+                                            indexSelection.selectAll(snapshot.document.indexes.map(\.id))
+                                        }
+                                    },
+                                    deleteSelected: {
+                                        prepareIndexDeletion(ids: indexSelection.selectedIDs.sorted(), snapshot: snapshot)
+                                    },
+                                    finish: {
+                                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                                            indexSelection.finish()
+                                        }
+                                    },
+                                    deleteDisabled: indexSelection.selectedIDs.isEmpty || isWorking,
+                                    horizontalInset: CatalogGroupLayout.horizontalInset
+                                )
+                            } else {
+                                SectionActionBar(
+                                    title: "分组",
+                                    actionTitle: "批量编辑",
+                                    action: {
+                                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                                            indexSelection.begin()
+                                        }
+                                    },
+                                    disabled: snapshot.document.indexes.isEmpty
+                                )
                             }
 
-                            ScrollView {
+                            ScrollView(.vertical, showsIndicators: false) {
                                 VStack(spacing: 8) {
                                     ForEach(snapshot.document.indexes, id: \.id) { index in
                                         let entries = snapshot.document.entries.filter { $0.indexId == index.id }
@@ -1582,14 +2367,17 @@ private struct SensitiveCatalogEditorCard: View {
                                     }
                                 }
                             }
-                        }
-                        .padding(14)
-                        .frame(width: 230, alignment: .topLeading)
-                        .frame(maxHeight: .infinity, alignment: .topLeading)
+                            }
+                            .padding(14)
+                            .frame(
+                                width: CatalogGroupLayout.paneWidth(availableWidth: geometry.size.width),
+                                alignment: .topLeading
+                            )
+                            .frame(maxHeight: .infinity, alignment: .topLeading)
 
-                        Divider()
+                            Divider()
 
-                        Group {
+                            Group {
                             if let selectedIndexID,
                                let index = snapshot.document.indexes.first(where: { $0.id == selectedIndexID }) {
                                 SensitiveCatalogGroupSheet(
@@ -1599,7 +2387,10 @@ private struct SensitiveCatalogEditorCard: View {
                                     commitEntryEdit: commitEntryEdit,
                                     revealCatalogField: revealCatalogField,
                                     replaceCatalogSecret: replaceCatalogSecret,
-                                    applyBatch: applyBatch
+                                    entrySelection: $entrySelection,
+                                    requestEntryDeletion: { ids in
+                                        prepareEntryDeletion(ids: ids, snapshot: snapshot)
+                                    }
                                 )
                             } else {
                                 ContentUnavailableView(
@@ -1611,10 +2402,12 @@ private struct SensitiveCatalogEditorCard: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
-                    .frame(minHeight: selectedIndexID == nil ? 250 : 520)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
                     .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                     if let deletionError {
@@ -1632,31 +2425,61 @@ private struct SensitiveCatalogEditorCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .alert(item: $pendingIndexDeletion) { request in
-            Alert(
-                title: Text("删除 \(request.itemCount) 个分组？"),
-                message: Text("其中包含 \(request.entryCount) 个条目、\(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
-                primaryButton: .destructive(Text("删除")) {
-                    deleteIndexes(request.ids)
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
+        .onChange(of: snapshot?.revision) { _, _ in
+            guard let snapshot else { return }
+            indexSelection.retainVisibleIDs(snapshot.document.indexes.map(\.id))
+            if let selectedIndexID,
+               !snapshot.document.indexes.contains(where: { $0.id == selectedIndexID }) {
+                self.selectedIndexID = nil
+            }
+        }
+        .alert(item: $pendingDeletion) { request in
+            switch request.kind {
+            case .indexes:
+                Alert(
+                    title: Text("删除 \(request.itemCount) 个分组？"),
+                    message: Text("其中包含 \(request.entryCount) 个条目、\(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
+                    primaryButton: .destructive(Text("删除")) {
+                        delete(request)
+                    },
+                    secondaryButton: .cancel(Text("取消"))
+                )
+            case .entries:
+                Alert(
+                    title: Text("删除 \(request.itemCount) 个条目？"),
+                    message: Text("其中包含 \(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
+                    primaryButton: .destructive(Text("删除")) {
+                        delete(request)
+                    },
+                    secondaryButton: .cancel(Text("取消"))
+                )
+            }
         }
     }
 
     private func indexRow(index: SecretCatalogIndex, entries: [SecretCatalogEntry], snapshot: SensitiveCatalogSnapshot) -> some View {
         let isSelected = selectedIndexID == index.id
         let isHovered = hoveredIndexID == index.id
-        return Button {
-            withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-                selectedIndexID = index.id
-            }
-        } label: {
-            HStack(spacing: 12) {
+        let isBatchSelected = indexSelection.selectedIDs.contains(index.id)
+        return HStack(alignment: .center, spacing: 8) {
+            Button {
+                withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                    if indexSelection.isSelecting {
+                        indexSelection.toggle(index.id)
+                    } else {
+                        selectedIndexID = index.id
+                    }
+                }
+            } label: {
+            HStack(alignment: .center, spacing: 12) {
+                if indexSelection.isSelecting {
+                    Image(systemName: isBatchSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isBatchSelected ? Color.accentColor : .secondary)
+                }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(index.title)
-                        .font(.callout.weight(isSelected ? .semibold : .regular))
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(index.title).font(.callout.weight((isSelected || isBatchSelected) ? .semibold : .regular))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
                     Text("\(entries.count) 个条目")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -1665,117 +2488,151 @@ private struct SensitiveCatalogEditorCard: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .center)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel(index.title)
+            .accessibilityValue(indexSelection.isSelecting ? (isBatchSelected ? "已选中" : "未选中") : (isSelected ? "当前分组" : "分组"))
+            .accessibilityHint(indexSelection.isSelecting ? "选择分组用于批量删除" : "查看该分组中的条目")
+
+            if !indexSelection.isSelecting {
+                Button(role: .destructive) {
+                    prepareIndexDeletion(for: index, snapshot: snapshot)
+                } label: {
+                    Image(systemName: "trash").font(.callout.weight(.semibold)).frame(width: 34, height: 34)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("删除分组")
+                .accessibilityLabel("删除分组")
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .background(
             LinearGradient(
                 colors: [
-                    Color.blue.opacity(isSelected ? 0.24 : 0.14),
-                    Color.indigo.opacity(isSelected ? 0.14 : 0.05)
+                    Color.blue.opacity((isSelected || isBatchSelected) ? 0.24 : 0.14),
+                    Color.indigo.opacity((isSelected || isBatchSelected) ? 0.14 : 0.05)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
-        .overlay(alignment: .trailing) {
-            Button(role: .destructive) {
-                prepareIndexDeletion(for: index, snapshot: snapshot)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("删除分组")
-            .accessibilityLabel("删除分组")
-            .disabled(applyBatch == nil)
-            .padding(.trailing, 8)
-        }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(
-                    isSelected
+                    (isSelected || isBatchSelected)
                         ? Color.accentColor.opacity(0.78)
                         : (isHovered ? Color.blue.opacity(0.42) : Color.blue.opacity(0.18)),
                     lineWidth: isSelected ? 2 : (isHovered ? 1.5 : 1)
                 )
                 .allowsHitTesting(false)
         }
+        .padding(.horizontal, CatalogGroupLayout.horizontalInset)
         .scaleEffect(isHovered && !reduceMotion ? 1.01 : 1)
         .onHover { isHovering in
             hoveredIndexID = isHovering ? index.id : nil
         }
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovered)
-        .accessibilityLabel(index.title)
-        .accessibilityValue(isSelected ? "当前分组" : "分组")
-        .accessibilityHint("查看该分组中的条目")
     }
 
     private func prepareIndexDeletion(for index: SecretCatalogIndex, snapshot: SensitiveCatalogSnapshot) {
-        let selectedEntries = snapshot.document.entries.filter { $0.indexId == index.id }
-        pendingIndexDeletion = CatalogDeletionRequest(
-            id: index.id,
+        prepareIndexDeletion(ids: [index.id], snapshot: snapshot)
+    }
+
+    private func prepareIndexDeletion(ids: [String], snapshot: SensitiveCatalogSnapshot) {
+        guard !ids.isEmpty else { return }
+        let summary = CatalogDeletionSummary.indexes(ids: ids, in: snapshot.document)
+        pendingDeletion = CatalogDeletionRequest(
+            id: ids.joined(separator: ","),
             kind: .indexes,
-            ids: [index.id],
-            itemCount: 1,
-            entryCount: selectedEntries.count,
-            secretFieldCount: selectedEntries.flatMap(\.fields).filter { $0.type.isSecret }.count
+            ids: ids,
+            itemCount: summary.itemCount,
+            entryCount: summary.entryCount,
+            secretFieldCount: summary.secretFieldCount
         )
     }
 
-    private func deleteIndexes(_ ids: [String]) {
+    private func prepareEntryDeletion(ids: [String], snapshot: SensitiveCatalogSnapshot) {
+        guard !ids.isEmpty else { return }
+        let summary = CatalogDeletionSummary.entries(ids: ids, in: snapshot.document.entries)
+        pendingDeletion = CatalogDeletionRequest(
+            id: ids.joined(separator: ","),
+            kind: .entries,
+            ids: ids,
+            itemCount: summary.itemCount,
+            entryCount: summary.entryCount,
+            secretFieldCount: summary.secretFieldCount
+        )
+    }
+
+    private func delete(_ request: CatalogDeletionRequest) {
         Task {
             isWorking = true
             deletionError = nil
             guard let applyBatch else {
+                let itemName: String
+                switch request.kind {
+                case .indexes:
+                    itemName = "分组"
+                case .entries:
+                    itemName = "条目"
+                }
                 deletionError = CatalogMutationUIError(
                     code: "APP_CONTROL_UNAVAILABLE",
-                    message: "本机控制服务不可用，无法删除分组"
+                    message: "本机控制服务不可用，无法删除\(itemName)"
                 )
-                pendingIndexDeletion = nil
+                pendingDeletion = nil
                 isWorking = false
                 return
             }
-            let result = await applyBatch(CatalogBatchMutation(operations: ids.map { .deleteIndex(id: $0) }))
+            let operations: [CatalogBatchOperation] = request.ids.map { id in
+                switch request.kind {
+                case .indexes:
+                    return .deleteIndex(id: id)
+                case .entries:
+                    return .deleteEntry(id: id)
+                }
+            }
+            let result = await applyBatch(CatalogBatchMutation(operations: operations))
             switch result {
             case .success:
-                if ids.contains(selectedIndexID ?? "") {
-                    selectedIndexID = nil
+                switch request.kind {
+                case .indexes:
+                    if request.ids.contains(selectedIndexID ?? "") {
+                        selectedIndexID = nil
+                    }
+                    indexSelection.deleteSucceeded(request.ids)
+                case .entries:
+                    entrySelection.deleteSucceeded(request.ids)
                 }
             case let .failure(error):
                 deletionError = error
             }
-            pendingIndexDeletion = nil
+            pendingDeletion = nil
             isWorking = false
         }
     }
 }
 
-private struct SensitiveCatalogGroupSheet: View {
+struct SensitiveCatalogGroupSheet: View {
     let index: SecretCatalogIndex
     let entries: [SecretCatalogEntry]
     let createEntry: ((String, String, String) async -> CatalogMutationUIResult)?
     let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let revealCatalogField: ((String, String) async throws -> String)?
     let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
-    let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
+    @Binding var entrySelection: CatalogBatchSelectionState
+    let requestEntryDeletion: ([String]) -> Void
 
     @State private var isAdding = false
     @State private var newEntryTitle = ""
     @State private var selectedPresetID = SensitiveCatalogEntryPreset.all.first?.id ?? "credential"
-    @State private var pendingEntryDeletion: CatalogDeletionRequest?
     @State private var newlyCreatedEntryID: String?
     @State private var isWorking = false
     @State private var createError: CatalogEntryCreationError?
-    @State private var deletionError: CatalogMutationUIError?
-    @State private var selectedEntryIDs: Set<String> = []
-    @State private var isSelectingEntries = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var secretFieldCount: Int {
@@ -1814,68 +2671,37 @@ private struct SensitiveCatalogGroupSheet: View {
                     createError = nil
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(entrySelection.isSelecting)
 
-                if isSelectingEntries {
-                    Button {
-                        if selectedEntryIDs.count == entries.count {
-                            selectedEntryIDs.removeAll()
-                        } else {
-                            selectedEntryIDs = Set(entries.map(\.id))
-                        }
-                    } label: {
-                        Image(systemName: selectedEntryIDs.count == entries.count ? "checkmark.circle.fill" : "circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help(selectedEntryIDs.count == entries.count ? "取消全选条目" : "全选条目")
-                    .accessibilityLabel(selectedEntryIDs.count == entries.count ? "取消全选条目" : "全选条目")
-
-                    Button(role: .destructive) {
-                        prepareEntryDeletion()
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .help("删除选中条目")
-                    .accessibilityLabel("删除选中条目")
-                    .disabled(isWorking || selectedEntryIDs.isEmpty || applyBatch == nil)
-
-                    Text("已选 \(selectedEntryIDs.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-                            isSelectingEntries = false
-                            selectedEntryIDs.removeAll()
-                        }
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("完成批量编辑")
-                    .accessibilityLabel("完成批量编辑")
+                Spacer()
+                if entrySelection.isSelecting {
+                    CatalogBatchActionBar(
+                        selectedCount: entrySelection.selectedIDs.count,
+                        totalCount: entries.count,
+                        toggleAll: {
+                            if entrySelection.selectedIDs.count == entries.count {
+                                entrySelection.clear()
+                            } else {
+                                entrySelection.selectAll(entries.map(\.id))
+                            }
+                        },
+                        deleteSelected: { requestEntryDeletion(entrySelection.selectedIDs.sorted()) },
+                        finish: {
+                            withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
+                                entrySelection.finish()
+                            }
+                        },
+                        deleteDisabled: isWorking || entrySelection.selectedIDs.isEmpty
+                    )
                 } else {
-                    Button {
-                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-                            isSelectingEntries = true
-                            selectedEntryIDs.removeAll()
-                        }
-                    } label: {
-                        Label("批量编辑", systemImage: "checklist")
+                    Button("批量编辑") {
+                        withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) { entrySelection.begin() }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderless)
                     .help("批量编辑条目")
                     .accessibilityLabel("批量编辑条目")
                     .disabled(entries.isEmpty)
                 }
-                Spacer()
-            }
-
-            if let deletionError {
-                Label(deletionError.displayText, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
             }
 
             if isAdding {
@@ -1944,86 +2770,35 @@ private struct SensitiveCatalogGroupSheet: View {
                             SensitiveCatalogEntryRow(
                                 entry: entry,
                                 autoEdit: newlyCreatedEntryID == entry.id,
-                                isSelecting: isSelectingEntries,
-                                isSelected: selectedEntryIDs.contains(entry.id),
+                                isSelecting: entrySelection.isSelecting,
+                                isSelected: entrySelection.selectedIDs.contains(entry.id),
                                 toggleSelection: { toggleEntrySelection(entry.id) },
                                 commitEntryEdit: commitEntryEdit,
                                 revealCatalogField: revealCatalogField,
                                 replaceCatalogSecret: replaceCatalogSecret,
-                                applyBatch: applyBatch,
-                                requestDelete: { prepareEntryDeletion(for: entry) }
+                                requestDelete: { requestEntryDeletion([entry.id]) }
                             )
                         }
                     }
                 }
-                .frame(maxHeight: 520)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .layoutPriority(1)
             }
         }
         .padding(22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
-        .alert(item: $pendingEntryDeletion) { request in
-            Alert(
-                title: Text("删除 \(request.itemCount) 个条目？"),
-                message: Text("其中包含 \(request.secretFieldCount) 个密码字段。此操作会删除目录引用。"),
-                primaryButton: .destructive(Text("删除")) {
-                    deleteEntries(request.ids)
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
+        .onChange(of: entries.map(\.id)) { _, ids in
+            entrySelection.retainVisibleIDs(ids)
         }
     }
 
     private func toggleEntrySelection(_ id: String) {
         withAnimation(reduceMotion ? nil : VaultWorkbenchMotion.interactive) {
-            if selectedEntryIDs.contains(id) {
-                selectedEntryIDs.remove(id)
-            } else {
-                selectedEntryIDs.insert(id)
-            }
+            entrySelection.toggle(id)
         }
     }
 
-    private func prepareEntryDeletion(for entry: SecretCatalogEntry? = nil) {
-        let ids = entry.map { [$0.id] } ?? selectedEntryIDs.sorted()
-        guard !ids.isEmpty else { return }
-        let selectedEntries = entries.filter { ids.contains($0.id) }
-        pendingEntryDeletion = CatalogDeletionRequest(
-            id: ids.joined(separator: ","),
-            kind: .entries,
-            ids: ids,
-            itemCount: ids.count,
-            entryCount: 0,
-            secretFieldCount: selectedEntries.flatMap(\.fields).filter { $0.type.isSecret }.count
-        )
-    }
-
-    private func deleteEntries(_ ids: [String]) {
-        Task {
-            isWorking = true
-            deletionError = nil
-            guard let applyBatch else {
-                deletionError = CatalogMutationUIError(
-                    code: "APP_CONTROL_UNAVAILABLE",
-                    message: "本机控制服务不可用，无法删除条目"
-                )
-                pendingEntryDeletion = nil
-                isWorking = false
-                return
-            }
-            let result = await applyBatch(CatalogBatchMutation(operations: ids.map { .deleteEntry(id: $0) }))
-            switch result {
-            case .success:
-                selectedEntryIDs.subtract(ids)
-                if selectedEntryIDs.isEmpty {
-                    isSelectingEntries = false
-                }
-            case let .failure(error):
-                deletionError = error
-            }
-            pendingEntryDeletion = nil
-            isWorking = false
-        }
-    }
 }
 
 private struct SensitiveCatalogEntryRow: View {
@@ -2035,7 +2810,6 @@ private struct SensitiveCatalogEntryRow: View {
     let commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?
     let revealCatalogField: ((String, String) async throws -> String)?
     let replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
-    let applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?
     let requestDelete: () -> Void
 
     @State private var editing = false
@@ -2044,17 +2818,30 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var draftTags: String
     @State private var draftEndpoints: String
     @State private var draftNotes: String
-    @State private var draftFields: [SecretCatalogFieldValue]
-    @State private var pendingSecretInputs: [String: String] = [:]
+    @State private var draftFields: [CatalogFieldDraft]
+    @State private var fieldSelection = CatalogBatchSelectionState()
     @State private var isSaving = false
     @State private var editorError: String?
     @State private var showingDetails: Bool
     @State private var revealedPlaintexts: [String: String] = [:]
     @State private var revealingKeys: Set<String> = []
+    @State private var revealTasks: [String: Task<Void, Never>] = [:]
+    @State private var revealExpiryTasks: [String: Task<Void, Never>] = [:]
+    @State private var revealGenerations: [String: UUID] = [:]
     @State private var revealError: String?
     @State private var isHovering = false
+    @State private var detailContentHeight: CGFloat = 260
+    @State private var detailAvailableWidth: CGFloat = 760
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private enum Metrics {
+        static let firstLineHeight: CGFloat = 24
+        static let titleBlockHeight: CGFloat = 40
+        static let horizontalPadding: CGFloat = 12
+        static let verticalPadding: CGFloat = 10
+        static let sectionSpacing: CGFloat = 6
+    }
 
     init(
         entry: SecretCatalogEntry,
@@ -2065,7 +2852,6 @@ private struct SensitiveCatalogEntryRow: View {
         commitEntryEdit: ((SecretCatalogEntry, [CatalogSecretInput]) async -> CatalogMutationUIResult)?,
         revealCatalogField: ((String, String) async throws -> String)?,
         replaceCatalogSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?,
-        applyBatch: ((CatalogBatchMutation) async -> CatalogMutationUIResult)?,
         requestDelete: @escaping () -> Void = {}
     ) {
         self.entry = entry
@@ -2076,14 +2862,13 @@ private struct SensitiveCatalogEntryRow: View {
         self.commitEntryEdit = commitEntryEdit
         self.revealCatalogField = revealCatalogField
         self.replaceCatalogSecret = replaceCatalogSecret
-        self.applyBatch = applyBatch
         self.requestDelete = requestDelete
         _draftTitle = State(initialValue: entry.title)
         _draftAliases = State(initialValue: entry.aliases.joined(separator: ", "))
         _draftTags = State(initialValue: entry.tags.joined(separator: ", "))
         _draftEndpoints = State(initialValue: entry.endpoints.map(Self.endpointLine).joined(separator: "\n"))
         _draftNotes = State(initialValue: entry.notes ?? "")
-        _draftFields = State(initialValue: entry.fields)
+        _draftFields = State(initialValue: CatalogFieldDraft.make(from: entry.fields))
         _editing = State(initialValue: autoEdit)
         _showingDetails = State(initialValue: autoEdit)
     }
@@ -2096,16 +2881,17 @@ private struct SensitiveCatalogEntryRow: View {
                         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                             .font(.title3)
                             .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                            .frame(width: Metrics.firstLineHeight, height: Metrics.firstLineHeight, alignment: .center)
 
-                        VStack(alignment: .leading, spacing: 10) {
-                            entrySummary
+                        VStack(alignment: .leading, spacing: 8) {
+                            entryTitleContent
                             entryCounts
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         Spacer(minLength: 0)
                     }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+                    .padding(.horizontal, Metrics.horizontalPadding)
+                    .padding(.vertical, Metrics.verticalPadding)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -2116,7 +2902,7 @@ private struct SensitiveCatalogEntryRow: View {
                 normalCard
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(
             LinearGradient(
                 colors: [
@@ -2143,85 +2929,97 @@ private struct SensitiveCatalogEntryRow: View {
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)
         .sheet(isPresented: $showingDetails, onDismiss: clearSensitiveOutput) {
             entryDetails
-                .frame(minWidth: 760, idealWidth: 900, minHeight: 520)
         }
         .onDisappear {
             clearSensitiveOutput()
         }
         .onChange(of: showingDetails) { _, isPresented in
-            if !isPresented { clearSensitiveOutput() }
+            if !isPresented { cancelEditing() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .inactive || phase == .background { clearSensitiveOutput() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            clearSensitiveOutput()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchSecurityStateInvalidated)) { _ in
+            clearSensitiveOutput()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
+            clearSensitiveOutput()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
+            clearSensitiveOutput()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in
+            clearSensitiveOutput()
+        }
     }
 
     private var normalCard: some View {
-        Button {
-            showingDetails = true
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 10) {
-                    entrySummary
-                    Spacer(minLength: 44)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Button { showingDetails = true } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "key.horizontal")
+                            .foregroundStyle(.green)
+                            .frame(width: Metrics.firstLineHeight, height: Metrics.firstLineHeight, alignment: .center)
+                        entryTitleContent
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-
-                HStack(alignment: .top, spacing: 12) {
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(entry.title)
+                    .accessibilityHint("打开条目详情")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    load(entry)
+                    editing = true
+                    showingDetails = true
+                    editorError = nil
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.callout.weight(.semibold))
+                        .frame(width: 34, height: Metrics.firstLineHeight, alignment: .center)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("编辑条目")
+                .accessibilityLabel("编辑条目")
+            }
+            HStack(spacing: 12) {
+                Button { showingDetails = true } label: {
                     entryCounts
-                    Spacer(minLength: 44)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(entry.title)
+                .accessibilityHint("打开条目详情")
+                Button("删除", role: .destructive, action: requestDelete)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("删除条目")
+                    .accessibilityLabel("删除条目")
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .overlay(alignment: .topTrailing) {
-            Button {
-                load(entry)
-                editing = true
-                showingDetails = true
-                editorError = nil
-            } label: {
-                Image(systemName: "pencil")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("编辑条目")
-            .accessibilityLabel("编辑条目")
-            .padding(.top, 7)
-            .padding(.trailing, 8)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            Button(role: .destructive, action: requestDelete) {
-                Image(systemName: "trash")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("删除条目")
-            .accessibilityLabel("删除条目")
-            .disabled(applyBatch == nil)
-            .padding(.bottom, 7)
-            .padding(.trailing, 8)
-        }
-        .accessibilityLabel(entry.title)
-        .accessibilityHint("打开条目详情")
+        .padding(.horizontal, Metrics.horizontalPadding)
+        .padding(.vertical, Metrics.verticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var entryDetails: some View {
-        NavigationStack {
-            ScrollView {
+        VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(entry.title)
+                            Text(editing ? draftTitle : entry.title)
                                 .font(.title.weight(.bold))
+                                .lineLimit(2)
+                                .truncationMode(.tail)
                         }
                         Spacer()
                     }
@@ -2236,53 +3034,85 @@ private struct SensitiveCatalogEntryRow: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                .padding(22)
-            }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") {
-                        showingDetails = false
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, CatalogDetailMetrics.horizontalPadding)
+                .padding(.vertical, CatalogDetailMetrics.verticalPadding)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: CatalogDetailContentHeightKey.self, value: proxy.size.height)
                     }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    if editing {
-                        Button("取消编辑") {
-                            load(entry)
-                            editing = false
-                            editorError = nil
-                        }
-                    } else {
-                        Button("编辑") {
-                            load(entry)
-                            editing = true
-                            editorError = nil
-                        }
-                    }
-                }
+                )
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: CatalogDetailAvailableWidthKey.self, value: proxy.size.width)
+                }
+            )
+            .onPreferenceChange(CatalogDetailContentHeightKey.self) { detailContentHeight = $0 }
+            .onPreferenceChange(CatalogDetailAvailableWidthKey.self) { width in
+                guard width > 0 else { return }
+                detailAvailableWidth = width
+            }
+
+            Divider()
+            detailActionBar
         }
+        .frame(
+            minWidth: 760,
+            idealWidth: 860,
+            maxWidth: 900,
+            minHeight: editing ? 520 : 320,
+            idealHeight: editing ? 640 : min(max(detailContentHeight + 92, 320), 720),
+            maxHeight: editing ? 720 : min(max(detailContentHeight + 92, 320), 720)
+        )
     }
 
-    private var entrySummary: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "key.horizontal")
-                .foregroundStyle(.green)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title)
-                    .font(.headline.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                if !entry.aliases.isEmpty {
-                    Text(entry.aliases.joined(separator: "、"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+    private var detailActionBar: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+            if editing {
+                Button(isSaving ? "保存中…" : "保存条目") {
+                    saveEntry()
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSaving || commitEntryEdit == nil)
+            } else {
+                Button("编辑") {
+                    load(entry)
+                    editing = true
+                    editorError = nil
+                }
+                .buttonStyle(.borderedProminent)
             }
+            Button("关闭") {
+                closeDetails()
+            }
+            .buttonStyle(.bordered)
+            .keyboardShortcut(.cancelAction)
+            .disabled(isSaving)
         }
+        .padding(.horizontal, CatalogDetailMetrics.horizontalPadding)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .background(.bar)
+    }
+
+    private var entryTitleContent: some View {
+        Text(entry.title)
+            .font(.headline.weight(.semibold))
+            .lineLimit(2)
+            .truncationMode(.tail)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: Metrics.titleBlockHeight,
+                maxHeight: Metrics.titleBlockHeight,
+                alignment: .topLeading
+            )
     }
 
     private var entryCounts: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(spacing: 12) {
             Label("字段 \(entry.fields.count)", systemImage: "list.bullet")
             Label("密码 \(entry.fields.filter { $0.type.isSecret }.count)", systemImage: "lock.fill")
                 .fixedSize(horizontal: false, vertical: true)
@@ -2292,107 +3122,172 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     private var displayBody: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(entry.fields.enumerated()), id: \.element.key) { offset, field in
-                HStack(spacing: 16) {
-                    Text(field.label)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 150, alignment: .leading)
-
-                    if field.type.isSecret {
-                        Spacer(minLength: 0)
-                        secretFieldValue(field)
-                    } else {
-                        Text(displayValue(field))
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                        Spacer(minLength: 0)
+        let sheetWidth = detailAvailableWidth > 0 ? detailAvailableWidth : 760
+        let gridAvailableWidth = CatalogDetailMetrics.gridAvailableWidth(for: sheetWidth)
+        let widths = CatalogDetailColumnWidths.calculate(
+            availableWidth: gridAvailableWidth
+        )
+        return VStack(alignment: .leading, spacing: 16) {
+            Grid(
+                horizontalSpacing: CatalogDetailMetrics.gridHorizontalSpacing,
+                verticalSpacing: CatalogDetailMetrics.gridVerticalSpacing
+            ) {
+                ForEach(entry.fields, id: \.key) { field in
+                    GridRow(alignment: .top) {
+                        Text(field.label)
+                            .font(.body.weight(.semibold))
+                            .frame(width: widths.name, alignment: .leading)
+                        detailValue(for: field)
+                            .frame(width: widths.value, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        detailAction(for: field)
+                            .frame(width: widths.action, alignment: .center)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    offset.isMultiple(of: 2)
-                        ? Color(nsColor: .controlBackgroundColor)
-                        : Color(nsColor: .windowBackgroundColor)
-                )
             }
+            .frame(width: gridAvailableWidth, alignment: .leading)
             if let notes = entry.notes, !notes.isEmpty {
-                Text(notes)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 16)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("备注").font(.body.weight(.semibold))
+                    Text(notes).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private func secretFieldValue(_ field: SecretCatalogFieldValue) -> some View {
-        if let plaintext = revealedPlaintexts[field.key] {
-            HStack(spacing: 6) {
-                Text(plaintext)
-                    .font(.system(.title3, design: .monospaced))
-                    .foregroundStyle(.orange)
-                Button("隐藏") {
-                    revealedPlaintexts.removeValue(forKey: field.key)
-                }
-                .buttonStyle(.borderless)
-            }
-        } else if field.secretRef != nil {
-            HStack(spacing: 6) {
-                Text("已加密")
-                    .font(.system(.title3, design: .monospaced))
-                    .foregroundStyle(.orange)
-                Button(revealingKeys.contains(field.key) ? "验证中…" : "解密") {
-                    reveal(field)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(revealCatalogField == nil || revealingKeys.contains(field.key))
-            }
-        } else {
-            HStack(spacing: 6) {
-                Text("未填写")
-                    .foregroundStyle(.secondary)
-                Button("填写密码") {
-                    editing = true
-                }
-                .buttonStyle(.bordered)
+    private func detailValue(for field: SecretCatalogFieldValue) -> some View {
+        let presentation = CatalogFieldPresentation.resolve(
+            field: field,
+            revealedPlaintext: revealedPlaintexts[field.key]
+        )
+        Text(presentation.displayText)
+            .font(presentation.isSecret ? .system(.body, design: .monospaced) : .body)
+            .foregroundStyle(
+                presentation.isSecret
+                    ? (presentation.isRevealed ? .orange : .orange)
+                    : (presentation.displayText == "未填写" || presentation.displayText == "已隐藏" ? .secondary : .primary)
+            )
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func detailAction(for field: SecretCatalogFieldValue) -> some View {
+        let presentation = CatalogFieldPresentation.resolve(
+            field: field,
+            revealedPlaintext: revealedPlaintexts[field.key]
+        )
+        Group {
+            switch presentation.actionKind {
+            case .copy:
+                Button("复制") { copy(presentation.displayText) }
+                    .buttonStyle(.bordered)
+                    .disabled(!presentation.allowsCopy)
+            case .reveal:
+                Button(revealingKeys.contains(field.key) ? "验证中…" : "解密") { reveal(field) }
+                    .buttonStyle(.bordered)
+                    .disabled(revealCatalogField == nil || revealingKeys.contains(field.key))
+            case .fillSecret:
+                Button("填写密码") { editing = true }
+                    .buttonStyle(.bordered)
             }
         }
+        .id("\(field.key)-\(presentation.actionKind.rawValue)")
+        .transition(
+            reduceMotion
+                ? .opacity
+                : .opacity.combined(with: .scale(scale: 0.98))
+        )
+        .animation(
+            reduceMotion ? .easeInOut(duration: 0.12) : .easeInOut(duration: 0.16),
+            value: presentation.actionKind
+        )
     }
 
     private func reveal(_ field: SecretCatalogFieldValue) {
         guard field.secretRef != nil, let revealCatalogField else { return }
         let fieldKey = field.key
+        revealTasks[fieldKey]?.cancel()
+        revealExpiryTasks[fieldKey]?.cancel()
+        revealExpiryTasks.removeValue(forKey: fieldKey)
+        let generation = UUID()
+        revealGenerations[fieldKey] = generation
+        revealedPlaintexts.removeValue(forKey: fieldKey)
         revealingKeys.insert(fieldKey)
         revealError = nil
-        Task { @MainActor in
-            defer { revealingKeys.remove(fieldKey) }
+
+        let task: Task<Void, Never> = Task { @MainActor in
+            defer {
+                if revealGenerations[fieldKey] == generation {
+                    revealTasks.removeValue(forKey: fieldKey)
+                    revealingKeys.remove(fieldKey)
+                }
+            }
             do {
                 let plaintext = try await revealCatalogField(entry.id, fieldKey)
-                guard showingDetails, scenePhase == .active else { return }
-                revealedPlaintexts[fieldKey] = plaintext
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(45))
-                    guard !Task.isCancelled, showingDetails, scenePhase == .active else { return }
-                    revealedPlaintexts.removeValue(forKey: fieldKey)
+                guard revealGenerations[fieldKey] == generation,
+                      showingDetails,
+                      scenePhase == .active
+                else { return }
+
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                    revealedPlaintexts[fieldKey] = plaintext
                 }
+
+                let expiryTask: Task<Void, Never> = Task { @MainActor in
+                    do {
+                        try await Task.sleep(for: .seconds(45))
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        return
+                    }
+
+                    guard !Task.isCancelled,
+                          revealGenerations[fieldKey] == generation,
+                          showingDetails,
+                          scenePhase == .active
+                    else { return }
+
+                    revealedPlaintexts.removeValue(forKey: fieldKey)
+                    revealExpiryTasks.removeValue(forKey: fieldKey)
+                }
+
+                guard revealGenerations[fieldKey] == generation else {
+                    expiryTask.cancel()
+                    return
+                }
+                revealExpiryTasks[fieldKey] = expiryTask
             } catch is CancellationError {
                 return
             } catch {
+                guard revealGenerations[fieldKey] == generation,
+                      showingDetails,
+                      scenePhase == .active
+                else { return }
                 revealError = "字段解密失败或本机授权未完成"
             }
         }
+        revealTasks[fieldKey] = task
     }
 
     private func clearSensitiveOutput() {
+        revealTasks.values.forEach { $0.cancel() }
+        revealExpiryTasks.values.forEach { $0.cancel() }
+        revealTasks.removeAll()
+        revealExpiryTasks.removeAll()
+        revealGenerations.removeAll()
         revealedPlaintexts.removeAll()
         revealingKeys.removeAll()
         revealError = nil
+    }
+
+    private func copy(_ value: String) {
+        guard !value.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private var editorBody: some View {
@@ -2414,77 +3309,90 @@ private struct SensitiveCatalogEntryRow: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
 
             HStack {
-                Text("字段")
-                    .font(.headline)
-                Spacer()
-                Button("新增自定义字段") {
-                    var number = draftFields.count + 1
-                    var key = "field\(number)"
-                    while draftFields.contains(where: { $0.key == key }) {
-                        number += 1
-                        key = "field\(number)"
+                if fieldSelection.isSelecting {
+                    Text("已选 \(fieldSelection.selectedIDs.count) 项")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(fieldSelection.selectedIDs.count == draftFields.count ? "取消全选" : "全选") {
+                        if fieldSelection.selectedIDs.count == draftFields.count {
+                            fieldSelection.clear()
+                        } else {
+                            fieldSelection.selectAll(draftFields.map(\.selectionID))
+                        }
                     }
-                    draftFields.append(SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
+                    .buttonStyle(.plain)
+                    Button("删除所选", role: .destructive) {
+                        deleteSelectedFields()
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(fieldSelection.selectedIDs.isEmpty)
+                    Button("完成") {
+                        fieldSelection.finish()
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text("字段")
+                        .font(.headline)
+                    Spacer()
+                    Button("新增自定义字段") {
+                        var number = draftFields.count + 1
+                        var key = "field\(number)"
+                        while draftFields.contains(where: { $0.field.key == key }) {
+                            number += 1
+                            key = "field\(number)"
+                        }
+                        draftFields.append(CatalogFieldDraft.newField(key: key))
+                    }
+                    .buttonStyle(.bordered)
+                    Button("批量编辑") {
+                        fieldSelection.begin()
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(draftFields.isEmpty)
                 }
-                .buttonStyle(.bordered)
             }
 
-            ForEach(draftFields, id: \.key) { field in
+            ForEach($draftFields) { $draft in
+                let draftID = draft.id
+                let selectionID = draft.selectionID
                 SensitiveCatalogFieldEditorRow(
-                    field: field,
-                    secretInput: Binding(
-                        get: { pendingSecretInputs[field.key] ?? "" },
-                        set: { value in
-                            if value.isEmpty {
-                                pendingSecretInputs.removeValue(forKey: field.key)
-                            } else {
-                                pendingSecretInputs[field.key] = value
-                            }
-                        }
-                    ),
+                    draft: $draft,
+                    isSelecting: fieldSelection.isSelecting,
+                    isSelected: fieldSelection.selectedIDs.contains(selectionID),
+                    toggleSelection: { fieldSelection.toggle(selectionID) },
                     replaceSecret: replaceCatalogSecret,
                     entryID: entry.id,
                     onReplacementSuccess: { newReference in
-                        pendingSecretInputs.removeValue(forKey: field.key)
-                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
-                        let currentField = draftFields[currentIndex]
-                        draftFields[currentIndex] = SecretCatalogFieldValue(
-                            key: currentField.key,
-                            label: currentField.label,
-                            type: currentField.type,
-                            agentVisible: currentField.agentVisible,
-                            searchable: currentField.searchable,
+                        let current = $draft.wrappedValue.field
+                        $draft.wrappedValue.secretInput = ""
+                        $draft.wrappedValue.field = SecretCatalogFieldValue(
+                            key: current.key,
+                            label: current.label,
+                            type: current.type,
+                            agentVisible: current.agentVisible,
+                            searchable: current.searchable,
                             value: nil,
                             secretRef: newReference
                         )
                         editorError = nil
                     },
-                    onUpdate: { updatedField in
-                        if updatedField.key != field.key,
-                           let pending = pendingSecretInputs.removeValue(forKey: field.key) {
-                            pendingSecretInputs[updatedField.key] = pending
-                        }
-                        guard updatedField.key == field.key || !draftFields.contains(where: { $0.key == updatedField.key }) else {
-                            editorError = "字段 key 已存在，请使用唯一名称"
-                            return
-                        }
-                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
-                        draftFields[currentIndex] = updatedField
-                    },
                     onDelete: {
-                        pendingSecretInputs.removeValue(forKey: field.key)
-                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }) else { return }
-                        draftFields.remove(at: currentIndex)
+                        deleteField(withID: draftID)
                     },
                     onMoveUp: {
-                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }), currentIndex > 0 else { return }
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.id == draftID }), currentIndex > 0 else { return }
                         draftFields.swapAt(currentIndex, currentIndex - 1)
                     },
                     onMoveDown: {
-                        guard let currentIndex = draftFields.firstIndex(where: { $0.key == field.key }), currentIndex + 1 < draftFields.count else { return }
+                        guard let currentIndex = draftFields.firstIndex(where: { $0.id == draftID }), currentIndex + 1 < draftFields.count else { return }
                         draftFields.swapAt(currentIndex, currentIndex + 1)
                     }
                 )
+            }
+
+            .onChange(of: draftFields.map(\.selectionID)) { _, ids in
+                fieldSelection.retainVisibleIDs(ids)
             }
 
             if let editorError {
@@ -2492,18 +3400,23 @@ private struct SensitiveCatalogEntryRow: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            HStack {
-                Spacer()
-                Button(isSaving ? "保存中…" : "保存条目") {
-                    saveEntry()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSaving || commitEntryEdit == nil)
-            }
         }
     }
 
+    private func deleteSelectedFields() {
+        let ids = fieldSelection.selectedIDs
+        guard !ids.isEmpty else { return }
+        draftFields.removeAll { ids.contains($0.selectionID) }
+        fieldSelection.finish()
+    }
+
+    private func deleteField(withID id: UUID) {
+        draftFields.removeAll { $0.id == id }
+    }
+
     private func saveEntry() {
+        guard !isSaving else { return }
+
         let title = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
             editorError = "条目标题不能为空"
@@ -2513,6 +3426,12 @@ private struct SensitiveCatalogEntryRow: View {
             editorError = "服务地址格式应为 type|host|port"
             return
         }
+        let fieldDraftSnapshot = draftFields
+        let fields = fieldDraftSnapshot.map(\.field)
+        if let fieldError = fields.compactMap(CatalogFieldDraftValidation.message(for:)).first {
+            editorError = fieldError
+            return
+        }
         let updated = SecretCatalogEntry(
             id: entry.id,
             indexId: entry.indexId,
@@ -2520,7 +3439,7 @@ private struct SensitiveCatalogEntryRow: View {
             type: entry.type,
             aliases: Self.csv(draftAliases),
             endpoints: endpoints,
-            fields: draftFields,
+            fields: fields,
             notes: draftNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftNotes,
             tags: Self.csv(draftTags),
             schema: entry.schema
@@ -2534,23 +3453,30 @@ private struct SensitiveCatalogEntryRow: View {
             editorError = "字段数据无效，请检查字段 key、类型和值"
             return
         }
-        Task {
-            isSaving = true
-            let secretInputs = draftFields.compactMap { field -> CatalogSecretInput? in
-                guard field.type.isSecret,
-                      field.secretRef == nil,
-                      let plaintext = pendingSecretInputs[field.key],
-                      !plaintext.isEmpty
-                else { return nil }
-                return CatalogSecretInput(key: field.key, label: field.label, plaintext: plaintext)
-            }
-            let result = await commitEntryEdit?(updated, secretInputs)
+
+        let secretInputs = fieldDraftSnapshot.compactMap { draft -> CatalogSecretInput? in
+            guard draft.field.type.isSecret,
+                  draft.field.secretRef == nil,
+                  !draft.secretInput.isEmpty
+            else { return nil }
+            return CatalogSecretInput(
+                key: draft.field.key,
+                label: draft.field.label,
+                plaintext: draft.secretInput
+            )
+        }
+        let commit = commitEntryEdit
+        isSaving = true
+        editorError = nil
+
+        Task { @MainActor in
+            let result = await commit?(updated, secretInputs)
             isSaving = false
             switch result {
             case .success:
                 editing = false
                 editorError = nil
-                pendingSecretInputs.removeAll()
+                draftFields = CatalogFieldDraft.make(from: updated.fields)
             case .failure(let error):
                 editorError = error.displayText
             case nil:
@@ -2568,20 +3494,23 @@ private struct SensitiveCatalogEntryRow: View {
         draftTags = value.tags.joined(separator: ", ")
         draftEndpoints = value.endpoints.map(Self.endpointLine).joined(separator: "\n")
         draftNotes = value.notes ?? ""
-        draftFields = value.fields
-        pendingSecretInputs.removeAll()
+        draftFields = CatalogFieldDraft.make(from: value.fields)
+        fieldSelection.finish()
     }
 
-    private func displayValue(_ field: SecretCatalogFieldValue) -> String {
-        if field.type.isSecret { return field.secretRef ?? "未绑定（保存时设置）" }
-        guard field.agentVisible else { return "已隐藏" }
-        guard let value = field.value else { return "未填写" }
-        switch value {
-        case .string(let value): return value
-        case .number(let value): return String(value)
-        case .boolean(let value): return value ? "是" : "否"
-        case .list(let value): return value.joined(separator: ", ")
+    private func cancelEditing() {
+        if editing {
+            load(entry)
         }
+        editing = false
+        editorError = nil
+        clearSensitiveOutput()
+    }
+
+    private func closeDetails() {
+        guard !isSaving else { return }
+        cancelEditing()
+        showingDetails = false
     }
 
     private static func csv(_ value: String) -> [String] {
@@ -2612,162 +3541,117 @@ private struct SensitiveCatalogEntryRow: View {
 }
 
 private struct SensitiveCatalogFieldEditorRow: View {
-    let field: SecretCatalogFieldValue
-    @Binding var secretInput: String
+    @Binding var draft: CatalogFieldDraft
+    let isSelecting: Bool
+    let isSelected: Bool
+    let toggleSelection: () -> Void
     let replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?
     let entryID: String
     let onReplacementSuccess: (String) -> Void
-    let onUpdate: (SecretCatalogFieldValue) -> Void
     let onDelete: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
 
-    @State private var draftKey: String
-    @State private var draftLabel: String
-    @State private var draftType: SecretCatalogFieldType
-    @State private var draftText: String
-    @State private var draftList: String
-    @State private var draftBoolean: Bool
-    @State private var draftAgentVisible: Bool
-    @State private var draftSearchable: Bool
-    @State private var showsSecret = true
+    @State private var showsSecret = false
     @State private var isReplacingSecret = false
     @State private var isSubmittingReplacement = false
     @State private var errorMessage: String?
 
     init(
-        field: SecretCatalogFieldValue,
-        secretInput: Binding<String>,
+        draft: Binding<CatalogFieldDraft>,
+        isSelecting: Bool = false,
+        isSelected: Bool = false,
+        toggleSelection: @escaping () -> Void = {},
         replaceSecret: ((String, String, String, String) async -> CatalogMutationUIResult)?,
         entryID: String,
         onReplacementSuccess: @escaping (String) -> Void = { _ in },
-        onUpdate: @escaping (SecretCatalogFieldValue) -> Void,
         onDelete: @escaping () -> Void,
         onMoveUp: @escaping () -> Void,
         onMoveDown: @escaping () -> Void
     ) {
-        self.field = field
-        self._secretInput = secretInput
+        self._draft = draft
+        self.isSelecting = isSelecting
+        self.isSelected = isSelected
+        self.toggleSelection = toggleSelection
         self.replaceSecret = replaceSecret
         self.entryID = entryID
         self.onReplacementSuccess = onReplacementSuccess
-        self.onUpdate = onUpdate
         self.onDelete = onDelete
         self.onMoveUp = onMoveUp
         self.onMoveDown = onMoveDown
-        _draftKey = State(initialValue: field.key)
-        _draftLabel = State(initialValue: field.label)
-        _draftType = State(initialValue: field.type)
-        _draftText = State(initialValue: Self.stringValue(field.value))
-        _draftList = State(initialValue: Self.listValue(field.value))
-        _draftBoolean = State(initialValue: Self.boolValue(field.value))
-        _draftAgentVisible = State(initialValue: field.agentVisible)
-        _draftSearchable = State(initialValue: field.searchable)
+    }
+
+    private var field: SecretCatalogFieldValue {
+        get { draft.field }
+        nonmutating set { draft.field = newValue }
+    }
+
+    private var secretInput: String {
+        get { draft.secretInput }
+        nonmutating set { draft.secretInput = newValue }
+    }
+
+    private var hasUnsavedKeyChange: Bool {
+        guard let originalKey = draft.originalKey else { return false }
+        return field.key != originalKey
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                TextField("key", text: $draftKey)
-                    .textFieldStyle(.roundedBorder)
-                TextField("字段标签", text: $draftLabel)
-                    .textFieldStyle(.roundedBorder)
-                Picker("类型", selection: Binding(
-                    get: { draftType },
-                    set: { value in
-                        if value != .secret { secretInput = "" }
-                        draftType = value
+            if isSelecting {
+                Button(action: toggleSelection) {
+                    HStack(spacing: 8) {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                        Text(field.label)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
                     }
-                )) {
-                    ForEach(SecretCatalogFieldType.allCases, id: \.self) { type in
-                        Text(Self.typeName(type)).tag(type)
-                    }
+                    .contentShape(Rectangle())
                 }
-                .frame(width: 135)
-                Button(action: onMoveUp) { Image(systemName: "chevron.up") }
-                    .buttonStyle(.borderless)
-                Button(action: onMoveDown) { Image(systemName: "chevron.down") }
-                    .buttonStyle(.borderless)
-                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-            }
-
-            if draftType.isSecret {
-                HStack(spacing: 8) {
-                    if let secretRef = field.secretRef {
-                        Text(secretRef)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                        if isReplacingSecret {
-                            if showsSecret {
-                                TextField("输入新密码", text: $secretInput)
-                                    .textFieldStyle(.roundedBorder)
-                            } else {
-                                SecureField("输入新密码", text: $secretInput)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            Button(showsSecret ? "隐藏" : "显示") {
-                                showsSecret.toggle()
-                            }
-                            .buttonStyle(.borderless)
-                            Button("取消") {
-                                secretInput = ""
-                                isReplacingSecret = false
-                                errorMessage = nil
-                            }
-                            .buttonStyle(.borderless)
-                            Button(isSubmittingReplacement ? "提交中…" : "提交替换") {
-                                submitSecretReplacement()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil)
-                        } else {
-                            Text("已绑定")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                            Button("替换密码") {
-                                secretInput = ""
-                                errorMessage = nil
-                                isReplacingSecret = true
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(replaceSecret == nil)
-                        }
-                    } else {
-                        if showsSecret {
-                            TextField("输入密码", text: $secretInput)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("输入密码", text: $secretInput)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        Button(showsSecret ? "隐藏" : "显示") {
-                            showsSecret.toggle()
-                        }
-                        .buttonStyle(.borderless)
-                        Text("应用字段后，保存条目时一次提交；密码不会写入 Markdown")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(field.label)
+                .accessibilityValue(isSelected ? "已选中" : "未选中")
             } else {
-                valueEditor
+                HStack(spacing: 7) {
+                    TextField("key", text: keyBinding)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("字段标签", text: labelBinding)
+                        .textFieldStyle(.roundedBorder)
+                    Picker("类型", selection: typeBinding) {
+                        ForEach(SecretCatalogFieldType.allCases, id: \.self) { type in
+                            Text(Self.typeName(type)).tag(type)
+                        }
+                    }
+                    .frame(width: 135)
+                    Button(action: onMoveUp) { Image(systemName: "chevron.up") }
+                        .buttonStyle(.borderless)
+                    Button(action: onMoveDown) { Image(systemName: "chevron.down") }
+                        .buttonStyle(.borderless)
+                    Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                }
+
+                if field.type.isSecret {
+                    secretEditor
+                } else {
+                    valueEditor
+                }
+
+                HStack(spacing: 12) {
+                    Toggle("智能体可查看", isOn: agentVisibleBinding)
+                    Toggle("可搜索", isOn: searchableBinding)
+                    Spacer()
+                }
             }
 
-            HStack(spacing: 12) {
-                Toggle("智能体可查看", isOn: $draftAgentVisible)
-                Toggle("可搜索", isOn: $draftSearchable)
-                Spacer()
-                Button("应用字段") {
-                    applyField()
-                }
-                .buttonStyle(.bordered)
-            }
             if let errorMessage {
                 Text(errorMessage)
                     .font(.caption2)
                     .foregroundStyle(.orange)
+                    .lineLimit(2)
             }
         }
         .padding(9)
@@ -2779,87 +3663,253 @@ private struct SensitiveCatalogFieldEditorRow: View {
     }
 
     @ViewBuilder
+    private var secretEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if field.secretRef != nil {
+                    Text("已绑定密文")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    if isReplacingSecret {
+                        secretInputEditor(prompt: "输入新密码")
+                        Button(showsSecret ? "隐藏" : "显示") {
+                            showsSecret.toggle()
+                        }
+                        .buttonStyle(.borderless)
+                        Button("取消") {
+                            secretInput = ""
+                            isReplacingSecret = false
+                            errorMessage = nil
+                        }
+                        .buttonStyle(.borderless)
+                        Button(isSubmittingReplacement ? "提交中…" : "提交替换") {
+                            submitSecretReplacement()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil || hasUnsavedKeyChange)
+                    } else {
+                        Text("已绑定")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Button("替换密码") {
+                            secretInput = ""
+                            errorMessage = nil
+                            isReplacingSecret = true
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(replaceSecret == nil || hasUnsavedKeyChange)
+                    }
+                } else {
+                    secretInputEditor(prompt: "输入密码")
+                    Button(showsSecret ? "隐藏" : "显示") {
+                        showsSecret.toggle()
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            if hasUnsavedKeyChange {
+                Text("字段 key 已修改，请先保存条目，再替换密码。")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func secretInputEditor(prompt: String) -> some View {
+        if showsSecret {
+            TextField(text: $draft.secretInput, prompt: Text(prompt).foregroundStyle(.orange)) {
+                Text("密码")
+            }
+            .textFieldStyle(.roundedBorder)
+        } else {
+            SecureField(text: $draft.secretInput, prompt: Text(prompt).foregroundStyle(.orange)) {
+                Text("密码")
+            }
+            .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    @ViewBuilder
     private var valueEditor: some View {
-        switch draftType {
+        switch field.type {
         case .multiline:
-            TextEditor(text: $draftText)
+            TextEditor(text: textBinding)
                 .frame(minHeight: 50, maxHeight: 90)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
         case .boolean:
-            Toggle("值", isOn: $draftBoolean)
+            Toggle("值", isOn: booleanBinding)
         case .list:
-            TextField("列表值（逗号分隔）", text: $draftList)
+            TextField("列表值（逗号分隔）", text: listBinding)
                 .textFieldStyle(.roundedBorder)
         default:
-            TextField(Self.typeName(draftType), text: $draftText)
+            TextField(Self.typeName(field.type), text: textBinding)
                 .textFieldStyle(.roundedBorder)
         }
     }
 
-    private func applyField() {
-        let key = draftKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let label = draftLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !label.isEmpty else {
-            errorMessage = "key 和字段标签不能为空"
-            return
-        }
-        let value: SecretCatalogValue?
-        switch draftType {
-        case .boolean:
-            value = .boolean(draftBoolean)
-        case .list:
-            value = .list(draftList.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
-        case .port:
-            if draftText.isEmpty {
-                value = nil
-            } else {
-                guard let port = Int(draftText), (0...65_535).contains(port) else {
-                    errorMessage = "端口必须是 0 到 65535 的数字"
-                    return
+    private var keyBinding: Binding<String> {
+        Binding(
+            get: { field.key },
+            set: { newKey in
+                field = updatedField(from: field, key: newKey)
+            }
+        )
+    }
+
+    private var labelBinding: Binding<String> {
+        Binding(
+            get: { field.label },
+            set: { field = updatedField(from: field, label: $0) }
+        )
+    }
+
+    private var typeBinding: Binding<SecretCatalogFieldType> {
+        Binding(
+            get: { field.type },
+            set: { newType in
+                if newType != .secret { secretInput = "" }
+                let current = field
+                field = updatedField(
+                    from: current,
+                    type: newType,
+                    value: newType.isSecret ? nil : current.value,
+                    setValue: true,
+                    secretRef: newType.isSecret ? current.secretRef : nil,
+                    setSecretRef: true
+                )
+            }
+        )
+    }
+
+    private var agentVisibleBinding: Binding<Bool> {
+        Binding(
+            get: { field.agentVisible },
+            set: { field = updatedField(from: field, agentVisible: $0) }
+        )
+    }
+
+    private var searchableBinding: Binding<Bool> {
+        Binding(
+            get: { field.searchable },
+            set: { field = updatedField(from: field, searchable: $0) }
+        )
+    }
+
+    private var booleanBinding: Binding<Bool> {
+        Binding(
+            get: {
+                guard case .boolean(let value) = field.value else { return false }
+                return value
+            },
+            set: { field = updatedField(from: field, value: .boolean($0), setValue: true) }
+        )
+    }
+
+    private var listBinding: Binding<String> {
+        Binding(
+            get: {
+                guard case .list(let values) = field.value else { return "" }
+                return values.joined(separator: ", ")
+            },
+            set: { rawValue in
+                let values = rawValue
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                field = updatedField(
+                    from: field,
+                    value: values.isEmpty ? nil : .list(values),
+                    setValue: true
+                )
+                errorMessage = nil
+            }
+        )
+    }
+
+    private var textBinding: Binding<String> {
+        Binding(
+            get: {
+                guard let value = field.value else { return "" }
+                switch value {
+                case .string(let value): return value
+                case .number(let value): return String(value)
+                case .boolean, .list: return ""
                 }
-                value = .number(Double(port))
+            },
+            set: { rawValue in
+                switch field.type {
+                case .port:
+                    guard rawValue.isEmpty || (Int(rawValue).map { (0...65_535).contains($0) } ?? false) else {
+                        errorMessage = "端口必须是 0 到 65535 的数字"
+                        return
+                    }
+                    field = updatedField(
+                        from: field,
+                        value: rawValue.isEmpty ? nil : .number(Double(Int(rawValue) ?? 0)),
+                        setValue: true
+                    )
+                case .number:
+                    guard rawValue.isEmpty || Double(rawValue) != nil else {
+                        errorMessage = "数字字段格式不正确"
+                        return
+                    }
+                    field = updatedField(
+                        from: field,
+                        value: rawValue.isEmpty ? nil : .number(Double(rawValue) ?? 0),
+                        setValue: true
+                    )
+                default:
+                    field = updatedField(
+                        from: field,
+                        value: rawValue.isEmpty ? nil : .string(rawValue),
+                        setValue: true
+                    )
+                }
+                errorMessage = nil
             }
-        case .number:
-            guard draftText.isEmpty || Double(draftText) != nil else {
-                errorMessage = "数字字段格式不正确"
-                return
-            }
-            value = draftText.isEmpty ? nil : .number(Double(draftText) ?? 0)
-        case .url:
-            guard draftText.isEmpty || Self.isValidURL(draftText) else {
-                errorMessage = "URL 格式不正确"
-                return
-            }
-            value = draftText.isEmpty ? nil : .string(draftText)
-        case .date:
-            guard draftText.isEmpty || Self.isValidDate(draftText) else {
-                errorMessage = "日期应为 YYYY-MM-DD 或 ISO 8601 格式"
-                return
-            }
-            value = draftText.isEmpty ? nil : .string(draftText)
-        case .secret:
-            value = nil
-        default:
-            value = draftText.isEmpty ? nil : .string(draftText)
-        }
-        onUpdate(SecretCatalogFieldValue(
-            key: key,
-            label: label,
-            type: draftType,
-            agentVisible: draftAgentVisible,
-            searchable: draftSearchable,
-            value: draftType.isSecret ? nil : value,
-            secretRef: draftType.isSecret ? field.secretRef : nil
-        ))
-        errorMessage = nil
+        )
+    }
+
+    private func updatedField(
+        from current: SecretCatalogFieldValue,
+        key: String? = nil,
+        label: String? = nil,
+        type: SecretCatalogFieldType? = nil,
+        agentVisible: Bool? = nil,
+        searchable: Bool? = nil,
+        value: SecretCatalogValue? = nil,
+        setValue: Bool = false,
+        secretRef: String? = nil,
+        setSecretRef: Bool = false
+    ) -> SecretCatalogFieldValue {
+        let resolvedType = type ?? current.type
+        let resolvedValue = setValue ? value : current.value
+        let resolvedSecretRef = setSecretRef ? secretRef : current.secretRef
+        return SecretCatalogFieldValue(
+            key: key ?? current.key,
+            label: label ?? current.label,
+            type: resolvedType,
+            agentVisible: agentVisible ?? current.agentVisible,
+            searchable: searchable ?? current.searchable,
+            value: resolvedType.isSecret ? nil : resolvedValue,
+            secretRef: resolvedType.isSecret ? resolvedSecretRef : nil
+        )
     }
 
     private func submitSecretReplacement() {
-        guard let replaceSecret, !secretInput.isEmpty else { return }
+        guard let replaceSecret,
+              !secretInput.isEmpty,
+              !hasUnsavedKeyChange
+        else { return }
         let plaintext = secretInput
+        let key = field.key
+        let label = field.label
         isSubmittingReplacement = true
         Task {
-            let result = await replaceSecret(entryID, field.key, field.label, plaintext)
+            let result = await replaceSecret(entryID, key, label, plaintext)
             secretInput = ""
             isSubmittingReplacement = false
             switch result {
@@ -2875,46 +3925,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
                 errorMessage = error.displayText
             }
         }
-    }
-
-    private static func stringValue(_ value: SecretCatalogValue?) -> String {
-        guard let value else { return "" }
-        if case .string(let value) = value { return value }
-        if case .number(let value) = value { return String(value) }
-        return ""
-    }
-
-    private static func listValue(_ value: SecretCatalogValue?) -> String {
-        if case .list(let value) = value { return value.joined(separator: ", ") }
-        return ""
-    }
-
-    private static func boolValue(_ value: SecretCatalogValue?) -> Bool {
-        if case .boolean(let value) = value { return value }
-        return false
-    }
-
-    private static func isValidURL(_ value: String) -> Bool {
-        guard let url = URL(string: value),
-              let scheme = url.scheme,
-              !scheme.isEmpty,
-              let host = url.host,
-              !host.isEmpty
-        else {
-            return false
-        }
-        return true
-    }
-
-    private static func isValidDate(_ value: String) -> Bool {
-        if ISO8601DateFormatter().date(from: value) != nil {
-            return true
-        }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: value) != nil
     }
 
     private static func typeName(_ type: SecretCatalogFieldType) -> String {
@@ -3164,80 +4174,80 @@ private struct SecurityBoundaryPanel: View {
     }
 }
 
-private struct AgentAutomationAuditCard: View {
+struct AgentAutomationAuditCard: View {
     let entries: [CatalogSecurityAuditEntry]
     let errorMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center) {
-                Label("智能体自动化", systemImage: "sparkles.rectangle.stack")
-                    .font(.title3.weight(.semibold))
-                Spacer()
-                Text("最近 \(entries.count) 条")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-
-            if entries.isEmpty {
-                HStack(spacing: 10) {
-                    Image(systemName: "clock.badge.questionmark")
-                        .foregroundStyle(.secondary)
-                    Text("暂无活动")
-                        .font(.body)
+        WorkbenchPanelSurface {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center) {
+                    Label("智能体自动化", systemImage: "sparkles.rectangle.stack")
+                        .font(.title3.weight(.semibold))
+                    Spacer()
+                    Text(summaryText)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 10) {
-                        ForEach(entries) { entry in
-                            HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: iconName(for: entry.operation))
-                                .foregroundStyle(.blue)
-                                .frame(width: 24)
+                .fixedSize(horizontal: false, vertical: true)
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(entry.operation.displayName)
-                                        .font(.headline)
-                                    Spacer()
-                                    Text(entry.result.displayName)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(entry.target)
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                Text("\(entry.source.displayName) · \(entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    if entries.isEmpty, errorMessage == nil {
+                        VStack {
+                            Spacer(minLength: 24)
+                            Label("暂无活动", systemImage: "clock.badge.questionmark")
+                                .foregroundStyle(.secondary)
+                            Spacer()
                         }
-                            .padding(14)
-                            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                    } else if entries.isEmpty {
+                        Label("最近活动暂不可用", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 100)
+                    } else {
+                        VStack(spacing: 10) {
+                            ForEach(entries) { entry in
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: iconName(for: entry.operation)).foregroundStyle(.blue).frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack {
+                                            Text(entry.operation.displayName).font(.headline)
+                                            Spacer()
+                                            Text(entry.result.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                        }
+                                        Text(entry.target).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                                        Text("\(entry.source.displayName) · \(entry.authorizationOutcome.displayName) · \(entry.referenceCount) 个引用 · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
+                                            .font(.caption).foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .padding(14)
+                                .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
                         }
                     }
                 }
                 .scrollIndicators(.automatic)
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .layoutPriority(1)
             }
+            .padding(20)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var summaryText: String {
+        if !entries.isEmpty { return "最近 \(entries.count) 条" }
+        return errorMessage == nil ? "暂无记录" : "读取异常"
     }
 
     private func iconName(for operation: AuditOperation) -> String {

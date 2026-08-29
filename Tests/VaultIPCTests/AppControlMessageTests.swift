@@ -17,9 +17,9 @@ private struct ControlService: AppControlServicing {
         nil
     }
 
-    func catalogRecentAuditEntries(limit: Int) async throws -> [CatalogSecurityAuditEntry] {
+    func catalogRecentAuditEntries(limit: Int) async throws -> CatalogRecentAuditResult {
         _ = limit
-        return []
+        return CatalogRecentAuditResult(entries: [])
     }
 
     func catalogAuditHealth() async -> String? { nil }
@@ -233,4 +233,40 @@ private struct ControlService: AppControlServicing {
     let authenticator = AppControlPeerAuthenticator(validator: { $0 == 123 })
     #expect(authenticator.isAuthorized(fileDescriptor: 123))
     #expect(!authenticator.isAuthorized(fileDescriptor: 124))
+}
+
+@Test func recentAuditResponseRoundTripsSafeReadDiagnostics() throws {
+    let result = CatalogRecentAuditResult(
+        entries: [CatalogSecurityAuditEntry(
+            id: UUID(),
+            timestamp: Date(timeIntervalSince1970: 1_900_000_600),
+            source: .agent,
+            operation: .catalogMutation,
+            authorizationOutcome: .notRequired,
+            result: .completed,
+            target: "catalog",
+            referenceCount: 0
+        )],
+        diagnostics: AuditReadDiagnostics(
+            recordDecodeFailureCount: 1,
+            authenticationFailureCount: 2,
+            eventDecodeFailureCount: 3,
+            unsupportedMetadataVersionCount: 4,
+            legacyCompatibilityFailureCount: 5
+        )
+    )
+    let response = AppControlResponse.catalogRecentAuditEntries(result)
+    let decoded = try JSONDecoder().decode(
+        AppControlResponse.self,
+        from: JSONEncoder().encode(response)
+    )
+
+    #expect(decoded == response)
+}
+
+@Test func legacyRecentAuditResponseDefaultsMissingDiagnosticsToNone() throws {
+    let legacyResponse = Data(#"{"type":"catalogRecentAuditEntries","entries":[]}"#.utf8)
+    let decoded = try JSONDecoder().decode(AppControlResponse.self, from: legacyResponse)
+
+    #expect(decoded == .catalogRecentAuditEntries(CatalogRecentAuditResult(entries: [])))
 }

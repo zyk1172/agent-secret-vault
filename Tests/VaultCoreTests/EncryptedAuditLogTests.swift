@@ -116,7 +116,80 @@ import Testing
     #expect((try await log.recent(limit: 101, masterKey: masterKey)).count == 3)
 }
 
-@Test func encryptedAuditLogRecentRejectsTamperedRoutingMetadata() async throws {
+@Test func encryptedAuditLogRecentCreatesMissingDirectoryAndReturnsEmpty() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-empty-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    #expect(!FileManager.default.fileExists(atPath: directory.path))
+
+    let log = EncryptedAuditLog(
+        directoryURL: directory,
+        auditKeyProvider: { SymmetricKey(data: Data(repeating: 0xD3, count: 32)) }
+    )
+    let events = try await log.recent()
+
+    #expect(events.isEmpty)
+    #expect(FileManager.default.fileExists(atPath: directory.path))
+
+    let result = try await log.recentWithDiagnostics()
+    #expect(result.events.isEmpty)
+    #expect(result.diagnostics == .none)
+}
+
+@Test func encryptedAuditLogRecentKeepsHealthyRecordsWhenOneRecordIsMalformed() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-malformed-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let log = EncryptedAuditLog(directoryURL: directory)
+    let masterKey = SymmetricKey(data: Data(repeating: 0xD4, count: 32))
+    let healthyEvents = (0..<99).map { index in
+        makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_400 + Double(index)))
+    }
+
+    for event in healthyEvents {
+        try await log.append(event, masterKey: masterKey)
+    }
+    try Data("{\"truncated\":".utf8).write(
+        to: directory.appending(path: "broken.audit.json"),
+        options: [.atomic]
+    )
+
+    let result = try await log.recentWithDiagnostics(limit: 100, masterKey: masterKey)
+
+    #expect(result.events == Array(healthyEvents.reversed()))
+    #expect(result.diagnostics.unreadableRecordCount == 1)
+    #expect(result.diagnostics.integrityFailureCount == 0)
+}
+
+@Test func encryptedAuditLogRecentReadsOneHundredHealthyRecordsWithoutDiagnostics() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-healthy-100-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let auditKey = SymmetricKey(data: Data(repeating: 0xD6, count: 32))
+    let log = EncryptedAuditLog(
+        directoryURL: directory,
+        auditKeyProvider: { auditKey }
+    )
+    let events = (0..<100).map { index in
+        makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_001_000 + Double(index)))
+    }
+
+    for event in events {
+        try await log.append(event)
+    }
+
+    let result = try await log.recentWithDiagnostics(limit: 100)
+    #expect(result.events == Array(events.reversed()))
+    #expect(result.diagnostics == .none)
+}
+
+@Test func encryptedAuditLogRecentReportsTamperedRecordWithoutDroppingHealthyRecords() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: "audit-recent-tamper-\(UUID().uuidString)")
     defer {
@@ -126,6 +199,8 @@ import Testing
     let masterKey = SymmetricKey(data: Data(repeating: 0xD4, count: 32))
 
     try await log.append(makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_200)), masterKey: masterKey)
+    let healthy = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_201))
+    try await log.append(healthy, masterKey: masterKey)
     let auditFile = try #require(
         try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .first(where: { $0.pathExtension == "json" && $0.lastPathComponent != "audit-key.json" })
@@ -136,9 +211,153 @@ import Testing
     object["createdAt"] = 0
     try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: auditFile, options: [.atomic])
 
-    await #expect(throws: EncryptedAuditLogError.integrityFailed) {
-        try await log.recent(limit: 1, masterKey: masterKey)
+    let result = try await log.recentWithDiagnostics(limit: 100, masterKey: masterKey)
+
+    #expect(result.events.count == 1)
+    #expect(result.diagnostics.unreadableRecordCount == 0)
+    #expect(result.diagnostics.integrityFailureCount == 1)
+    #expect(result.diagnostics.eventDecodeFailureCount == 0)
+}
+
+@Test func encryptedAuditLogRecentClassifiesUnsupportedMetadataVersion() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-unsupported-version-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
     }
+    let auditKey = SymmetricKey(data: Data(repeating: 0xD7, count: 32))
+    let log = EncryptedAuditLog(
+        directoryURL: directory,
+        auditKeyProvider: { auditKey }
+    )
+    let healthy = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_700))
+    try await log.append(healthy)
+    let auditFile = try #require(
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first(where: { $0.lastPathComponent.hasSuffix(".audit.json") })
+    )
+    var object = try #require(
+        JSONSerialization.jsonObject(with: Data(contentsOf: auditFile)) as? [String: Any]
+    )
+    object["metadataVersion"] = 99
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        .write(to: auditFile, options: [.atomic])
+
+    let result = try await log.recentWithDiagnostics()
+    #expect(result.events.isEmpty)
+    #expect(result.diagnostics.recordDecodeFailureCount == 0)
+    #expect(result.diagnostics.unsupportedMetadataVersionCount == 1)
+    #expect(result.diagnostics.authenticationFailureCount == 0)
+}
+
+@Test func encryptedAuditLogRecentClassifiesLegacyPayloadDecodeFailure() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-legacy-decode-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let auditKey = SymmetricKey(data: Data(repeating: 0xD8, count: 32))
+    let log = EncryptedAuditLog(
+        directoryURL: directory,
+        auditKeyProvider: { auditKey }
+    )
+    try await log.append(makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_800)))
+    let legacyPayload = Data("not-an-audit-event".utf8)
+    let sealed = try AES.GCM.seal(
+        legacyPayload,
+        using: auditKey,
+        authenticating: Data("AgentSecretVault.AuditEvent.v1".utf8)
+    )
+    let legacy = LegacyAuditEventRecord(
+        id: "legacy-invalid-payload",
+        createdAt: Date(timeIntervalSince1970: 1_900_000_801),
+        ciphertext: sealed.ciphertext,
+        nonce: Data(sealed.nonce),
+        tag: sealed.tag
+    )
+    try JSONEncoder().encode(legacy).write(
+        to: directory.appending(path: "legacy-invalid-payload.audit.json"),
+        options: [.atomic]
+    )
+
+    let result = try await log.recentWithDiagnostics(limit: 100)
+    #expect(result.events.count == 1)
+    #expect(result.diagnostics.legacyCompatibilityFailureCount == 1)
+    #expect(result.diagnostics.authenticationFailureCount == 0)
+    #expect(result.diagnostics.eventDecodeFailureCount == 0)
+}
+
+@Test func encryptedAuditLogRecentClassifiesAuthenticatedCurrentPayloadDecodeFailure() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-current-decode-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let auditKey = SymmetricKey(data: Data(repeating: 0xD9, count: 32))
+    let log = EncryptedAuditLog(
+        directoryURL: directory,
+        auditKeyProvider: { auditKey }
+    )
+    let healthy = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_850))
+    try await log.append(healthy)
+    let auditFile = try #require(
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first(where: { $0.lastPathComponent.hasSuffix(".audit.json") })
+    )
+    var record = try JSONDecoder().decode(
+        CurrentAuditEventRecord.self,
+        from: Data(contentsOf: auditFile)
+    )
+    let sealed = try AES.GCM.seal(
+        Data("not-an-audit-event".utf8),
+        using: auditKey,
+        authenticating: authenticatedAuditAssociatedData(id: record.id, createdAt: record.createdAt)
+    )
+    record.ciphertext = sealed.ciphertext
+    record.nonce = Data(sealed.nonce)
+    record.tag = sealed.tag
+    try JSONEncoder().encode(record).write(to: auditFile, options: [.atomic])
+
+    let result = try await log.recentWithDiagnostics(limit: 100)
+    #expect(result.events.isEmpty)
+    #expect(result.diagnostics.eventDecodeFailureCount == 1)
+    #expect(result.diagnostics.authenticationFailureCount == 0)
+    #expect(result.diagnostics.legacyCompatibilityFailureCount == 0)
+}
+
+@Test func encryptedAuditLogRecentAuthenticatesBeforeApplyingTopN() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-top-n-integrity-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let clock = AuditTestClock(start: 1_700_000_000)
+    let log = EncryptedAuditLog(directoryURL: directory, now: { clock.now() })
+    let masterKey = SymmetricKey(data: Data(repeating: 0xD5, count: 32))
+    let first = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_500))
+    let second = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_501))
+
+    try await log.append(first, masterKey: masterKey)
+    try await log.append(second, masterKey: masterKey)
+    let auditFiles = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        .filter { $0.lastPathComponent.hasSuffix(".audit.json") }
+    let newestOuterRecord = try #require(
+        auditFiles
+            .map { (url: $0, createdAt: try persistedCreatedAt($0)) }
+            .max { $0.createdAt < $1.createdAt }?
+            .url
+    )
+    var object = try #require(
+        JSONSerialization.jsonObject(with: Data(contentsOf: newestOuterRecord)) as? [String: Any]
+    )
+    object["createdAt"] = 0
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        .write(to: newestOuterRecord, options: [.atomic])
+
+    let result = try await log.recentWithDiagnostics(limit: 1, masterKey: masterKey)
+
+    #expect(result.events == [first])
+    #expect(result.diagnostics.integrityFailureCount == 1)
 }
 
 @Test func encryptedAuditLogRecentKeepsLegacyRecordsReadable() async throws {
@@ -176,6 +395,67 @@ import Testing
     #expect(try await log.recent(limit: 1) == [event])
 }
 
+@Test func encryptedAuditLogRecentReadsLegacyAndCurrentRecordsTogether() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "audit-recent-legacy-current-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let auditKey = SymmetricKey(data: Data(repeating: 0xE6, count: 32))
+    let log = EncryptedAuditLog(
+        directoryURL: directory,
+        auditKeyProvider: { auditKey }
+    )
+    let legacyEvent = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_900))
+    let currentEvent = makeAuditEvent(timestamp: Date(timeIntervalSince1970: 1_900_000_901))
+    try await log.append(currentEvent)
+
+    let sealed = try AES.GCM.seal(
+        JSONEncoder().encode(legacyEvent),
+        using: auditKey,
+        authenticating: Data("AgentSecretVault.AuditEvent.v1".utf8)
+    )
+    let legacy = LegacyAuditEventRecord(
+        id: "legacy-mixed-record",
+        createdAt: Date(timeIntervalSince1970: 1_900_000_900),
+        ciphertext: sealed.ciphertext,
+        nonce: Data(sealed.nonce),
+        tag: sealed.tag
+    )
+    try JSONEncoder().encode(legacy).write(
+        to: directory.appending(path: "legacy-mixed-record.audit.json"),
+        options: [.atomic]
+    )
+
+    let result = try await log.recentWithDiagnostics(limit: 100)
+    #expect(result.events == [currentEvent, legacyEvent])
+    #expect(result.diagnostics == .none)
+}
+
+private final class AuditTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var next: TimeInterval
+
+    init(start: TimeInterval) {
+        next = start
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        defer { next += 1 }
+        return Date(timeIntervalSince1970: next)
+    }
+}
+
+private func persistedCreatedAt(_ url: URL) throws -> Date {
+    let object = try #require(
+        JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+    )
+    let value = try #require(object["createdAt"] as? NSNumber)
+    return Date(timeIntervalSinceReferenceDate: value.doubleValue)
+}
+
 private func makeAuditEvent(timestamp: Date) -> AuditEvent {
     AuditEvent(
         timestamp: timestamp,
@@ -196,6 +476,23 @@ private struct LegacyAuditEventRecord: Codable {
     let ciphertext: Data
     let nonce: Data
     let tag: Data
+}
+
+private struct CurrentAuditEventRecord: Codable {
+    let id: String
+    let createdAt: Date
+    let metadataVersion: Int
+    var ciphertext: Data
+    var nonce: Data
+    var tag: Data
+}
+
+private func authenticatedAuditAssociatedData(id: String, createdAt: Date) -> Data {
+    var data = Data("AgentSecretVault.AuditEvent.v2\n".utf8)
+    data.append(contentsOf: id.utf8)
+    data.append(0)
+    data.append(contentsOf: createdAt.timeIntervalSince1970.description.utf8)
+    return data
 }
 
 private func allFileBytes(under directory: URL) throws -> Data {
