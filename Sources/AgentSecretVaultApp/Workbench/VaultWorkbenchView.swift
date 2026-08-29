@@ -2825,6 +2825,9 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var showingDetails: Bool
     @State private var revealedPlaintexts: [String: String] = [:]
     @State private var revealingKeys: Set<String> = []
+    @State private var revealTasks: [String: Task<Void, Never>] = [:]
+    @State private var revealExpiryTasks: [String: Task<Void, Never>] = [:]
+    @State private var revealGenerations: [String: UUID] = [:]
     @State private var revealError: String?
     @State private var isHovering = false
     @State private var detailContentHeight: CGFloat = 260
@@ -3206,30 +3209,76 @@ private struct SensitiveCatalogEntryRow: View {
     private func reveal(_ field: SecretCatalogFieldValue) {
         guard field.secretRef != nil, let revealCatalogField else { return }
         let fieldKey = field.key
+        revealTasks[fieldKey]?.cancel()
+        revealExpiryTasks[fieldKey]?.cancel()
+        revealExpiryTasks.removeValue(forKey: fieldKey)
+        let generation = UUID()
+        revealGenerations[fieldKey] = generation
+        revealedPlaintexts.removeValue(forKey: fieldKey)
         revealingKeys.insert(fieldKey)
         revealError = nil
-        Task { @MainActor in
-            defer { revealingKeys.remove(fieldKey) }
+
+        let task: Task<Void, Never> = Task { @MainActor in
+            defer {
+                if revealGenerations[fieldKey] == generation {
+                    revealTasks.removeValue(forKey: fieldKey)
+                    revealingKeys.remove(fieldKey)
+                }
+            }
             do {
                 let plaintext = try await revealCatalogField(entry.id, fieldKey)
-                guard showingDetails, scenePhase == .active else { return }
+                guard revealGenerations[fieldKey] == generation,
+                      showingDetails,
+                      scenePhase == .active
+                else { return }
+
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
                     revealedPlaintexts[fieldKey] = plaintext
                 }
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(45))
-                    guard !Task.isCancelled, showingDetails, scenePhase == .active else { return }
+
+                let expiryTask: Task<Void, Never> = Task { @MainActor in
+                    do {
+                        try await Task.sleep(for: .seconds(45))
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        return
+                    }
+
+                    guard !Task.isCancelled,
+                          revealGenerations[fieldKey] == generation,
+                          showingDetails,
+                          scenePhase == .active
+                    else { return }
+
                     revealedPlaintexts.removeValue(forKey: fieldKey)
+                    revealExpiryTasks.removeValue(forKey: fieldKey)
                 }
+
+                guard revealGenerations[fieldKey] == generation else {
+                    expiryTask.cancel()
+                    return
+                }
+                revealExpiryTasks[fieldKey] = expiryTask
             } catch is CancellationError {
                 return
             } catch {
+                guard revealGenerations[fieldKey] == generation,
+                      showingDetails,
+                      scenePhase == .active
+                else { return }
                 revealError = "字段解密失败或本机授权未完成"
             }
         }
+        revealTasks[fieldKey] = task
     }
 
     private func clearSensitiveOutput() {
+        revealTasks.values.forEach { $0.cancel() }
+        revealExpiryTasks.values.forEach { $0.cancel() }
+        revealTasks.removeAll()
+        revealExpiryTasks.removeAll()
+        revealGenerations.removeAll()
         revealedPlaintexts.removeAll()
         revealingKeys.removeAll()
         revealError = nil
@@ -3366,6 +3415,8 @@ private struct SensitiveCatalogEntryRow: View {
     }
 
     private func saveEntry() {
+        guard !isSaving else { return }
+
         let title = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
             editorError = "条目标题不能为空"
@@ -3375,7 +3426,8 @@ private struct SensitiveCatalogEntryRow: View {
             editorError = "服务地址格式应为 type|host|port"
             return
         }
-        let fields = draftFields.map(\.field)
+        let fieldDraftSnapshot = draftFields
+        let fields = fieldDraftSnapshot.map(\.field)
         if let fieldError = fields.compactMap(CatalogFieldDraftValidation.message(for:)).first {
             editorError = fieldError
             return
@@ -3401,20 +3453,24 @@ private struct SensitiveCatalogEntryRow: View {
             editorError = "字段数据无效，请检查字段 key、类型和值"
             return
         }
-        Task {
-            isSaving = true
-            let secretInputs = draftFields.compactMap { draft -> CatalogSecretInput? in
-                guard draft.field.type.isSecret,
-                      draft.field.secretRef == nil,
-                      !draft.secretInput.isEmpty
-                else { return nil }
-                return CatalogSecretInput(
-                    key: draft.field.key,
-                    label: draft.field.label,
-                    plaintext: draft.secretInput
-                )
-            }
-            let result = await commitEntryEdit?(updated, secretInputs)
+
+        let secretInputs = fieldDraftSnapshot.compactMap { draft -> CatalogSecretInput? in
+            guard draft.field.type.isSecret,
+                  draft.field.secretRef == nil,
+                  !draft.secretInput.isEmpty
+            else { return nil }
+            return CatalogSecretInput(
+                key: draft.field.key,
+                label: draft.field.label,
+                plaintext: draft.secretInput
+            )
+        }
+        let commit = commitEntryEdit
+        isSaving = true
+        editorError = nil
+
+        Task { @MainActor in
+            let result = await commit?(updated, secretInputs)
             isSaving = false
             switch result {
             case .success:
@@ -3535,6 +3591,11 @@ private struct SensitiveCatalogFieldEditorRow: View {
         nonmutating set { draft.secretInput = newValue }
     }
 
+    private var hasUnsavedKeyChange: Bool {
+        guard let originalKey = draft.originalKey else { return false }
+        return field.key != originalKey
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             if isSelecting {
@@ -3603,46 +3664,55 @@ private struct SensitiveCatalogFieldEditorRow: View {
 
     @ViewBuilder
     private var secretEditor: some View {
-        HStack(spacing: 8) {
-            if field.secretRef != nil {
-                Text("已绑定密文")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                if isReplacingSecret {
-                    secretInputEditor(prompt: "输入新密码")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if field.secretRef != nil {
+                    Text("已绑定密文")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    if isReplacingSecret {
+                        secretInputEditor(prompt: "输入新密码")
+                        Button(showsSecret ? "隐藏" : "显示") {
+                            showsSecret.toggle()
+                        }
+                        .buttonStyle(.borderless)
+                        Button("取消") {
+                            secretInput = ""
+                            isReplacingSecret = false
+                            errorMessage = nil
+                        }
+                        .buttonStyle(.borderless)
+                        Button(isSubmittingReplacement ? "提交中…" : "提交替换") {
+                            submitSecretReplacement()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil || hasUnsavedKeyChange)
+                    } else {
+                        Text("已绑定")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Button("替换密码") {
+                            secretInput = ""
+                            errorMessage = nil
+                            isReplacingSecret = true
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(replaceSecret == nil || hasUnsavedKeyChange)
+                    }
+                } else {
+                    secretInputEditor(prompt: "输入密码")
                     Button(showsSecret ? "隐藏" : "显示") {
                         showsSecret.toggle()
                     }
                     .buttonStyle(.borderless)
-                    Button("取消") {
-                        secretInput = ""
-                        isReplacingSecret = false
-                        errorMessage = nil
-                    }
-                    .buttonStyle(.borderless)
-                    Button(isSubmittingReplacement ? "提交中…" : "提交替换") {
-                        submitSecretReplacement()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil)
-                } else {
-                    Text("已绑定")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Button("替换密码") {
-                        secretInput = ""
-                        errorMessage = nil
-                        isReplacingSecret = true
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(replaceSecret == nil)
                 }
-            } else {
-                secretInputEditor(prompt: "输入密码")
-                Button(showsSecret ? "隐藏" : "显示") {
-                    showsSecret.toggle()
-                }
-                .buttonStyle(.borderless)
+            }
+
+            if hasUnsavedKeyChange {
+                Text("字段 key 已修改，请先保存条目，再替换密码。")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
             }
         }
     }
@@ -3830,7 +3900,10 @@ private struct SensitiveCatalogFieldEditorRow: View {
     }
 
     private func submitSecretReplacement() {
-        guard let replaceSecret, !secretInput.isEmpty else { return }
+        guard let replaceSecret,
+              !secretInput.isEmpty,
+              !hasUnsavedKeyChange
+        else { return }
         let plaintext = secretInput
         let key = field.key
         let label = field.label
