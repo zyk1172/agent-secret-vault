@@ -529,7 +529,11 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
     /// dictionary ordering deterministic. Transport handles are intentionally
     /// excluded: a sessionID identifies a reusable connection, not the
     /// operation's authorization subject, so replacing an expired transport
-    /// must not change the exact operation ticket.
+    /// must not change the exact operation ticket. The agent's free-text risk
+    /// metadata is excluded for the same reason: it is untrusted explanatory
+    /// input that the policy engine re-evaluates on every request, and two
+    /// byte-identical operations must share one lease regardless of how the
+    /// Agent words its assessment.
     public var operationHash: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -554,7 +558,6 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         let payload: SecretOperationPayload?
         let requestedEffects: [String]
         let parameters: [String: String]
-        let agentAssessment: AgentRiskAssessment
 
         init(descriptor: SecretOperationDescriptor) {
             actionType = descriptor.actionType
@@ -573,7 +576,6 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
             payload = descriptor.payload
             requestedEffects = descriptor.requestedEffects
             parameters = descriptor.parameters
-            agentAssessment = descriptor.agentAssessment
         }
     }
 

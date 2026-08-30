@@ -40,9 +40,9 @@ public struct SecretOperationPolicyEngine: Sendable {
             normalizedDestination: normalizedDestination
         )
         let agentRisk = descriptor.agentAssessment.declaredRisk
-        let effectiveRequirement = AuthorizationRequirement.max(
-            local.authorizationRequirement,
-            Self.agentAuthorizationRequirement(for: agentRisk)
+        let effectiveRequirement = Self.effectiveAuthorizationRequirement(
+            local: local.authorizationRequirement,
+            agentRisk: agentRisk
         )
         let effectiveRisk: OperationRisk = {
             switch effectiveRequirement {
@@ -69,20 +69,36 @@ public struct SecretOperationPolicyEngine: Sendable {
         )
     }
 
-    /// The Agent can request more scrutiny, but its coarse risk hint must not
-    /// be able to create a reusable lease from a locally silent operation. A
-    /// self-declared `approvalRequired` therefore maps to a fresh decision;
-    /// only the local classifier grants reusable-lease semantics.
-    private static func agentAuthorizationRequirement(
-        for risk: OperationRisk
+    /// The Agent's declared risk is a bounded hint, not authorization. It can
+    /// raise the local decision, but it must not reshape the lease semantics
+    /// the local policy already granted: an honest `approvalRequired` report
+    /// must not push a locally reusable operation out of the five-minute
+    /// execution window, and it must not mint reusable approval for a locally
+    /// silent operation either. Only the local classifier grants
+    /// reusable-lease semantics.
+    private static func effectiveAuthorizationRequirement(
+        local: AuthorizationRequirement,
+        agentRisk: OperationRisk
     ) -> AuthorizationRequirement {
-        switch risk {
+        switch agentRisk {
         case .silent:
-            return .none
-        case .approvalRequired:
-            return .freshApprovalRequired
+            return local
         case .denied:
             return .denied
+        case .approvalRequired:
+            switch local {
+            case .none:
+                // The local policy found no side effects, but the Agent
+                // believes there are. Demand a fresh decision instead of
+                // trusting the Agent to define the lease terms.
+                return .freshApprovalRequired
+            case .reusableApproval, .freshApprovalRequired:
+                // The local policy already set the requirement; agreeing
+                // that approval is needed cannot raise reusable to fresh.
+                return local
+            case .denied:
+                return .denied
+            }
         }
     }
 

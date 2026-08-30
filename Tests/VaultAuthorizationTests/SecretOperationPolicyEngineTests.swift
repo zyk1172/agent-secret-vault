@@ -48,6 +48,99 @@ import VaultCore
     #expect(decision.authorizationRequirement == .freshApprovalRequired)
 }
 
+@Test func agentApprovalHintCannotDestroyTheReusableExecutionWindow() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "mkdir /share/svlt-test",
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .approvalRequired,
+            reason: "creates a directory",
+            intendedEffect: "remote write"
+        )
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    // The local classifier granted reusable approval for this reversible
+    // write. An honest "this needs approval" hint must not upgrade it to a
+    // fresh decision, which would silently disable the five-minute window.
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .reusableApproval)
+    #expect(decision.requiredApproval)
+}
+
+@Test func destructiveSSHStaysFreshRegardlessOfAgentApprovalHint() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "rm -rf /share/svlt-test",
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .approvalRequired,
+            reason: "removes a directory tree",
+            intendedEffect: "remote write"
+        )
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(!decision.requiresFreshApprovalOnFirstUse)
+}
+
+@Test func operationHashIsIndependentOfTheAgentRiskReport() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let base = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://qnap.local:8080/api/status",
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .approvalRequired,
+            reason: "check NAS status",
+            intendedEffect: "read status"
+        )
+    )
+    let reworded = SecretOperationDescriptor(
+        actionType: base.actionType,
+        secretReferences: base.secretReferences,
+        destination: base.destination,
+        port: base.port,
+        protocolType: base.protocolType,
+        httpMethod: base.httpMethod,
+        url: base.url,
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .silent,
+            reason: "read NAS status",
+            intendedEffect: "completely different wording"
+        )
+    )
+
+    // Two byte-identical operations must share one lease even when the
+    // Agent rewords its free-text assessment between calls. The policy
+    // engine re-evaluates the risk hint on every request, so the exact
+    // operation fingerprint must not depend on it.
+    #expect(base.operationHash == reworded.operationHash)
+}
+
 @Test func deniedAgentHintRemainsDenied() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(

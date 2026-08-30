@@ -230,6 +230,83 @@ import VaultIPC
     #expect(!deleteSummary.contains("复用最多"))
 }
 
+@Test func agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 6_000)
+    let clock = ServiceTestClock(start)
+    let monotonicStart: UInt64 = 60_000_000_000
+    clock.monotonicNow = monotonicStart
+    let authorizationSession = AuthorizationSession(
+        executionTTL: 300,
+        monotonicNow: { clock.monotonicNow },
+        now: { clock.now }
+    )
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    // An Agent that honestly reports approvalRequired for a locally
+    // reversible write must still enter the five-minute window: the first
+    // request is one fresh approval that establishes the scoped lease.
+    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    let output = try await fixture.service.performSecretOperation(mkdir)
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let scope = fixture.executionScope(for: mkdir)
+    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
+    #expect(originalExpiry == start.addingTimeInterval(300))
+
+    // The follow-up write reuses the lease without a new Touch ID, and the
+    // fixed TTL does not slide.
+    clock.now = start.addingTimeInterval(100)
+    clock.monotonicNow = monotonicStart + 100_000_000_000
+    let touch = fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
+    let reused = try await fixture.service.performSecretOperation(touch)
+    #expect(reused.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 2)
+    let modes = await fixture.auditEntries().compactMap(\.authorizationMode)
+    #expect(modes.contains(.executionWindowReuse))
+    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
+}
+
+@Test func agentApprovalHintOnSilentOperationTakesFreshApprovalWithoutExtendingLease() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 7_000)
+    let clock = ServiceTestClock(start)
+    let monotonicStart: UInt64 = 70_000_000_000
+    clock.monotonicNow = monotonicStart
+    let authorizationSession = AuthorizationSession(
+        executionTTL: 300,
+        monotonicNow: { clock.monotonicNow },
+        now: { clock.now }
+    )
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(mkdir)
+    let scope = fixture.executionScope(for: mkdir)
+    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
+    #expect(originalExpiry == start.addingTimeInterval(300))
+
+    // A locally silent read that the Agent flags as approvalRequired takes
+    // the fresh one-shot path: it must not mint or extend a reusable lease.
+    clock.now = start.addingTimeInterval(100)
+    clock.monotonicNow = monotonicStart + 100_000_000_000
+    let hostname = fixture.ssh(command: "hostname", agentRisk: .approvalRequired)
+    let output = try await fixture.service.performSecretOperation(hostname)
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
+    let modes = await fixture.auditEntries().compactMap(\.authorizationMode)
+    #expect(!modes.contains(.executionWindowReuse))
+}
+
 @Test func concurrentEligibleOperationsShareOneApproval() async throws {
     let fixture = try await OperationServiceFixture(approval: .delayed)
     defer { fixture.remove() }
@@ -734,7 +811,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
         )
     }
 
-    func ssh(command: String) -> SecretOperationDescriptor {
+    func ssh(command: String, agentRisk: OperationRisk? = nil) -> SecretOperationDescriptor {
         SecretOperationDescriptor(
             actionType: .sshCommand,
             secretReferences: [reference],
@@ -743,7 +820,14 @@ private final class OperationServiceFixture: @unchecked Sendable {
             protocolType: .ssh,
             command: command,
             requestedEffects: [command == "hostname" ? "read-only" : "remote-write"],
-            parameters: ["passwordRef": reference.description, "username": "admin"]
+            parameters: ["passwordRef": reference.description, "username": "admin"],
+            agentAssessment: agentRisk.map { risk in
+                AgentRiskAssessment(
+                    declaredRisk: risk,
+                    reason: "agent-reported risk",
+                    intendedEffect: command == "hostname" ? "inspect host name" : "remote write"
+                )
+            } ?? .conservativeDefault
         )
     }
 
