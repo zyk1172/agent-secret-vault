@@ -659,8 +659,15 @@ const SshCommandInput = z
     passwordRef: SecretReference,
     // Raw remote command: single-line or multi-line (newlines, quotes,
     // pipelines, redirects, heredocs, interpreters are all allowed). SVLT
-    // never parses shell syntax; the remote login shell does.
-    command: z.string().min(1).max(65_536),
+    // never parses shell syntax; the remote login shell does. The ceiling is
+    // UTF-8 bytes to match the Swift side exactly (§61): Zod's .max() counts
+    // UTF-16 code units, which diverges for CJK/emoji input.
+    command: z
+        .string()
+        .min(1)
+        .refine((value) => Buffer.byteLength(value, "utf8") <= 65_536, {
+            message: "command must be at most 65536 UTF-8 bytes"
+        }),
     sessionID: z.string().min(1).max(128).optional(),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment

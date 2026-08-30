@@ -235,10 +235,10 @@ must never be returned to the agent.
   requirement: the hint may promote `none` to fresh and `reusable` to fresh
   when the agent itself claims high risk, but it can never lower a local
   decision, mint reusable approval from `none`, or deny on the owner's behalf.
-- Bound read-only SSH/HTTPS/database/SFTP operations can run silently. An
-  eligible purpose-built Agent execution whose policy result is
-  `reusableApproval` may use one fresh device-owner approval to open a fixed,
-  non-sliding 300-second in-memory execution window. The window is scoped to
+- Every secret-bearing execution (SSH, HTTP/API, database, SFTP, export,
+  browser, local app, trusted process) is an ordinary `reusableApproval`
+  operation: one device-owner approval opens a fixed, non-sliding 300-second
+  in-memory execution window. The window is scoped to
   the calling Agent process, exact secret references, normalized destination
   and port, protocol, action family, and security generation; it is not a
   global execution gate. Every request still re-evaluates the current local
@@ -251,9 +251,12 @@ must never be returned to the agent.
   `ssh`, so the remote login shell interprets exactly what the caller wrote:
   single-line and multi-line scripts, pipelines, redirects, heredocs, shell
   interpreters, `sudo`, and unknown NAS CLIs are all first-class inputs. The
-  policy engine only decides the authorization level; explicitly destructive
-  forms (`rm`, `dd`, `mkfs*`, `reboot`, `docker rm`/`system prune`, ...) take a
-  fresh approval with the full command shown.
+  policy engine only decides the authorization level; at most five explicitly
+  registered fresh-rule categories per execution layer (SSH: power control,
+  filesystem delete, block-device/filesystem destruction, storage/RAID
+  destruction, container destruction) take a fresh approval with the full
+  command shown. The SSH ControlMaster is a reuse optimization only — its
+  failure never fails a command that already ran and never clears the lease.
 - Secret-bearing HTTP over plaintext `http://` triggers a fresh approval with a
   plaintext-transport warning instead of a policy refusal. Authenticated
   responses are metadata-only unless an App-owned response projection profile

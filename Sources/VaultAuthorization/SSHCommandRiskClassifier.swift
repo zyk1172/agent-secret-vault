@@ -1,23 +1,25 @@
 import Foundation
 import VaultCore
 
-/// SVLT policy classifies authorization requirements; it does not replace the
-/// device owner's decision.
+/// SVLT uses a device-owner authorization lease, not a semantic command
+/// firewall.
 ///
 /// The classifier answers exactly one question: "which authorization level
 /// does this command need?" It never answers "is this command allowed?".
 ///
-/// - Safe metadata reads (small explicit list) require no approval.
-/// - Explicitly dangerous, hard-to-reverse commands always require a fresh
-///   device-owner decision with the full command shown.
-/// - Everything else — unknown commands, shell interpreters, interpreters,
-///   pipelines, NAS CLIs — is an ordinary reversible write from the local
-///   classifier's point of view and enters the scoped five-minute window.
-///
-/// There is deliberately no "unknown → denied" and no "unknown → fresh" tier:
-/// an incomplete allowlist must never widen or restrict what the device owner
-/// may decide. Hard failures are reserved for malformed input (empty, NUL,
-/// oversized), which the policy engine surfaces as technical errors.
+/// - Every technically valid SSH command defaults to `reusableApproval`:
+///   one device-owner approval opens the scoped five-minute window.
+/// - Only the small, explicitly declared fixed fresh rules (at most five
+///   categories, see `SSHFreshRules`) promote a command to
+///   `freshApprovalRequired`. They are detected with a deliberately shallow
+///   lexical scan of the raw command; the scan exists solely to promote
+///   reusable → fresh and can never deny.
+/// - There is no safe-read tier, no unknown tier, and no syntax blocklist:
+///   shell interpreters, pipelines, redirects, heredocs, `sudo`, interpreters,
+///   `find -exec`, and unknown NAS CLIs are all ordinary operations. When the
+///   scan cannot decide, the command stays on the ordinary path.
+/// - Hard failures are reserved for malformed input (empty, NUL, oversized),
+///   which the policy engine surfaces as technical errors.
 public struct SSHCommandRiskClassification: Equatable, Sendable {
     public let risk: OperationRisk
     public let authorizationRequirement: AuthorizationRequirement
@@ -35,6 +37,24 @@ public struct SSHCommandRiskClassification: Equatable, Sendable {
         self.reasons = reasons
         self.ruleID = ruleID
     }
+}
+
+/// The complete, explicit registry of SSH fresh rules. Test code asserts that
+/// this list never grows past five categories.
+public enum SSHFreshRules {
+    public static let powerControl = "ssh.fresh.power-control"
+    public static let filesystemDelete = "ssh.fresh.filesystem-delete"
+    public static let blockDeviceFilesystem = "ssh.fresh.block-device-filesystem"
+    public static let storageRaidDestruction = "ssh.fresh.storage-raid-destruction"
+    public static let containerDestruction = "ssh.fresh.container-destruction"
+
+    public static let all: [String] = [
+        powerControl,
+        filesystemDelete,
+        blockDeviceFilesystem,
+        storageRaidDestruction,
+        containerDestruction
+    ]
 }
 
 public struct SSHCommandRiskClassifier: Sendable {
@@ -57,11 +77,7 @@ public struct SSHCommandRiskClassifier: Sendable {
         // Tokenizing here is classification-only. The executor sends the raw
         // string byte-for-byte as one ssh remote-command argument; this split
         // never changes what runs remotely.
-        let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-        guard let executable = tokens.first else {
-            return technicalFailure("SSH 命令为空", ruleID: "ssh.command.missing")
-        }
-        return classifyTier(executable: executable, arguments: Array(tokens.dropFirst()))
+        return classifyTier(rawCommand: command)
     }
 
     public func classify(batch: SSHCommandBatch?) -> SSHCommandRiskClassification {
@@ -74,32 +90,22 @@ public struct SSHCommandRiskClassifier: Sendable {
             return technicalFailure("SSH 批处理参数无效", ruleID: "ssh.batch.invalid")
         }
 
-        var highest = SSHCommandRiskClassification(
-            risk: .silent,
-            authorizationRequirement: .none,
-            reasons: [],
-            ruleID: "ssh.batch.read-only.silent"
-        )
         for command in batch.commands {
             let current = classify(spec: command)
-            highest = combine(highest, current)
-            if highest.authorizationRequirement.severity >= AuthorizationRequirement.freshApprovalRequired.severity {
-                break
+            if current.authorizationRequirement == .freshApprovalRequired {
+                return SSHCommandRiskClassification(
+                    risk: .approvalRequired,
+                    authorizationRequirement: .freshApprovalRequired,
+                    reasons: ["批处理最高风险："] + current.reasons,
+                    ruleID: current.ruleID
+                )
             }
         }
-        if highest.reasons.isEmpty {
-            return SSHCommandRiskClassification(
-                risk: .silent,
-                authorizationRequirement: .none,
-                reasons: ["SSH 批处理被本地解析为只读操作"],
-                ruleID: "ssh.batch.read-only.silent"
-            )
-        }
         return SSHCommandRiskClassification(
-            risk: highest.risk,
-            authorizationRequirement: highest.authorizationRequirement,
-            reasons: ["批处理最高风险："] + highest.reasons,
-            ruleID: highest.ruleID
+            risk: .approvalRequired,
+            authorizationRequirement: .reusableApproval,
+            reasons: ["SSH 批处理属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
+            ruleID: "ssh.ordinary.reusable-approval"
         )
     }
 
@@ -107,35 +113,20 @@ public struct SSHCommandRiskClassifier: Sendable {
         guard (try? spec.validate()) != nil else {
             return technicalFailure("SSH 命令参数无效", ruleID: "ssh.command.invalid")
         }
-
-        let executable = URL(fileURLWithPath: spec.executable).lastPathComponent.lowercased()
-        let arguments = spec.arguments.map { $0.lowercased() }
-        return classifyTier(executable: executable, arguments: arguments)
+        return classifyTier(rawCommand: ([spec.executable] + spec.arguments).joined(separator: " "))
     }
 
-    private func classifyTier(executable: String, arguments: [String]) -> SSHCommandRiskClassification {
-        if isDangerous(executable: executable, arguments: arguments) {
+    // MARK: - Tier classification
+
+    private func classifyTier(rawCommand: String) -> SSHCommandRiskClassification {
+        if let freshRule = matchFixedFreshRule(in: rawCommand) {
             return SSHCommandRiskClassification(
                 risk: .approvalRequired,
                 authorizationRequirement: .freshApprovalRequired,
-                reasons: ["SSH 命令可能造成难以撤销的远程破坏，必须由设备所有者重新认证后执行"],
-                ruleID: "ssh.dangerous.fresh-approval"
+                reasons: ["SSH 命令匹配固定高危类别（\(freshRule)），每次都需要设备所有者重新认证后执行"],
+                ruleID: freshRule
             )
         }
-
-        if isSafeRead(executable: executable) {
-            return SSHCommandRiskClassification(
-                risk: .silent,
-                authorizationRequirement: .none,
-                reasons: ["SSH 命令被本地解析为明确的元数据只读操作"],
-                ruleID: "ssh.read-only.silent"
-            )
-        }
-
-        // Everything else — ordinary writes, unknown executables, shell
-        // interpreters, interpreters, pipelines, NAS CLIs — is an ordinary
-        // operation for the local classifier. The device owner approves the
-        // first use, and the scoped five-minute window covers follow-ups.
         return SSHCommandRiskClassification(
             risk: .approvalRequired,
             authorizationRequirement: .reusableApproval,
@@ -144,67 +135,85 @@ public struct SSHCommandRiskClassifier: Sendable {
         )
     }
 
-    private func combine(
-        _ lhs: SSHCommandRiskClassification,
-        _ rhs: SSHCommandRiskClassification
-    ) -> SSHCommandRiskClassification {
-        let requirement = AuthorizationRequirement.max(
-            lhs.authorizationRequirement,
-            rhs.authorizationRequirement
-        )
-        let risk: OperationRisk
-        switch requirement {
-        case .none:
-            risk = .silent
-        case .reusableApproval, .freshApprovalRequired:
-            risk = .approvalRequired
-        case .denied:
-            risk = .denied
+    /// Shallow lexical detection for the fixed fresh rules only. It splits the
+    /// raw command on whitespace and shell separators, normalizes each word to
+    /// its basename (so `/bin/rm`, `'rm'`, and `rm` are recognized), and walks
+    /// adjacent word pairs for subcommand forms. This is best-effort by
+    /// design: an unmatched command stays on the ordinary path, and the scan
+    /// can never deny anything.
+    func matchFixedFreshRule(in rawCommand: String) -> String? {
+        let separators = CharacterSet(charactersIn: " \t\n\r;&|'\"`()<>")
+        let words = rawCommand
+            .components(separatedBy: separators)
+            .map { Self.basename($0) }
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty else { return nil }
+
+        for (index, word) in words.enumerated() {
+            let next = index + 1 < words.count ? words[index + 1] : nil
+            let next2 = index + 2 < words.count ? words[index + 2] : nil
+
+            if Self.powerControlExecutables.contains(word) {
+                return SSHFreshRules.powerControl
+            }
+            if word == "systemctl", let next, Self.dangerousSystemctlSubcommands.contains(next) {
+                return SSHFreshRules.powerControl
+            }
+            if Self.filesystemDeleteExecutables.contains(word) {
+                return SSHFreshRules.filesystemDelete
+            }
+            if word.hasPrefix("mkfs") || Self.blockDeviceExecutables.contains(word) {
+                return SSHFreshRules.blockDeviceFilesystem
+            }
+            if word == "zpool", next == "destroy" {
+                return SSHFreshRules.storageRaidDestruction
+            }
+            if word == "mdadm", let next, Self.destructiveMdadmFlags.contains(next) {
+                return SSHFreshRules.storageRaidDestruction
+            }
+            if word == "docker", let next {
+                if next == "rm" {
+                    return SSHFreshRules.containerDestruction
+                }
+                if next == "volume", next2 == "rm" {
+                    return SSHFreshRules.containerDestruction
+                }
+                if next == "system", next2 == "prune" {
+                    return SSHFreshRules.containerDestruction
+                }
+            }
         }
-        return SSHCommandRiskClassification(
-            risk: risk,
-            authorizationRequirement: requirement,
-            reasons: lhs.reasons + rhs.reasons,
-            ruleID: requirement == rhs.authorizationRequirement ? rhs.ruleID : lhs.ruleID
-        )
+        return nil
     }
 
-    /// A small, explicit list of metadata reads that cannot mutate the remote
-    /// host. Anything not on the list is NOT denied — it simply takes the
-    /// ordinary approval path.
-    private func isSafeRead(executable: String) -> Bool {
-        Self.safeReadCommands.contains(executable)
+    /// Strips surrounding quotes and any leading path so `/bin/rm`, `'rm'`, and
+    /// `rm` all normalize to `rm`. Classification only — the raw command sent
+    /// to SSH is never rewritten.
+    private static func basename(_ word: String) -> String {
+        let trimmed = word.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+        guard !trimmed.isEmpty else { return "" }
+        return URL(fileURLWithPath: trimmed).lastPathComponent.lowercased()
     }
 
-    /// A small, explicit list of locally provable destructive forms. These are
-    /// never executed silently or on a reusable lease; the device owner sees
-    /// the full command and re-authenticates for every use. They are NOT
-    /// denied: approval executes them.
-    private func isDangerous(executable: String, arguments: [String]) -> Bool {
-        if Self.dangerousExecutables.contains(executable) {
-            return true
-        }
-        if executable.hasPrefix("mkfs") {
-            return true
-        }
-        if executable == "systemctl",
-           let subcommand = arguments.first,
-           Self.dangerousSystemctlSubcommands.contains(subcommand) {
-            return true
-        }
-        if executable == "docker" {
-            if arguments.first == "rm" {
-                return true
-            }
-            if arguments.first == "volume", arguments.dropFirst().first == "rm" {
-                return true
-            }
-            if arguments.first == "system", arguments.dropFirst().first == "prune" {
-                return true
-            }
-        }
-        return false
-    }
+    private static let powerControlExecutables: Set<String> = [
+        "reboot", "shutdown", "poweroff", "halt"
+    ]
+
+    private static let dangerousSystemctlSubcommands: Set<String> = [
+        "reboot", "poweroff", "halt", "kexec", "isolate", "rescue", "emergency"
+    ]
+
+    private static let filesystemDeleteExecutables: Set<String> = [
+        "rm", "shred"
+    ]
+
+    private static let blockDeviceExecutables: Set<String> = [
+        "wipefs", "fdisk", "parted", "dd"
+    ]
+
+    private static let destructiveMdadmFlags: Set<String> = [
+        "--zero-superblock", "--fail", "--stop", "--remove"
+    ]
 
     private func technicalFailure(_ reason: String, ruleID: String) -> SSHCommandRiskClassification {
         SSHCommandRiskClassification(
@@ -214,17 +223,4 @@ public struct SSHCommandRiskClassifier: Sendable {
             ruleID: ruleID
         )
     }
-
-    private static let safeReadCommands: Set<String> = [
-        "hostname", "whoami", "pwd", "uname", "id", "date", "uptime", "df", "du", "stat", "ls"
-    ]
-
-    private static let dangerousExecutables: Set<String> = [
-        "rm", "shred", "wipefs", "fdisk", "parted", "dd",
-        "reboot", "shutdown", "poweroff", "halt", "zpool", "mdadm"
-    ]
-
-    private static let dangerousSystemctlSubcommands: Set<String> = [
-        "reboot", "poweroff", "halt", "kexec", "isolate", "rescue", "emergency"
-    ]
 }

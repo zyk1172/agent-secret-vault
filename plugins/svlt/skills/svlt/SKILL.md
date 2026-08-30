@@ -47,7 +47,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `ssh_command_with_secret` 的 `command` 是真正的 remote shell 命令，会 byte-for-byte 交给远端登录 shell 执行：单行、多行、`;`、`&&`、`|`、`>`、`$()`、glob、引号、heredoc、`bash -c`、`python -c`、`find -exec`、`sudo` 都按你真实的意图提交，SVLT 不解析也不改写 shell 语法。需要真实 shell 语义时优先用它。
 - 结构化 `ssh_batch_with_secret`（每项 `executable` + `arguments`）适合天然参数化的任务；不要为了绕过任何限制把脚本强行拆成 batch。两种形式都是一等公民。
 - 准确填写 `intendedEffect` 和风险提示。不得拆小、改写、伪装或谎报 destructive/不可逆操作；SVLT 会把完整原始命令展示给设备所有者，由用户通过 Touch ID/密码做最终决定。
-- 授权分层：明确的元数据只读命令（hostname/whoami/pwd/uname/id/date/uptime/df/du/stat/ls）无需审批；`rm`、`shred`、`mkfs*`、`wipefs`、`fdisk`、`parted`、`dd`、`zpool`、`mdadm`、`reboot`、`shutdown`、`poweroff`、`halt`、危险 `systemctl`、危险 Docker 删除/清理等每次都需要设备所有者 fresh approval；其余一切命令（包括未知命令和 shell 语法）都是普通操作，首次审批后进入 5 分钟窗口。fresh approval 不会刷新或延长普通 lease。
+- 授权分层（§22 新模型）：所有使用 Secret 的 SSH 命令——包括 hostname、df、cat、未知 NAS CLI——默认都是普通操作：第一次 Touch ID/密码，之后同 scope 300 秒免审批。只有固定 5 类高危操作每次 fresh approval：电源控制（reboot/shutdown/poweroff/halt/systemctl kexec·isolate）、文件删除（rm/shred）、块设备与文件系统（mkfs*/wipefs/fdisk/parted/dd）、存储/RAID 破坏（zpool destroy、破坏性 mdadm）、容器删除（docker rm/volume rm/system prune）。fresh approval 不会刷新或延长普通 lease。
 - MCP 连接建立后应声明客户端名称与版本；Audit/UI 只显示 `Codex（自报）`、`Pi（自报）` 等 display metadata。该 identity 不是可信 security principal，也不能改变 lease 隔离。
 - 以上是行为指导。SVLT 的职责是判断授权级别、展示事实、执行用户决定；它不替设备所有者拒绝任何技术上可执行的请求，最终允许/拒绝由用户通过 Touch ID/密码决定。
 

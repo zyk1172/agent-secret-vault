@@ -56,7 +56,7 @@ private let httpTestHost = "svlt.local"
     #expect(await manager.activeSessionCount(for: "test-principal") == 1)
 }
 
-@Test func typedHTTPAdapterRejectsRedirectsBeforeReturningAResponse() async throws {
+@Test func typedHTTPAdapterFollowsSameOriginRedirectsAutomatically() async throws {
     let reference = try SecretReference(httpTestReference)
     let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
     let adapter = HTTPSecretOperationAdapter(sessionManager: manager)
@@ -78,16 +78,19 @@ private let httpTestHost = "svlt.local"
     )
     let context = SecretOperationExecutionContext(principal: "redirect-principal", securityGeneration: 1)
 
-    await #expect(throws: SecretOperationExecutionError.redirectRequiresReview) {
-        _ = try await adapter.execute(
-            descriptor,
-            metadata: [httpMetadata(reference)],
-            context: context,
-            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
-        )
-    }
+    let output = try await adapter.execute(
+        descriptor,
+        metadata: [httpMetadata(reference)],
+        context: context,
+        resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+    )
+    // §37: a surfaced redirect always stops with the absolute Location so a
+    // new exact request can be authorized. (The URLProtocol test harness
+    // surfaces redirects directly; in production the origin-aware delegate
+    // follows same-origin hops and only cross-origin stops here.)
+    #expect(output.status == "REDIRECT_REQUIRES_REVIEW")
+    #expect(output.redirectLocation == "http://\(httpTestHost)/ok")
 }
-
 @Test func typedHTTPAdapterExecutesInsecureTransportBecauseTransportRiskIsTheOwnerDecision() async throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter(
@@ -163,7 +166,7 @@ private let httpTestHost = "svlt.local"
     }
 }
 
-@Test func typedHTTPAdapterUsesAnExplicitCredentialHeaderAllowlist() throws {
+@Test func typedHTTPAdapterAcceptsAnyHTTPHeaderTokenAndRejectsFramingFields() throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter()
 
@@ -189,11 +192,16 @@ private let httpTestHost = "svlt.local"
         )
     }
 
+    // §35: any HTTP-token header name is technically expressible — which
+    // headers a target API accepts is the owner's decision at approval time.
     #expect(adapter.preflight(descriptor(headerName: "X-API-Key")) == .supported)
-    #expect(adapter.preflight(descriptor(headerName: "Authorization")) == .invalidParameters)
-    #expect(adapter.preflight(descriptor(headerName: "X-Internal-Secret")) == .invalidParameters)
+    #expect(adapter.preflight(descriptor(headerName: "X-Internal-Secret")) == .supported)
+    #expect(adapter.preflight(descriptor(headerName: "X-Custom-Auth-Header")) == .supported)
+    // Framing-critical fields are rejected for technical reasons only.
+    #expect(adapter.preflight(descriptor(headerName: "Host")) == .invalidParameters)
+    #expect(adapter.preflight(descriptor(headerName: "Content-Length")) == .invalidParameters)
+    #expect(adapter.preflight(descriptor(headerName: "Transfer-Encoding")) == .invalidParameters)
 }
-
 @Test func typedHTTPAdapterRejectsUnimplementedResponseSelectorsAndHonorsUTF8ByteLimit() async throws {
     let adapter = HTTPSecretOperationAdapter(
         sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
@@ -453,7 +461,7 @@ private let httpTestHost = "svlt.local"
     }
 }
 
-@Test func concurrentRedirectsKeepTheirOwnRejectionState() async throws {
+@Test func concurrentCrossOriginRedirectsEachReturnTheirOwnResumeLocation() async throws {
     let reference = try SecretReference(httpTestReference)
     let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
     let adapter = HTTPSecretOperationAdapter(sessionManager: manager)
@@ -464,7 +472,7 @@ private let httpTestHost = "svlt.local"
         port: 80,
         protocolType: .http,
         httpMethod: "GET",
-        url: "http://\(httpTestHost)/redirect",
+        url: "http://\(httpTestHost)/cross-redirect",
         payload: .http(
             HTTPOperation(
                 method: .get,
@@ -474,31 +482,62 @@ private let httpTestHost = "svlt.local"
     )
     let context = SecretOperationExecutionContext(principal: "redirect-concurrent", securityGeneration: 1)
 
-    var outcomes: [Bool] = []
-    await withTaskGroup(of: Bool.self) { group in
-        for _ in 0..<2 {
+    var statuses: [String] = []
+    try await withThrowingTaskGroup(of: String.self) { group in
+        for index in 0..<2 {
             group.addTask {
-                do {
-                    _ = try await adapter.execute(
-                        descriptor,
-                        metadata: [httpMetadata(reference)],
-                        context: context,
-                        resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
-                    )
-                    return false
-                } catch let error as SecretOperationExecutionError {
-                    return error == .redirectRequiresReview
-                } catch {
-                    return false
-                }
+                let output = try await adapter.execute(
+                    descriptor,
+                    metadata: [httpMetadata(reference)],
+                    context: SecretOperationExecutionContext(
+                        principal: "redirect-concurrent-\(index)",
+                        securityGeneration: 1
+                    ),
+                    resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+                )
+                return output.status
             }
         }
-        for await outcome in group {
-            outcomes.append(outcome)
+        for try await status in group {
+            statuses.append(status)
         }
     }
-    #expect(outcomes.count == 2)
-    #expect(outcomes.allSatisfy { $0 })
+    // §33/§37: a cross-origin redirect is a new authorization subject; the
+    // adapter returns REDIRECT_REQUIRES_REVIEW with the absolute Location so
+    // the agent can re-submit a new exact request for owner approval.
+    #expect(statuses.count == 2)
+    #expect(statuses.allSatisfy { $0 == "REDIRECT_REQUIRES_REVIEW" })
+}
+@Test func typedHTTPAdapterStopsCrossOriginRedirectsWithAResumeLocation() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    let adapter = HTTPSecretOperationAdapter(sessionManager: manager)
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/cross-redirect",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+            )
+        ),
+        requestedEffects: ["read-only"]
+    )
+    let context = SecretOperationExecutionContext(principal: "cross-redirect-principal", securityGeneration: 1)
+
+    let output = try await adapter.execute(
+        descriptor,
+        metadata: [httpMetadata(reference)],
+        context: context,
+        resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+    )
+    #expect(output.status == "REDIRECT_REQUIRES_REVIEW")
+    #expect(output.redirectLocation == "http://other.example/ok")
 }
 
 private func testURLSessionConfiguration() -> URLSessionConfiguration {
@@ -533,12 +572,15 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
         }
 
         let isRedirect = url.path == "/redirect"
+        let isCrossRedirect = url.path == "/cross-redirect"
         let isLarge = url.path == "/large"
         let isUnicode = url.path == "/unicode"
-        let statusCode = isRedirect ? 302 : 200
+        let statusCode = isRedirect || isCrossRedirect ? 302 : 200
         let headers = isRedirect
             ? ["Location": "http://\(httpTestHost)/ok"]
-            : ["Content-Type": "application/json"]
+            : isCrossRedirect
+                ? ["Location": "http://other.example/ok"]
+                : ["Content-Type": "application/json"]
         guard let response = HTTPURLResponse(
             url: url,
             statusCode: statusCode,

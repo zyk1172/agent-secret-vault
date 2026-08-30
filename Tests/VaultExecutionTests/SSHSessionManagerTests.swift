@@ -126,31 +126,29 @@ import VaultCore
     #expect(await runner.invocations.contains { $0.arguments.contains("exit") } == false)
 }
 
-@Test func SSHSessionManagerDoesNotPublishSessionWhenMasterHealthCheckFails() async throws {
+@Test func SSHSessionManagerReturnsTheRealCommandResultWhenMasterHealthCheckFails() async throws {
     let root = try makeTemporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let runner = SessionProcessRunner(checkExitCode: 1)
     let manager = SSHSessionManager(processRunner: runner, sessionDirectory: root)
 
-    do {
-        _ = try await manager.execute(scope: sessionScope()) { _ in
-            SSHSessionCommandExecution(
-                processResult: ProcessResult(exitCode: 0, stdout: Data("command ran".utf8), stderr: Data()),
-                transportReady: true
-            )
-        }
-        Issue.record("A session was published without a live ControlMaster.")
-    } catch SSHSessionManagerError.controlUnavailable {
-        // Expected: a completed channel is not enough to create a reusable
-        // transport handle; the explicit -O check must also succeed.
+    // §8: the ControlMaster is a reuse optimization, never a precondition.
+    // The remote command already ran, so its real result is returned with
+    // sessionID = nil; no error is raised and no session is published.
+    let execution = try await manager.execute(scope: sessionScope()) { _ in
+        SSHSessionCommandExecution(
+            processResult: ProcessResult(exitCode: 0, stdout: Data("command ran".utf8), stderr: Data()),
+            transportReady: true
+        )
     }
 
+    #expect(execution.processResult.stdout == Data("command ran".utf8))
+    #expect(execution.sessionID == nil)
     #expect(await manager.statuses(for: "agent-process").isEmpty)
     let invocations = await runner.invocations
     #expect(invocations.contains { $0.arguments.contains("check") })
     #expect(invocations.contains { $0.arguments.contains("exit") })
 }
-
 @Test func SSHSessionManagerRejectsRequestedScopeMismatchAndEnforcesLimits() async throws {
     let root = try makeTemporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }

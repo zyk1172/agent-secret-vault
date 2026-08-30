@@ -84,7 +84,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                     : ["metadataOnly", "projectedJSON"],
                 transportSessionReuse: true,
                 derivedCredentialCapture: false,
-                publicNetworkEgress: false,
+                publicNetworkEgress: true,
                 insecurePrivateNetworkHTTPProfileOptIn: true
             )
         )
@@ -190,6 +190,19 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             body: sanitizedBody,
             hasSecretAuth: hasSecretAuth
         )
+        // §37: a cross-origin redirect stops here with the absolute Location.
+        // The agent re-submits a new exact request to that URL, which goes
+        // through the ordinary authorization flow on its own; SVLT never
+        // silently follows to another origin.
+        if (300...399).contains(response.statusCode), let redirectLocation = response.redirectLocation {
+            return SecretOperationOutput(
+                status: "REDIRECT_REQUIRES_REVIEW",
+                httpStatus: response.statusCode,
+                sessionID: response.sessionID,
+                redirectLocation: redirectLocation,
+                redacted: true
+            )
+        }
         return SecretOperationOutput(
             status: response.statusCode >= 400 ? "HTTP_ERROR" : "COMPLETED",
             httpStatus: response.statusCode,
@@ -227,8 +240,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               url.host?.isEmpty == false,
-              !rawURL.contains("secret://"),
-              !hasCredentialQueryParameter(url)
+              !rawURL.contains("secret://")
         else {
             throw HTTPAdapterError.invalidParameter
         }
@@ -859,12 +871,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         }
     }
 
-    private func hasCredentialQueryParameter(_ url: URL) -> Bool {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
-        return components.queryItems?.contains { item in
-            item.name.range(of: #"(?i)password|passwd|pwd|token|secret|api[_-]?key|authorization|cookie"#, options: .regularExpression) != nil
-        } == true
-    }
 
     private static func isSafeHeaderName(
         _ name: String,
@@ -905,13 +911,23 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         }
     }
 
+    /// HTTP token grammar (RFC 9110) plus a technical exclusion for fields
+    /// that would corrupt HTTP framing. There is deliberately no vendor or
+    /// API-name allowlist: which headers a target API accepts is the device
+    /// owner's decision at approval time, not SVLT's.
     private static func isAllowedSecretHeaderName(_ name: String) -> Bool {
-        [
-            "api-key", "api-token", "x-api-key", "x-api-token",
-            "x-access-token", "x-auth-token", "x-client-token",
-            "x-service-token", "x-subscription-key", "x-rapidapi-key",
-            "x-goog-api-key"
-        ].contains(name.lowercased())
+        guard !name.isEmpty, name.utf8.count <= 256 else { return false }
+        let framingReserved: Set<String> = [
+            "host", "content-length", "transfer-encoding", "connection", "expect"
+        ]
+        guard !framingReserved.contains(name.lowercased()) else { return false }
+        // RFC 9110 token characters: tchar = "!" / "#" / "$" / "%" / "&" /
+        // "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+        let excluded: Set<UInt8> = [0x28, 0x29, 0x3C, 0x3E, 0x40, 0x2C, 0x3B, 0x3A,
+                                    0x5C, 0x22, 0x2F, 0x5B, 0x5D, 0x3F, 0x3D, 0x7B, 0x7D]
+        return name.utf8.allSatisfy { byte in
+            byte > 0x20 && byte < 0x7F && !excluded.contains(byte)
+        }
     }
 
     private static func isSafeAuthScheme(_ value: String) -> Bool {

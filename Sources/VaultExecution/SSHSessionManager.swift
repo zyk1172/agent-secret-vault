@@ -405,16 +405,19 @@ public actor SSHSessionManager {
             }
             // The first channel may complete successfully even when the
             // ControlMaster did not persist (for example, because an option
-            // was rejected or the master exited immediately). Never publish
-            // an apparently reusable session until OpenSSH itself confirms
-            // that the private control socket has a live master behind it.
+            // was rejected or the master exited immediately). The master is
+            // a reuse optimization, never a precondition for execution: when
+            // OpenSSH does not confirm a live control socket, drop the
+            // unusable session record and return the real command result
+            // with sessionID = nil (transparent fallback, §8). The next
+            // command simply opens a fresh connection.
             guard await checkControl(record) else {
                 records.removeValue(forKey: record.id)
                 await closeControl(record)
-                throw SSHSessionManagerError.controlUnavailable
+                return result.assigningSessionID(nil)
             }
             guard var current = records[id] else {
-                throw SSHSessionManagerError.controlUnavailable
+                return result.assigningSessionID(nil)
             }
             current.state = .active
             current.lastUsedAt = now()
@@ -449,7 +452,9 @@ public actor SSHSessionManager {
             return result.assigningSessionID(nil)
         }
         guard var current = records[record.id] else {
-            throw SSHSessionManagerError.controlUnavailable
+            // The record vanished (reaped concurrently) but the command
+            // already ran: return the real result instead of failing it.
+            return result.assigningSessionID(nil)
         }
         current.lastUsedAt = now()
         current.lastUsedTick = monotonicNow()

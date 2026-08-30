@@ -49,12 +49,22 @@ public struct HTTPTransportResponse: Sendable {
     public let statusCode: Int
     public let contentType: String?
     public let sessionID: String
+    /// Absolute Location of a cross-origin redirect that stopped for a
+    /// device-owner decision (§37). Nil for non-redirect responses.
+    public let redirectLocation: String?
 
-    public init(data: Data, statusCode: Int, contentType: String?, sessionID: String) {
+    public init(
+        data: Data,
+        statusCode: Int,
+        contentType: String?,
+        sessionID: String,
+        redirectLocation: String? = nil
+    ) {
         self.data = data
         self.statusCode = statusCode
         self.contentType = contentType
         self.sessionID = sessionID
+        self.redirectLocation = redirectLocation
     }
 }
 
@@ -133,17 +143,14 @@ public actor HTTPSessionManager {
         // URLSession's session delegate is shared by every task. Use a fresh
         // task delegate/tracker for this request so concurrent redirects cannot
         // reset or consume one another's rejection state.
-        let redirectTracker = HTTPRedirectTracker()
+        let redirectTracker = HTTPRedirectTracker(originalOrigin: request.url)
         do {
             let (bytes, response) = try await current.session.bytes(
                 for: request,
-                delegate: HTTPRedirectRejectingDelegate(tracker: redirectTracker)
+                delegate: HTTPOriginAwareRedirectDelegate(tracker: redirectTracker)
             )
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw SecretOperationExecutionError.processFailed
-            }
-            guard !(300...399).contains(httpResponse.statusCode) else {
-                throw HTTPSessionManagerError.redirectRequiresReview
             }
             var data = Data()
             data.reserveCapacity(min(maxResponseBytes, 64 * 1024))
@@ -152,6 +159,21 @@ public actor HTTPSessionManager {
                     throw HTTPSessionManagerError.responseTooLarge
                 }
                 data.append(byte)
+            }
+            // A surfaced 3xx is a cross-origin redirect the delegate refused.
+            // Return it with the absolute Location so the caller can form a
+            // new exact request; the device owner approves that request
+            // through the ordinary authorization flow (§37).
+            if (300...399).contains(httpResponse.statusCode) {
+                let location = httpResponse.value(forHTTPHeaderField: "Location")
+                    .flatMap { URL(string: $0, relativeTo: request.url)?.absoluteString }
+                return HTTPTransportResponse(
+                    data: data,
+                    statusCode: httpResponse.statusCode,
+                    contentType: httpResponse.value(forHTTPHeaderField: "Content-Type"),
+                    sessionID: current.id,
+                    redirectLocation: location
+                )
             }
             return HTTPTransportResponse(
                 data: data,
@@ -162,9 +184,6 @@ public actor HTTPSessionManager {
         } catch let error as HTTPSessionManagerError {
             throw error
         } catch {
-            if redirectTracker.didRejectRedirect {
-                throw HTTPSessionManagerError.redirectRequiresReview
-            }
             throw error
         }
     }
@@ -254,16 +273,18 @@ final class HTTPRedirectTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var rejected = false
 
+    /// The original request origin: same-origin redirects may follow
+    /// transparently; cross-origin redirects must stop for an owner decision.
+    let originalOrigin: URL?
+
+    init(originalOrigin: URL?) {
+        self.originalOrigin = originalOrigin
+    }
+
     var didRejectRedirect: Bool {
         lock.lock()
         defer { lock.unlock() }
         return rejected
-    }
-
-    func reset() {
-        lock.lock()
-        rejected = false
-        lock.unlock()
     }
 
     func markRejected() {
@@ -273,7 +294,7 @@ final class HTTPRedirectTracker: @unchecked Sendable {
     }
 }
 
-private final class HTTPRedirectRejectingDelegate: NSObject, URLSessionTaskDelegate {
+private final class HTTPOriginAwareRedirectDelegate: NSObject, URLSessionTaskDelegate {
     private let tracker: HTTPRedirectTracker
 
     init(tracker: HTTPRedirectTracker) {
@@ -284,10 +305,22 @@ private final class HTTPRedirectRejectingDelegate: NSObject, URLSessionTaskDeleg
         _: URLSession,
         task _: URLSessionTask,
         willPerformHTTPRedirection _: HTTPURLResponse,
-        newRequest _: URLRequest,
+        newRequest: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
+        if Self.isSameOrigin(newRequest.url, as: tracker.originalOrigin) {
+            completionHandler(newRequest)
+            return
+        }
         tracker.markRejected()
         completionHandler(nil)
+    }
+
+    private static func isSameOrigin(_ candidate: URL?, as origin: URL?) -> Bool {
+        guard let candidate, let origin else { return false }
+        return candidate.scheme?.lowercased() == origin.scheme?.lowercased()
+            && candidate.host?.lowercased() == origin.host?.lowercased()
+            && (candidate.port ?? (candidate.scheme?.lowercased() == "https" ? 443 : 80))
+                == (origin.port ?? (origin.scheme?.lowercased() == "https" ? 443 : 80))
     }
 }

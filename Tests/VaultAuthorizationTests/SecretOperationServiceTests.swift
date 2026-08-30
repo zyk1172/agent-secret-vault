@@ -7,14 +7,16 @@ import VaultExecution
 import VaultIPC
 @testable import VaultService
 
-@Test func silentSecretOperationUsesAgentExecutorWithoutApproval() async throws {
+@Test func firstOrdinaryOperationTakesOneApprovalAndOpensTheWindow() async throws {
     let fixture = try await OperationServiceFixture()
     defer { fixture.remove() }
 
+    // §22: every secret-bearing execution — including hostname — takes
+    // exactly one device-owner approval on first use.
     let output = try await fixture.service.performSecretOperation(fixture.ssh(command: "hostname"))
 
     #expect(output.status == "COMPLETED")
-    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 1)
 }
 
@@ -95,14 +97,17 @@ import VaultIPC
     #expect(try String(contentsOf: secondDestination, encoding: .utf8).contains("ASV_CANARY_OPERATION_SECRET"))
 }
 
-@Test func failedScopedOperationClearsItsLeaseBeforeTheNextAttempt() async throws {
+@Test func failedScopedOperationKeepsOwnerAuthorizationUntilExpiry() async throws {
     let fixture = try await OperationServiceFixture(executorStatus: "FAILED")
     defer { fixture.remove() }
 
     let output = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
 
+    // §10/§11: the 300-second lease records that the owner authorized this
+    // scope. A remote execution failure is reported honestly but never
+    // revokes the owner's decision.
     #expect(output.status == "FAILED")
-    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()))
     #expect((await fixture.auditEntries()).last?.result == "FAILED")
 }
 
@@ -269,7 +274,7 @@ import VaultIPC
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
-@Test func agentApprovalHintOnSilentOperationTakesFreshApprovalWithoutExtendingLease() async throws {
+@Test func agentApprovalHintOnHostnameBehavesAsAnOrdinaryWindowOperation() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 7_000)
     let clock = ServiceTestClock(start)
     let monotonicStart: UInt64 = 70_000_000_000
@@ -291,18 +296,16 @@ import VaultIPC
     let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
     #expect(originalExpiry == start.addingTimeInterval(300))
 
-    // A locally silent read that the Agent flags as approvalRequired takes
-    // the fresh one-shot path: it must not mint or extend a reusable lease.
+    // §30: the Agent's denied hint is a visible warning only — the hostname
+    // follow-up still reuses the ordinary window with zero extra prompts.
     clock.now = start.addingTimeInterval(100)
     clock.monotonicNow = monotonicStart + 100_000_000_000
-    let hostname = fixture.ssh(command: "hostname", agentRisk: .approvalRequired)
+    let hostname = fixture.ssh(command: "hostname", agentRisk: .denied)
     let output = try await fixture.service.performSecretOperation(hostname)
     #expect(output.status == "COMPLETED")
-    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 2)
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
-    let modes = await fixture.auditEntries().compactMap(\.authorizationMode)
-    #expect(!modes.contains(.executionWindowReuse))
 }
 
 @Test func containerLifecycleWritesReuseTheWindowAndRemovalStaysFresh() async throws {
@@ -509,7 +512,7 @@ import VaultIPC
     #expect(await fixture.executor.count == 3)
 }
 
-@Test func policyMismatchAfterApprovalPromotesToAFreshApprovalInsteadOfDenial() async throws {
+@Test func policyMismatchAfterApprovalStillExecutesUnderTheOriginalApproval() async throws {
     let gate = ApprovalGate()
     let fixture = try await OperationServiceFixture(
         approval: .gated,
@@ -536,18 +539,17 @@ import VaultIPC
     }
     #expect(await fixture.approver.count == 1)
 
-    // The record becomes read-only while the first approval is pending. The
-    // re-evaluation promotes the operation to a fresh decision instead of
-    // refusing it; the owner still decides through the second prompt.
+    // §32/§45: a saved credential-policy mismatch is display-only metadata.
+    // The re-evaluation after approval does not manufacture a second prompt:
+    // the owner's single decision stands and the ordinary lease opens.
     try await fixture.replaceWithReadOnlyRecord()
     await gate.release()
 
     #expect(await operation.value == nil)
-    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 1)
-    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()))
 }
-
 @Test func securityInvalidationCancelsAnInFlightSecretExecutor() async throws {
     let fixture = try await OperationServiceFixture(blockExecution: true)
     defer { fixture.remove() }
@@ -925,12 +927,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
             username: descriptor.actionType == .sshCommand ? descriptor.parameters["username"] : nil,
             protocolType: descriptor.protocolType?.rawValue,
             actionFamily: descriptor.actionType.rawValue,
-            operationFingerprint: descriptor.actionType == .httpRequest
-                || descriptor.actionType == .apiRequest
-                || descriptor.actionType == .databaseQuery
-                || descriptor.actionType == .sftpTransfer
-                ? descriptor.operationHash
-                : nil,
+            operationFingerprint: nil,
             generation: generation
         )
     }

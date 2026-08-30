@@ -710,7 +710,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         do {
             currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
         } catch {
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.actionExecutionFailed
         }
         var currentDecision = operationPolicyEngine.evaluate(
@@ -728,11 +727,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationMode: authorizationPath.auditMode,
                 status: .failure
             )
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.invalidOperationParameters
         }
         guard operationGeneration == securityGeneration else {
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
         }
 
@@ -744,9 +741,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // resolution or execution.
         if executionScope != nil,
            currentDecision.authorizationRequirement != .reusableApproval {
-            let staleScope = executionScope
+            // A re-evaluated fresh requirement takes the one-shot path, but
+            // the owner's already-granted ordinary lease stays untouched
+            // (§55): fresh never deletes, refreshes, or extends it.
             executionScope = nil
-            await abandonExecutionAuthorization(scope: staleScope)
             authorizationPath = try await authorizeIfNeeded(
                 descriptor,
                 metadata: currentMetadata,
@@ -775,7 +773,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         guard let recordResolver else {
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.actionExecutionFailed
         }
 
@@ -789,12 +786,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 forceFreshWhenUnscoped: false
             )
         } catch {
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.actionExecutionFailed
         }
 
         guard operationGeneration == securityGeneration else {
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
         }
 
@@ -815,7 +810,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     scope: executionScope
                 )
                 guard operationGeneration == securityGeneration else {
-                    await abandonExecutionAuthorization(scope: executionScope)
                     throw SecretOperationError.authorizationCancelled
                 }
 
@@ -823,7 +817,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 do {
                     refreshedMetadata = try await policyMetadata(for: descriptor.secretReferences)
                 } catch {
-                    await abandonExecutionAuthorization(scope: executionScope)
                     throw SecretOperationError.actionExecutionFailed
                 }
                 let refreshedDecision = operationPolicyEngine.evaluate(
@@ -831,11 +824,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     metadata: refreshedMetadata
                 )
                 guard refreshedDecision.risk != .denied else {
-                    await abandonExecutionAuthorization(scope: executionScope)
                     throw SecretOperationError.invalidOperationParameters
                 }
                 guard operationGeneration == securityGeneration else {
-                    await abandonExecutionAuthorization(scope: executionScope)
                     throw SecretOperationError.authorizationCancelled
                 }
 
@@ -851,11 +842,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                         forceFreshWhenUnscoped: false
                     )
                 } catch {
-                    await abandonExecutionAuthorization(scope: executionScope)
                     throw SecretOperationError.actionExecutionFailed
                 }
                 guard operationGeneration == securityGeneration else {
-                    await abandonExecutionAuthorization(scope: executionScope)
                     throw SecretOperationError.authorizationCancelled
                 }
 
@@ -865,7 +854,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     masterKey: key
                 )
                 guard commit != .needsFreshApproval else {
-                    await abandonExecutionAuthorization(scope: executionScope)
                     throw SecretOperationError.authorizationCancelled
                 }
             }
@@ -877,7 +865,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationPath = .executionWindowReuse
                 shouldEmitExecutionWindowReuseAudit = true
             case .needsFreshApproval:
-                await abandonExecutionAuthorization(scope: executionScope)
                 throw SecretOperationError.authorizationCancelled
             }
         }
@@ -887,7 +874,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // guard passes, task creation and registration below are synchronous
         // on this actor so a lock cannot slip between the check and tracking.
         guard operationGeneration == securityGeneration else {
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
         }
         if shouldEmitExecutionWindowReuseAudit {
@@ -901,7 +887,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // before creating the task so a lock/sleep during that append cannot
         // start a secret-bearing executor after security invalidation.
         guard operationGeneration == securityGeneration else {
-            await abandonExecutionAuthorization(scope: executionScope)
             throw SecretOperationError.authorizationCancelled
         }
 
@@ -936,7 +921,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw SecretOperationError.actionExecutorUnavailable
             }
             guard output.status == "COMPLETED" else {
-                await abandonExecutionAuthorization(scope: executionScope)
                 await emitAudit(
                     action: authorizationPath.operationAuditAction,
                     target: currentDecision.normalizedDestination ?? "local",
@@ -961,7 +945,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             return output
         } catch SecretOperationExecutionError.unavailable {
-            await abandonExecutionAuthorization(scope: executionScope)
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -974,7 +957,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw SecretOperationError.actionExecutorUnavailable
         } catch SecretOperationError.actionExecutorUnavailable {
-            await abandonExecutionAuthorization(scope: executionScope)
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -987,7 +969,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw SecretOperationError.actionExecutorUnavailable
         } catch SecretOperationExecutionError.redirectRequiresReview {
-            await abandonExecutionAuthorization(scope: executionScope)
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -1000,7 +981,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw SecretOperationError.redirectRequiresReview
         } catch SecretOperationExecutionError.outputQuarantined {
-            await abandonExecutionAuthorization(scope: executionScope)
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -1014,7 +994,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.outputQuarantined
         } catch let error as SecretOperationExecutionError {
             let mappedError = mapExecutionError(error)
-            await abandonExecutionAuthorization(scope: executionScope)
             await emitAudit(
                 action: authorizationPath.operationAuditAction,
                 target: currentDecision.normalizedDestination ?? "local",
@@ -1027,7 +1006,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw mappedError
         } catch {
-            await abandonExecutionAuthorization(scope: executionScope)
             if operationGeneration != securityGeneration {
                 await emitAudit(
                     action: authorizationPath.operationAuditAction,
@@ -3585,7 +3563,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
 
         guard operationGeneration == securityGeneration else {
-            await abandonExecutionAuthorization(scope: scope)
             throw SecretOperationError.authorizationCancelled
         }
 
@@ -3593,16 +3570,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         do {
             currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
         } catch {
-            await abandonExecutionAuthorization(scope: scope)
             throw SecretOperationError.actionExecutionFailed
         }
         var currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
         guard currentDecision.risk != .denied else {
-            await abandonExecutionAuthorization(scope: scope)
             throw SecretOperationError.invalidOperationParameters
         }
         guard operationGeneration == securityGeneration else {
-            await abandonExecutionAuthorization(scope: scope)
             throw SecretOperationError.authorizationCancelled
         }
 
@@ -3612,9 +3586,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // exact one-shot approval without creating/extending a reusable lease.
         if scope != nil,
            currentDecision.authorizationRequirement != .reusableApproval {
-            let staleScope = scope
+            // The owner's already-granted export lease stays untouched when a
+            // re-evaluation promotes this request to a fresh one-shot (§55).
             scope = nil
-            await abandonExecutionAuthorization(scope: staleScope)
             authorizationPath = try await authorizeIfNeeded(
                 descriptor,
                 metadata: currentMetadata,
@@ -3652,11 +3626,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 forceFreshWhenUnscoped: true
             )
         } catch {
-            await abandonExecutionAuthorization(scope: scope)
             throw SecretOperationError.actionExecutionFailed
         }
         guard operationGeneration == securityGeneration else {
-            await abandonExecutionAuthorization(scope: scope)
             throw SecretOperationError.authorizationCancelled
         }
 
@@ -3676,22 +3648,18 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     scope: scope
                 )
                 guard operationGeneration == securityGeneration else {
-                    await abandonExecutionAuthorization(scope: scope)
                     throw SecretOperationError.authorizationCancelled
                 }
                 do {
                     currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
                 } catch {
-                    await abandonExecutionAuthorization(scope: scope)
                     throw SecretOperationError.actionExecutionFailed
                 }
                 currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
                 guard currentDecision.risk != .denied else {
-                    await abandonExecutionAuthorization(scope: scope)
                     throw SecretOperationError.invalidOperationParameters
                 }
                 guard operationGeneration == securityGeneration else {
-                    await abandonExecutionAuthorization(scope: scope)
                     throw SecretOperationError.authorizationCancelled
                 }
                 do {
@@ -3703,7 +3671,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                         forceFreshWhenUnscoped: true
                     )
                 } catch {
-                    await abandonExecutionAuthorization(scope: scope)
                     throw SecretOperationError.actionExecutionFailed
                 }
                 commit = try await commitExecutionAuthorization(
@@ -3712,7 +3679,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     masterKey: key
                 )
                 guard commit != .needsFreshApproval else {
-                    await abandonExecutionAuthorization(scope: scope)
                     throw SecretOperationError.authorizationCancelled
                 }
             }
@@ -3724,7 +3690,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationPath = .executionWindowReuse
                 reusedScopedAuthorization = true
             case .needsFreshApproval:
-                await abandonExecutionAuthorization(scope: scope)
                 throw SecretOperationError.authorizationCancelled
             }
         }
@@ -3752,7 +3717,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw VaultAppServicesExportError.writeFailed
             }
         } catch {
-            await abandonExecutionAuthorization(scope: scope)
             throw error
         }
 
@@ -4223,6 +4187,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             username = descriptor.actionType == .sshCommand ? descriptor.parameters["username"] : nil
             protocolType = descriptor.protocolType?.rawValue
         }
+        // §80: the ordinary lease is a scope grant, not an exact-operation
+        // grant. The fingerprint stays out so two requests in the same scope
+        // (different paths, statements, or remote files) share one approval;
+        // fixed dangerous rules are re-checked by policy on every request.
         return ExecutionAuthorizationScope(
             principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
             secretReferenceIDs: descriptor.secretReferences.map(\.description),
@@ -4231,12 +4199,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             username: username,
             protocolType: protocolType,
             actionFamily: descriptor.actionType.rawValue,
-            operationFingerprint: descriptor.actionType == .httpRequest
-                || descriptor.actionType == .apiRequest
-                || descriptor.actionType == .databaseQuery
-                || descriptor.actionType == .sftpTransfer
-                ? descriptor.operationHash
-                : nil,
+            operationFingerprint: nil,
             generation: generation
         )
     }
@@ -4589,13 +4552,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return base
         }
         let seconds = executionWindowDuration.formatted(.number.precision(.fractionLength(0...3)))
-        let fingerprintBinding = descriptor.actionType == .httpRequest
-            || descriptor.actionType == .apiRequest
-            || descriptor.actionType == .databaseQuery
-            || descriptor.actionType == .sftpTransfer
-            ? "；HTTP/API、数据库和 SFTP 还要求完全相同的操作内容"
-            : ""
-        return "\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒\(fingerprintBinding)；不会授权其他凭据、目标或协议"
+        return "\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒；不会授权其他凭据、目标或协议"
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {

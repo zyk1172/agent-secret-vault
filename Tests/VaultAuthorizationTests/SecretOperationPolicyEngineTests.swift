@@ -1,13 +1,14 @@
 import Foundation
 import Testing
 import VaultCore
+import VaultExecution
 @testable import VaultAuthorization
 
 // SVLT policy classifies authorization requirements; it does not replace the
 // device owner's decision. Semantic risk promotes an operation to a higher
 // approval level, but a technically executable request is never hard-denied.
 
-@Test func safeReadSSHIsSilentAndAgentCannotDowngradeLocalDecision() throws {
+@Test func hostnameIsAnOrdinarySecretBearingOperationAndEntersTheWindow() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let engine = SecretOperationPolicyEngine()
     let metadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
@@ -27,12 +28,15 @@ import VaultCore
 
     let decision = engine.evaluate(descriptor, metadata: [metadata])
 
-    #expect(decision.risk == .silent)
-    #expect(decision.authorizationRequirement == .none)
-    #expect(!decision.requiredApproval)
+    // §22: every secret-bearing execution defaults to reusableApproval —
+    // the first use is one device-owner approval, then the 300-second
+    // window covers follow-ups. There is no silent tier for secret ops.
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .reusableApproval)
+    #expect(decision.requiredApproval)
 }
 
-@Test func agentApprovalHintCanOnlyRaiseSilentOperation() throws {
+@Test func agentApprovalHintIsDisplayOnlyAndDoesNotChangeTheRequirement() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -49,11 +53,14 @@ import VaultCore
     let metadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
 
     let decision = engine().evaluate(descriptor, metadata: [metadata])
-    #expect(decision.risk == .approvalRequired)
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    // §30: AgentRisk never changes the authorization requirement. The hint
+    // and its reason are displayed in the approval prompt only.
+    #expect(decision.authorizationRequirement == .reusableApproval)
+    #expect(decision.reasons.contains { $0.contains("Agent 提示此操作需要审批") })
+    #expect(decision.reasons.contains { $0.contains("agent wants explicit confirmation") })
 }
 
-@Test func agentDeniedHintBecomesFreshApprovalInsteadOfDenial() throws {
+@Test func agentDeniedHintIsAWarningThatNeverChangesTheRequirement() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -70,12 +77,11 @@ import VaultCore
     let metadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
 
     let decision = engine().evaluate(descriptor, metadata: [metadata])
-    // The agent must never deny on the device owner's behalf: its strongest
-    // hint promotes the operation to a fresh approval with a visible warning.
-    #expect(decision.risk == .approvalRequired)
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    // §30: an Agent "denied" hint is only a visible warning; the ordinary
+    // reusable requirement is untouched and the owner still decides.
+    #expect(decision.authorizationRequirement == .reusableApproval)
     #expect(decision.reasons.contains { $0.contains("Agent 自身认为此操作风险很高") })
-    #expect(decision.reasons.contains { $0.contains("ambiguous request") })
+    #expect(decision.requiredApproval)
 }
 
 @Test func agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() throws {
@@ -107,7 +113,7 @@ import VaultCore
     #expect(decision.requiredApproval)
 }
 
-@Test func agentDeniedHintOnReusableOperationPromotesToFresh() throws {
+@Test func agentDeniedHintOnReusableOperationDoesNotPromoteToFresh() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -128,7 +134,9 @@ import VaultCore
         metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
     )
 
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    // §30: the Agent cannot manufacture additional approval prompts. The
+    // ordinary five-minute window stays intact.
+    #expect(decision.authorizationRequirement == .reusableApproval)
 }
 
 @Test func destructiveSSHStaysFreshRegardlessOfAgentApprovalHint() throws {
@@ -295,7 +303,8 @@ import VaultCore
         ), metadata: metadata)
         #expect(decision.authorizationRequirement == .freshApprovalRequired, "command: \(command)")
         #expect(decision.risk == .approvalRequired, "command: \(command)")
-        #expect(decision.policyRuleID == "ssh.dangerous.fresh-approval", "command: \(command)")
+        // §44/§45: the rule ID must come from the explicit fixed registry.
+        #expect(SSHFreshRules.all.contains(decision.policyRuleID), "command: \(command)")
     }
 }
 
@@ -345,7 +354,7 @@ import VaultCore
 @Test func httpTiersFollowTheNewAuthorizationModel() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
 
-    func descriptor(method: String, url: String, protocols: [String]) -> SecretOperationDescriptor {
+    func descriptor(method: String, url: String) -> SecretOperationDescriptor {
         let scheme = url.hasPrefix("https") ? "https" : "http"
         return SecretOperationDescriptor(
             actionType: .apiRequest,
@@ -359,46 +368,32 @@ import VaultCore
     }
 
     let engine = SecretOperationPolicyEngine()
-    let httpsMetadata = [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])]
-    let httpMetadata = [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])]
+    let metadata = [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http", "https"])]
 
-    let read = engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api/status", protocols: ["https"]), metadata: httpsMetadata)
-    #expect(read.risk == .silent)
-    #expect(read.authorizationRequirement == .none)
+    // §33: ordinary methods (including GET) are reusable 300-second
+    // operations; only the fixed fresh rules promote to fresh.
+    #expect(engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api/status"), metadata: metadata).authorizationRequirement == .reusableApproval)
+    #expect(engine.evaluate(descriptor(method: "POST", url: "https://qnap.local:8080/api/restart"), metadata: metadata).authorizationRequirement == .reusableApproval)
+    #expect(engine.evaluate(descriptor(method: "PUT", url: "https://qnap.local:8080/api/config"), metadata: metadata).authorizationRequirement == .reusableApproval)
 
-    let write = engine.evaluate(descriptor(method: "POST", url: "https://qnap.local:8080/api/items", protocols: ["https"]), metadata: httpsMetadata)
-    #expect(write.authorizationRequirement == .reusableApproval)
-
-    let delete = engine.evaluate(descriptor(method: "DELETE", url: "https://qnap.local:8080/api/items/1", protocols: ["https"]), metadata: httpsMetadata)
+    let delete = engine.evaluate(descriptor(method: "DELETE", url: "https://qnap.local:8080/api/items/1"), metadata: metadata)
     #expect(delete.authorizationRequirement == .freshApprovalRequired)
+    #expect(delete.policyRuleID == "http.fresh.delete")
 
-    // Insecure HTTP with a credential is never silently refused: it takes a
-    // fresh approval whose reasons explain the plaintext risk.
-    let insecureGet = engine.evaluate(descriptor(method: "GET", url: "http://qnap.local:8080/api/status", protocols: ["http"]), metadata: httpMetadata)
-    #expect(insecureGet.authorizationRequirement == .freshApprovalRequired)
-    #expect(insecureGet.reasons.contains { $0.contains("未加密 HTTP") })
+    let insecure = engine.evaluate(descriptor(method: "GET", url: "http://qnap.local:8080/api/status"), metadata: metadata)
+    #expect(insecure.authorizationRequirement == .freshApprovalRequired)
+    #expect(insecure.policyRuleID == "http.fresh.insecure-secret-transport")
+    #expect(insecure.reasons.contains { $0.contains("明文") })
 
-    let insecurePost = engine.evaluate(descriptor(method: "POST", url: "http://qnap.local:8080/api/items", protocols: ["http"]), metadata: httpMetadata)
-    #expect(insecurePost.authorizationRequirement == .freshApprovalRequired)
-
-    // Credential-bearing query parameters are a risk signal, not a refusal.
-    let credentialQuery = engine.evaluate(SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 8080,
-        protocolType: .https,
-        httpMethod: "GET",
-        url: "https://qnap.local:8080/api/status?token=abc"
-    ), metadata: httpsMetadata)
+    let credentialQuery = engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api?token=abc"), metadata: metadata)
     #expect(credentialQuery.authorizationRequirement == .freshApprovalRequired)
+    #expect(credentialQuery.policyRuleID == "http.fresh.credential-in-url")
 }
 
-@Test func httpDestinationBindingMismatchesRequireOwnerConfirmation() throws {
+@Test func httpDestinationMismatchOpensANewOrdinaryScopeWithAWarning() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let engine = SecretOperationPolicyEngine()
 
-    // Unbound private destination → fresh confirmation, not a silent reuse.
     let unboundPrivate = engine.evaluate(SecretOperationDescriptor(
         actionType: .apiRequest,
         secretReferences: [reference],
@@ -408,10 +403,9 @@ import VaultCore
         httpMethod: "POST",
         url: "https://unbound-nas.local:8080/api"
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])])
-    #expect(unboundPrivate.authorizationRequirement == .freshApprovalRequired)
+    #expect(unboundPrivate.authorizationRequirement == .reusableApproval)
     #expect(unboundPrivate.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
 
-    // Unbound public destination → fresh confirmation, never a hard deny.
     let unboundPublic = engine.evaluate(SecretOperationDescriptor(
         actionType: .apiRequest,
         secretReferences: [reference],
@@ -421,12 +415,11 @@ import VaultCore
         httpMethod: "GET",
         url: "https://8.8.8.8/status"
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])])
-    #expect(unboundPublic.risk == .approvalRequired)
-    #expect(unboundPublic.authorizationRequirement == .freshApprovalRequired)
+    #expect(unboundPublic.authorizationRequirement == .reusableApproval)
     #expect(unboundPublic.reasons.contains { $0.contains("公网地址") })
 }
 
-@Test func sshDestinationBindingMismatchRequiresOwnerConfirmation() throws {
+@Test func sshDestinationMismatchOpensANewOrdinaryScopeWithAWarning() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let engine = SecretOperationPolicyEngine()
 
@@ -439,12 +432,14 @@ import VaultCore
         command: "hostname"
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["ssh"])])
 
+    // §31: the mismatched destination is a new execution scope — first use
+    // takes the ordinary approval; the warning is display-only.
     #expect(mismatch.risk == .approvalRequired)
-    #expect(mismatch.authorizationRequirement == .freshApprovalRequired)
+    #expect(mismatch.authorizationRequirement == .reusableApproval)
     #expect(mismatch.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
 }
 
-@Test func secretPolicyMismatchRequiresOwnerConfirmationInsteadOfDenial() throws {
+@Test func secretPolicyMismatchIsAWarningOnTheOrdinaryPath() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let engine = SecretOperationPolicyEngine()
     let readOnlyMetadata = [SecretPolicyMetadata(
@@ -464,12 +459,14 @@ import VaultCore
         command: "hostname"
     ), metadata: readOnlyMetadata)
 
+    // §32/§45: a saved credential-policy mismatch is a visible hint on the
+    // ordinary path — never fresh, never denied.
     #expect(decision.risk == .approvalRequired)
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.authorizationRequirement == .reusableApproval)
     #expect(decision.reasons.contains { $0.contains("凭据被用户标记为") })
 }
 
-@Test func secretProtocolMismatchRequiresOwnerConfirmationInsteadOfDenial() throws {
+@Test func secretProtocolMismatchIsAWarningOnTheOrdinaryPath() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let engine = SecretOperationPolicyEngine()
 
@@ -482,11 +479,9 @@ import VaultCore
         command: "hostname"
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])])
 
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.authorizationRequirement == .reusableApproval)
     #expect(decision.reasons.contains { $0.contains("凭据未绑定当前协议") })
 }
-
-// MARK: Database tiers (§28)
 
 @Test func databaseTiersFollowTheNewAuthorizationModel() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
@@ -504,69 +499,56 @@ import VaultCore
         ), metadata: metadata)
     }
 
-    #expect(decision("SELECT 1").authorizationRequirement == .none)
-    #expect(decision("SELECT * FROM users WHERE id = 1").authorizationRequirement == .none)
+    // §38: everything ordinary — reads, writes, schema additions, unknown
+    // SQL — shares the ordinary 300-second window.
+    #expect(decision("SELECT 1").authorizationRequirement == .reusableApproval)
+    #expect(decision("SELECT * FROM users WHERE id = 1").authorizationRequirement == .reusableApproval)
     #expect(decision("INSERT INTO logs VALUES (1)").authorizationRequirement == .reusableApproval)
     #expect(decision("UPDATE users SET name = 'x' WHERE id = 1").authorizationRequirement == .reusableApproval)
-    #expect(decision("DELETE FROM logs WHERE id = 1").authorizationRequirement == .reusableApproval)
-    #expect(decision("DROP TABLE audit").authorizationRequirement == .freshApprovalRequired)
-    #expect(decision("TRUNCATE TABLE logs").authorizationRequirement == .freshApprovalRequired)
-    #expect(decision("ALTER TABLE users DROP COLUMN name").authorizationRequirement == .freshApprovalRequired)
-    #expect(decision("DELETE FROM logs").authorizationRequirement == .freshApprovalRequired)
-    #expect(decision("UPDATE users SET name = 'x'").authorizationRequirement == .freshApprovalRequired)
-    // Unknown SQL is never denied: it takes the ordinary path.
-    #expect(decision("VACUUM my_table").authorizationRequirement == .reusableApproval)
+    #expect(decision("CREATE INDEX idx ON logs (ts)").authorizationRequirement == .reusableApproval)
+    #expect(decision("ALTER TABLE logs ADD COLUMN note TEXT").authorizationRequirement == .reusableApproval)
+    #expect(decision("VACUUM").authorizationRequirement == .reusableApproval)
     #expect(decision("SELECT 1; SELECT 2").authorizationRequirement == .reusableApproval)
+    #expect(decision("my-custom-procedure-call").authorizationRequirement == .reusableApproval)
 
-    let empty = decision("")
-    #expect(empty.risk == .denied)
-    #expect(empty.technicalFailure)
+    // The five fixed fresh rules.
+    #expect(decision("DROP TABLE logs").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("TRUNCATE TABLE logs").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("DELETE FROM logs").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("DELETE FROM logs WHERE id = 1").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("ALTER TABLE logs DROP COLUMN note").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("GRANT ALL ON app TO someone").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("REVOKE SELECT ON app FROM someone").authorizationRequirement == .freshApprovalRequired)
 }
-
-// MARK: SFTP tiers (§29)
 
 @Test func sftpTiersFollowTheNewAuthorizationModel() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["sftp"])]
     let engine = SecretOperationPolicyEngine()
 
-    #expect(engine.evaluate(SecretOperationDescriptor(
-        actionType: .sftpTransfer, secretReferences: [reference],
-        destination: "nas.local", port: 22, protocolType: .sftp,
-        fileOperation: .list, fileTarget: "/share"
-    ), metadata: metadata).authorizationRequirement == .none)
+    func decision(_ operation: SecretFileOperation, _ target: String?) -> PolicyDecision {
+        engine.evaluate(SecretOperationDescriptor(
+            actionType: .sftpTransfer, secretReferences: [reference],
+            destination: "nas.local", port: 22, protocolType: .sftp,
+            fileOperation: operation, fileTarget: target
+        ), metadata: metadata)
+    }
 
-    #expect(engine.evaluate(SecretOperationDescriptor(
-        actionType: .sftpTransfer, secretReferences: [reference],
-        destination: "nas.local", port: 22, protocolType: .sftp,
-        fileOperation: .upload, fileTarget: "/tmp/report.txt"
-    ), metadata: metadata).authorizationRequirement == .reusableApproval)
+    // §39: ordinary transfers share the 300-second window regardless of the
+    // local path — there are no safe-directory fresh rules.
+    #expect(decision(.list, "/share").authorizationRequirement == .reusableApproval)
+    #expect(decision(.read, "/share/a").authorizationRequirement == .reusableApproval)
+    #expect(decision(.download, "/tmp/elsewhere/report.txt").authorizationRequirement == .reusableApproval)
+    #expect(decision(.upload, "/tmp/elsewhere/report.txt").authorizationRequirement == .reusableApproval)
+    #expect(decision(.move, "/share/b").authorizationRequirement == .reusableApproval)
 
-    #expect(engine.evaluate(SecretOperationDescriptor(
-        actionType: .sftpTransfer, secretReferences: [reference],
-        destination: "nas.local", port: 22, protocolType: .sftp,
-        fileOperation: .delete, fileTarget: "/share/report.txt"
-    ), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
-
-    #expect(engine.evaluate(SecretOperationDescriptor(
-        actionType: .sftpTransfer, secretReferences: [reference],
-        destination: "nas.local", port: 22, protocolType: .sftp,
-        fileOperation: .move, fileTarget: "/share/report.txt"
-    ), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
-
-    // A download target outside the default safe directory is a fresh
-    // owner confirmation with the path shown — not a denial.
-    let outside = engine.evaluate(SecretOperationDescriptor(
-        actionType: .sftpTransfer, secretReferences: [reference],
-        destination: "nas.local", port: 22, protocolType: .sftp,
-        fileOperation: .download, fileTarget: "/Users/zhengyunkai/Desktop/report.txt"
-    ), metadata: metadata)
-    #expect(outside.authorizationRequirement == .freshApprovalRequired)
+    // Fixed fresh rules.
+    #expect(decision(.delete, "/share/report.txt").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision(.overwrite, "/share/report.txt").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision(.write, "/share/report.txt").authorizationRequirement == .freshApprovalRequired)
 }
 
-// MARK: localExecution / trustedProcess (§32)
-
-@Test func localExecutionBecomesHighRiskFreshApprovalInsteadOfDenial() throws {
+@Test func localExecutionIsASingleFixedFreshSecretReleaseRule() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = policyMetadata(reference, destinations: [], protocols: [])
     let descriptor = SecretOperationDescriptor(actionType: .localExecution, secretReferences: [reference])
@@ -575,10 +557,10 @@ import VaultCore
     #expect(decision.risk == .approvalRequired)
     #expect(decision.authorizationRequirement == .freshApprovalRequired)
     #expect(decision.reasons.contains { $0.contains("把凭据交给本地任意进程") })
-    #expect(decision.policyRuleID == "local-execution.user-approved-secret-release")
+    #expect(decision.policyRuleID == "local-execution.fresh.arbitrary-secret-release")
 }
 
-@Test func trustedProcessStaysFresh() throws {
+@Test func trustedProcessUsesTheOrdinaryWindow() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let trustedPayload = SecretOperationPayload.trustedProcess(
         TrustedProcessOperation(profileID: "signed-helper", secretReferences: [reference])
@@ -589,10 +571,10 @@ import VaultCore
         payload: trustedPayload
     )
 
-    #expect(engine().evaluate(trusted, metadata: [policyMetadata(reference, destinations: [], protocols: [])]).authorizationRequirement == .freshApprovalRequired)
+    // §43: a user-registered signed process profile is an ordinary scoped
+    // operation — first approval opens the five-minute window.
+    #expect(engine().evaluate(trusted, metadata: [policyMetadata(reference, destinations: [], protocols: [])]).authorizationRequirement == .reusableApproval)
 }
-
-// MARK: unchanged technical shape failures
 
 @Test func duplicateSecretReferencesAreRejectedWithoutTrapping() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
@@ -746,4 +728,121 @@ private func policyMetadata(
         allowedDestinations: destinations,
         allowedProtocols: protocols
     )
+}
+
+
+// MARK: §44/§45 — fixed fresh rule registry bounds
+
+@Test func freshRuleRegistriesNeverExceedFiveCategoriesPerLayer() {
+    #expect(SSHFreshRules.all.count <= 5)
+    #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count <= 5)
+    #expect(SecretOperationPolicyEngine.DatabaseFreshRules.all.count <= 5)
+    #expect(SecretOperationPolicyEngine.SFTPFreshRules.all.count <= 5)
+}
+
+@Test func localExecutionHasExactlyOneFreshRule() {
+    // §42: the only localExecution fresh category is arbitrary secret
+    // release; there is deliberately nothing else.
+    #expect(engine().evaluate(SecretOperationDescriptor(
+        actionType: .localExecution,
+        secretReferences: [try! SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")]
+    ), metadata: []).policyRuleID == "local-execution.fresh.arbitrary-secret-release")
+}
+
+// MARK: §28/§71 — the shallow dangerous scanner sees through wrappers
+
+@Test func dangerousScannerCatchesWrapperAndCompositionForms() {
+    let classifier = SSHCommandRiskClassifier()
+    let freshCommands: [(String, String)] = [
+        ("rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("/bin/rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("/usr/bin/rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("sudo rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("sudo /bin/rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("sh -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
+        ("bash -c 'reboot'", SSHFreshRules.powerControl),
+        ("hostname && rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("uptime\nrm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("/sbin/reboot", SSHFreshRules.powerControl),
+        ("docker system prune", SSHFreshRules.containerDestruction),
+        ("docker rm web", SSHFreshRules.containerDestruction),
+        ("zpool destroy tank", SSHFreshRules.storageRaidDestruction),
+        ("mdadm --zero-superblock /dev/md0", SSHFreshRules.storageRaidDestruction),
+        ("systemctl isolate rescue.target", SSHFreshRules.powerControl)
+    ]
+    for (command, expectedRule) in freshCommands {
+        let match = classifier.matchFixedFreshRule(in: command)
+        #expect(match == expectedRule, "command: \(command)")
+    }
+}
+
+@Test func ordinaryFormsAreNeverPromotedByTheScanner() {
+    let classifier = SSHCommandRiskClassifier()
+    let ordinary = [
+        "bash -c 'echo hello'",
+        "python3 -c 'print(1)'",
+        "find /tmp -exec echo {} \\;",
+        "sudo systemctl restart jellyfin",
+        "unknown-nas-command",
+        "cd /tmp && df -h",
+        "docker ps",
+        "docker restart web",
+        "systemctl stop jellyfin",
+        "zpool status",
+        "uptime\ndf -h"
+    ]
+    for command in ordinary {
+        #expect(classifier.matchFixedFreshRule(in: command) == nil, "command: \(command)")
+        #expect(classifier.classify(command: command).authorizationRequirement == .reusableApproval, "command: \(command)")
+    }
+}
+
+
+// MARK: §47/§48 — structured batch counts (1/2/3/10/32) flow through every layer
+
+@Test func structuredBatchesOfAnySizeUpToTheLimitFlowThroughPolicyAndPreflight() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let engine = SecretOperationPolicyEngine()
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+
+    func descriptor(_ commands: [SSHCommandSpec]) -> SecretOperationDescriptor {
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            sshCommandBatch: SSHCommandBatch(commands: commands),
+            parameters: ["passwordRef": reference.description, "username": "admin"]
+        )
+    }
+
+    let simple: [SSHCommandSpec] = [
+        .init(executable: "uptime"),
+        .init(executable: "cat", arguments: ["/proc/loadavg"]),
+        .init(executable: "df", arguments: ["-h"]),
+        .init(executable: "touch", arguments: ["/tmp/svlt-a"]),
+        .init(executable: "mkdir", arguments: ["/tmp/svlt-b"]),
+        .init(executable: "hostname"),
+        .init(executable: "df", arguments: ["-h", "/share"]),
+        .init(executable: "ls", arguments: ["/tmp"]),
+        .init(executable: "cat", arguments: ["/etc/hostname"]),
+        .init(executable: "whoami")
+    ]
+    let executor = LocalSecretOperationExecutor()
+
+    for count in [1, 2, 3, 10, 32] {
+        let filler = Array(repeating: SSHCommandSpec(executable: "echo", arguments: ["ok"]), count: max(0, count - simple.count))
+        let commands = (simple + filler).prefix(count)
+        let d = descriptor(Array(commands))
+        let decision = engine.evaluate(d, metadata: metadata)
+        #expect(decision.authorizationRequirement == .reusableApproval, "batch size \(count)")
+        #expect(!decision.technicalFailure, "batch size \(count)")
+        #expect(executor.preflight(d) == .supported, "batch size \(count)")
+    }
+
+    // Over the technical limit: a validation error, never a policy refusal.
+    let oversized = Array(repeating: SSHCommandSpec(executable: "echo", arguments: ["ok"]), count: 33)
+    let oversizedDecision = engine.evaluate(descriptor(oversized), metadata: metadata)
+    #expect(oversizedDecision.technicalFailure)
 }

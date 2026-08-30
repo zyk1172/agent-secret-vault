@@ -1,17 +1,26 @@
 import Foundation
 import VaultCore
 
+/// SVLT uses a device-owner authorization lease, not a semantic command
+/// firewall.
+///
 /// SVLT policy classifies authorization requirements; it does not replace
 /// the device owner's decision.
 ///
-/// Semantic risk may promote an operation from silent to reusable to fresh
-/// approval, and it may attach warning text for the approval prompt, but it
-/// must not hard-deny an otherwise technically executable request.
+/// For secret-bearing execution, ordinary operations use one scoped,
+/// non-sliding 300-second owner authorization. Only a small, explicit set
+/// of at most five high-impact rule categories per execution layer may
+/// require one-shot fresh approval.
 ///
-/// Hard failures are reserved for malformed, contradictory, stale, or
-/// identity-invalid requests (`PolicyDecision.technicalFailure`). The device
-/// owner makes the final allow/deny decision through Touch ID / password for
-/// everything else.
+/// Agent risk hints, unknown operations, destination warnings, and
+/// transport/session failures must not manufacture additional approval
+/// prompts.
+///
+/// Semantic risk must not hard-deny an otherwise technically executable
+/// request. Hard failures are reserved for malformed, contradictory, stale,
+/// or identity-invalid requests (`PolicyDecision.technicalFailure`). The
+/// device owner makes the final allow/deny decision through Touch ID /
+/// password for everything else. SVLT executes that decision.
 public struct SecretOperationPolicyEngine: Sendable {
     public struct Configuration: Sendable {
         public let maxCommandLength: Int
@@ -47,11 +56,11 @@ public struct SecretOperationPolicyEngine: Sendable {
             metadata: metadata,
             normalizedDestination: normalizedDestination
         )
-        let agentRisk = descriptor.agentAssessment.declaredRisk
-        let effectiveRequirement = Self.effectiveAuthorizationRequirement(
-            local: local.authorizationRequirement,
-            agentRisk: agentRisk
-        )
+        // AgentRisk has completely exited the authorization decision (§30):
+        // declaredRisk/reason/intendedEffect are display and audit metadata
+        // only. They can never raise reusable to fresh, lower fresh to
+        // reusable, or deny on the device owner's behalf.
+        let effectiveRequirement = local.authorizationRequirement
         let effectiveRisk: OperationRisk = {
             switch effectiveRequirement {
             case .none: return .silent
@@ -61,6 +70,7 @@ public struct SecretOperationPolicyEngine: Sendable {
         }()
 
         var reasons = local.reasons
+        let agentRisk = descriptor.agentAssessment.declaredRisk
         if agentRisk != .silent {
             if agentRisk == .denied {
                 reasons.append("⚠️ Agent 自身认为此操作风险很高；最终是否执行由设备所有者决定")
@@ -83,44 +93,6 @@ public struct SecretOperationPolicyEngine: Sendable {
             requiresFreshApprovalOnFirstUse: false,
             technicalFailure: local.technicalFailure
         )
-    }
-
-    /// The Agent's declared risk is a bounded hint, not authorization. It can
-    /// raise the local decision, but it must not reshape the lease semantics
-    /// the local policy already granted, and it must not deny the request on
-    /// the device owner's behalf: an Agent "denied" hint becomes a fresh
-    /// approval with a visible warning, never a refusal.
-    private static func effectiveAuthorizationRequirement(
-        local: AuthorizationRequirement,
-        agentRisk: OperationRisk
-    ) -> AuthorizationRequirement {
-        switch agentRisk {
-        case .silent:
-            return local
-        case .denied:
-            switch local {
-            case .denied:
-                return .denied
-            case .none, .reusableApproval:
-                return .freshApprovalRequired
-            case .freshApprovalRequired:
-                return .freshApprovalRequired
-            }
-        case .approvalRequired:
-            switch local {
-            case .none:
-                // The local policy found no side effects, but the Agent
-                // believes there are. Demand a fresh decision instead of
-                // trusting the Agent to define the lease terms.
-                return .freshApprovalRequired
-            case .reusableApproval, .freshApprovalRequired:
-                // The local policy already set the requirement; agreeing
-                // that approval is needed cannot raise reusable to fresh.
-                return local
-            case .denied:
-                return .denied
-            }
-        }
     }
 
     private func localDecision(
@@ -178,23 +150,28 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = transferOutcome.ruleID
             localRequirement = transferOutcome.requirement
         case .browserLogin, .localAppFill:
-            localRisk = .silent
-            reasons = ["绑定目标上的普通登录或表单填充"]
-            ruleID = "bound-login.silent"
-            localRequirement = .none
+            // Secret-bearing execution defaults to the ordinary lease; the
+            // adapter reports ACTION_EXECUTOR_UNAVAILABLE until a real
+            // executor exists (§40: no semantic deny, no invented rules).
+            localRisk = .approvalRequired
+            reasons = ["浏览器/本地 App 填充属于普通 Secret 操作，首次需要本机审批，之后可在执行窗口内复用"]
+            ruleID = "bound-login.reusable-approval"
+            localRequirement = .reusableApproval
         case .localExecution:
             localRisk = .approvalRequired
             reasons = [
                 "⚠️ 此操作会把凭据交给本地任意进程；该进程可能读取、保存、转换或传输凭据",
                 "批准后 SVLT 无法保证 Agent 不获得该凭据；本次释放会被审计记录为 userApprovedSecretRelease"
             ]
-            ruleID = "local-execution.user-approved-secret-release"
+            ruleID = "local-execution.fresh.arbitrary-secret-release"
             localRequirement = .freshApprovalRequired
         case .trustedProcess:
+            // A user-registered signed process profile is an ordinary scoped
+            // operation (§43): first approval opens the five-minute window.
             localRisk = .approvalRequired
-            reasons = ["Trusted Process 会把 Secret 交给预先登记的签名进程；每次都需要设备所有者重新认证"]
-            ruleID = "trusted-process.fresh-approval"
-            localRequirement = .freshApprovalRequired
+            reasons = ["Trusted Process 会把 Secret 交给预先登记的签名进程；首次需要本机审批，之后可在执行窗口内复用"]
+            ruleID = "trusted-process.reusable-approval"
+            localRequirement = .reusableApproval
         }
 
         // A technical failure means the request itself is malformed or cannot
@@ -214,10 +191,11 @@ public struct SecretOperationPolicyEngine: Sendable {
             metadata: metadata,
             normalizedDestination: normalizedDestination
         )
-        let effectiveRequirement = AuthorizationRequirement.max(
-            localRequirement,
-            binding.requirement
-        )
+        // Binding information is display-only (§31/§32): a destination,
+        // protocol, or credential-policy mismatch opens a new execution scope
+        // whose first use takes the ordinary approval; it never promotes to
+        // fresh and never denies. Only technical identity failures fail hard.
+        let effectiveRequirement = localRequirement
         if effectiveRequirement == .denied {
             // Binding verification can only fail hard for technical reasons
             // (missing or contradictory credential identity information).
@@ -236,14 +214,10 @@ public struct SecretOperationPolicyEngine: Sendable {
             case .denied: return .denied
             }
         }()
-        // When the binding check contributed nothing (bound destination, no
-        // mismatch), the semantic rule that classified the operation stays the
-        // reported rule ID; a binding promotion reports its own.
-        let finalRuleID = binding.requirement == .none ? ruleID : binding.ruleID
         return decision(
             effectiveRisk,
             reasons + binding.reasons,
-            finalRuleID,
+            ruleID,
             normalizedDestination,
             authorizationRequirement: effectiveRequirement
         )
@@ -451,10 +425,12 @@ public struct SecretOperationPolicyEngine: Sendable {
         return nil
     }
 
-    /// Destination/protocol/policy bindings no longer refuse anything: a
-    /// mismatch only promotes the operation to a fresh approval with the
-    /// mismatch facts shown, and the device owner decides for this execution.
-    /// Approving never mutates the saved binding.
+    /// Destination/protocol/credential-policy information is display-only
+    /// (§31/§32): a mismatch opens a new execution scope whose first use takes
+    /// the ordinary approval and a visible hint; it never promotes to fresh
+    /// and never denies. Approving never mutates the saved binding. Only
+    /// unverifiable credential identity (missing/contradictory metadata)
+    /// fails hard as a technical error.
     private func bindingDecision(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
@@ -476,7 +452,6 @@ public struct SecretOperationPolicyEngine: Sendable {
             metadataByReference[item.reference] = item
         }
 
-        var requirement = AuthorizationRequirement.none
         var reasons: [String] = []
         for reference in descriptor.secretReferences {
             guard let secret = metadataByReference[reference] else {
@@ -486,16 +461,14 @@ public struct SecretOperationPolicyEngine: Sendable {
             if let protocolType = descriptor.protocolType,
                !secret.allowedProtocols.isEmpty,
                !isAllowedProtocol(protocolType, for: descriptor, allowedProtocols: secret.allowedProtocols) {
-                requirement = .freshApprovalRequired
                 reasons.append(
-                    "凭据未绑定当前协议（已保存：\(secret.allowedProtocols.joined(separator: "/"))；本次：\(protocolType.rawValue)），设备所有者确认后本次执行"
+                    "提示：凭据未绑定当前协议（已保存：\(secret.allowedProtocols.joined(separator: "/"))；本次：\(protocolType.rawValue)）；本次审批进入新的执行 scope"
                 )
             }
 
             if !isAllowedSecretPolicy(secret.policy, action: descriptor.actionType) {
-                requirement = .freshApprovalRequired
                 reasons.append(
-                    "凭据被用户标记为 \(secret.policy.rawValue)；本次副作用需要设备所有者确认"
+                    "提示：凭据被用户标记为 \(secret.policy.rawValue)；本次副作用由设备所有者在审批中确认"
                 )
             }
 
@@ -510,30 +483,36 @@ public struct SecretOperationPolicyEngine: Sendable {
                 continue
             }
 
-            // The export root is the validated security boundary, not a
-            // credential destination: an export lease stays on the ordinary
-            // five-minute window (a standing product decision), so a
-            // destination mismatch only asks for the ordinary approval.
-            if descriptor.actionType == .exportPlaintext {
-                if requirement == .none {
-                    requirement = .reusableApproval
-                    reasons.append("导出根目录不在凭据绑定中；导出授权按现有 5 分钟窗口执行")
-                }
-                continue
-            }
-
-            requirement = .freshApprovalRequired
             if isPublicDestination(normalizedDestination) {
-                reasons.append("目标 \(normalizedDestination) 不在该凭据已保存的绑定中，且是公网地址；设备所有者确认后本次执行")
+                reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中，且是公网地址；本次审批进入新的执行 scope")
             } else {
-                reasons.append("目标 \(normalizedDestination) 不在该凭据已保存的绑定中；设备所有者确认后本次执行")
+                reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中；本次审批进入新的执行 scope")
             }
         }
 
-        if requirement == .none {
-            return (.none, [], "destination.bound")
-        }
-        return (requirement, reasons, "destination.owner-confirmation")
+        return (.none, reasons, "destination.bound")
+    }
+
+    /// The complete, explicit registry of HTTP fresh rules (§33). Test code
+    /// asserts this list never grows past five categories. `cross-origin-
+    /// redirect` is enforced at the redirect resume: the adapter stops with
+    /// REDIRECT_REQUIRES_REVIEW and the agent re-submits a new exact request
+    /// that is authorized on its own. `explicit-secret-release` is reserved
+    /// for a future derived-credential adapter and is not produced today.
+    public enum HTTPFreshRules {
+        public static let delete = "http.fresh.delete"
+        public static let insecureSecretTransport = "http.fresh.insecure-secret-transport"
+        public static let credentialInURL = "http.fresh.credential-in-url"
+        public static let crossOriginRedirect = "http.fresh.cross-origin-redirect"
+        public static let explicitSecretRelease = "http.fresh.explicit-secret-release"
+
+        public static let all: [String] = [
+            delete,
+            insecureSecretTransport,
+            credentialInURL,
+            crossOriginRedirect,
+            explicitSecretRelease
+        ]
     }
 
     private func httpDecision(
@@ -549,15 +528,17 @@ public struct SecretOperationPolicyEngine: Sendable {
             return (.denied, .denied, ["HTTP URL 无效或包含 URL 内嵌凭据"], "http.url.invalid")
         }
 
-        let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
         let carriesSecret = !descriptor.secretReferences.isEmpty
 
+        // Fixed fresh rules (§33). Everything else — GET/HEAD/POST/PUT/PATCH,
+        // public destinations, unknown paths, custom headers, new destinations
+        // — is an ordinary operation in a fresh execution scope.
         if hasCredentialQueryParameter(parsedURL) {
             return (
                 .approvalRequired,
                 .freshApprovalRequired,
                 ["URL query 携带凭据类参数，可能被记录在服务器日志或代理中；设备所有者确认后执行"],
-                "http.credential-query.fresh-approval"
+                HTTPFreshRules.credentialInURL
             )
         }
 
@@ -566,28 +547,43 @@ public struct SecretOperationPolicyEngine: Sendable {
                 .approvalRequired,
                 .freshApprovalRequired,
                 ["目标使用未加密 HTTP，凭据可能以明文在网络中传输；设备所有者确认后执行"],
-                "http.insecure-transport.fresh-approval"
+                HTTPFreshRules.insecureSecretTransport
             )
         }
 
-        switch method {
-        case "GET", "HEAD":
-            return (.silent, .none, ["HTTP GET/HEAD 被本地解析为无副作用读取"], "http.read-only.silent")
-        case "DELETE":
+        let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
+        if method == "DELETE" {
             return (
                 .approvalRequired,
                 .freshApprovalRequired,
                 ["HTTP DELETE 可能删除远端资源，每次都需要设备所有者重新认证"],
-                "http.delete.fresh-approval"
-            )
-        default:
-            return (
-                .approvalRequired,
-                .reusableApproval,
-                ["HTTP 请求可能产生副作用，首次需要本机审批，之后可在执行窗口内复用"],
-                "http.write.reusable-approval"
+                HTTPFreshRules.delete
             )
         }
+
+        return (
+            .approvalRequired,
+            .reusableApproval,
+            ["HTTP 请求属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
+            "http.ordinary.reusable-approval"
+        )
+    }
+
+    /// The complete, explicit registry of database fresh rules (§38).
+    public enum DatabaseFreshRules {
+        public static let drop = "database.fresh.drop"
+        public static let truncate = "database.fresh.truncate"
+        public static let delete = "database.fresh.delete"
+        public static let destructiveAlter = "database.fresh.destructive-alter"
+        public static let privilegeAccountAdmin = "database.fresh.privilege-account-admin"
+
+        public static let all: [String] = [
+            drop,
+            truncate,
+            delete,
+            destructiveAlter,
+            privilegeAccountAdmin
+        ]
     }
 
     private func databaseDecision(
@@ -596,111 +592,92 @@ public struct SecretOperationPolicyEngine: Sendable {
         guard let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (.denied, .denied, ["数据库查询为空"], "database.query.missing")
         }
-        if isClearlyDestructiveSQL(query) {
+        if let rule = matchFixedFreshDatabaseRule(query) {
             return (
                 .approvalRequired,
                 .freshApprovalRequired,
-                ["数据库查询包含明确的破坏性语义，每次都需要设备所有者重新认证"],
-                "database.destructive.fresh-approval"
+                ["数据库查询匹配固定高危类别（\(rule)），每次都需要设备所有者重新认证"],
+                rule
             )
-        }
-        if isReadOnlyDatabaseQuery(query) {
-            return (.silent, .none, ["数据库查询被本地解析为只读语句"], "database.read-only.silent")
         }
         return (
             .approvalRequired,
             .reusableApproval,
-            ["数据库查询可能改变数据库状态，首次需要本机审批，之后可在执行窗口内复用"],
-            "database.write.reusable-approval"
+            ["数据库查询属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
+            "database.ordinary.reusable-approval"
         )
     }
 
-    /// Only locally provable destructive SQL promotes to fresh. Unknown or
-    /// unparseable SQL stays on the ordinary path — the device owner decides,
-    /// not the parser.
-    private func isClearlyDestructiveSQL(_ query: String) -> Bool {
+    /// Fixed fresh rules for SQL, matched with a shallow lexical scan
+    /// (§38). Unknown or unparseable SQL stays on the ordinary path — the
+    /// device owner decides, not the parser.
+    private func matchFixedFreshDatabaseRule(_ query: String) -> String? {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.range(of: #"(?i)\b(drop|truncate|alter)\b"#, options: .regularExpression) != nil {
-            return true
+        if normalized.range(of: #"(?i)\bdrop\b"#, options: .regularExpression) != nil {
+            return DatabaseFreshRules.drop
         }
-        let firstKeyword = normalized.range(
-            of: #"(?i)^\s*(delete|update)\b"#,
-            options: .regularExpression
-        )
-        guard firstKeyword != nil else { return false }
-        return normalized.range(of: #"(?i)\bwhere\b"#, options: .regularExpression) == nil
+        if normalized.range(of: #"(?i)\btruncate\b"#, options: .regularExpression) != nil {
+            return DatabaseFreshRules.truncate
+        }
+        if normalized.range(of: #"(?i)^\s*(delete)\b"#, options: .regularExpression) != nil {
+            return DatabaseFreshRules.delete
+        }
+        if normalized.range(of: #"(?i)\balter\b"#, options: .regularExpression) != nil,
+           normalized.range(of: #"(?i)\b(drop)\b"#, options: .regularExpression) != nil {
+            return DatabaseFreshRules.destructiveAlter
+        }
+        if normalized.range(of: #"(?i)\b(grant|revoke|create\s+user|drop\s+user|alter\s+user)\b"#, options: .regularExpression) != nil {
+            return DatabaseFreshRules.privilegeAccountAdmin
+        }
+        return nil
     }
 
-    private func isReadOnlyDatabaseQuery(_ query: String) -> Bool {
-        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return false }
-        let withoutTrailingSemicolon = normalized.hasSuffix(";")
-            ? String(normalized.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
-            : normalized
-        // Only a single statement can be proven read-only locally; anything
-        // else takes the ordinary approval path.
-        guard !withoutTrailingSemicolon.contains(";") else { return false }
-        guard withoutTrailingSemicolon.range(
-            of: #"(?i)^\s*(select|with|show|describe|explain)\b"#,
-            options: .regularExpression
-        ) != nil else {
-            return false
-        }
-        let forbidden = #"(?i)\b(insert|update|delete|drop|alter|create|truncate|copy|grant|revoke|replace|merge|attach|detach|load|call|execute|do|set|lock|vacuum|into|for\s+update|for\s+share)\b"#
-        return withoutTrailingSemicolon.range(of: forbidden, options: .regularExpression) == nil
+    /// The complete, explicit registry of SFTP fresh rules (§39). There is no
+    /// fifth rule today: only delete, overwrite-existing, and
+    /// replace-existing-target promote to fresh.
+    public enum SFTPFreshRules {
+        public static let delete = "sftp.fresh.delete"
+        public static let overwriteExisting = "sftp.fresh.overwrite-existing"
+        public static let replaceExistingTarget = "sftp.fresh.replace-existing-target"
+
+        public static let all: [String] = [
+            delete,
+            overwriteExisting,
+            replaceExistingTarget
+        ]
     }
 
     private func sftpDecision(
         _ descriptor: SecretOperationDescriptor
     ) -> (risk: OperationRisk, requirement: AuthorizationRequirement, reasons: [String], ruleID: String) {
         switch descriptor.effectiveFileOperation {
-        case .list, .read:
-            return (.silent, .none, ["SFTP 操作被本地解析为只读"], "sftp.read.silent")
-        case .download:
-            guard let target = descriptor.fileTarget,
-                  isWithinSafeDownloadDirectory(target)
-            else {
-                return (
-                    .approvalRequired,
-                    .freshApprovalRequired,
-                    ["SFTP 下载目标\(descriptor.fileTarget.map { " \($0)" } ?? "")不在默认安全目录；设备所有者确认本次路径后执行"],
-                    "sftp.download.fresh-approval"
-                )
-            }
-            guard !FileManager.default.fileExists(atPath: URL(fileURLWithPath: target).standardizedFileURL.path) else {
-                return (
-                    .approvalRequired,
-                    .freshApprovalRequired,
-                    ["SFTP 下载目标已存在，覆盖需要设备所有者确认"],
-                    "sftp.download.overwrite.fresh-approval"
-                )
-            }
-            return (
-                .approvalRequired,
-                .reusableApproval,
-                ["SFTP 下载写入专用安全目录且不覆盖现有文件，首次需要本机审批"],
-                "sftp.download.reusable-approval"
-            )
-        case .upload:
-            return (
-                .approvalRequired,
-                .reusableApproval,
-                ["SFTP 上传为新文件写入，首次需要本机审批，之后可在执行窗口内复用"],
-                "sftp.upload.reusable-approval"
-            )
-        case .write, .overwrite, .delete, .move:
+        case .delete:
             return (
                 .approvalRequired,
                 .freshApprovalRequired,
-                ["SFTP/SCP 操作会覆盖、删除或移动远端数据，每次都需要设备所有者重新认证"],
-                "sftp.destructive.fresh-approval"
+                ["SFTP 删除远端数据，每次都需要设备所有者重新认证"],
+                SFTPFreshRules.delete
             )
-        case .none:
+        case .overwrite:
+            return (
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["SFTP 覆盖远端已有数据，每次都需要设备所有者重新认证"],
+                SFTPFreshRules.overwriteExisting
+            )
+        case .write:
+            return (
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["SFTP 写入会替换目标内容，每次都需要设备所有者重新认证"],
+                SFTPFreshRules.replaceExistingTarget
+            )
+        case .list, .read, .download, .upload, .move, .none:
             return (
                 .approvalRequired,
                 .reusableApproval,
-                ["SFTP 传输为普通操作，首次需要本机审批，之后可在执行窗口内复用"],
-                "sftp.transfer.reusable-approval"
+                ["SFTP/SCP 操作属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
+                "sftp.ordinary.reusable-approval"
             )
         }
     }
@@ -748,16 +725,6 @@ public struct SecretOperationPolicyEngine: Sendable {
             return false
         }
         return allowedProtocols.contains(where: { $0.lowercased() == scheme })
-    }
-
-    private func isWithinSafeDownloadDirectory(_ path: String) -> Bool {
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        let root = configuration.safeDownloadDirectory.standardizedFileURL
-        let parent = url.deletingLastPathComponent()
-        let resolvedRoot = root.resolvingSymlinksInPath()
-        let resolvedParent = parent.resolvingSymlinksInPath()
-        return resolvedParent.path.hasPrefix(resolvedRoot.path + "/")
-            || resolvedParent.path == resolvedRoot.path
     }
 
     private func isPublicDestination(_ destination: String) -> Bool {

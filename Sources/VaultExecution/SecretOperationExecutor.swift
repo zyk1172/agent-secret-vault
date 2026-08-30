@@ -94,6 +94,10 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
     public let sessionID: String?
     public let failedIndex: Int?
     public let results: [SSHCommandResult]?
+    /// Set when a cross-origin HTTP redirect stopped for an owner decision
+    /// (§37). The agent re-submits a new exact request to this URL; that
+    /// request is authorized through the ordinary flow.
+    public let redirectLocation: String?
     public let redacted: Bool
 
     public init(
@@ -113,6 +117,7 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         sessionID: String? = nil,
         failedIndex: Int? = nil,
         results: [SSHCommandResult]? = nil,
+        redirectLocation: String? = nil,
         redacted: Bool = true
     ) {
         self.status = status
@@ -131,6 +136,7 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         self.sessionID = sessionID
         self.failedIndex = failedIndex
         self.results = results
+        self.redirectLocation = redirectLocation
         self.redacted = redacted
     }
 }
