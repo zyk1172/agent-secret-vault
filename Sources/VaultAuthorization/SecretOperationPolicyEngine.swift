@@ -129,11 +129,18 @@ public struct SecretOperationPolicyEngine: Sendable {
             reasons = httpDecision.reasons
             ruleID = httpDecision.ruleID
             // A profile-approved insecure HTTP target is reusable only after
-            // its first use establishes fresh device-owner presence.
-            localRequirement = httpDecision.requiresFreshApprovalOnFirstUse
-                ? .reusableApproval
-                : authorizationRequirement(for: descriptor, risk: localRisk)
+            // its first use establishes fresh device-owner presence.  The
+            // transport opt-in may promote a silent request to reusable, but
+            // it must never downgrade a method-specific fresh approval (for
+            // example DELETE) or a denied operation.  The first-use marker
+            // therefore only stays set when the effective local requirement
+            // remained reusable: fresh operations never establish a lease.
+            let baseRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
+            let transportRequirement: AuthorizationRequirement =
+                httpDecision.requiresFreshApprovalOnFirstUse ? .reusableApproval : .none
+            localRequirement = AuthorizationRequirement.max(baseRequirement, transportRequirement)
             requiresFreshApprovalOnFirstUse = httpDecision.requiresFreshApprovalOnFirstUse
+                && localRequirement == .reusableApproval
         case .databaseQuery:
             let databaseDecision = databaseDecision(descriptor.effectiveDatabaseStatement)
             localRisk = databaseDecision.risk

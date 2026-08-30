@@ -99,6 +99,26 @@ public struct SSHCommandRiskClassifier: Sendable {
         if Self.shellExecutables.contains(executable) {
             return denied("SSH 不允许通过 shell 解释器执行未结构化命令", ruleID: "ssh.shell-executable.denied")
         }
+        if containsIndirectInterpreterInvocation(executable: executable, arguments: arguments) {
+            return denied(
+                "SSH 不允许通过命令包装器间接启动解释器",
+                ruleID: "ssh.indirect-interpreter.denied"
+            )
+        }
+        // A direct `python3 -c`/`perl -e`/`node -e` invocation carries the
+        // same "hand a code string to an interpreter" capability as launching
+        // it through env/sudo, so it cannot enter the structured command
+        // boundary either.
+        if Self.interpreterExecutables.contains(executable),
+           isCodeExecutionInvocation(interpreter: executable, arguments: arguments) {
+            return denied(
+                "SSH 不允许把代码字符串直接交给解释器执行",
+                ruleID: "ssh.interpreter-code.denied"
+            )
+        }
+        if executable == "find" {
+            return classifyFind(arguments: arguments)
+        }
         if isDestructive(executable: executable, arguments: arguments) {
             return SSHCommandRiskClassification(
                 risk: .approvalRequired,
@@ -172,16 +192,45 @@ public struct SSHCommandRiskClassifier: Sendable {
         return subcommand == "ps" || subcommand == "inspect" || subcommand == "images"
     }
 
+    private func classifyFind(arguments: [String]) -> SSHCommandRiskClassification {
+        if arguments.contains(where: Self.findIndirectExecutionActions.contains) {
+            return denied(
+                "SSH find 命令不允许通过 -exec 或 -ok 间接执行其他程序",
+                ruleID: "ssh.find.indirect-execution.denied"
+            )
+        }
+        if arguments.contains(where: Self.findSideEffectActions.contains) {
+            return SSHCommandRiskClassification(
+                risk: .approvalRequired,
+                authorizationRequirement: .freshApprovalRequired,
+                reasons: ["SSH find 命令可能写入文件或修改远程状态，必须重新本机认证"],
+                ruleID: "ssh.find.side-effect.fresh-approval"
+            )
+        }
+        if let unknownAction = arguments.first(where: { argument in
+            argument.hasPrefix("-") && !Self.safeFindArguments.contains(argument)
+        }) {
+            return SSHCommandRiskClassification(
+                risk: .approvalRequired,
+                authorizationRequirement: .freshApprovalRequired,
+                reasons: ["SSH find 参数语义无法可靠解析（\(unknownAction)），必须重新本机认证"],
+                ruleID: "ssh.find.unknown.fresh-approval"
+            )
+        }
+        return SSHCommandRiskClassification(
+            risk: .silent,
+            authorizationRequirement: .none,
+            reasons: ["SSH find 命令仅包含本地识别的只读遍历和输出参数"],
+            ruleID: "ssh.find.read-only.silent"
+        )
+    }
+
     private func isDestructive(executable: String, arguments: [String]) -> Bool {
         if executable == "rm" || executable == "shred" || executable.hasPrefix("mkfs")
             || executable == "wipefs" || executable == "fdisk" || executable == "parted"
             || executable == "reboot" || executable == "shutdown" || executable == "poweroff"
             || executable == "halt" || executable == "dd" || executable == "zpool"
             || executable == "mdadm" {
-            return true
-        }
-        if executable == "find",
-           arguments.contains(where: { $0 == "-delete" || $0 == "-exec" || $0 == "-execdir" }) {
             return true
         }
         if executable == "systemctl", arguments.contains(where: { $0 == "disable" || $0 == "mask" || $0 == "stop" }) {
@@ -199,6 +248,41 @@ public struct SSHCommandRiskClassifier: Sendable {
             }
         }
         return false
+    }
+
+    private func containsIndirectInterpreterInvocation(executable: String, arguments: [String]) -> Bool {
+        guard Self.indirectInterpreterLaunchers.contains(executable) else { return false }
+        for (index, argument) in arguments.enumerated() {
+            let candidate = URL(fileURLWithPath: argument).lastPathComponent.lowercased()
+            guard Self.interpreterExecutables.contains(candidate) else { continue }
+            let trailingArguments = Array(arguments.dropFirst(index + 1))
+            if isCodeExecutionInvocation(interpreter: candidate, arguments: trailingArguments) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isCodeExecutionInvocation(interpreter: String, arguments: [String]) -> Bool {
+        if Self.shellExecutables.contains(interpreter) {
+            return arguments.contains {
+                $0 == "-c" || $0 == "-lc" || $0 == "-cl" || $0 == "-ic" || $0 == "-ilc" || $0 == "-cli"
+            }
+        }
+        switch interpreter {
+        case "python", "python2", "python3":
+            // `-c` hands over a code string; `-m` executes an installed
+            // module, which is equally arbitrary code.
+            return arguments.contains { $0 == "-c" || $0 == "-m" }
+        case "perl", "ruby":
+            return arguments.contains { $0 == "-e" }
+        case "php":
+            return arguments.contains { $0 == "-r" }
+        case "node", "osascript":
+            return arguments.contains { $0 == "-e" || $0 == "--eval" }
+        default:
+            return false
+        }
     }
 
     private func denied(_ reason: String, ruleID: String) -> SSHCommandRiskClassification {
@@ -227,7 +311,34 @@ public struct SSHCommandRiskClassifier: Sendable {
 
     private static let readOnlyCommands: Set<String> = [
         "hostname", "uptime", "df", "du", "ps", "uname", "whoami", "id", "date", "free", "w", "last",
-        "ls", "cat", "head", "tail", "grep", "stat", "find", "pwd", "printenv"
+        "ls", "cat", "head", "tail", "grep", "stat", "pwd", "printenv"
+    ]
+
+    private static let findIndirectExecutionActions: Set<String> = [
+        "-exec", "-execdir", "-ok", "-okdir"
+    ]
+
+    private static let findSideEffectActions: Set<String> = [
+        "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"
+    ]
+
+    private static let safeFindArguments: Set<String> = [
+        "--", "!", "(", ")", "\\(", "\\)", "-a", "-and", "-o", "-or", ",",
+        "-amin", "-anewer", "-atime", "-cmin", "-cnewer", "-ctime", "-daystart", "-depth",
+        "-empty", "-false", "-fstype", "-gid", "-group", "-ilname", "-iname", "-inum",
+        "-links", "-lname", "-ls", "-maxdepth", "-mindepth", "-mmin", "-mount", "-name",
+        "-newer", "-nogroup", "-nouser", "-path", "-perm", "-print", "-print0",
+        "-printf", "-prune", "-readable", "-regex", "-iregex", "-size", "-true", "-type",
+        "-uid", "-user", "-writable", "-xdev", "-quit", "-h", "-l", "-p"
+    ]
+
+    private static let indirectInterpreterLaunchers: Set<String> = [
+        "env", "sudo", "doas", "command", "xargs"
+    ]
+
+    private static let interpreterExecutables: Set<String> = [
+        "sh", "bash", "zsh", "fish", "ksh", "dash", "ash", "csh", "tcsh",
+        "python", "python2", "python3", "perl", "ruby", "php", "node", "osascript"
     ]
 
     private static let reversibleWriteCommands: Set<String> = [

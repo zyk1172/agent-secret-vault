@@ -274,6 +274,8 @@ private let httpTestHost = "svlt.local"
     let profile = HTTPResponseProjectionProfile(
         id: "status-profile",
         origin: "http://\(httpTestHost)",
+        allowedMethods: [.get],
+        path: "/projected",
         allowedJSONPointers: ["/status", "/data"]
     )
     let adapter = HTTPSecretOperationAdapter(
@@ -312,11 +314,94 @@ private let httpTestHost = "svlt.local"
     #expect(!(output.bodyPreview ?? "").contains("access_token"))
 }
 
+@Test func typedHTTPProjectionProfileBindsTheExactMethodAndPath() throws {
+    let reference = try SecretReference(httpTestReference)
+    let profile = HTTPResponseProjectionProfile(
+        id: "exact-profile",
+        origin: "http://\(httpTestHost)",
+        allowedMethods: [.get],
+        path: "/projected",
+        allowedJSONPointers: ["/status"]
+    )
+    let adapter = HTTPSecretOperationAdapter(responseProjectionProfiles: [profile])
+
+    func descriptor(method: HTTPMethod, path: String) -> SecretOperationDescriptor {
+        SecretOperationDescriptor(
+            actionType: .apiRequest,
+            secretReferences: [reference],
+            destination: httpTestHost,
+            port: 80,
+            protocolType: .http,
+            httpMethod: method.rawValue,
+            url: "http://\(httpTestHost)\(path)",
+            payload: .http(
+                HTTPOperation(
+                    method: method,
+                    auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference),
+                    responsePolicy: HTTPResponsePolicy(
+                        kind: .projectedJSON,
+                        fields: ["/status"],
+                        profileID: profile.id
+                    )
+                )
+            )
+        )
+    }
+
+    #expect(adapter.preflight(descriptor(method: .get, path: "/projected")) == .supported)
+    #expect(adapter.preflight(descriptor(method: .get, path: "/other")) == .invalidParameters)
+    #expect(adapter.preflight(descriptor(method: .post, path: "/projected")) == .invalidParameters)
+}
+
+@Test func typedHTTPProjectionProfileComparesTheEncodedWirePath() throws {
+    let reference = try SecretReference(httpTestReference)
+    let profile = HTTPResponseProjectionProfile(
+        id: "encoded-path-profile",
+        origin: "http://\(httpTestHost)",
+        allowedMethods: [.get],
+        path: "/a/b",
+        allowedJSONPointers: ["/status"]
+    )
+    let adapter = HTTPSecretOperationAdapter(responseProjectionProfiles: [profile])
+
+    func descriptor(path: String) -> SecretOperationDescriptor {
+        SecretOperationDescriptor(
+            actionType: .apiRequest,
+            secretReferences: [reference],
+            destination: httpTestHost,
+            port: 80,
+            protocolType: .http,
+            httpMethod: "GET",
+            url: "http://\(httpTestHost)\(path)",
+            payload: .http(
+                HTTPOperation(
+                    method: .get,
+                    auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference),
+                    responsePolicy: HTTPResponsePolicy(
+                        kind: .projectedJSON,
+                        fields: ["/status"],
+                        profileID: profile.id
+                    )
+                )
+            )
+        )
+    }
+
+    #expect(adapter.preflight(descriptor(path: "/a/b")) == .supported)
+    // `/a%2Fb` decodes to `/a/b`, but the wire request keeps the encoded
+    // path, so the endpoint profile must not match it.
+    #expect(adapter.preflight(descriptor(path: "/a%2Fb")) == .invalidParameters)
+    // Any percent-encoding variation fails the exact path comparison.
+    #expect(adapter.preflight(descriptor(path: "/a%62")) == .invalidParameters)
+}
+
 @Test func typedHTTPAdapterQuarantinesSensitiveFieldsInsideProjectedJSON() async throws {
     let reference = try SecretReference(httpTestReference)
     let profile = HTTPResponseProjectionProfile(
         id: "data-profile",
         origin: "http://\(httpTestHost)",
+        allowedMethods: [.get],
+        path: "/sensitive",
         allowedJSONPointers: ["/data"]
     )
     let adapter = HTTPSecretOperationAdapter(
@@ -358,6 +443,8 @@ private let httpTestHost = "svlt.local"
     let profile = HTTPResponseProjectionProfile(
         id: "unsafe-profile",
         origin: "http://(httpTestHost)",
+        allowedMethods: [.get],
+        path: "/projected",
         allowedJSONPointers: ["/access_token"]
     )
     let adapter = HTTPSecretOperationAdapter(

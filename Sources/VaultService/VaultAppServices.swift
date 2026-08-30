@@ -4552,7 +4552,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
-    private func approvalSummary(
+    func approvalSummary(
         descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
@@ -4563,11 +4563,26 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             .filter { !$0.isEmpty }
         let labelText = labels.isEmpty ? "未命名凭据" : labels.prefix(3).joined(separator: "、")
         let target = safeDisplayLabel(decision.normalizedDestination ?? "本机")
-        let detail = safeDisplayLabel(operationDetail(for: descriptor))
-        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+        // The batch summary already bounds every command, argument, and its
+        // total length; the 80-character single-operation cut would hide the
+        // exact commands the device owner is being asked to approve.
+        let rawDetail = operationDetail(for: descriptor)
+        let detail = descriptor.actionType == .sshCommand && descriptor.sshCommandBatch != nil
+            ? boundedDisplayValue(rawDetail, maxBytes: 1_600)
+            : safeDisplayLabel(rawDetail)
+        let batchRequirement = descriptor.sshCommandBatch != nil
+            ? "；批处理最高授权级别：\(authorizationRequirementDisplay(decision.authorizationRequirement))"
+            : ""
+        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(batchRequirement)"
         guard let executionWindowDuration else {
             if decision.requiresFreshApprovalOnFirstUse {
                 return "\(base)；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；这是首次使用，必须本机认证"
+            }
+            // A destructive method such as DELETE takes the fresh one-shot
+            // path with the first-use marker cleared.  The device owner still
+            // must be told the credential would travel unencrypted.
+            if isInsecureSecretHTTPTarget(descriptor) {
+                return "\(base)；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；必须本机认证"
             }
             return base
         }
@@ -4575,7 +4590,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let insecureWarning = decision.requiresFreshApprovalOnFirstUse
             ? "；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；首次使用必须本机认证"
             : ""
-        return "\(base)\(insecureWarning)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒；不会授权其他凭据、目标或协议"
+        let fingerprintBinding = descriptor.actionType == .httpRequest
+            || descriptor.actionType == .apiRequest
+            || descriptor.actionType == .databaseQuery
+            || descriptor.actionType == .sftpTransfer
+            ? "；HTTP/API、数据库和 SFTP 还要求完全相同的操作内容"
+            : ""
+        return "\(base)\(insecureWarning)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒\(fingerprintBinding)；不会授权其他凭据、目标或协议"
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {
@@ -4585,9 +4606,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return displayName(for: descriptor.actionType)
     }
 
-    private func operationDetail(for descriptor: SecretOperationDescriptor) -> String {
+    func operationDetail(for descriptor: SecretOperationDescriptor) -> String {
         switch descriptor.actionType {
         case .sshCommand:
+            if let batch = descriptor.sshCommandBatch {
+                return sshBatchOperationDetail(batch)
+            }
             return descriptor.command ?? "未提供命令"
         case .httpRequest, .apiRequest, .browserLogin:
             let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
@@ -4605,6 +4629,28 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         default:
             return "受保护操作"
         }
+    }
+
+    private func sshBatchOperationDetail(_ batch: SSHCommandBatch) -> String {
+        let maxDisplayedCommands = 5
+        let maxDisplayedArguments = 6
+        let commandDetails = batch.commands.prefix(maxDisplayedCommands).enumerated().map { offset, command in
+            let executable = boundedDisplayValue(command.executable, maxBytes: 48)
+            let arguments = command.arguments.prefix(maxDisplayedArguments).map {
+                "「\(boundedDisplayValue($0, maxBytes: 64))」"
+            }.joined(separator: " ")
+            let omittedArguments = command.arguments.count > maxDisplayedArguments
+                ? " …（还有 \(command.arguments.count - maxDisplayedArguments) 个参数）"
+                : ""
+            return "\(offset + 1). \(executable)\(arguments.isEmpty ? "" : " \(arguments)")\(omittedArguments)"
+        }
+        let omittedCommands = batch.commands.count > maxDisplayedCommands
+            ? "；其余 \(batch.commands.count - maxDisplayedCommands) 条命令未在摘要展开"
+            : ""
+        return boundedDisplayValue(
+            "SSH 批处理（\(batch.commands.count) 条）：\(commandDetails.joined(separator: "；"))\(omittedCommands)",
+            maxBytes: 1_600
+        )
     }
 
     private func displayName(for action: SecretOperationAction) -> String {
@@ -4633,11 +4679,51 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
+    private func sanitizedDisplayText(_ value: String) -> String {
+        value.unicodeScalars.map { scalar -> String in
+            if scalar.value < 0x20 || scalar.value == 0x7F {
+                return " "
+            }
+            return String(scalar)
+        }.joined()
+    }
+
     private func safeDisplayLabel(_ value: String) -> String {
-        String(value
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-            .prefix(80))
+        String(sanitizedDisplayText(value).prefix(80))
+    }
+
+    private func isInsecureSecretHTTPTarget(_ descriptor: SecretOperationDescriptor) -> Bool {
+        guard !descriptor.secretReferences.isEmpty,
+              let rawURL = descriptor.url,
+              let url = URL(string: rawURL) else {
+            return false
+        }
+        return url.scheme?.lowercased() == "http"
+    }
+
+    /// Bounds display text by UTF-8 bytes without the 80-character
+    /// single-field cut, so bounded batch summaries keep their full content.
+    private func boundedDisplayValue(_ value: String, maxBytes: Int) -> String {
+        let sanitized = sanitizedDisplayText(value)
+        let data = Data(sanitized.utf8)
+        guard data.count > maxBytes else { return sanitized }
+        guard maxBytes > 3 else {
+            return String(decoding: data.prefix(maxBytes), as: UTF8.self)
+        }
+        return String(decoding: data.prefix(maxBytes - 3), as: UTF8.self) + "…"
+    }
+
+    private func authorizationRequirementDisplay(_ requirement: AuthorizationRequirement) -> String {
+        switch requirement {
+        case .none:
+            return "无需额外认证"
+        case .reusableApproval:
+            return "可复用审批"
+        case .freshApprovalRequired:
+            return "必须重新本机认证"
+        case .denied:
+            return "拒绝"
+        }
     }
 
     private func operationReason(for descriptor: SecretOperationDescriptor) -> String {

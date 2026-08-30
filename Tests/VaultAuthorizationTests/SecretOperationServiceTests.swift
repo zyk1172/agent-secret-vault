@@ -178,6 +178,58 @@ import VaultIPC
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
+@Test func insecureHTTPDeleteRequiresFreshApprovalWithoutEstablishingOrExtendingALease() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 5_000)
+    let clock = ServiceTestClock(start)
+    let monotonicStart: UInt64 = 50_000_000_000
+    clock.monotonicNow = monotonicStart
+    let authorizationSession = AuthorizationSession(
+        executionTTL: 300,
+        monotonicNow: { clock.monotonicNow },
+        now: { clock.now }
+    )
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        allowedDestinations: ["qnap.local:8080"],
+        allowedProtocols: ["http"],
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    // The first insecure GET is the profile-approved first use: one fresh
+    // approval establishes the exact-operation reusable lease.
+    let read = fixture.http(method: "GET", path: "/api/status")
+    let readOutput = try await fixture.service.performSecretOperation(read)
+    #expect(readOutput.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let readScope = fixture.executionScope(for: read)
+    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: readScope)
+    #expect(originalExpiry == start.addingTimeInterval(300))
+    let readSummary = await fixture.approver.summaries.first ?? ""
+    #expect(readSummary.contains("未加密 HTTP"))
+    #expect(readSummary.contains("复用最多 300 秒"))
+
+    clock.now = start.addingTimeInterval(100)
+    clock.monotonicNow = monotonicStart + 100_000_000_000
+    let delete = fixture.http(method: "DELETE", path: "/api/items/123")
+    let output = try await fixture.service.performSecretOperation(delete)
+
+    // The insecure transport opt-in must not downgrade DELETE: the device
+    // owner is prompted again, and the fresh approval neither creates a
+    // lease for the DELETE scope nor refreshes or extends the read lease.
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(
+        for: fixture.executionScope(for: delete)
+    ) == false)
+    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: readScope) == originalExpiry)
+
+    let deleteSummary = await fixture.approver.summaries.last ?? ""
+    #expect(deleteSummary.contains("未加密 HTTP"))
+    #expect(!deleteSummary.contains("复用最多"))
+}
+
 @Test func concurrentEligibleOperationsShareOneApproval() async throws {
     let fixture = try await OperationServiceFixture(approval: .delayed)
     defer { fixture.remove() }
@@ -608,6 +660,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
         executorStatus: String = "COMPLETED",
         blockExecution: Bool = false,
         usesMasterKeyProvider: Bool = false,
+        allowedDestinations: [String] = ["qnap.local"],
+        allowedProtocols: [String] = ["ssh"],
         now: @escaping @Sendable () -> Date = Date.init
     ) async throws {
         root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
@@ -629,8 +683,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
             version: 1,
             label: "QNAP credential",
             policy: .credential,
-            allowedDestinations: ["qnap.local"],
-            allowedProtocols: ["ssh"],
+            allowedDestinations: allowedDestinations,
+            allowedProtocols: allowedProtocols,
             masterKey: key
         )
         try await store.save(record)
@@ -693,6 +747,19 @@ private final class OperationServiceFixture: @unchecked Sendable {
         )
     }
 
+    func http(method: String, path: String) -> SecretOperationDescriptor {
+        SecretOperationDescriptor(
+            actionType: .apiRequest,
+            secretReferences: [reference],
+            destination: "qnap.local:8080",
+            port: 8080,
+            protocolType: .http,
+            httpMethod: method,
+            url: "http://qnap.local:8080\(path)",
+            requestedEffects: [method == "GET" ? "read-only" : "remote-write"]
+        )
+    }
+
     func statusValues() async -> [WorkbenchStatus] {
         await statusRecorder.values
     }
@@ -713,6 +780,32 @@ private final class OperationServiceFixture: @unchecked Sendable {
             username: "admin",
             protocolType: SecretOperationProtocol.ssh.rawValue,
             actionFamily: SecretOperationAction.sshCommand.rawValue,
+            generation: generation
+        )
+    }
+
+    /// Mirrors `VaultAppServices.scopedAuthorizationScope` so tests can assert
+    /// exact lease state for any descriptor, including HTTP operations whose
+    /// scope carries the operation fingerprint.
+    func executionScope(
+        for descriptor: SecretOperationDescriptor,
+        principal: String = AuditSource.agent.rawValue,
+        generation: UInt64 = 0
+    ) -> ExecutionAuthorizationScope {
+        ExecutionAuthorizationScope(
+            principal: principal,
+            secretReferenceIDs: descriptor.secretReferences.map(\.description),
+            normalizedDestination: descriptor.normalizedDestination,
+            port: descriptor.port,
+            username: descriptor.actionType == .sshCommand ? descriptor.parameters["username"] : nil,
+            protocolType: descriptor.protocolType?.rawValue,
+            actionFamily: descriptor.actionType.rawValue,
+            operationFingerprint: descriptor.actionType == .httpRequest
+                || descriptor.actionType == .apiRequest
+                || descriptor.actionType == .databaseQuery
+                || descriptor.actionType == .sftpTransfer
+                ? descriptor.operationHash
+                : nil,
             generation: generation
         )
     }

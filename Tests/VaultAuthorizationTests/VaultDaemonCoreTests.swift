@@ -25,6 +25,8 @@ import VaultIPC
     let profile = HTTPResponseProjectionProfile(
         id: "status-profile",
         origin: "https://qnap.local",
+        allowedMethods: [.get],
+        path: "/status",
         allowedJSONPointers: ["/status"]
     )
     let configuration = VaultDaemonConfiguration(

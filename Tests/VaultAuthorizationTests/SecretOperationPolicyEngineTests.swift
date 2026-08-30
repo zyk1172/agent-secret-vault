@@ -96,6 +96,26 @@ import VaultCore
     #expect(engine().evaluate(write, metadata: [metadata]).risk == .approvalRequired)
 }
 
+@Test func insecureHTTPDeleteCannotBeDowngradedToReusableApproval() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "DELETE",
+        url: "http://qnap.local:8080/api/items/123"
+    )
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
+    ])
+
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(!decision.requiresFreshApprovalOnFirstUse)
+}
+
 @Test func insecureHTTPWithoutAnExplicitSavedProfileIsDenied() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(
@@ -495,7 +515,6 @@ import VaultCore
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
     let commands = [
-        SSHCommandSpec(executable: "/usr/bin/env", arguments: ["/bin/sh", "-c", "rm -rf /"]),
         SSHCommandSpec(executable: "cp", arguments: ["-f", "/tmp/a", "/etc/passwd"]),
         SSHCommandSpec(executable: "mv", arguments: ["/tmp/a", "/etc/passwd"]),
         SSHCommandSpec(executable: "chmod", arguments: ["000", "/etc/passwd"]),
@@ -517,6 +536,104 @@ import VaultCore
         let decision = engine().evaluate(descriptor, metadata: metadata)
         #expect(decision.authorizationRequirement == .freshApprovalRequired)
     }
+}
+
+@Test func indirectInterpreterWrappersAreDeniedEvenWhenStructured() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    let commands = [
+        SSHCommandSpec(executable: "/usr/bin/env", arguments: ["/bin/sh", "-c", "rm -rf /"]),
+        SSHCommandSpec(executable: "sudo", arguments: ["--", "/bin/bash", "-lc", "id"]),
+        SSHCommandSpec(executable: "doas", arguments: ["zsh", "-c", "id"]),
+        SSHCommandSpec(executable: "command", arguments: ["sh", "-c", "id"]),
+        SSHCommandSpec(executable: "xargs", arguments: ["-0", "sh", "-c", "id"])
+    ]
+
+    for command in commands {
+        let descriptor = SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            sshCommandBatch: SSHCommandBatch(commands: [command])
+        )
+        let decision = engine().evaluate(descriptor, metadata: metadata)
+        #expect(decision.risk == .denied)
+        #expect(decision.authorizationRequirement == .denied)
+        #expect(decision.policyRuleID == "ssh.indirect-interpreter.denied")
+    }
+}
+
+@Test func directInterpreterCodeExecutionIsDeniedEvenWhenStructured() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    let commands = [
+        SSHCommandSpec(executable: "python3", arguments: ["-c", "import os; os.system('id')"]),
+        SSHCommandSpec(executable: "/usr/bin/python", arguments: ["-c", "print(1)"]),
+        SSHCommandSpec(executable: "perl", arguments: ["-e", "exec('id')"]),
+        SSHCommandSpec(executable: "ruby", arguments: ["-e", "system('id')"]),
+        SSHCommandSpec(executable: "node", arguments: ["-e", "require('child_process')"]),
+        SSHCommandSpec(executable: "php", arguments: ["-r", "system('id');"])
+    ]
+
+    for command in commands {
+        let descriptor = SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            sshCommandBatch: SSHCommandBatch(commands: [command])
+        )
+        let decision = engine().evaluate(descriptor, metadata: metadata)
+        #expect(decision.risk == .denied)
+        #expect(decision.authorizationRequirement == .denied)
+        #expect(decision.policyRuleID == "ssh.interpreter-code.denied")
+    }
+
+    // Running a script file is not a code-string invocation; it keeps the
+    // unknown-command fresh-approval path instead of being denied outright.
+    let scriptFile = SSHCommandSpec(executable: "python3", arguments: ["/opt/tools/report.py"])
+    let scriptDecision = engine().evaluate(SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        sshCommandBatch: SSHCommandBatch(commands: [scriptFile])
+    ), metadata: metadata)
+    #expect(scriptDecision.authorizationRequirement == .freshApprovalRequired)
+    #expect(scriptDecision.policyRuleID == "ssh.unknown.fresh-approval")
+}
+
+@Test func findOnlyKnownReadPredicatesAreSilentButSideEffectsAndUnknownActionsAreNot() throws {
+    let classifier = SSHCommandRiskClassifier()
+    let readOnly = classifier.classify(spec: SSHCommandSpec(
+        executable: "find",
+        arguments: ["/share", "-type", "f", "-name", "*.log", "-print"]
+    ))
+    #expect(readOnly.authorizationRequirement == .none)
+
+    for action in ["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"] {
+        let classification = classifier.classify(spec: SSHCommandSpec(
+            executable: "find",
+            arguments: ["/share", action, "/tmp/results"]
+        ))
+        #expect(classification.authorizationRequirement == .freshApprovalRequired)
+    }
+
+    let execute = classifier.classify(spec: SSHCommandSpec(
+        executable: "find",
+        arguments: ["/share", "-exec", "rm", "{}", ";"]
+    ))
+    #expect(execute.authorizationRequirement == .denied)
+
+    let unknown = classifier.classify(spec: SSHCommandSpec(
+        executable: "find",
+        arguments: ["/share", "-unknown-action"]
+    ))
+    #expect(unknown.authorizationRequirement == .freshApprovalRequired)
 }
 
 @Test func transportSessionIDDoesNotChangeTheOperationAuthorizationHash() throws {

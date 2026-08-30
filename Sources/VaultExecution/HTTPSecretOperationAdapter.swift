@@ -4,16 +4,26 @@ import VaultCore
 /// A user-owned, immutable response allowlist. It is injected by the App's
 /// profile layer rather than accepted from an individual MCP request. The
 /// profile contains no credential value and only permits non-sensitive JSON
-/// Pointer fields for one exact origin; invalid profiles are discarded by the
-/// adapter before capability advertisement.
+/// Pointer fields for one exact origin, method set, and path. Invalid profiles
+/// are discarded by the adapter before capability advertisement.
 public struct HTTPResponseProjectionProfile: Codable, Equatable, Sendable {
     public let id: String
     public let origin: String
+    public let allowedMethods: [HTTPMethod]
+    public let path: String
     public let allowedJSONPointers: [String]
 
-    public init(id: String, origin: String, allowedJSONPointers: [String]) {
+    public init(
+        id: String,
+        origin: String,
+        allowedMethods: [HTTPMethod],
+        path: String,
+        allowedJSONPointers: [String]
+    ) {
         self.id = id
         self.origin = origin
+        self.allowedMethods = allowedMethods
+        self.path = path
         self.allowedJSONPointers = allowedJSONPointers
     }
 }
@@ -282,7 +292,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                 method: method,
                 auth: try validateAuth(auth, descriptor: descriptor),
                 body: try validateBody(body),
-                responsePolicy: try validateResponsePolicy(responsePolicy, for: url),
+                responsePolicy: try validateResponsePolicy(responsePolicy, for: url, method: method),
                 timeout: defaultTimeout
             )
         }
@@ -294,7 +304,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             method: method,
             auth: try validateAuth(auth, descriptor: descriptor),
             body: try validateBody(body),
-            responsePolicy: try validateResponsePolicy(responsePolicy, for: url),
+            responsePolicy: try validateResponsePolicy(responsePolicy, for: url, method: method),
             timeout: .milliseconds(timeoutMilliseconds)
         )
     }
@@ -417,7 +427,8 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
 
     private func validateResponsePolicy(
         _ policy: HTTPResponsePolicy,
-        for url: URL
+        for url: URL,
+        method: HTTPMethod
     ) throws -> HTTPResponsePolicy {
         guard (0...outputLimitBytes).contains(policy.maxBytes),
               policy.fields.count <= 32,
@@ -452,7 +463,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                   policy.source == nil || policy.source == .json,
                   let profileID = policy.profileID,
                   !profileID.isEmpty,
-                  projectionProfileAllows(policy, profileID: profileID, for: url) else {
+                  projectionProfileAllows(policy, profileID: profileID, for: url, method: method) else {
                 throw HTTPAdapterError.invalidParameter
             }
         case .captureCredential:
@@ -500,6 +511,10 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         guard !profile.id.isEmpty,
               profile.id.utf8.count <= 128,
               Self.normalizedOrigin(profile.origin) != nil,
+              !profile.allowedMethods.isEmpty,
+              profile.allowedMethods.count <= HTTPMethod.allCases.count,
+              Set(profile.allowedMethods.map(\.rawValue)).count == profile.allowedMethods.count,
+              Self.canonicalEndpointPath(profile.path) == profile.path,
               !profile.allowedJSONPointers.isEmpty,
               profile.allowedJSONPointers.count <= 64 else {
             return false
@@ -513,14 +528,27 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
     private func projectionProfileAllows(
         _ policy: HTTPResponsePolicy,
         profileID: String,
-        for url: URL
+        for url: URL,
+        method: HTTPMethod
     ) -> Bool {
         guard !invalidResponseProjectionProfileIDs.contains(profileID),
               let profile = responseProjectionProfiles[profileID],
               Self.isValidProjectionProfile(profile),
               let profileOrigin = Self.normalizedOrigin(profile.origin),
               profileOrigin == Self.normalizedOrigin(url),
+              profile.allowedMethods.contains(method),
               !profile.allowedJSONPointers.isEmpty else {
+            return false
+        }
+        // The wire request keeps percent-encoding, so endpoint binding must
+        // compare the encoded path.  A decoded comparison would let a request
+        // to `/a%2Fb` match a profile authored for the endpoint `/a/b`.
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        let rawRequestPath = components.percentEncodedPath
+        guard let requestPath = Self.canonicalEndpointPath(rawRequestPath.isEmpty ? "/" : rawRequestPath),
+              profile.path == requestPath else {
             return false
         }
         let allowed = Set(profile.allowedJSONPointers.compactMap(Self.canonicalJSONPointer))
@@ -704,6 +732,29 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
               !host.isEmpty else { return nil }
         let port = url.port ?? (scheme == "https" ? 443 : 80)
         return "\(scheme)://\(host.lowercased()):\(port)"
+    }
+
+    private static func canonicalEndpointPath(_ rawPath: String) -> String? {
+        guard !rawPath.isEmpty,
+              rawPath.hasPrefix("/"),
+              rawPath.utf8.count <= 2_048,
+              !rawPath.contains("?"),
+              !rawPath.contains("#"),
+              !rawPath.contains("\\"),
+              rawPath.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) else {
+            return nil
+        }
+        let lowered = rawPath.lowercased()
+        guard !lowered.contains("%2e"),
+              !lowered.contains("%2f"),
+              !lowered.contains("%5c") else {
+            return nil
+        }
+        let segments = rawPath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !segments.contains(where: { $0 == "." || $0 == ".." }) else {
+            return nil
+        }
+        return rawPath
     }
 
     private static func canonicalJSONPointer(_ field: String) -> String? {
