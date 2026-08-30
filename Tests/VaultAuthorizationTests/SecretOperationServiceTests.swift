@@ -1,7 +1,8 @@
 import CryptoKit
 import Foundation
+import LocalAuthentication
 import Testing
-import VaultAuthorization
+@testable import VaultAuthorization
 import VaultCore
 import VaultExecution
 import VaultIPC
@@ -18,6 +19,25 @@ import VaultIPC
     #expect(output.status == "COMPLETED")
     #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 1)
+}
+
+@Test func firstOperationForwardsItsOwnerApprovalContextToTheMasterKeyLookup() async throws {
+    let context = LocalAuthenticationContext(rawContext: LAContext())
+    let contextualKeyProvider = ContextualKeyProvider(
+        key: SymmetricKey(data: Data(repeating: 0x44, count: 32))
+    )
+    let fixture = try await OperationServiceFixture(
+        contextApprover: ContextApprovalRecorder(context: context),
+        contextualKeyProvider: contextualKeyProvider
+    )
+    defer { fixture.remove() }
+
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "hostname")
+    )
+
+    #expect(output.status == "COMPLETED")
+    #expect(await contextualKeyProvider.receivedContext === context)
 }
 
 @Test func dangerousSecretOperationWaitsForApprovalAndResumesSameRequest() async throws {
@@ -663,6 +683,18 @@ private actor ApprovalRecorder: OperationApproving {
     }
 }
 
+private struct ContextApprovalRecorder: OperationApprovalContextProviding {
+    let context: LocalAuthenticationContext
+
+    func approve(summary _: String) async throws {}
+
+    func approveWithAuthenticationContext(
+        summary _: String
+    ) async throws -> LocalAuthenticationContext? {
+        context
+    }
+}
+
 private actor ApprovalGate {
     private var released = false
     private var continuation: CheckedContinuation<Void, Never>?
@@ -734,6 +766,20 @@ private actor ScopedKeyProviderRecorder {
     }
 }
 
+private actor ContextualKeyProvider {
+    private let key: SymmetricKey
+    private(set) var receivedContext: LocalAuthenticationContext?
+
+    init(key: SymmetricKey) {
+        self.key = key
+    }
+
+    func masterKey(authenticationContext: LocalAuthenticationContext?) -> SymmetricKey {
+        receivedContext = authenticationContext
+        return key
+    }
+}
+
 private actor StatusRecorder {
     private(set) var values: [WorkbenchStatus] = []
 
@@ -780,6 +826,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
         executorStatus: String = "COMPLETED",
         blockExecution: Bool = false,
         usesMasterKeyProvider: Bool = false,
+        contextApprover: (any OperationApproving)? = nil,
+        contextualKeyProvider: ContextualKeyProvider? = nil,
         allowedDestinations: [String] = ["qnap.local"],
         allowedProtocols: [String] = ["ssh"],
         now: @escaping @Sendable () -> Date = Date.init
@@ -820,6 +868,19 @@ private final class OperationServiceFixture: @unchecked Sendable {
             masterKeyProvider = nil
             freshMasterKeyProvider = nil
         }
+        let masterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)?
+        let freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)?
+        if let contextualKeyProvider {
+            masterKeyProviderWithAuthenticationContext = { _, _, authenticationContext in
+                await contextualKeyProvider.masterKey(authenticationContext: authenticationContext)
+            }
+            freshMasterKeyProviderWithAuthenticationContext = { _, _, authenticationContext in
+                await contextualKeyProvider.masterKey(authenticationContext: authenticationContext)
+            }
+        } else {
+            masterKeyProviderWithAuthenticationContext = nil
+            freshMasterKeyProviderWithAuthenticationContext = nil
+        }
 
         let statuses = StatusRecorder()
         statusRecorder = statuses
@@ -836,11 +897,13 @@ private final class OperationServiceFixture: @unchecked Sendable {
             textEncryptor: DummyTextEncryptor(),
             activeRoot: nil,
             recordResolver: VaultRecordResolver(recordStore: store),
-            masterKey: keyProvider == nil ? key : nil,
+            masterKey: keyProvider == nil && contextualKeyProvider == nil ? key : nil,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
+            masterKeyProviderWithAuthenticationContext: masterKeyProviderWithAuthenticationContext,
+            freshMasterKeyProviderWithAuthenticationContext: freshMasterKeyProviderWithAuthenticationContext,
             authorizationSession: authorizationSession,
-            operationApprover: approver,
+            operationApprover: contextApprover ?? approver,
             operationExecutor: executor,
             operationApprovalTimeout: timeout,
             now: now,

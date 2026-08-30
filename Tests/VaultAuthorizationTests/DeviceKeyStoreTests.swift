@@ -113,6 +113,29 @@ import Testing
     #expect(keychain.copyQueries[1][kSecUseAuthenticationContext as String] == nil)
 }
 
+@Test func legacyKeychainLookupReusesTheOperationApprovalContextWithoutASecondPrompt() async throws {
+    let expectedKey = Data(repeating: 0x5C, count: 32)
+    let evaluator = CountingLocalAuthenticationEvaluator()
+    let authenticator = LocalAuthenticator(evaluator: evaluator)
+    let approver = LocalOperationApprover(authenticator: authenticator)
+    let materialStore = LegacyAuthRequiredDeviceKeyMaterialStore(key: expectedKey)
+    let store = DeviceKeyStore(authenticator: authenticator, materialStore: materialStore)
+
+    let context = try await approver.approveWithAuthenticationContext(
+        summary: "运行 SSH 命令"
+    )
+    let keys = try await store.deviceKeyCandidates(
+        reason: "运行 SSH 命令",
+        authenticationContext: context
+    )
+
+    #expect(keys == [expectedKey])
+    // The same LAContext authorizes the legacy userPresence lookup. A second
+    // `makeAuthenticationContext` here would surface as another Touch ID.
+    #expect(await evaluator.count == 1)
+    #expect(await materialStore.loadCount == 1)
+}
+
 @Test func existingAccessibleOnlyKeychainItemRemainsUsableAfterAuthentication() async throws {
     let keychain = FakeKeychainClient(
         copyResults: [(errSecSuccess, Data(repeating: 0x55, count: 32))],

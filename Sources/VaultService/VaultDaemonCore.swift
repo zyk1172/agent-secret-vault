@@ -158,12 +158,14 @@ public actor VaultDaemonCore {
             return masterKey
         }
 
-        let masterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+        let masterKeyProviderWithAuthenticationContext: @Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey = {
             policy,
-            reason in
+            reason,
+            authenticationContext in
             let candidates = try await protectionKeyStore.deviceKeyCandidates(
                 for: policy,
-                reason: reason
+                reason: reason,
+                authenticationContext: authenticationContext
             )
             var remainingCandidates = candidates
             while !remainingCandidates.isEmpty {
@@ -182,12 +184,14 @@ public actor VaultDaemonCore {
             }
             throw MasterKeyCoordinatorError.integrityFailed
         }
-        let freshMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+        let freshMasterKeyProviderWithAuthenticationContext: @Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey = {
             policy,
-            reason in
+            reason,
+            authenticationContext in
             let candidates = try await protectionKeyStore.freshDeviceKeyCandidates(
                 for: policy,
-                reason: reason
+                reason: reason,
+                authenticationContext: authenticationContext
             )
             var remainingCandidates = candidates
             while !remainingCandidates.isEmpty {
@@ -204,6 +208,16 @@ public actor VaultDaemonCore {
                 }
             }
             throw MasterKeyCoordinatorError.integrityFailed
+        }
+        let masterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+            policy,
+            reason in
+            try await masterKeyProviderWithAuthenticationContext(policy, reason, nil)
+        }
+        let freshMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+            policy,
+            reason in
+            try await freshMasterKeyProviderWithAuthenticationContext(policy, reason, nil)
         }
 
         let encryptor = EncryptSelectionCoordinator(
@@ -236,6 +250,8 @@ public actor VaultDaemonCore {
             catalogSelectionManifestURL: configuration.catalogSelectionURL,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
+            masterKeyProviderWithAuthenticationContext: masterKeyProviderWithAuthenticationContext,
+            freshMasterKeyProviderWithAuthenticationContext: freshMasterKeyProviderWithAuthenticationContext,
             clearProtectedKeyState: {
                 await protectionKeyStore.clearAll()
             },

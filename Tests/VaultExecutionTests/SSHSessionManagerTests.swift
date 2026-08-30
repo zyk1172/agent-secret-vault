@@ -149,6 +149,57 @@ import VaultCore
     #expect(invocations.contains { $0.arguments.contains("check") })
     #expect(invocations.contains { $0.arguments.contains("exit") })
 }
+
+@Test func SSHSessionManagerReconnectsAConcurrentWaiterWhenMasterHealthCheckFails() async throws {
+    let root = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let checkGate = SessionCheckGate()
+    let runner = SessionProcessRunner(checkExitCode: 1, checkGate: checkGate)
+    let manager = SSHSessionManager(processRunner: runner, sessionDirectory: root)
+    let accesses = ConcurrentAccessFlags()
+    let scope = sessionScope()
+
+    let firstTask = Task {
+        try await manager.execute(scope: scope) { access in
+            await accesses.append("first", requiresAuthentication: access.requiresAuthentication)
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data("first command".utf8), stderr: Data()),
+                transportReady: true
+            )
+        }
+    }
+
+    // Hold the initial health check open so the second request joins the same
+    // opening flight. The master then fails to persist, which used to make the
+    // waiter throw SESSION_CONTROL_UNAVAILABLE.
+    await checkGate.waitForFirstCheck()
+    let secondTask = Task {
+        try await manager.execute(scope: scope) { access in
+            await accesses.append("second", requiresAuthentication: access.requiresAuthentication)
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data("second command".utf8), stderr: Data()),
+                transportReady: true
+            )
+        }
+    }
+    for _ in 0..<20 {
+        await Task.yield()
+    }
+    await checkGate.releaseFirstCheck()
+
+    let first = try await firstTask.value
+    let second = try await secondTask.value
+
+    #expect(first.processResult.stdout == Data("first command".utf8))
+    #expect(second.processResult.stdout == Data("second command".utf8))
+    #expect(first.sessionID == nil)
+    #expect(second.sessionID == nil)
+    #expect(await accesses.value(for: "first") == true)
+    // The waiter reconnects as a normal first-channel operation instead of
+    // assuming an unavailable ControlMaster was a failed command.
+    #expect(await accesses.value(for: "second") == true)
+}
+
 @Test func SSHSessionManagerRejectsRequestedScopeMismatchAndEnforcesLimits() async throws {
     let root = try makeTemporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -289,9 +340,11 @@ private func makeTemporaryDirectory() throws -> URL {
 private actor SessionProcessRunner: ProcessRunning {
     private(set) var invocations: [ProcessInvocation] = []
     let checkExitCode: Int32
+    let checkGate: SessionCheckGate?
 
-    init(checkExitCode: Int32 = 0) {
+    init(checkExitCode: Int32 = 0, checkGate: SessionCheckGate? = nil) {
         self.checkExitCode = checkExitCode
+        self.checkGate = checkGate
     }
 
     func run(
@@ -302,9 +355,53 @@ private actor SessionProcessRunner: ProcessRunning {
     ) async throws -> ProcessResult {
         invocations.append(invocation)
         if invocation.arguments.contains("check") {
+            await checkGate?.waitAtFirstCheck()
             return ProcessResult(exitCode: checkExitCode, stdout: Data(), stderr: Data())
         }
         return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
+    }
+}
+
+private actor SessionCheckGate {
+    private var firstCheckObserved = false
+    private var released = false
+    private var firstCheckContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func waitAtFirstCheck() async {
+        guard !firstCheckObserved else { return }
+        firstCheckObserved = true
+        firstCheckContinuation?.resume()
+        firstCheckContinuation = nil
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitForFirstCheck() async {
+        guard !firstCheckObserved else { return }
+        await withCheckedContinuation { continuation in
+            firstCheckContinuation = continuation
+        }
+    }
+
+    func releaseFirstCheck() {
+        released = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor ConcurrentAccessFlags {
+    private var values: [String: Bool] = [:]
+
+    func append(_ name: String, requiresAuthentication: Bool) {
+        values[name] = requiresAuthentication
+    }
+
+    func value(for name: String) -> Bool? {
+        values[name]
     }
 }
 

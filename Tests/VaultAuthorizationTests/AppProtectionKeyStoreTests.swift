@@ -1,6 +1,7 @@
 import Foundation
+import LocalAuthentication
 import Testing
-import VaultAuthorization
+@testable import VaultAuthorization
 import VaultCore
 @testable import AgentSecretVaultApp
 
@@ -68,6 +69,20 @@ import VaultCore
     #expect(await deviceKeyStore.candidateRequestCount == 1)
 }
 
+@Test func protectionKeyStoreForwardsTheCurrentOperationAuthenticationContext() async throws {
+    let expectedKey = Data(repeating: 0x53, count: 32)
+    let deviceKeyStore = ContextRecordingDeviceKeyStore(keyData: expectedKey)
+    let protectionKeyStore = AppProtectionKeyStore(deviceKeyStore: deviceKeyStore)
+    let context = LocalAuthenticationContext(rawContext: LAContext())
+
+    #expect(try await protectionKeyStore.deviceKeyCandidates(
+        for: .credential,
+        reason: "运行 SSH 命令",
+        authenticationContext: context
+    ) == [expectedKey])
+    #expect(await deviceKeyStore.receivedContext === context)
+}
+
 private actor CountingDeviceKeyStore: DeviceKeyStoring {
     private let keyData: Data
     private(set) var reasons: [String] = []
@@ -97,5 +112,26 @@ private actor CandidateDeviceKeyStore: DeviceKeyStoring {
     func deviceKeyCandidates(reason: String) async throws -> [Data] {
         candidateRequestCount += 1
         return candidates
+    }
+}
+
+private actor ContextRecordingDeviceKeyStore: DeviceKeyStoring {
+    private let keyData: Data
+    private(set) var receivedContext: LocalAuthenticationContext?
+
+    init(keyData: Data) {
+        self.keyData = keyData
+    }
+
+    func deviceKey(reason _: String) async throws -> Data {
+        keyData
+    }
+
+    func deviceKeyCandidates(
+        reason _: String,
+        authenticationContext: LocalAuthenticationContext?
+    ) async throws -> [Data] {
+        receivedContext = authenticationContext
+        return [keyData]
     }
 }

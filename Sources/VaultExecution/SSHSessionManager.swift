@@ -160,6 +160,14 @@ public actor SSHSessionManager {
         var outputFingerprints: [SecretOutputFingerprint]
     }
 
+    /// A single-flight open is keyed by both scope and record ID. The ID
+    /// prevents a cancelled or superseded open from removing a newer flight
+    /// for the same scope after an actor re-entry.
+    private struct OpeningTask {
+        let recordID: String
+        let task: Task<SSHSessionCommandExecution, Error>
+    }
+
     private let processRunner: any ProcessRunning
     private let sessionDirectory: URL
     private let idleTTL: Duration
@@ -171,7 +179,7 @@ public actor SSHSessionManager {
     private let now: @Sendable () -> Date
     private let monotonicNow: @Sendable () -> UInt64
     private var records: [String: Record] = [:]
-    private var openingTasks: [SSHSessionScope: Task<SSHSessionCommandExecution, Error>] = [:]
+    private var openingTasks: [SSHSessionScope: OpeningTask] = [:]
     private var didCleanStaleControlPaths = false
 
     public init(
@@ -244,16 +252,15 @@ public actor SSHSessionManager {
             return try await executeOnActiveRecord(existing, operation: operation)
         }
 
-        if let openingTask = openingTasks[scope] {
-            do {
-                _ = try await openingTask.value
-            } catch {
-                throw error
-            }
-            guard let active = records.values.first(where: { $0.scope == scope && $0.state == .active }) else {
-                throw SSHSessionManagerError.controlUnavailable
-            }
-            return try await executeOnActiveRecord(active, operation: operation)
+        if let opening = openingTasks[scope] {
+            _ = try await opening.task.value
+            // The opening command can succeed even though ControlMaster did
+            // not persist. Once that flight has settled, re-enter the normal
+            // lookup path: reuse a published master when present, otherwise
+            // create a fresh authenticated connection. A missing optimization
+            // must never turn a concurrent command into
+            // SESSION_CONTROL_UNAVAILABLE.
+            return try await execute(scope: scope, operation: operation)
         }
 
         return try await createAndExecute(scope: scope, operation: operation)
@@ -345,8 +352,8 @@ public actor SSHSessionManager {
     }
 
     public func invalidateAll() async {
-        for task in openingTasks.values {
-            task.cancel()
+        for opening in openingTasks.values {
+            opening.task.cancel()
         }
         openingTasks.removeAll()
         let recordsToClose = Array(records.values)
@@ -389,51 +396,90 @@ public actor SSHSessionManager {
         )
         records[id] = record
         let access = SSHSessionAccess(id: id, controlPath: controlPath, requiresAuthentication: true)
-        let task = Task { try await operation(access) }
-        openingTasks[scope] = task
-        do {
-            let result = try await task.value
+        let task = Task { [weak self] in
+            do {
+                let result = try await operation(access)
+                guard let self else {
+                    return result.assigningSessionID(nil)
+                }
+                return await self.finishOpening(
+                    scope: scope,
+                    record: record,
+                    result: result
+                )
+            } catch {
+                await self?.finishFailedOpening(scope: scope, record: record)
+                throw error
+            }
+        }
+        openingTasks[scope] = OpeningTask(recordID: id, task: task)
+        return try await task.value
+    }
+
+    /// Settles an initial transport before its task becomes observable to
+    /// waiters. Keeping the flight registered through the ControlMaster
+    /// health check prevents a waiter from racing a half-settled record; after
+    /// a failed check, all waiters re-enter `execute` and reconnect normally.
+    private func finishOpening(
+        scope: SSHSessionScope,
+        record: Record,
+        result: SSHSessionCommandExecution
+    ) async -> SSHSessionCommandExecution {
+        guard openingTasks[scope]?.recordID == record.id else {
+            return result.assigningSessionID(nil)
+        }
+
+        guard result.transportReady else {
             openingTasks.removeValue(forKey: scope)
-            guard result.transportReady else {
-                // A failed first channel is not an authenticated transport.
-                // Do not issue a second `ssh -O exit` invocation (which could
-                // itself be interpreted as a new connection attempt); remove
-                // only the private, still-pending control path.
-                records.removeValue(forKey: record.id)
-                removeControlPath(record.controlPath)
-                return result.assigningSessionID(nil)
-            }
-            // The first channel may complete successfully even when the
-            // ControlMaster did not persist (for example, because an option
-            // was rejected or the master exited immediately). The master is
-            // a reuse optimization, never a precondition for execution: when
-            // OpenSSH does not confirm a live control socket, drop the
-            // unusable session record and return the real command result
-            // with sessionID = nil (transparent fallback, §8). The next
-            // command simply opens a fresh connection.
-            guard await checkControl(record) else {
-                records.removeValue(forKey: record.id)
-                await closeControl(record)
-                return result.assigningSessionID(nil)
-            }
-            guard var current = records[id] else {
-                return result.assigningSessionID(nil)
-            }
-            current.state = .active
-            current.lastUsedAt = now()
-            current.lastUsedTick = monotonicNow()
-            current.outputFingerprints = result.outputFingerprints
-            records[id] = current
-            return result.assigningSessionID(id)
-        } catch {
-            openingTasks.removeValue(forKey: scope)
-            // The opening closure has not reported an authenticated
-            // transport. Avoid invoking `ssh -O exit` on a path that may
-            // never have been a live master.
+            // A failed first channel is not an authenticated transport. Do
+            // not issue `ssh -O exit` on a path that may never have been a
+            // live master.
             records.removeValue(forKey: record.id)
             removeControlPath(record.controlPath)
-            throw error
+            return result.assigningSessionID(nil)
         }
+
+        // The first channel may complete successfully even when the
+        // ControlMaster did not persist. The master is a reuse optimization,
+        // never a precondition for execution: drop the unusable record and
+        // preserve the real command result.
+        guard await checkControl(record) else {
+            guard openingTasks[scope]?.recordID == record.id else {
+                return result.assigningSessionID(nil)
+            }
+            openingTasks.removeValue(forKey: scope)
+            records.removeValue(forKey: record.id)
+            await closeControl(record)
+            return result.assigningSessionID(nil)
+        }
+
+        // `checkControl` above awaits. `invalidateAll()` may cancel this
+        // flight and a later caller may already have started a replacement
+        // flight for the same scope before we resume. Never remove that newer
+        // flight while cleaning up this old one.
+        guard openingTasks[scope]?.recordID == record.id,
+              var current = records[record.id] else {
+            return result.assigningSessionID(nil)
+        }
+        current.state = .active
+        current.lastUsedAt = now()
+        current.lastUsedTick = monotonicNow()
+        current.outputFingerprints = result.outputFingerprints
+        records[record.id] = current
+        openingTasks.removeValue(forKey: scope)
+        return result.assigningSessionID(record.id)
+    }
+
+    private func finishFailedOpening(scope: SSHSessionScope, record: Record) {
+        guard openingTasks[scope]?.recordID == record.id else {
+            return
+        }
+        openingTasks.removeValue(forKey: scope)
+        // The opening closure has not reported an authenticated transport.
+        // Avoid invoking `ssh -O exit` on a path that may never have been a
+        // live master.
+        records.removeValue(forKey: record.id)
+        removeControlPath(record.controlPath)
     }
 
     private func executeOnActiveRecord(

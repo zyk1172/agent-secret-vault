@@ -759,7 +759,9 @@ private func policyMetadata(
         ("/usr/bin/rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
         ("sudo rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
         ("sudo /bin/rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("env MODE=maintenance rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
         ("sh -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
+        ("sudo bash -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
         ("bash -c 'reboot'", SSHFreshRules.powerControl),
         ("hostname && rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
         ("uptime\nrm -rf /tmp/a", SSHFreshRules.filesystemDelete),
@@ -789,12 +791,50 @@ private func policyMetadata(
         "docker restart web",
         "systemctl stop jellyfin",
         "zpool status",
-        "uptime\ndf -h"
+        "uptime\ndf -h",
+        // Arguments and data must not be scanned as executable positions.
+        "echo rm",
+        "printf 'reboot\\n'",
+        "cat /tmp/rm",
+        "grep reboot logfile",
+        "cat /backup/dd",
+        // A heredoc body is input for `cat`, not a command stream.
+        """
+        cat <<'EOF'
+        rm -rf /tmp/not-executed
+        reboot
+        EOF
+        """
     ]
     for command in ordinary {
         #expect(classifier.matchFixedFreshRule(in: command) == nil, "command: \(command)")
         #expect(classifier.classify(command: command).authorizationRequirement == .reusableApproval, "command: \(command)")
     }
+}
+
+@Test func structuredArgumentsAreNeverTreatedAsExecutablePositions() {
+    let classifier = SSHCommandRiskClassifier()
+
+    let ordinarySpecs = [
+        SSHCommandSpec(executable: "echo", arguments: ["rm"]),
+        SSHCommandSpec(executable: "cat", arguments: ["/tmp/rm"]),
+        SSHCommandSpec(executable: "grep", arguments: ["reboot", "logfile"]),
+        SSHCommandSpec(executable: "printf", arguments: ["rm\\n"])
+    ]
+    for spec in ordinarySpecs {
+        #expect(
+            classifier.classify(spec: spec).authorizationRequirement == .reusableApproval,
+            "spec: \(spec)"
+        )
+    }
+
+    let shellScript = SSHCommandSpec(
+        executable: "bash",
+        arguments: ["-c", "rm -rf /tmp/a"]
+    )
+    #expect(
+        classifier.classify(spec: shellScript).authorizationRequirement == .freshApprovalRequired
+    )
 }
 
 

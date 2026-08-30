@@ -119,8 +119,18 @@ private enum CatalogSecureInputAbortError: Error, Sendable {
 
 private enum SecretOperationAuthorizationPath: Sendable {
     case notRequired
-    case freshLocalApproval
+    case freshLocalApproval(LocalAuthenticationContext?)
     case executionWindowReuse
+
+    /// This context is short-lived request state, never an IPC value or a
+    /// reusable authorization capability. It is passed only to the immediate
+    /// Keychain-backed master-key lookup that follows the same owner approval.
+    var authenticationContext: LocalAuthenticationContext? {
+        guard case let .freshLocalApproval(context) = self else {
+            return nil
+        }
+        return context
+    }
 
     var auditMode: AuditAuthorizationMode? {
         switch self {
@@ -155,7 +165,7 @@ private enum SecretOperationAuthorizationPath: Sendable {
 private struct ExecutionApprovalFlight {
     let id: UUID
     let generation: UInt64
-    let task: Task<Void, Error>
+    let task: Task<LocalAuthenticationContext?, Error>
 }
 
 private struct ScopedMasterKeyFlight {
@@ -246,6 +256,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let masterKey: SymmetricKey?
     private let masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
     private let freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
+    private let masterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)?
+    private let freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)?
     private let clearProtectedKeyState: (@Sendable () async -> Void)?
     private let isUnlockedProvider: (@Sendable () async -> Bool)
     private let revealSessionStore: RevealSessionStore
@@ -314,6 +326,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
+        masterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
+        freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
         clearProtectedKeyState: (@Sendable () async -> Void)? = nil,
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
@@ -352,6 +366,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.masterKey = masterKey
         self.masterKeyProvider = masterKeyProvider
         self.freshMasterKeyProvider = freshMasterKeyProvider
+        self.masterKeyProviderWithAuthenticationContext = masterKeyProviderWithAuthenticationContext
+        self.freshMasterKeyProviderWithAuthenticationContext = freshMasterKeyProviderWithAuthenticationContext
         self.clearProtectedKeyState = clearProtectedKeyState
         self.isUnlockedProvider = isUnlockedProvider
         self.revealSessionStore = revealSessionStore
@@ -418,6 +434,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
+        masterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
+        freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
         clearProtectedKeyState: (@Sendable () async -> Void)? = nil,
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
@@ -454,6 +472,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             masterKey: masterKey,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
+            masterKeyProviderWithAuthenticationContext: masterKeyProviderWithAuthenticationContext,
+            freshMasterKeyProviderWithAuthenticationContext: freshMasterKeyProviderWithAuthenticationContext,
             clearProtectedKeyState: clearProtectedKeyState,
             isUnlockedProvider: isUnlockedProvider,
             revealSessionStore: revealSessionStore,
@@ -783,6 +803,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                 reason: operationReason(for: descriptor),
                 destination: currentDecision.normalizedDestination,
+                authenticationContext: authorizationPath.authenticationContext,
                 forceFreshWhenUnscoped: false
             )
         } catch {
@@ -839,6 +860,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                         for: authorizationPolicy(for: refreshedMetadata.map(\.policy)),
                         reason: operationReason(for: descriptor),
                         destination: refreshedDecision.normalizedDestination,
+                        authenticationContext: authorizationPath.authenticationContext,
                         forceFreshWhenUnscoped: false
                     )
                 } catch {
@@ -860,7 +882,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
             switch commit {
             case .leaseEstablished, .approvedWithoutLease:
-                authorizationPath = .freshLocalApproval
+                authorizationPath = .freshLocalApproval(authorizationPath.authenticationContext)
             case .leaseReused:
                 authorizationPath = .executionWindowReuse
                 shouldEmitExecutionWindowReuseAudit = true
@@ -2116,7 +2138,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationOutcome: .requested,
                 status: .requested
             )
-            try await approveWithTimeout(summary: secureInputApprovalSummary(for: request))
+            _ = try await approveWithTimeout(summary: secureInputApprovalSummary(for: request))
             await emitAudit(
                 action: "智能体安全输入本机认证完成",
                 target: "catalog-field",
@@ -2781,7 +2803,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         writeAccessStates[id] = .authenticating
         do {
-            try await approveWithTimeout(summary: catalogWriteApprovalSummary(request))
+            _ = try await approveWithTimeout(summary: catalogWriteApprovalSummary(request))
             guard writeAccessStates[id] == .authenticating,
                   let intent = request.intent
             else {
@@ -3623,6 +3645,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                 reason: operationContext.reason,
                 destination: exportDirectory.standardizedFileURL.path,
+                authenticationContext: authorizationPath.authenticationContext,
                 forceFreshWhenUnscoped: true
             )
         } catch {
@@ -3668,6 +3691,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                         for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                         reason: operationContext.reason,
                         destination: exportDirectory.standardizedFileURL.path,
+                        authenticationContext: authorizationPath.authenticationContext,
                         forceFreshWhenUnscoped: true
                     )
                 } catch {
@@ -3685,7 +3709,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
             switch commit {
             case .leaseEstablished, .approvedWithoutLease:
-                authorizationPath = .freshLocalApproval
+                authorizationPath = .freshLocalApproval(authorizationPath.authenticationContext)
             case .leaseReused:
                 authorizationPath = .executionWindowReuse
                 reusedScopedAuthorization = true
@@ -3840,8 +3864,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approvalPending = true
         await statusObserver?(status())
 
+        var authenticationContext: LocalAuthenticationContext?
         do {
-            try await Self.approveWithTimeout(
+            authenticationContext = try await Self.approveWithTimeout(
                 approver: operationApprover,
                 timeout: operationApprovalTimeout,
                 summary: summary
@@ -3911,7 +3936,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         approvalPending = false
         await statusObserver?(status())
-        return .freshLocalApproval
+        return .freshLocalApproval(authenticationContext)
     }
 
     private func isExecutionLeaseEligible(_ action: SecretOperationAction) -> Bool {
@@ -3988,11 +4013,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         let approvalID = UUID()
-        let task = Task { [weak self] () throws -> Void in
+        let task = Task { [weak self] () throws -> LocalAuthenticationContext? in
             guard let self else {
                 throw OperationAuthorizationError.cancelled
             }
-            try await self.performFreshExecutionApproval(
+            return try await self.performFreshExecutionApproval(
                 descriptor: descriptor,
                 metadata: metadata,
                 decision: decision,
@@ -4009,7 +4034,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         await statusObserver?(status())
 
         do {
-            try await task.value
+            let authenticationContext = try await task.value
+            await markExecutionApprovalCompleted(approvalID)
+            return .freshLocalApproval(authenticationContext)
         } catch {
             await finishExecutionApprovalFlight(
                 scope: scope,
@@ -4018,9 +4045,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw mappedSecretOperationError(error)
         }
-
-        await markExecutionApprovalCompleted(approvalID)
-        return .freshLocalApproval
     }
 
     private func waitForExecutionApprovalFlight(
@@ -4029,7 +4053,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         generation: UInt64
     ) async throws -> SecretOperationAuthorizationPath {
         do {
-            try await flight.task.value
+            let authenticationContext = try await flight.task.value
+            guard generation == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            await markExecutionApprovalCompleted(flight.id)
+            // The approval is kept as a completed flight until one request
+            // reaches the final execution commit. This closes the gap where
+            // the first request is still rechecking policy while a later
+            // request would otherwise start a second Touch ID prompt.
+            return .freshLocalApproval(authenticationContext)
         } catch {
             await finishExecutionApprovalFlight(
                 scope: scope,
@@ -4038,15 +4071,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw mappedSecretOperationError(error)
         }
-        guard generation == securityGeneration else {
-            throw SecretOperationError.authorizationCancelled
-        }
-        await markExecutionApprovalCompleted(flight.id)
-        // The approval is kept as a completed flight until one request
-        // reaches the final execution commit. This closes the gap where the
-        // first request is still rechecking policy while a later request
-        // would otherwise start a second Touch ID prompt.
-        return .freshLocalApproval
     }
 
     private func performFreshExecutionApproval(
@@ -4054,7 +4078,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
         generation: UInt64
-    ) async throws {
+    ) async throws -> LocalAuthenticationContext? {
         do {
             guard generation == securityGeneration else {
                 throw OperationAuthorizationError.cancelled
@@ -4079,7 +4103,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             guard generation == securityGeneration else {
                 throw OperationAuthorizationError.cancelled
             }
-            try await Self.approveWithTimeout(
+            let authenticationContext = try await Self.approveWithTimeout(
                 approver: operationApprover,
                 timeout: operationApprovalTimeout,
                 summary: summary
@@ -4103,6 +4127,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationOutcome: .approved,
                 authorizationMode: .freshLocalApproval
             )
+            return authenticationContext
         } catch {
             let mappedError = mappedSecretOperationError(error)
             switch mappedError {
@@ -4261,7 +4286,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         do {
-            try await flight.task.value
+            _ = try await flight.task.value
         } catch {
             await finishExecutionApprovalFlight(
                 scope: scope,
@@ -4438,7 +4463,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
     }
 
-    private func approveWithTimeout(summary: String) async throws {
+    private func approveWithTimeout(summary: String) async throws -> LocalAuthenticationContext? {
         try await Self.approveWithTimeout(
             approver: operationApprover,
             timeout: operationApprovalTimeout,
@@ -4450,17 +4475,24 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approver: any OperationApproving,
         timeout: Duration,
         summary: String
-    ) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
+    ) async throws -> LocalAuthenticationContext? {
+        try await withThrowingTaskGroup(of: LocalAuthenticationContext?.self) { group in
             group.addTask {
+                if let contextApprover = approver as? any OperationApprovalContextProviding {
+                    return try await contextApprover.approveWithAuthenticationContext(summary: summary)
+                }
                 try await approver.approve(summary: summary)
+                return nil
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
                 throw OperationAuthorizationError.timeout
             }
             defer { group.cancelAll() }
-            try await group.next()
+            guard let result = try await group.next() else {
+                throw OperationAuthorizationError.cancelled
+            }
+            return result
         }
     }
 
@@ -4787,6 +4819,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         reason: String,
         allowsAgentDecryptReuse: Bool = false,
         destination: String? = nil,
+        authenticationContext: LocalAuthenticationContext? = nil,
         forceFresh: Bool = false
     ) async throws -> SymmetricKey {
         if let masterKey {
@@ -4802,8 +4835,32 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         let key: SymmetricKey
-        if forceFresh, let freshMasterKeyProvider {
-            key = try await freshMasterKeyProvider(policy, reason)
+        if forceFresh {
+            if let freshMasterKeyProviderWithAuthenticationContext {
+                key = try await freshMasterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
+            } else if let freshMasterKeyProvider {
+                key = try await freshMasterKeyProvider(policy, reason)
+            } else if let masterKeyProviderWithAuthenticationContext {
+                key = try await masterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
+            } else if let masterKeyProvider {
+                key = try await masterKeyProvider(policy, reason)
+            } else {
+                throw VaultAppServicesRevealError.revealUnavailable
+            }
+        } else if let masterKeyProviderWithAuthenticationContext {
+            key = try await masterKeyProviderWithAuthenticationContext(
+                policy,
+                reason,
+                authenticationContext
+            )
         } else if let masterKeyProvider {
             key = try await masterKeyProvider(policy, reason)
         } else {
@@ -4833,6 +4890,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         for policy: SecretPolicy,
         reason: String,
         destination: String?,
+        authenticationContext: LocalAuthenticationContext?,
         forceFreshWhenUnscoped: Bool
     ) async throws -> SymmetricKey {
         guard let scope else {
@@ -4841,6 +4899,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 reason: reason,
                 allowsAgentDecryptReuse: false,
                 destination: destination,
+                authenticationContext: authenticationContext,
                 forceFresh: forceFreshWhenUnscoped
             )
         }
@@ -4859,12 +4918,28 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let masterKey = self.masterKey
         let masterKeyProvider = self.masterKeyProvider
         let freshMasterKeyProvider = self.freshMasterKeyProvider
+        let masterKeyProviderWithAuthenticationContext = self.masterKeyProviderWithAuthenticationContext
+        let freshMasterKeyProviderWithAuthenticationContext = self.freshMasterKeyProviderWithAuthenticationContext
         let task = Task<SymmetricKey, Error> {
             if let masterKey {
                 return masterKey
             }
+            if let freshMasterKeyProviderWithAuthenticationContext {
+                return try await freshMasterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
+            }
             if let freshMasterKeyProvider {
                 return try await freshMasterKeyProvider(policy, reason)
+            }
+            if let masterKeyProviderWithAuthenticationContext {
+                return try await masterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
             }
             guard let masterKeyProvider else {
                 throw VaultAppServicesRevealError.revealUnavailable
