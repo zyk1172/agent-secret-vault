@@ -88,7 +88,7 @@ private let httpTestHost = "svlt.local"
     }
 }
 
-@Test func typedHTTPAdapterRejectsInsecureSecretTransportWithoutProfileOptIn() async throws {
+@Test func typedHTTPAdapterExecutesInsecureTransportBecauseTransportRiskIsTheOwnerDecision() async throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter(
         sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
@@ -109,51 +109,22 @@ private let httpTestHost = "svlt.local"
         )
     )
 
-    await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
-        _ = try await adapter.execute(
-            descriptor,
-            metadata: [],
-            context: SecretOperationExecutionContext(principal: "insecure-http", securityGeneration: 1),
-            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
-        )
-    }
-}
-
-@Test func typedHTTPAdapterRejectsInsecureSecretTransportOnAnUnprofiledPort() async throws {
-    let reference = try SecretReference(httpTestReference)
-    let adapter = HTTPSecretOperationAdapter(
-        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    // The adapter is an executor, not a second approval layer: plaintext
+    // transport is classified by the policy engine and decided by the device
+    // owner (fresh approval with a plaintext warning), so the adapter runs it.
+    let output = try await adapter.execute(
+        descriptor,
+        metadata: [SecretPolicyMetadata(
+            reference: reference,
+            policy: .credential,
+            label: "HTTP test credential",
+            allowedDestinations: ["\(httpTestHost):80"],
+            allowedProtocols: ["http"]
+        )],
+        context: SecretOperationExecutionContext(principal: "insecure-http", securityGeneration: 1),
+        resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: httpTestHost,
-        port: 80,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://\(httpTestHost)/ok",
-        payload: .http(
-            HTTPOperation(
-                method: .get,
-                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
-            )
-        )
-    )
-
-    await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
-        _ = try await adapter.execute(
-            descriptor,
-            metadata: [SecretPolicyMetadata(
-                reference: reference,
-                policy: .credential,
-                label: "HTTP test credential",
-                allowedDestinations: ["\(httpTestHost):8080"],
-                allowedProtocols: ["http"]
-            )],
-            context: SecretOperationExecutionContext(principal: "insecure-port", securityGeneration: 1),
-            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
-        )
-    }
+    #expect(output.status == "COMPLETED")
 }
 
 @Test func typedHTTPAdapterEnforcesStreamingResponseLimit() async throws {

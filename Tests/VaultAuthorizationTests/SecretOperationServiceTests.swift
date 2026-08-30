@@ -178,7 +178,7 @@ import VaultIPC
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
-@Test func insecureHTTPDeleteRequiresFreshApprovalWithoutEstablishingOrExtendingALease() async throws {
+@Test func insecureHTTPRequiresAFreshApprovalForEachOperationWithoutALease() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 5_000)
     let clock = ServiceTestClock(start)
     let monotonicStart: UInt64 = 50_000_000_000
@@ -196,34 +196,32 @@ import VaultIPC
     )
     defer { fixture.remove() }
 
-    // The first insecure GET is the profile-approved first use: one fresh
-    // approval establishes the exact-operation reusable lease.
+    // Insecure HTTP is never refused, but it is never silently reusable
+    // either: every secret-bearing request over http:// takes a fresh
+    // approval with the plaintext-transport warning, and no lease is
+    // established for it.
     let read = fixture.http(method: "GET", path: "/api/status")
     let readOutput = try await fixture.service.performSecretOperation(read)
     #expect(readOutput.status == "COMPLETED")
     #expect(await fixture.approver.count == 1)
     let readScope = fixture.executionScope(for: read)
-    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: readScope)
-    #expect(originalExpiry == start.addingTimeInterval(300))
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: readScope) == false)
     let readSummary = await fixture.approver.summaries.first ?? ""
     #expect(readSummary.contains("未加密 HTTP"))
-    #expect(readSummary.contains("复用最多 300 秒"))
+    #expect(!readSummary.contains("复用最多"))
 
     clock.now = start.addingTimeInterval(100)
     clock.monotonicNow = monotonicStart + 100_000_000_000
     let delete = fixture.http(method: "DELETE", path: "/api/items/123")
     let output = try await fixture.service.performSecretOperation(delete)
 
-    // The insecure transport opt-in must not downgrade DELETE: the device
-    // owner is prompted again, and the fresh approval neither creates a
-    // lease for the DELETE scope nor refreshes or extends the read lease.
     #expect(output.status == "COMPLETED")
     #expect(await fixture.approver.count == 2)
     #expect(await fixture.executor.count == 2)
     #expect(await authorizationSession.hasActiveExecutionAuthorization(
         for: fixture.executionScope(for: delete)
     ) == false)
-    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: readScope) == originalExpiry)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: readScope) == false)
 
     let deleteSummary = await fixture.approver.summaries.last ?? ""
     #expect(deleteSummary.contains("未加密 HTTP"))
@@ -487,20 +485,18 @@ import VaultIPC
     #expect(await fixture.executor.count == 0)
 }
 
-@Test func executionWindowDoesNotBypassDeniedPolicyOrExactSensitiveApproval() async throws {
+@Test func unboundPublicDestinationTakesFreshApprovalInsteadOfDenial() async throws {
     let fixture = try await OperationServiceFixture()
     defer { fixture.remove() }
 
     _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
 
-    do {
-        _ = try await fixture.service.performSecretOperation(
-            fixture.ssh(command: "mkdir /share/svlt-test").replacingDestination("8.8.8.8")
-        )
-        Issue.record("Expected an unbound public destination to remain denied.")
-    } catch let error as SecretOperationError {
-        #expect(error == .operationDenied)
-    }
+    // A destination outside the credential's saved binding is no longer
+    // refused by policy: the owner sees the mismatch and decides. The
+    // approval is per execution and never mutates the saved binding.
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test").replacingDestination("8.8.8.8")
+    )
 
     _ = try await fixture.service.performSecretOperation(
         SecretOperationDescriptor(
@@ -509,11 +505,11 @@ import VaultIPC
         )
     )
 
-    #expect(await fixture.approver.count == 2)
-    #expect(await fixture.executor.count == 2)
+    #expect(await fixture.approver.count == 3)
+    #expect(await fixture.executor.count == 3)
 }
 
-@Test func policyIsReevaluatedAfterApprovalBeforeExecution() async throws {
+@Test func policyMismatchAfterApprovalPromotesToAFreshApprovalInsteadOfDenial() async throws {
     let gate = ApprovalGate()
     let fixture = try await OperationServiceFixture(
         approval: .gated,
@@ -540,11 +536,15 @@ import VaultIPC
     }
     #expect(await fixture.approver.count == 1)
 
+    // The record becomes read-only while the first approval is pending. The
+    // re-evaluation promotes the operation to a fresh decision instead of
+    // refusing it; the owner still decides through the second prompt.
     try await fixture.replaceWithReadOnlyRecord()
     await gate.release()
 
-    #expect(await operation.value == .operationDenied)
-    #expect(await fixture.executor.count == 0)
+    #expect(await operation.value == nil)
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 1)
     #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
 }
 

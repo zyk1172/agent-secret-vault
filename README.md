@@ -221,31 +221,51 @@ must never be returned to the agent.
 - MCP tools never return decrypted values. Reveal requests display plaintext
   only in the macOS app, and Obsidian plugin reveal responses contain status
   only.
-- Each secret operation is independently evaluated as `silent`,
-  `approvalRequired`, or `denied` by `SecretOperationPolicyEngine`.
-- `effectiveRisk = max(agentRisk, localRisk)`: the Agent hint may raise risk but
-  never lowers a local approval or denial.
+- Each secret operation is independently classified by
+  `SecretOperationPolicyEngine` into an authorization level: `none` for locally
+  provable metadata reads, `reusableApproval` for ordinary operations, and
+  `freshApprovalRequired` for explicitly destructive or high-impact operations.
+- SVLT policy classifies authorization requirements; it does not replace the
+  device owner's decision. Semantic risk promotes an operation to a fresh
+  approval with the full facts shown (raw command, target, credential, risk
+  reasons, agent warning) — it never hard-denies a technically executable
+  request. Hard failures are reserved for malformed, contradictory, stale, or
+  identity-invalid requests.
+- `effectiveAuthorizationRequirement` merges the agent hint with the local
+  requirement: the hint may promote `none` to fresh and `reusable` to fresh
+  when the agent itself claims high risk, but it can never lower a local
+  decision, mint reusable approval from `none`, or deny on the owner's behalf.
 - Bound read-only SSH/HTTPS/database/SFTP operations can run silently. An
   eligible purpose-built Agent execution whose policy result is
-  `approvalRequired` may use one fresh device-owner approval to open a fixed,
+  `reusableApproval` may use one fresh device-owner approval to open a fixed,
   non-sliding 300-second in-memory execution window. The window is scoped to
   the calling Agent process, exact secret references, normalized destination
   and port, protocol, action family, and security generation; it is not a
   global execution gate. Every request still re-evaluates the current local
-  policy; destinations that remain denied stay denied.
+  policy; a fresh approval for a dangerous operation never creates, refreshes,
+  or extends the ordinary window.
 - The ordinary Agent IPC type and transport contain no plaintext-bearing
   response. Session reveal and Catalog plaintext responses are available only
   through the separately authenticated, code-signed App-control socket.
-- Secret-bearing HTTP over plaintext `http://` is never enabled by an Agent
-  request flag. It requires a user-saved `http`/`http-loopback` profile marker,
-  an exact destination binding, and fresh device-owner approval on first use.
-  Authenticated responses are metadata-only unless an App-owned response
-  projection profile allowlists the requested JSON pointers. The production
-  daemon receives those non-secret profiles through `VaultDaemonConfiguration`;
-  its default empty configuration advertises metadata-only responses. Derived
-  credential/cookie capture is not implemented in this release.
-- `localExecution` remains permanently denied. `trustedProcess` is a separate
-  future adapter boundary and is unavailable until a signed process profile is
+- SSH commands are passed byte-for-byte as a single remote-command argument to
+  `ssh`, so the remote login shell interprets exactly what the caller wrote:
+  single-line and multi-line scripts, pipelines, redirects, heredocs, shell
+  interpreters, `sudo`, and unknown NAS CLIs are all first-class inputs. The
+  policy engine only decides the authorization level; explicitly destructive
+  forms (`rm`, `dd`, `mkfs*`, `reboot`, `docker rm`/`system prune`, ...) take a
+  fresh approval with the full command shown.
+- Secret-bearing HTTP over plaintext `http://` triggers a fresh approval with a
+  plaintext-transport warning instead of a policy refusal. Authenticated
+  responses are metadata-only unless an App-owned response projection profile
+  allowlists the requested JSON pointers. The production daemon receives those
+  non-secret profiles through `VaultDaemonConfiguration`; its default empty
+  configuration advertises metadata-only responses. Derived credential/cookie
+  capture is not implemented in this release.
+- `localExecution` (handing a Secret to an arbitrary local process) is a
+  very-high-risk fresh approval explicitly labeled `userApprovedSecretRelease`
+  in audit and capability output; the device owner sees the process, arguments,
+  and secret label before approving. `trustedProcess` is a separate future
+  adapter boundary and is unavailable until a signed process profile is
   configured.
 - Plaintext reveal/copy, deletes, security-setting changes, and Catalog Agent
   writes retain their exact, one-shot `ApprovalTicket` authorization boundary.

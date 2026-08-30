@@ -1,11 +1,23 @@
 import Foundation
 import VaultCore
 
-/// Conservative classifier for SSH commands. Known read-only commands are
-/// silent, argument-aware ordinary writes (plus mkdir/touch) use the scoped
-/// reusable approval lease, and destructive or unparseable commands require a
-/// fresh device-owner decision. Shell composition is rejected by the policy
-/// engine rather than treated as a command that can be made safe by quoting.
+/// SVLT policy classifies authorization requirements; it does not replace the
+/// device owner's decision.
+///
+/// The classifier answers exactly one question: "which authorization level
+/// does this command need?" It never answers "is this command allowed?".
+///
+/// - Safe metadata reads (small explicit list) require no approval.
+/// - Explicitly dangerous, hard-to-reverse commands always require a fresh
+///   device-owner decision with the full command shown.
+/// - Everything else — unknown commands, shell interpreters, interpreters,
+///   pipelines, NAS CLIs — is an ordinary reversible write from the local
+///   classifier's point of view and enters the scoped five-minute window.
+///
+/// There is deliberately no "unknown → denied" and no "unknown → fresh" tier:
+/// an incomplete allowlist must never widen or restrict what the device owner
+/// may decide. Hard failures are reserved for malformed input (empty, NUL,
+/// oversized), which the policy engine surfaces as technical errors.
 public struct SSHCommandRiskClassification: Equatable, Sendable {
     public let risk: OperationRisk
     public let authorizationRequirement: AuthorizationRequirement
@@ -28,36 +40,38 @@ public struct SSHCommandRiskClassification: Equatable, Sendable {
 public struct SSHCommandRiskClassifier: Sendable {
     public let maxCommandLength: Int
 
-    public init(maxCommandLength: Int = 2_000) {
+    public init(maxCommandLength: Int = 65_536) {
         self.maxCommandLength = maxCommandLength
     }
 
     public func classify(command: String?) -> SSHCommandRiskClassification {
         guard let command, !command.isEmpty else {
-            return denied("SSH 命令为空", ruleID: "ssh.command.missing")
+            return technicalFailure("SSH 命令为空", ruleID: "ssh.command.missing")
         }
         guard command.utf8.count <= maxCommandLength else {
-            return denied("SSH 命令超过长度限制", ruleID: "ssh.command.too-long")
+            return technicalFailure("SSH 命令超过长度限制", ruleID: "ssh.command.too-long")
         }
-        guard !containsForbiddenShellSyntax(command) else {
-            return denied("SSH 命令包含不支持的 shell 组合语法", ruleID: "ssh.command.ambiguous-shell")
+        guard !command.contains("\u{0}") else {
+            return technicalFailure("SSH 命令包含 NUL 字节", ruleID: "ssh.command.nul")
         }
-
+        // Tokenizing here is classification-only. The executor sends the raw
+        // string byte-for-byte as one ssh remote-command argument; this split
+        // never changes what runs remotely.
         let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
         guard let executable = tokens.first else {
-            return denied("SSH 命令无法解析", ruleID: "ssh.command.unparseable")
+            return technicalFailure("SSH 命令为空", ruleID: "ssh.command.missing")
         }
-        return classify(spec: SSHCommandSpec(executable: executable, arguments: Array(tokens.dropFirst())))
+        return classifyTier(executable: executable, arguments: Array(tokens.dropFirst()))
     }
 
     public func classify(batch: SSHCommandBatch?) -> SSHCommandRiskClassification {
         guard let batch else {
-            return denied("SSH 批处理缺失", ruleID: "ssh.batch.missing")
+            return technicalFailure("SSH 批处理缺失", ruleID: "ssh.batch.missing")
         }
         do {
             try batch.validate()
         } catch {
-            return denied("SSH 批处理参数无效", ruleID: "ssh.batch.invalid")
+            return technicalFailure("SSH 批处理参数无效", ruleID: "ssh.batch.invalid")
         }
 
         var highest = SSHCommandRiskClassification(
@@ -69,7 +83,7 @@ public struct SSHCommandRiskClassifier: Sendable {
         for command in batch.commands {
             let current = classify(spec: command)
             highest = combine(highest, current)
-            if highest.authorizationRequirement == .denied {
+            if highest.authorizationRequirement.severity >= AuthorizationRequirement.freshApprovalRequired.severity {
                 break
             }
         }
@@ -91,83 +105,42 @@ public struct SSHCommandRiskClassifier: Sendable {
 
     public func classify(spec: SSHCommandSpec) -> SSHCommandRiskClassification {
         guard (try? spec.validate()) != nil else {
-            return denied("SSH 命令参数无效", ruleID: "ssh.command.invalid")
+            return technicalFailure("SSH 命令参数无效", ruleID: "ssh.command.invalid")
         }
 
         let executable = URL(fileURLWithPath: spec.executable).lastPathComponent.lowercased()
         let arguments = spec.arguments.map { $0.lowercased() }
-        if Self.shellExecutables.contains(executable) {
-            return denied("SSH 不允许通过 shell 解释器执行未结构化命令", ruleID: "ssh.shell-executable.denied")
-        }
-        if containsIndirectInterpreterInvocation(executable: executable, arguments: arguments) {
-            return denied(
-                "SSH 不允许通过命令包装器间接启动解释器",
-                ruleID: "ssh.indirect-interpreter.denied"
-            )
-        }
-        // A direct `python3 -c`/`perl -e`/`node -e` invocation carries the
-        // same "hand a code string to an interpreter" capability as launching
-        // it through env/sudo, so it cannot enter the structured command
-        // boundary either.
-        if Self.interpreterExecutables.contains(executable),
-           isCodeExecutionInvocation(interpreter: executable, arguments: arguments) {
-            return denied(
-                "SSH 不允许把代码字符串直接交给解释器执行",
-                ruleID: "ssh.interpreter-code.denied"
-            )
-        }
-        if executable == "find" {
-            return classifyFind(arguments: arguments)
-        }
-        if isDestructive(executable: executable, arguments: arguments) {
+        return classifyTier(executable: executable, arguments: arguments)
+    }
+
+    private func classifyTier(executable: String, arguments: [String]) -> SSHCommandRiskClassification {
+        if isDangerous(executable: executable, arguments: arguments) {
             return SSHCommandRiskClassification(
                 risk: .approvalRequired,
                 authorizationRequirement: .freshApprovalRequired,
-                reasons: ["SSH 命令可能造成不可逆远程破坏，必须重新本机认证"],
-                ruleID: "ssh.destructive.fresh-approval"
+                reasons: ["SSH 命令可能造成难以撤销的远程破坏，必须由设备所有者重新认证后执行"],
+                ruleID: "ssh.dangerous.fresh-approval"
             )
         }
 
-        if isReadOnly(executable: executable, arguments: arguments) {
+        if isSafeRead(executable: executable) {
             return SSHCommandRiskClassification(
                 risk: .silent,
                 authorizationRequirement: .none,
-                reasons: ["SSH 命令被本地解析为只读操作"],
+                reasons: ["SSH 命令被本地解析为明确的元数据只读操作"],
                 ruleID: "ssh.read-only.silent"
             )
         }
 
-        // Argument-aware ordinary writes: the service-control and container
-        // lifecycle forms below are locally proven reversible, so they may
-        // enter the five-minute execution window. Every unrecognized write
-        // keeps the fresh path; an incomplete blacklist must never widen the
-        // reusable boundary on its own.
-        if isOrdinaryWrite(executable: executable, arguments: arguments) {
-            return SSHCommandRiskClassification(
-                risk: .approvalRequired,
-                authorizationRequirement: .reusableApproval,
-                reasons: ["SSH 命令被本地解析为普通可逆写操作，可在执行窗口内复用审批"],
-                ruleID: "ssh.ordinary-write.reusable-approval"
-            )
-        }
-
-        if Self.reversibleWriteCommands.contains(executable) {
-            return SSHCommandRiskClassification(
-                risk: .approvalRequired,
-                authorizationRequirement: .reusableApproval,
-                reasons: ["SSH 命令可能修改远程状态，需要本机审批"],
-                ruleID: "ssh.effect.reusable-approval"
-            )
-        }
-
-        // Unknown semantics are never silently approved. A fresh decision is
-        // safer than an incomplete blacklist and still allows a user to make
-        // an explicit decision for a purpose-built command.
+        // Everything else — ordinary writes, unknown executables, shell
+        // interpreters, interpreters, pipelines, NAS CLIs — is an ordinary
+        // operation for the local classifier. The device owner approves the
+        // first use, and the scoped five-minute window covers follow-ups.
         return SSHCommandRiskClassification(
             risk: .approvalRequired,
-            authorizationRequirement: .freshApprovalRequired,
-            reasons: ["SSH 命令语义无法可靠解析，必须重新本机认证"],
-            ruleID: "ssh.unknown.fresh-approval"
+            authorizationRequirement: .reusableApproval,
+            reasons: ["SSH 命令属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
+            ruleID: "ssh.ordinary.reusable-approval"
         )
     }
 
@@ -196,128 +169,44 @@ public struct SSHCommandRiskClassifier: Sendable {
         )
     }
 
-    private func isReadOnly(executable: String, arguments: [String]) -> Bool {
-        if Self.readOnlyCommands.contains(executable) {
+    /// A small, explicit list of metadata reads that cannot mutate the remote
+    /// host. Anything not on the list is NOT denied — it simply takes the
+    /// ordinary approval path.
+    private func isSafeRead(executable: String) -> Bool {
+        Self.safeReadCommands.contains(executable)
+    }
+
+    /// A small, explicit list of locally provable destructive forms. These are
+    /// never executed silently or on a reusable lease; the device owner sees
+    /// the full command and re-authenticates for every use. They are NOT
+    /// denied: approval executes them.
+    private func isDangerous(executable: String, arguments: [String]) -> Bool {
+        if Self.dangerousExecutables.contains(executable) {
             return true
         }
-        guard executable == "docker", let subcommand = arguments.first else {
-            return false
-        }
-        return subcommand == "ps" || subcommand == "inspect" || subcommand == "images"
-    }
-
-    /// Only command forms the local classifier can prove reversible. File
-    /// copying/moving and permission or ownership changes can overwrite or
-    /// re-scope existing data and therefore never qualify; a target-specific
-    /// App-owned policy profile is the intended future home for widening
-    /// these boundaries, not a growing global table.
-    private func isOrdinaryWrite(executable: String, arguments: [String]) -> Bool {
-        switch executable {
-        case "systemctl":
-            guard let subcommand = arguments.first else { return false }
-            return Self.reversibleServiceSubcommands.contains(subcommand)
-        case "docker":
-            guard let subcommand = arguments.first else { return false }
-            return Self.reversibleContainerSubcommands.contains(subcommand)
-        default:
-            return false
-        }
-    }
-
-    private func classifyFind(arguments: [String]) -> SSHCommandRiskClassification {
-        if arguments.contains(where: Self.findIndirectExecutionActions.contains) {
-            return denied(
-                "SSH find 命令不允许通过 -exec 或 -ok 间接执行其他程序",
-                ruleID: "ssh.find.indirect-execution.denied"
-            )
-        }
-        if arguments.contains(where: Self.findSideEffectActions.contains) {
-            return SSHCommandRiskClassification(
-                risk: .approvalRequired,
-                authorizationRequirement: .freshApprovalRequired,
-                reasons: ["SSH find 命令可能写入文件或修改远程状态，必须重新本机认证"],
-                ruleID: "ssh.find.side-effect.fresh-approval"
-            )
-        }
-        if let unknownAction = arguments.first(where: { argument in
-            argument.hasPrefix("-") && !Self.safeFindArguments.contains(argument)
-        }) {
-            return SSHCommandRiskClassification(
-                risk: .approvalRequired,
-                authorizationRequirement: .freshApprovalRequired,
-                reasons: ["SSH find 参数语义无法可靠解析（\(unknownAction)），必须重新本机认证"],
-                ruleID: "ssh.find.unknown.fresh-approval"
-            )
-        }
-        return SSHCommandRiskClassification(
-            risk: .silent,
-            authorizationRequirement: .none,
-            reasons: ["SSH find 命令仅包含本地识别的只读遍历和输出参数"],
-            ruleID: "ssh.find.read-only.silent"
-        )
-    }
-
-    private func isDestructive(executable: String, arguments: [String]) -> Bool {
-        if executable == "rm" || executable == "shred" || executable.hasPrefix("mkfs")
-            || executable == "wipefs" || executable == "fdisk" || executable == "parted"
-            || executable == "reboot" || executable == "shutdown" || executable == "poweroff"
-            || executable == "halt" || executable == "dd" || executable == "zpool"
-            || executable == "mdadm" {
+        if executable.hasPrefix("mkfs") {
             return true
         }
-        if executable == "systemctl", arguments.contains(where: { $0 == "disable" || $0 == "mask" || $0 == "stop" }) {
+        if executable == "systemctl",
+           let subcommand = arguments.first,
+           Self.dangerousSystemctlSubcommands.contains(subcommand) {
             return true
         }
         if executable == "docker" {
-            if arguments.first == "system" && arguments.dropFirst().first == "prune" {
+            if arguments.first == "rm" {
                 return true
             }
-            if arguments.first == "volume" && arguments.dropFirst().first == "rm" {
+            if arguments.first == "volume", arguments.dropFirst().first == "rm" {
                 return true
             }
-            if arguments.first == "rm" && arguments.contains("-f") {
-                return true
-            }
-        }
-        return false
-    }
-
-    private func containsIndirectInterpreterInvocation(executable: String, arguments: [String]) -> Bool {
-        guard Self.indirectInterpreterLaunchers.contains(executable) else { return false }
-        for (index, argument) in arguments.enumerated() {
-            let candidate = URL(fileURLWithPath: argument).lastPathComponent.lowercased()
-            guard Self.interpreterExecutables.contains(candidate) else { continue }
-            let trailingArguments = Array(arguments.dropFirst(index + 1))
-            if isCodeExecutionInvocation(interpreter: candidate, arguments: trailingArguments) {
+            if arguments.first == "system", arguments.dropFirst().first == "prune" {
                 return true
             }
         }
         return false
     }
 
-    private func isCodeExecutionInvocation(interpreter: String, arguments: [String]) -> Bool {
-        if Self.shellExecutables.contains(interpreter) {
-            return arguments.contains {
-                $0 == "-c" || $0 == "-lc" || $0 == "-cl" || $0 == "-ic" || $0 == "-ilc" || $0 == "-cli"
-            }
-        }
-        switch interpreter {
-        case "python", "python2", "python3":
-            // `-c` hands over a code string; `-m` executes an installed
-            // module, which is equally arbitrary code.
-            return arguments.contains { $0 == "-c" || $0 == "-m" }
-        case "perl", "ruby":
-            return arguments.contains { $0 == "-e" }
-        case "php":
-            return arguments.contains { $0 == "-r" }
-        case "node", "osascript":
-            return arguments.contains { $0 == "-e" || $0 == "--eval" }
-        default:
-            return false
-        }
-    }
-
-    private func denied(_ reason: String, ruleID: String) -> SSHCommandRiskClassification {
+    private func technicalFailure(_ reason: String, ruleID: String) -> SSHCommandRiskClassification {
         SSHCommandRiskClassification(
             risk: .denied,
             authorizationRequirement: .denied,
@@ -326,71 +215,16 @@ public struct SSHCommandRiskClassifier: Sendable {
         )
     }
 
-    private func containsForbiddenShellSyntax(_ command: String) -> Bool {
-        if command.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
-            return true
-        }
-        // These characters are rejected even when they could be represented
-        // as a quoted argument. The legacy single-command API cannot
-        // preserve argument boundaries, and allowing them here would make
-        // policy say "approved" while the executor later fails closed.
-        let disallowed = [";", "&&", "||", "|", ">", "<", "`", "$(", "${", "&", "'", "\"", "\\", "$"]
-        if disallowed.contains(where: command.contains) {
-            return true
-        }
-        return command.contains("*") || command.contains("?") || command.contains("[") || command.contains("]")
-    }
-
-    private static let readOnlyCommands: Set<String> = [
-        "hostname", "uptime", "df", "du", "ps", "uname", "whoami", "id", "date", "free", "w", "last",
-        "ls", "cat", "head", "tail", "grep", "stat", "pwd", "printenv"
+    private static let safeReadCommands: Set<String> = [
+        "hostname", "whoami", "pwd", "uname", "id", "date", "uptime", "df", "du", "stat", "ls"
     ]
 
-    private static let findIndirectExecutionActions: Set<String> = [
-        "-exec", "-execdir", "-ok", "-okdir"
+    private static let dangerousExecutables: Set<String> = [
+        "rm", "shred", "wipefs", "fdisk", "parted", "dd",
+        "reboot", "shutdown", "poweroff", "halt", "zpool", "mdadm"
     ]
 
-    private static let findSideEffectActions: Set<String> = [
-        "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"
-    ]
-
-    private static let safeFindArguments: Set<String> = [
-        "--", "!", "(", ")", "\\(", "\\)", "-a", "-and", "-o", "-or", ",",
-        "-amin", "-anewer", "-atime", "-cmin", "-cnewer", "-ctime", "-daystart", "-depth",
-        "-empty", "-false", "-fstype", "-gid", "-group", "-ilname", "-iname", "-inum",
-        "-links", "-lname", "-ls", "-maxdepth", "-mindepth", "-mmin", "-mount", "-name",
-        "-newer", "-nogroup", "-nouser", "-path", "-perm", "-print", "-print0",
-        "-printf", "-prune", "-readable", "-regex", "-iregex", "-size", "-true", "-type",
-        "-uid", "-user", "-writable", "-xdev", "-quit", "-h", "-l", "-p"
-    ]
-
-    private static let indirectInterpreterLaunchers: Set<String> = [
-        "env", "sudo", "doas", "command", "xargs"
-    ]
-
-    private static let interpreterExecutables: Set<String> = [
-        "sh", "bash", "zsh", "fish", "ksh", "dash", "ash", "csh", "tcsh",
-        "python", "python2", "python3", "perl", "ruby", "php", "node", "osascript"
-    ]
-
-    private static let reversibleWriteCommands: Set<String> = [
-        // Keep this allow-list deliberately small. Commands such as cp/mv can
-        // overwrite existing data, while chmod/chown/ln/install/tee can
-        // change security properties or replace an existing path. Without a
-        // complete argument-aware proof they must take the unknown-command
-        // fresh-approval path instead of reusing a five-minute lease.
-        "mkdir", "touch"
-    ]
-
-    private static let reversibleServiceSubcommands: Set<String> = [
-        "start", "restart", "reload"
-    ]
-
-    private static let reversibleContainerSubcommands: Set<String> = [
-        "start", "restart", "stop", "pause", "unpause"
-    ]
-
-    private static let shellExecutables: Set<String> = [
-        "sh", "bash", "zsh", "fish", "ksh", "dash", "ash", "csh", "tcsh"
+    private static let dangerousSystemctlSubcommands: Set<String> = [
+        "reboot", "poweroff", "halt", "kexec", "isolate", "rescue", "emergency"
     ]
 }

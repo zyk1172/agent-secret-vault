@@ -743,10 +743,16 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
     public let requiredApproval: Bool
     public let authorizationRequirement: AuthorizationRequirement
     public let policyRuleID: String
-    /// Some profile-bound transports require fresh user presence the first
-    /// time a reusable scope is used. The scope may then be reused only after
-    /// that fresh approval; this flag is separate from risk severity.
+    /// Kept for wire compatibility. The current authorization model never
+    /// sets this flag: semantic risk promotes an operation to fresh approval
+    /// instead of denying it, and only technical failures fail hard.
     public let requiresFreshApprovalOnFirstUse: Bool
+    /// True when the request could not be processed for technical reasons
+    /// (malformed shape, contradictory fields, unverifiable identity) and the
+    /// failure is an input error rather than an authorization decision. The
+    /// service layer surfaces these as invalid-parameter errors, never as
+    /// security denials.
+    public let technicalFailure: Bool
 
     public init(
         risk: OperationRisk,
@@ -755,7 +761,8 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
         requiredApproval: Bool,
         policyRuleID: String,
         authorizationRequirement: AuthorizationRequirement? = nil,
-        requiresFreshApprovalOnFirstUse: Bool = false
+        requiresFreshApprovalOnFirstUse: Bool = false,
+        technicalFailure: Bool = false
     ) {
         self.risk = risk
         self.reasons = reasons
@@ -764,11 +771,12 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
         self.authorizationRequirement = authorizationRequirement ?? risk.authorizationRequirement
         self.policyRuleID = policyRuleID
         self.requiresFreshApprovalOnFirstUse = requiresFreshApprovalOnFirstUse
+        self.technicalFailure = technicalFailure
     }
 
     private enum CodingKeys: String, CodingKey {
         case risk, reasons, normalizedDestination, requiredApproval, authorizationRequirement, policyRuleID,
-             requiresFreshApprovalOnFirstUse
+             requiresFreshApprovalOnFirstUse, technicalFailure
     }
 
     public init(from decoder: any Decoder) throws {
@@ -781,7 +789,8 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
             requiredApproval: try container.decodeIfPresent(Bool.self, forKey: .requiredApproval) ?? (risk != .silent),
             policyRuleID: try container.decode(String.self, forKey: .policyRuleID),
             authorizationRequirement: try container.decodeIfPresent(AuthorizationRequirement.self, forKey: .authorizationRequirement),
-            requiresFreshApprovalOnFirstUse: try container.decodeIfPresent(Bool.self, forKey: .requiresFreshApprovalOnFirstUse) ?? false
+            requiresFreshApprovalOnFirstUse: try container.decodeIfPresent(Bool.self, forKey: .requiresFreshApprovalOnFirstUse) ?? false,
+            technicalFailure: try container.decodeIfPresent(Bool.self, forKey: .technicalFailure) ?? false
         )
     }
 
@@ -794,5 +803,6 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
         try container.encode(authorizationRequirement, forKey: .authorizationRequirement)
         try container.encode(policyRuleID, forKey: .policyRuleID)
         try container.encode(requiresFreshApprovalOnFirstUse, forKey: .requiresFreshApprovalOnFirstUse)
+        try container.encode(technicalFailure, forKey: .technicalFailure)
     }
 }

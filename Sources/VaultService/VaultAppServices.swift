@@ -640,12 +640,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         guard decision.risk != .denied else {
             await emitAudit(
-                action: "智能体操作被本地策略拒绝",
+                action: "智能体操作请求无效",
                 target: decision.policyRuleID,
                 referenceCount: descriptor.secretReferences.count,
                 result: "失败"
             )
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         }
 
         let executorAction = isExecutionLeaseEligible(descriptor.actionType)
@@ -719,7 +719,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
         guard currentDecision.risk != .denied else {
             await emitAudit(
-                action: "智能体操作在执行前被本地策略拒绝",
+                action: "智能体操作请求在执行前无效",
                 target: currentDecision.policyRuleID,
                 referenceCount: descriptor.secretReferences.count,
                 result: "失败",
@@ -729,7 +729,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 status: .failure
             )
             await abandonExecutionAuthorization(scope: executionScope)
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         }
         guard operationGeneration == securityGeneration else {
             await abandonExecutionAuthorization(scope: executionScope)
@@ -767,7 +767,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 metadata: currentMetadata
             )
             guard currentDecision.risk != .denied else {
-                throw SecretOperationError.operationDenied
+                throw SecretOperationError.invalidOperationParameters
             }
             guard operationGeneration == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
@@ -832,7 +832,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 )
                 guard refreshedDecision.risk != .denied else {
                     await abandonExecutionAuthorization(scope: executionScope)
-                    throw SecretOperationError.operationDenied
+                    throw SecretOperationError.invalidOperationParameters
                 }
                 guard operationGeneration == securityGeneration else {
                     await abandonExecutionAuthorization(scope: executionScope)
@@ -1144,7 +1144,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )]
         )
         guard decision.risk != .denied else {
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         }
         try await authorizeIfNeeded(
             descriptor,
@@ -2540,7 +2540,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 requestedEffects: ["secure-input-final-diff"]
             )
             let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-            guard decision.risk != .denied else { throw SecretOperationError.operationDenied }
+            guard decision.risk != .denied else { throw SecretOperationError.invalidOperationParameters }
         }
     }
 
@@ -3599,7 +3599,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         var currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
         guard currentDecision.risk != .denied else {
             await abandonExecutionAuthorization(scope: scope)
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         }
         guard operationGeneration == securityGeneration else {
             await abandonExecutionAuthorization(scope: scope)
@@ -3635,7 +3635,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 metadata: currentMetadata
             )
             guard currentDecision.risk != .denied else {
-                throw SecretOperationError.operationDenied
+                throw SecretOperationError.invalidOperationParameters
             }
             guard operationGeneration == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
@@ -3688,7 +3688,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
                 guard currentDecision.risk != .denied else {
                     await abandonExecutionAuthorization(scope: scope)
-                    throw SecretOperationError.operationDenied
+                    throw SecretOperationError.invalidOperationParameters
                 }
                 guard operationGeneration == securityGeneration else {
                     await abandonExecutionAuthorization(scope: scope)
@@ -3846,7 +3846,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         case .none:
             return .notRequired
         case .denied:
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         case .reusableApproval, .freshApprovalRequired:
             break
         }
@@ -3886,7 +3886,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw OperationAuthorizationError.cancelled
             }
             guard await approvalTicketStore.consume(ticket, for: descriptor, now: now()) else {
-                throw SecretOperationError.operationDenied
+                throw SecretOperationError.invalidOperationParameters
             }
             guard generation == securityGeneration else {
                 throw OperationAuthorizationError.cancelled
@@ -4124,7 +4124,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw OperationAuthorizationError.cancelled
             }
             guard await approvalTicketStore.consume(ticket, for: descriptor, now: now()) else {
-                throw SecretOperationError.operationDenied
+                throw SecretOperationError.invalidOperationParameters
             }
             guard generation == securityGeneration else {
                 throw OperationAuthorizationError.cancelled
@@ -4510,7 +4510,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let catalogDecision = catalogMutationPolicyEngine.evaluate(diff, transport: transport)
         switch catalogDecision {
         case .denied:
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         case .silent:
             if requireAgentSafeWrite {
                 // A caller that still asks for the removed global gate is a
@@ -4563,40 +4563,39 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             .filter { !$0.isEmpty }
         let labelText = labels.isEmpty ? "未命名凭据" : labels.prefix(3).joined(separator: "、")
         let target = safeDisplayLabel(decision.normalizedDestination ?? "本机")
-        // The batch summary already bounds every command, argument, and its
-        // total length; the 80-character single-operation cut would hide the
-        // exact commands the device owner is being asked to approve.
+        // The device owner must see the actual command: raw single-line and
+        // multi-line commands are shown in full with newlines preserved, and
+        // the policy's risk reasons (including the agent's own warning) are
+        // part of the prompt. The final decision belongs to the owner.
         let rawDetail = operationDetail(for: descriptor)
-        let detail = descriptor.actionType == .sshCommand && descriptor.sshCommandBatch != nil
-            ? boundedDisplayValue(rawDetail, maxBytes: 1_600)
-            : safeDisplayLabel(rawDetail)
+        let detail: String
+        switch descriptor.actionType {
+        case .sshCommand:
+            detail = displayCommandText(rawDetail, maxBytes: 65_536)
+        default:
+            detail = safeDisplayLabel(rawDetail)
+        }
+        let riskText = decision.reasons
+            .map { safeDisplayLabel($0) }
+            .filter { !$0.isEmpty }
+            .prefix(3)
+            .joined(separator: "；")
+        let riskSection = riskText.isEmpty ? "" : "；风险：\(riskText)"
         let batchRequirement = descriptor.sshCommandBatch != nil
             ? "；批处理最高授权级别：\(authorizationRequirementDisplay(decision.authorizationRequirement))"
             : ""
-        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(batchRequirement)"
+        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(riskSection)\(batchRequirement)"
         guard let executionWindowDuration else {
-            if decision.requiresFreshApprovalOnFirstUse {
-                return "\(base)；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；这是首次使用，必须本机认证"
-            }
-            // A destructive method such as DELETE takes the fresh one-shot
-            // path with the first-use marker cleared.  The device owner still
-            // must be told the credential would travel unencrypted.
-            if isInsecureSecretHTTPTarget(descriptor) {
-                return "\(base)；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；必须本机认证"
-            }
             return base
         }
         let seconds = executionWindowDuration.formatted(.number.precision(.fractionLength(0...3)))
-        let insecureWarning = decision.requiresFreshApprovalOnFirstUse
-            ? "；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；首次使用必须本机认证"
-            : ""
         let fingerprintBinding = descriptor.actionType == .httpRequest
             || descriptor.actionType == .apiRequest
             || descriptor.actionType == .databaseQuery
             || descriptor.actionType == .sftpTransfer
             ? "；HTTP/API、数据库和 SFTP 还要求完全相同的操作内容"
             : ""
-        return "\(base)\(insecureWarning)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒\(fingerprintBinding)；不会授权其他凭据、目标或协议"
+        return "\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒\(fingerprintBinding)；不会授权其他凭据、目标或协议"
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {
@@ -4617,11 +4616,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
             return "\(method) \(descriptor.normalizedPath ?? "/")"
         case .databaseQuery:
-            return descriptor.effectiveDatabaseStatement?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
-                .first
-                .map(String.init) ?? "数据库查询"
+            guard let statement = descriptor.effectiveDatabaseStatement else {
+                return "数据库查询"
+            }
+            return displayCommandText(statement.trimmingCharacters(in: .whitespacesAndNewlines), maxBytes: 65_536)
         case .sftpTransfer:
             return "\(descriptor.effectiveFileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
         case .localAppFill:
@@ -4632,24 +4630,18 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func sshBatchOperationDetail(_ batch: SSHCommandBatch) -> String {
-        let maxDisplayedCommands = 5
-        let maxDisplayedArguments = 6
-        let commandDetails = batch.commands.prefix(maxDisplayedCommands).enumerated().map { offset, command in
-            let executable = boundedDisplayValue(command.executable, maxBytes: 48)
-            let arguments = command.arguments.prefix(maxDisplayedArguments).map {
-                "「\(boundedDisplayValue($0, maxBytes: 64))」"
+        // Every batch command is shown: the owner approves the exact batch,
+        // so nothing is summarized away.
+        let commandDetails = batch.commands.enumerated().map { offset, command in
+            let executable = displayCommandText(command.executable, maxBytes: 4_096)
+            let arguments = command.arguments.map {
+                "「\(displayCommandText($0, maxBytes: 4_096))」"
             }.joined(separator: " ")
-            let omittedArguments = command.arguments.count > maxDisplayedArguments
-                ? " …（还有 \(command.arguments.count - maxDisplayedArguments) 个参数）"
-                : ""
-            return "\(offset + 1). \(executable)\(arguments.isEmpty ? "" : " \(arguments)")\(omittedArguments)"
+            return "\(offset + 1). \(executable)\(arguments.isEmpty ? "" : " \(arguments)")"
         }
-        let omittedCommands = batch.commands.count > maxDisplayedCommands
-            ? "；其余 \(batch.commands.count - maxDisplayedCommands) 条命令未在摘要展开"
-            : ""
-        return boundedDisplayValue(
-            "SSH 批处理（\(batch.commands.count) 条）：\(commandDetails.joined(separator: "；"))\(omittedCommands)",
-            maxBytes: 1_600
+        return displayCommandText(
+            "SSH 批处理（\(batch.commands.count) 条）：\(commandDetails.joined(separator: "；"))",
+            maxBytes: 65_536
         )
     }
 
@@ -4701,10 +4693,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return url.scheme?.lowercased() == "http"
     }
 
-    /// Bounds display text by UTF-8 bytes without the 80-character
-    /// single-field cut, so bounded batch summaries keep their full content.
-    private func boundedDisplayValue(_ value: String, maxBytes: Int) -> String {
-        let sanitized = sanitizedDisplayText(value)
+    /// Display text for commands: preserves newlines and tabs so multi-line
+    /// commands stay readable in the approval prompt, strips other control
+    /// characters, and bounds the total by UTF-8 bytes.
+    private func displayCommandText(_ value: String, maxBytes: Int) -> String {
+        let sanitized = String(String.UnicodeScalarView(value.unicodeScalars.compactMap { scalar -> UnicodeScalar? in
+            if scalar == "\n" || scalar == "\t" {
+                return scalar
+            }
+            if scalar.value < 0x20 || scalar.value == 0x7F {
+                return nil
+            }
+            return scalar
+        }))
         let data = Data(sanitized.utf8)
         guard data.count > maxBytes else { return sanitized }
         guard maxBytes > 3 else {

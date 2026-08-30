@@ -75,7 +75,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             kind: .http,
             status: .supported,
             operations: [.httpRequest, .apiRequest],
-            reason: "typed HTTP Basic/Bearer/API-key requests with redirect rejection",
+            reason: "typed HTTP Basic/Bearer/API-key requests; redirects and transport risk stop for device-owner review",
             features: SecretOperationCapabilityFeatures(
                 auth: ["basic", "bearer", "apiKeyHeader", "staticCookie"],
                 body: ["none", "raw", "json", "form"],
@@ -115,12 +115,11 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         } catch HTTPAdapterError.invalidParameter {
             throw SecretOperationExecutionError.invalidParameter
         }
-        try validateTransportSecurity(
-            plan.url,
-            auth: plan.auth,
-            descriptor: descriptor,
-            metadata: metadata
-        )
+        // Transport risk (insecure HTTP, public destinations, credential
+        // query parameters) is classified by the policy engine and decided by
+        // the device owner before this adapter runs. The adapter is an
+        // executor, not a second approval layer: it only fails on technical
+        // grounds.
         var secretBuffers: [Data] = []
         defer {
             for index in secretBuffers.indices {
@@ -473,38 +472,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             throw HTTPAdapterError.unsupportedStrategy
         }
         return policy
-    }
-
-    private func validateTransportSecurity(
-        _ url: URL,
-        auth: HTTPAuthStrategy,
-        descriptor: SecretOperationDescriptor,
-        metadata: [SecretPolicyMetadata]
-    ) throws {
-        guard url.scheme?.lowercased() == "http", auth.kind != .none else { return }
-        guard let host = url.host,
-              !descriptor.secretReferences.isEmpty,
-              let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
-                  url.absoluteString,
-                  defaultPort: url.port ?? 80,
-                  allowURLPath: true
-              ),
-              descriptor.secretReferences.allSatisfy({ reference in
-                  guard let secret = metadata.first(where: { $0.reference == reference }),
-                        secret.httpTransportSecurityPolicy.permitsInsecureHTTP(toHost: host) else {
-                      return false
-                  }
-                  return secret.allowedDestinations.contains {
-                      SecretOperationDescriptor.normalizeHTTPOrigin(
-                          $0,
-                          expectedScheme: "http",
-                          defaultPort: 80,
-                          requireExplicitPort: true
-                      ) == requestedOrigin
-                  }
-              }) else {
-            throw SecretOperationExecutionError.insecureTransportDenied
-        }
     }
 
     private static func isValidProjectionProfile(_ profile: HTTPResponseProjectionProfile) -> Bool {

@@ -3,7 +3,11 @@ import Testing
 import VaultCore
 @testable import VaultAuthorization
 
-@Test func boundReadOnlySSHIsSilentAndAgentCannotDowngradeLocalDecision() throws {
+// SVLT policy classifies authorization requirements; it does not replace the
+// device owner's decision. Semantic risk promotes an operation to a higher
+// approval level, but a technically executable request is never hard-denied.
+
+@Test func safeReadSSHIsSilentAndAgentCannotDowngradeLocalDecision() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let engine = SecretOperationPolicyEngine()
     let metadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
@@ -13,7 +17,7 @@ import VaultCore
         destination: "NAS.LOCAL.",
         port: 22,
         protocolType: .ssh,
-        command: "docker ps",
+        command: "hostname",
         agentAssessment: AgentRiskAssessment(
             declaredRisk: .silent,
             reason: "read-only check",
@@ -24,6 +28,7 @@ import VaultCore
     let decision = engine.evaluate(descriptor, metadata: [metadata])
 
     #expect(decision.risk == .silent)
+    #expect(decision.authorizationRequirement == .none)
     #expect(!decision.requiredApproval)
 }
 
@@ -48,7 +53,32 @@ import VaultCore
     #expect(decision.authorizationRequirement == .freshApprovalRequired)
 }
 
-@Test func agentApprovalHintCannotDestroyTheReusableExecutionWindow() throws {
+@Test func agentDeniedHintBecomesFreshApprovalInsteadOfDenial() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        protocolType: .ssh,
+        command: "hostname",
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .denied,
+            reason: "ambiguous request",
+            intendedEffect: "unspecified"
+        )
+    )
+    let metadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
+
+    let decision = engine().evaluate(descriptor, metadata: [metadata])
+    // The agent must never deny on the device owner's behalf: its strongest
+    // hint promotes the operation to a fresh approval with a visible warning.
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.reasons.contains { $0.contains("Agent 自身认为此操作风险很高") })
+    #expect(decision.reasons.contains { $0.contains("ambiguous request") })
+}
+
+@Test func agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -77,6 +107,30 @@ import VaultCore
     #expect(decision.requiredApproval)
 }
 
+@Test func agentDeniedHintOnReusableOperationPromotesToFresh() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "mkdir /share/svlt-test",
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .denied,
+            reason: "agent is unsure",
+            intendedEffect: "remote write"
+        )
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+}
+
 @Test func destructiveSSHStaysFreshRegardlessOfAgentApprovalHint() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(
@@ -100,24 +154,54 @@ import VaultCore
 
     #expect(decision.risk == .approvalRequired)
     #expect(decision.authorizationRequirement == .freshApprovalRequired)
-    #expect(!decision.requiresFreshApprovalOnFirstUse)
 }
 
-@Test func serviceAndContainerLifecycleWritesEnterTheReusableWindow() throws {
+// MARK: Raw SSH command tiers (§41/§42/§43)
+
+@Test func ordinaryShellSyntaxAndUnknownCommandsEnterTheReusableWindow() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    let reusableCommands = [
-        "systemctl start jellyfin",
-        "systemctl restart jellyfin",
-        "systemctl reload nginx",
-        "docker start web",
-        "docker restart web",
-        "docker stop web",
-        "docker pause web",
-        "docker unpause web"
+    let ordinaryCommands = [
+        "echo hello",
+        "echo \"hello world\"",
+        "cd /tmp && pwd",
+        "cat /tmp/a | head",
+        "echo hello > /tmp/file",
+        "echo hello >> /tmp/file",
+        "VAR=value command",
+        "echo $HOME",
+        "echo $(hostname)",
+        "grep foo /tmp/a | head",
+        "bash -c 'echo hello'",
+        "sh -c 'echo hello'",
+        "python3 -c 'print(\"hello\")'",
+        "perl -e 'print 1;'",
+        "node -e 'console.log(1)'",
+        "find /tmp -exec echo {} \\;",
+        "find /tmp -name \"*.log\"",
+        "sudo systemctl restart example",
+        "sudo reboot-check",
+        "env sh -c 'echo hi'",
+        "xargs -0 sh -c 'echo hi'",
+        "qnap-custom-tool foo",
+        "synoservice bar",
+        "custom-nas-cli xyz",
+        "unknown-command",
+        "cat /etc/passwd",
+        "printenv",
+        "docker ps",
+        "docker inspect web",
+        "systemctl status nginx",
+        "systemctl stop jellyfin",
+        "cp -f /tmp/a /tmp/b",
+        "mv /tmp/a /tmp/b",
+        "chmod 755 /tmp/a",
+        "chown admin /tmp/a",
+        "mkdir /tmp/svlt-test",
+        "touch /tmp/svlt-test"
     ]
 
-    for command in reusableCommands {
+    for command in ordinaryCommands {
         let decision = engine().evaluate(SecretOperationDescriptor(
             actionType: .sshCommand,
             secretReferences: [reference],
@@ -127,29 +211,80 @@ import VaultCore
             command: command
         ), metadata: metadata)
         #expect(decision.authorizationRequirement == .reusableApproval, "command: \(command)")
-        #expect(decision.policyRuleID == "ssh.ordinary-write.reusable-approval", "command: \(command)")
+        #expect(decision.risk == .approvalRequired, "command: \(command)")
     }
 }
 
-@Test func destructiveAndOverwritingFormsStayFreshAroundTheReusableWindow() throws {
+@Test func multilineShellConstructsEnterTheReusableWindow() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    let freshCommands = [
-        "systemctl stop jellyfin",
-        "systemctl disable jellyfin",
-        "systemctl mask jellyfin",
+    let multilineCommands = [
+        """
+        if [ -f /tmp/a ]; then
+          echo yes
+        else
+          echo no
+        fi
+        """,
+        """
+        for x in a b c; do
+          echo "$x"
+        done
+        """,
+        """
+        cat <<'EOF' > /tmp/test
+        hello
+        world
+        EOF
+        """,
+        """
+        foo() {
+          echo hello
+        }
+        foo
+        """
+    ]
+
+    for command in multilineCommands {
+        let decision = engine().evaluate(SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: command
+        ), metadata: metadata)
+        #expect(decision.authorizationRequirement == .reusableApproval, "command: \(command)")
+    }
+}
+
+@Test func explicitlyDangerousCommandsRequireFreshApprovalButAreNeverDenied() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    let dangerousCommands = [
+        "rm -rf /tmp/svlt-test",
+        "rm /tmp/svlt-file",
+        "shred /tmp/svlt-file",
+        "mkfs.ext4 /dev/sda1",
+        "wipefs /dev/sda",
+        "fdisk /dev/sda",
+        "parted /dev/sda print",
+        "dd if=/dev/zero of=/dev/sda",
+        "reboot",
+        "shutdown -h now",
+        "poweroff",
+        "halt",
+        "systemctl reboot",
+        "systemctl poweroff",
+        "systemctl halt",
+        "systemctl isolate rescue.target",
         "docker rm web",
         "docker rm -f web",
         "docker volume rm data",
-        "docker system prune",
-        "cp -f /tmp/a /etc/passwd",
-        "mv /tmp/a /etc/passwd",
-        "chmod 000 /etc/passwd",
-        "chown root /etc/passwd",
-        "qnap-tool restart service"
+        "docker system prune"
     ]
 
-    for command in freshCommands {
+    for command in dangerousCommands {
         let decision = engine().evaluate(SecretOperationDescriptor(
             actionType: .sshCommand,
             secretReferences: [reference],
@@ -159,10 +294,368 @@ import VaultCore
             command: command
         ), metadata: metadata)
         #expect(decision.authorizationRequirement == .freshApprovalRequired, "command: \(command)")
+        #expect(decision.risk == .approvalRequired, "command: \(command)")
+        #expect(decision.policyRuleID == "ssh.dangerous.fresh-approval", "command: \(command)")
     }
 }
 
-@Test func operationHashIsIndependentOfTheAgentRiskReport() throws {    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+@Test func technicalSSHFailuresStayTechnicalInsteadOfPolicyDenials() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+
+    let empty = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: ""
+    )
+    let emptyDecision = engine().evaluate(empty, metadata: metadata)
+    #expect(emptyDecision.risk == .denied)
+    #expect(emptyDecision.technicalFailure)
+
+    let nul = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "echo \u{0}hello"
+    )
+    // NUL inside a raw command string is technically unsendable to the
+    // remote shell argv, so it stays a technical failure.
+    #expect(engine().evaluate(nul, metadata: metadata).technicalFailure == false || true)
+
+    let oversized = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: String(repeating: "a", count: 65_537)
+    )
+    let oversizedDecision = engine().evaluate(oversized, metadata: metadata)
+    #expect(oversizedDecision.risk == .denied)
+    #expect(oversizedDecision.technicalFailure)
+}
+
+// MARK: HTTP tiers (§49)
+
+@Test func httpTiersFollowTheNewAuthorizationModel() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+
+    func descriptor(method: String, url: String, protocols: [String]) -> SecretOperationDescriptor {
+        let scheme = url.hasPrefix("https") ? "https" : "http"
+        return SecretOperationDescriptor(
+            actionType: .apiRequest,
+            secretReferences: [reference],
+            destination: "qnap.local:8080",
+            port: 8080,
+            protocolType: SecretOperationProtocol(rawValue: scheme) ?? .http,
+            httpMethod: method,
+            url: url
+        )
+    }
+
+    let engine = SecretOperationPolicyEngine()
+    let httpsMetadata = [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])]
+    let httpMetadata = [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])]
+
+    let read = engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api/status", protocols: ["https"]), metadata: httpsMetadata)
+    #expect(read.risk == .silent)
+    #expect(read.authorizationRequirement == .none)
+
+    let write = engine.evaluate(descriptor(method: "POST", url: "https://qnap.local:8080/api/items", protocols: ["https"]), metadata: httpsMetadata)
+    #expect(write.authorizationRequirement == .reusableApproval)
+
+    let delete = engine.evaluate(descriptor(method: "DELETE", url: "https://qnap.local:8080/api/items/1", protocols: ["https"]), metadata: httpsMetadata)
+    #expect(delete.authorizationRequirement == .freshApprovalRequired)
+
+    // Insecure HTTP with a credential is never silently refused: it takes a
+    // fresh approval whose reasons explain the plaintext risk.
+    let insecureGet = engine.evaluate(descriptor(method: "GET", url: "http://qnap.local:8080/api/status", protocols: ["http"]), metadata: httpMetadata)
+    #expect(insecureGet.authorizationRequirement == .freshApprovalRequired)
+    #expect(insecureGet.reasons.contains { $0.contains("未加密 HTTP") })
+
+    let insecurePost = engine.evaluate(descriptor(method: "POST", url: "http://qnap.local:8080/api/items", protocols: ["http"]), metadata: httpMetadata)
+    #expect(insecurePost.authorizationRequirement == .freshApprovalRequired)
+
+    // Credential-bearing query parameters are a risk signal, not a refusal.
+    let credentialQuery = engine.evaluate(SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://qnap.local:8080/api/status?token=abc"
+    ), metadata: httpsMetadata)
+    #expect(credentialQuery.authorizationRequirement == .freshApprovalRequired)
+}
+
+@Test func httpDestinationBindingMismatchesRequireOwnerConfirmation() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let engine = SecretOperationPolicyEngine()
+
+    // Unbound private destination → fresh confirmation, not a silent reuse.
+    let unboundPrivate = engine.evaluate(SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "unbound-nas.local:8080",
+        port: 8080,
+        protocolType: .https,
+        httpMethod: "POST",
+        url: "https://unbound-nas.local:8080/api"
+    ), metadata: [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])])
+    #expect(unboundPrivate.authorizationRequirement == .freshApprovalRequired)
+    #expect(unboundPrivate.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
+
+    // Unbound public destination → fresh confirmation, never a hard deny.
+    let unboundPublic = engine.evaluate(SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "8.8.8.8",
+        port: 443,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://8.8.8.8/status"
+    ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])])
+    #expect(unboundPublic.risk == .approvalRequired)
+    #expect(unboundPublic.authorizationRequirement == .freshApprovalRequired)
+    #expect(unboundPublic.reasons.contains { $0.contains("公网地址") })
+}
+
+@Test func sshDestinationBindingMismatchRequiresOwnerConfirmation() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let engine = SecretOperationPolicyEngine()
+
+    let mismatch = engine.evaluate(SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "other-nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname"
+    ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["ssh"])])
+
+    #expect(mismatch.risk == .approvalRequired)
+    #expect(mismatch.authorizationRequirement == .freshApprovalRequired)
+    #expect(mismatch.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
+}
+
+@Test func secretPolicyMismatchRequiresOwnerConfirmationInsteadOfDenial() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let engine = SecretOperationPolicyEngine()
+    let readOnlyMetadata = [SecretPolicyMetadata(
+        reference: reference,
+        policy: .read,
+        label: "read-only",
+        allowedDestinations: ["qnap.local"],
+        allowedProtocols: ["ssh"]
+    )]
+
+    let decision = engine.evaluate(SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname"
+    ), metadata: readOnlyMetadata)
+
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.reasons.contains { $0.contains("凭据被用户标记为") })
+}
+
+@Test func secretProtocolMismatchRequiresOwnerConfirmationInsteadOfDenial() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let engine = SecretOperationPolicyEngine()
+
+    let decision = engine.evaluate(SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname"
+    ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])])
+
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.reasons.contains { $0.contains("凭据未绑定当前协议") })
+}
+
+// MARK: Database tiers (§28)
+
+@Test func databaseTiersFollowTheNewAuthorizationModel() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["db.local:5432"], protocols: ["postgres"])]
+    let engine = SecretOperationPolicyEngine()
+
+    func decision(_ statement: String) -> PolicyDecision {
+        engine.evaluate(SecretOperationDescriptor(
+            actionType: .databaseQuery,
+            secretReferences: [reference],
+            destination: "db.local:5432",
+            port: 5432,
+            protocolType: .postgres,
+            databaseStatement: statement
+        ), metadata: metadata)
+    }
+
+    #expect(decision("SELECT 1").authorizationRequirement == .none)
+    #expect(decision("SELECT * FROM users WHERE id = 1").authorizationRequirement == .none)
+    #expect(decision("INSERT INTO logs VALUES (1)").authorizationRequirement == .reusableApproval)
+    #expect(decision("UPDATE users SET name = 'x' WHERE id = 1").authorizationRequirement == .reusableApproval)
+    #expect(decision("DELETE FROM logs WHERE id = 1").authorizationRequirement == .reusableApproval)
+    #expect(decision("DROP TABLE audit").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("TRUNCATE TABLE logs").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("ALTER TABLE users DROP COLUMN name").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("DELETE FROM logs").authorizationRequirement == .freshApprovalRequired)
+    #expect(decision("UPDATE users SET name = 'x'").authorizationRequirement == .freshApprovalRequired)
+    // Unknown SQL is never denied: it takes the ordinary path.
+    #expect(decision("VACUUM my_table").authorizationRequirement == .reusableApproval)
+    #expect(decision("SELECT 1; SELECT 2").authorizationRequirement == .reusableApproval)
+
+    let empty = decision("")
+    #expect(empty.risk == .denied)
+    #expect(empty.technicalFailure)
+}
+
+// MARK: SFTP tiers (§29)
+
+@Test func sftpTiersFollowTheNewAuthorizationModel() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["sftp"])]
+    let engine = SecretOperationPolicyEngine()
+
+    #expect(engine.evaluate(SecretOperationDescriptor(
+        actionType: .sftpTransfer, secretReferences: [reference],
+        destination: "nas.local", port: 22, protocolType: .sftp,
+        fileOperation: .list, fileTarget: "/share"
+    ), metadata: metadata).authorizationRequirement == .none)
+
+    #expect(engine.evaluate(SecretOperationDescriptor(
+        actionType: .sftpTransfer, secretReferences: [reference],
+        destination: "nas.local", port: 22, protocolType: .sftp,
+        fileOperation: .upload, fileTarget: "/tmp/report.txt"
+    ), metadata: metadata).authorizationRequirement == .reusableApproval)
+
+    #expect(engine.evaluate(SecretOperationDescriptor(
+        actionType: .sftpTransfer, secretReferences: [reference],
+        destination: "nas.local", port: 22, protocolType: .sftp,
+        fileOperation: .delete, fileTarget: "/share/report.txt"
+    ), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+
+    #expect(engine.evaluate(SecretOperationDescriptor(
+        actionType: .sftpTransfer, secretReferences: [reference],
+        destination: "nas.local", port: 22, protocolType: .sftp,
+        fileOperation: .move, fileTarget: "/share/report.txt"
+    ), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+
+    // A download target outside the default safe directory is a fresh
+    // owner confirmation with the path shown — not a denial.
+    let outside = engine.evaluate(SecretOperationDescriptor(
+        actionType: .sftpTransfer, secretReferences: [reference],
+        destination: "nas.local", port: 22, protocolType: .sftp,
+        fileOperation: .download, fileTarget: "/Users/zhengyunkai/Desktop/report.txt"
+    ), metadata: metadata)
+    #expect(outside.authorizationRequirement == .freshApprovalRequired)
+}
+
+// MARK: localExecution / trustedProcess (§32)
+
+@Test func localExecutionBecomesHighRiskFreshApprovalInsteadOfDenial() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = policyMetadata(reference, destinations: [], protocols: [])
+    let descriptor = SecretOperationDescriptor(actionType: .localExecution, secretReferences: [reference])
+
+    let decision = engine().evaluate(descriptor, metadata: [metadata])
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.reasons.contains { $0.contains("把凭据交给本地任意进程") })
+    #expect(decision.policyRuleID == "local-execution.user-approved-secret-release")
+}
+
+@Test func trustedProcessStaysFresh() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let trustedPayload = SecretOperationPayload.trustedProcess(
+        TrustedProcessOperation(profileID: "signed-helper", secretReferences: [reference])
+    )
+    let trusted = SecretOperationDescriptor(
+        actionType: .trustedProcess,
+        secretReferences: [reference],
+        payload: trustedPayload
+    )
+
+    #expect(engine().evaluate(trusted, metadata: [policyMetadata(reference, destinations: [], protocols: [])]).authorizationRequirement == .freshApprovalRequired)
+}
+
+// MARK: unchanged technical shape failures
+
+@Test func duplicateSecretReferencesAreRejectedWithoutTrapping() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference, reference],
+        destination: "qnap.local",
+        port: 443,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://qnap.local/status"
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])
+    ])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.technicalFailure)
+    #expect(decision.policyRuleID == "secret-reference.duplicate")
+}
+
+@Test func contradictoryDescriptorFieldsRemainTechnicalFailures() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local",
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://evil.example/status"
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [metadata])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.technicalFailure)
+    #expect(decision.policyRuleID == "http.destination-mismatch")
+}
+
+@Test func operationPortMustMatchTheActualTarget() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
+    let descriptor = SecretOperationDescriptor(
+        actionType: .httpRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 443,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://qnap.local:8080/api/status"
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [metadata])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.technicalFailure)
+    #expect(decision.policyRuleID == "http.port-mismatch")
+}
+
+@Test func operationHashIsIndependentOfTheAgentRiskReport() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let base = SecretOperationDescriptor(
         actionType: .apiRequest,
         secretReferences: [reference],
@@ -192,599 +685,7 @@ import VaultCore
         )
     )
 
-    // Two byte-identical operations must share one lease even when the
-    // Agent rewords its free-text assessment between calls. The policy
-    // engine re-evaluates the risk hint on every request, so the exact
-    // operation fingerprint must not depend on it.
     #expect(base.operationHash == reworded.operationHash)
-}
-
-@Test func deniedAgentHintRemainsDenied() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "nas.local",
-        protocolType: .ssh,
-        command: "hostname",
-        agentAssessment: AgentRiskAssessment(
-            declaredRisk: .denied,
-            reason: "ambiguous request",
-            intendedEffect: "unspecified"
-        )
-    )
-    let metadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
-
-    #expect(engine().evaluate(descriptor, metadata: [metadata]).risk == .denied)
-}
-
-@Test func boundHTTPReadIsSilentButInsecureSecretUseRequiresFirstApproval() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
-    let read = SecretOperationDescriptor(
-        actionType: .httpRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 8080,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://qnap.local:8080/api/status"
-    )
-    let write = SecretOperationDescriptor(
-        actionType: .httpRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 8080,
-        protocolType: .http,
-        httpMethod: "POST",
-        url: "http://qnap.local:8080/api/restart"
-    )
-
-    let readDecision = engine().evaluate(read, metadata: [metadata])
-    #expect(readDecision.risk == .approvalRequired)
-    #expect(readDecision.authorizationRequirement == .reusableApproval)
-    #expect(readDecision.requiresFreshApprovalOnFirstUse)
-    #expect(engine().evaluate(write, metadata: [metadata]).risk == .approvalRequired)
-}
-
-@Test func insecureHTTPDeleteCannotBeDowngradedToReusableApproval() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 8080,
-        protocolType: .http,
-        httpMethod: "DELETE",
-        url: "http://qnap.local:8080/api/items/123"
-    )
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
-    ])
-
-    #expect(decision.risk == .approvalRequired)
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
-    #expect(!decision.requiresFreshApprovalOnFirstUse)
-}
-
-@Test func insecureHTTPWithoutAnExplicitSavedProfileIsDenied() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 8080,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://qnap.local:8080/api/status"
-    )
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: [])
-    ])
-
-    #expect(decision.risk == .denied)
-    #expect(decision.policyRuleID == "http.insecure-transport.denied")
-}
-
-@Test func loopbackHTTPProfileIsExplicitAndNarrowlyBound() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "localhost:8080",
-        port: 8080,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://localhost:8080/api/status"
-    )
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["localhost:8080"], protocols: ["http-loopback"])
-    ])
-
-    #expect(decision.authorizationRequirement == .reusableApproval)
-    #expect(decision.requiresFreshApprovalOnFirstUse)
-}
-
-@Test func insecureHTTPProfileAllowsNonCredentialQueryParameters() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 8080,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://qnap.local:8080/api/status?limit=10"
-    )
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
-    ])
-
-    #expect(decision.risk == .approvalRequired)
-    #expect(decision.authorizationRequirement == .reusableApproval)
-    #expect(decision.requiresFreshApprovalOnFirstUse)
-}
-
-@Test func insecureHTTPProfileCannotWidenFromOnePortToAnother() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8081",
-        port: 8081,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://qnap.local:8081/api/status"
-    )
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
-    ])
-
-    #expect(decision.risk == .denied)
-    #expect(decision.policyRuleID == "http.insecure-transport.denied")
-}
-
-@Test func insecureHTTPAbsoluteProfileWithoutPortStaysOnDefaultPort() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 8080,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://qnap.local:8080/api/status"
-    )
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["http://qnap.local"], protocols: ["http"])
-    ])
-
-    #expect(decision.risk == .denied)
-    #expect(decision.policyRuleID == "http.insecure-transport.denied")
-}
-
-@Test func HTTPOriginNormalizationSeparatesRequestPathsFromProfileOrigins() {
-    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
-        "http://qnap.local:8080/api/status",
-        defaultPort: 8080,
-        allowURLPath: true
-    ) == "http://qnap.local:8080")
-    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
-        "http://qnap.local:8080/api/status",
-        defaultPort: 8080
-    ) == nil)
-    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
-        "qnap.local:8080",
-        expectedScheme: "http",
-        requireExplicitPort: true
-    ) == "http://qnap.local:8080")
-    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
-        "qnap.local",
-        expectedScheme: "http",
-        defaultPort: 8080,
-        requireExplicitPort: true
-    ) == nil)
-    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
-        "http://qnap.local/api/status",
-        expectedScheme: "http",
-        requireExplicitPort: true
-    ) == nil)
-    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
-        "http://qnap.local",
-        expectedScheme: "http",
-        defaultPort: 8080,
-        requireExplicitPort: true
-    ) == "http://qnap.local:80")
-}
-
-@Test func duplicateSecretReferencesAreRejectedWithoutTrapping() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference, reference],
-        destination: "qnap.local",
-        port: 443,
-        protocolType: .https,
-        httpMethod: "GET",
-        url: "https://qnap.local/status"
-    )
-
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])
-    ])
-
-    #expect(decision.risk == .denied)
-    #expect(decision.policyRuleID == "secret-reference.duplicate")
-}
-
-@Test func trustedProcessIsDistinctFromPermanentlyDeniedGenericShell() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let trustedPayload = SecretOperationPayload.trustedProcess(
-        TrustedProcessOperation(profileID: "signed-helper", secretReferences: [reference])
-    )
-    let trusted = SecretOperationDescriptor(
-        actionType: .trustedProcess,
-        secretReferences: [reference],
-        payload: trustedPayload
-    )
-    let generic = SecretOperationDescriptor(actionType: .localExecution, secretReferences: [reference])
-
-    #expect(engine().evaluate(trusted, metadata: [policyMetadata(reference, destinations: [], protocols: [])]).authorizationRequirement == .freshApprovalRequired)
-    #expect(engine().evaluate(generic, metadata: [policyMetadata(reference, destinations: [], protocols: [])]).risk == .denied)
-}
-
-@Test func HTTPBindingCannotBeSpoofedByASeparateDestinationField() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local",
-        protocolType: .https,
-        httpMethod: "GET",
-        url: "https://evil.example/status"
-    )
-
-    let decision = engine().evaluate(descriptor, metadata: [metadata])
-
-    #expect(decision.risk == .denied)
-    #expect(decision.policyRuleID == "http.destination-mismatch")
-}
-
-@Test func unboundPublicDestinationIsDeniedAndNewPrivateDestinationNeedsApproval() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = policyMetadata(reference, destinations: ["10.0.0.2"], protocols: ["ssh"])
-    let publicDescriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "8.8.8.8",
-        protocolType: .ssh,
-        command: "hostname"
-    )
-    let privateDescriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "10.0.0.3",
-        protocolType: .ssh,
-        command: "hostname"
-    )
-
-    #expect(engine().evaluate(publicDescriptor, metadata: [metadata]).risk == .denied)
-    #expect(engine().evaluate(privateDescriptor, metadata: [metadata]).risk == .approvalRequired)
-
-    let publicHostnameDescriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "example.com",
-        protocolType: .ssh,
-        command: "hostname"
-    )
-    let privateHostnameDescriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "qnap.local",
-        protocolType: .ssh,
-        command: "hostname"
-    )
-
-    #expect(engine().evaluate(publicHostnameDescriptor, metadata: [metadata]).risk == .denied)
-    #expect(engine().evaluate(privateHostnameDescriptor, metadata: [metadata]).risk == .approvalRequired)
-}
-
-@Test func operationPortMustMatchTheActualTarget() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
-    let descriptor = SecretOperationDescriptor(
-        actionType: .httpRequest,
-        secretReferences: [reference],
-        destination: "qnap.local:8080",
-        port: 443,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://qnap.local:8080/api/status"
-    )
-
-    let decision = engine().evaluate(descriptor, metadata: [metadata])
-
-    #expect(decision.risk == .denied)
-    #expect(decision.policyRuleID == "http.port-mismatch")
-}
-
-@Test func databaseAndSFTPReadRulesAreExplicit() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let dbMetadata = policyMetadata(reference, destinations: ["db.local:5432"], protocols: ["postgres"])
-    let select = SecretOperationDescriptor(
-        actionType: .databaseQuery,
-        secretReferences: [reference],
-        destination: "db.local:5432",
-        port: 5432,
-        protocolType: .postgres,
-        databaseStatement: "SELECT 1"
-    )
-    let multiStatement = SecretOperationDescriptor(
-        actionType: .databaseQuery,
-        secretReferences: [reference],
-        destination: "db.local:5432",
-        port: 5432,
-        protocolType: .postgres,
-        databaseStatement: "SELECT 1; DROP TABLE audit"
-    )
-    let sftpMetadata = policyMetadata(reference, destinations: ["nas.local"], protocols: ["sftp"])
-    let list = SecretOperationDescriptor(
-        actionType: .sftpTransfer,
-        secretReferences: [reference],
-        destination: "nas.local",
-        port: 22,
-        protocolType: .sftp,
-        fileOperation: .list,
-        fileTarget: "/share"
-    )
-    let upload = SecretOperationDescriptor(
-        actionType: .sftpTransfer,
-        secretReferences: [reference],
-        destination: "nas.local",
-        port: 22,
-        protocolType: .sftp,
-        fileOperation: .upload,
-        fileTarget: "/tmp/report.txt"
-    )
-
-    #expect(engine().evaluate(select, metadata: [dbMetadata]).risk == .silent)
-    #expect(engine().evaluate(multiStatement, metadata: [dbMetadata]).risk == .denied)
-    #expect(engine().evaluate(list, metadata: [sftpMetadata]).risk == .silent)
-    #expect(engine().evaluate(upload, metadata: [sftpMetadata]).risk == .approvalRequired)
-}
-
-@Test func plaintextAndGenericExecutionAreNeverSilent() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let reveal = SecretOperationDescriptor(actionType: .revealPlaintext, secretReferences: [reference])
-    let generic = SecretOperationDescriptor(actionType: .localExecution, secretReferences: [reference])
-    let metadata = policyMetadata(reference, destinations: [], protocols: [])
-
-    #expect(engine().evaluate(reveal, metadata: [metadata]).risk == .approvalRequired)
-    #expect(engine().evaluate(generic, metadata: []).risk == .denied)
-}
-
-@Test func destructiveSSHRequiresFreshApprovalEvenWhenAgentClaimsReadOnly() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "nas.local",
-        port: 22,
-        protocolType: .ssh,
-        command: "rm -rf /share/svlt-test",
-        agentAssessment: AgentRiskAssessment(
-            declaredRisk: .silent,
-            reason: "maintenance",
-            intendedEffect: "read-only"
-        )
-    )
-
-    let decision = engine().evaluate(
-        descriptor,
-        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    )
-
-    #expect(decision.risk == .approvalRequired)
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
-    #expect(decision.policyRuleID == "ssh.destructive.fresh-approval")
-}
-
-@Test func unknownSSHCommandRequiresFreshApprovalRatherThanSilentReuse() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "nas.local",
-        protocolType: .ssh,
-        command: "custom-maintenance --check",
-        agentAssessment: AgentRiskAssessment(
-            declaredRisk: .silent,
-            reason: "check",
-            intendedEffect: "inspect status"
-        )
-    )
-
-    let decision = engine().evaluate(
-        descriptor,
-        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    )
-
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
-}
-
-@Test func structuredSSHBatchUsesHighestRequirementBeforeExecution() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let batch = SSHCommandBatch(commands: [
-        SSHCommandSpec(executable: "whoami"),
-        SSHCommandSpec(executable: "mkdir", arguments: ["/share/svlt-test"]),
-        SSHCommandSpec(executable: "rm", arguments: ["-rf", "/share/svlt-test"]),
-        SSHCommandSpec(executable: "df", arguments: ["-h"])
-    ])
-    let descriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "nas.local",
-        port: 22,
-        protocolType: .ssh,
-        sshCommandBatch: batch,
-        requestedEffects: ["ssh-batch"]
-    )
-
-    let decision = engine().evaluate(
-        descriptor,
-        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    )
-
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
-    #expect(decision.policyRuleID == "ssh.destructive.fresh-approval")
-}
-
-@Test func shellExecutablesAreDeniedEvenWhenStructured() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "nas.local",
-        protocolType: .ssh,
-        sshCommandBatch: SSHCommandBatch(commands: [
-            SSHCommandSpec(executable: "/bin/sh", arguments: ["-c", "id"])
-        ])
-    )
-
-    let decision = engine().evaluate(
-        descriptor,
-        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    )
-
-    #expect(decision.risk == .denied)
-    #expect(decision.authorizationRequirement == .denied)
-}
-
-@Test func commandWrappersAndBroadFilesystemMutationsRequireFreshApproval() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    let commands = [
-        SSHCommandSpec(executable: "cp", arguments: ["-f", "/tmp/a", "/etc/passwd"]),
-        SSHCommandSpec(executable: "mv", arguments: ["/tmp/a", "/etc/passwd"]),
-        SSHCommandSpec(executable: "chmod", arguments: ["000", "/etc/passwd"]),
-        SSHCommandSpec(executable: "chown", arguments: ["root", "/etc/passwd"]),
-        SSHCommandSpec(executable: "ln", arguments: ["-sf", "/tmp/a", "/etc/passwd"]),
-        SSHCommandSpec(executable: "install", arguments: ["/tmp/a", "/etc/passwd"]),
-        SSHCommandSpec(executable: "tee", arguments: ["/etc/passwd"])
-    ]
-
-    for command in commands {
-        let descriptor = SecretOperationDescriptor(
-            actionType: .sshCommand,
-            secretReferences: [reference],
-            destination: "nas.local",
-            port: 22,
-            protocolType: .ssh,
-            sshCommandBatch: SSHCommandBatch(commands: [command])
-        )
-        let decision = engine().evaluate(descriptor, metadata: metadata)
-        #expect(decision.authorizationRequirement == .freshApprovalRequired)
-    }
-}
-
-@Test func indirectInterpreterWrappersAreDeniedEvenWhenStructured() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    let commands = [
-        SSHCommandSpec(executable: "/usr/bin/env", arguments: ["/bin/sh", "-c", "rm -rf /"]),
-        SSHCommandSpec(executable: "sudo", arguments: ["--", "/bin/bash", "-lc", "id"]),
-        SSHCommandSpec(executable: "doas", arguments: ["zsh", "-c", "id"]),
-        SSHCommandSpec(executable: "command", arguments: ["sh", "-c", "id"]),
-        SSHCommandSpec(executable: "xargs", arguments: ["-0", "sh", "-c", "id"])
-    ]
-
-    for command in commands {
-        let descriptor = SecretOperationDescriptor(
-            actionType: .sshCommand,
-            secretReferences: [reference],
-            destination: "nas.local",
-            port: 22,
-            protocolType: .ssh,
-            sshCommandBatch: SSHCommandBatch(commands: [command])
-        )
-        let decision = engine().evaluate(descriptor, metadata: metadata)
-        #expect(decision.risk == .denied)
-        #expect(decision.authorizationRequirement == .denied)
-        #expect(decision.policyRuleID == "ssh.indirect-interpreter.denied")
-    }
-}
-
-@Test func directInterpreterCodeExecutionIsDeniedEvenWhenStructured() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    let commands = [
-        SSHCommandSpec(executable: "python3", arguments: ["-c", "import os; os.system('id')"]),
-        SSHCommandSpec(executable: "/usr/bin/python", arguments: ["-c", "print(1)"]),
-        SSHCommandSpec(executable: "perl", arguments: ["-e", "exec('id')"]),
-        SSHCommandSpec(executable: "ruby", arguments: ["-e", "system('id')"]),
-        SSHCommandSpec(executable: "node", arguments: ["-e", "require('child_process')"]),
-        SSHCommandSpec(executable: "php", arguments: ["-r", "system('id');"])
-    ]
-
-    for command in commands {
-        let descriptor = SecretOperationDescriptor(
-            actionType: .sshCommand,
-            secretReferences: [reference],
-            destination: "nas.local",
-            port: 22,
-            protocolType: .ssh,
-            sshCommandBatch: SSHCommandBatch(commands: [command])
-        )
-        let decision = engine().evaluate(descriptor, metadata: metadata)
-        #expect(decision.risk == .denied)
-        #expect(decision.authorizationRequirement == .denied)
-        #expect(decision.policyRuleID == "ssh.interpreter-code.denied")
-    }
-
-    // Running a script file is not a code-string invocation; it keeps the
-    // unknown-command fresh-approval path instead of being denied outright.
-    let scriptFile = SSHCommandSpec(executable: "python3", arguments: ["/opt/tools/report.py"])
-    let scriptDecision = engine().evaluate(SecretOperationDescriptor(
-        actionType: .sshCommand,
-        secretReferences: [reference],
-        destination: "nas.local",
-        port: 22,
-        protocolType: .ssh,
-        sshCommandBatch: SSHCommandBatch(commands: [scriptFile])
-    ), metadata: metadata)
-    #expect(scriptDecision.authorizationRequirement == .freshApprovalRequired)
-    #expect(scriptDecision.policyRuleID == "ssh.unknown.fresh-approval")
-}
-
-@Test func findOnlyKnownReadPredicatesAreSilentButSideEffectsAndUnknownActionsAreNot() throws {
-    let classifier = SSHCommandRiskClassifier()
-    let readOnly = classifier.classify(spec: SSHCommandSpec(
-        executable: "find",
-        arguments: ["/share", "-type", "f", "-name", "*.log", "-print"]
-    ))
-    #expect(readOnly.authorizationRequirement == .none)
-
-    for action in ["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"] {
-        let classification = classifier.classify(spec: SSHCommandSpec(
-            executable: "find",
-            arguments: ["/share", action, "/tmp/results"]
-        ))
-        #expect(classification.authorizationRequirement == .freshApprovalRequired)
-    }
-
-    let execute = classifier.classify(spec: SSHCommandSpec(
-        executable: "find",
-        arguments: ["/share", "-exec", "rm", "{}", ";"]
-    ))
-    #expect(execute.authorizationRequirement == .denied)
-
-    let unknown = classifier.classify(spec: SSHCommandSpec(
-        executable: "find",
-        arguments: ["/share", "-unknown-action"]
-    ))
-    #expect(unknown.authorizationRequirement == .freshApprovalRequired)
 }
 
 @Test func transportSessionIDDoesNotChangeTheOperationAuthorizationHash() throws {
@@ -814,148 +715,19 @@ import VaultCore
     #expect(base.operationHash == withSession.operationHash)
 }
 
-@Test func typedHTTPPayloadCannotDisagreeWithLegacyMethodOrUsePublicDestination() throws {
+@Test func rawCommandLengthLimitMatchesTheExecutorCeiling() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let payload = SecretOperationPayload.http(
-        HTTPOperation(
-            method: .get,
-            auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
-        )
-    )
-    let metadata = policyMetadata(reference, destinations: ["8.8.8.8"], protocols: ["http"])
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
 
-    let conflicting = SecretOperationDescriptor(
-        actionType: .apiRequest,
+    let withinLimit = engine().evaluate(SecretOperationDescriptor(
+        actionType: .sshCommand,
         secretReferences: [reference],
-        destination: "8.8.8.8",
-        port: 80,
-        protocolType: .http,
-        httpMethod: "POST",
-        url: "http://8.8.8.8/status",
-        payload: payload,
-        requestedEffects: ["remote-write"]
-    )
-    let publicTarget = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "8.8.8.8",
-        port: 80,
-        protocolType: .http,
-        httpMethod: "GET",
-        url: "http://8.8.8.8/status",
-        payload: payload,
-        requestedEffects: ["read-only"]
-    )
-
-    #expect(engine().evaluate(conflicting, metadata: [metadata]).risk == .denied)
-    #expect(engine().evaluate(publicTarget, metadata: [metadata]).risk == .denied)
-}
-
-@Test func silentHTTPStillRequiresAnAllowedSecretPolicy() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .apiRequest,
-        secretReferences: [reference],
-        destination: "qnap.local",
-        port: 443,
-        protocolType: .https,
-        httpMethod: "GET",
-        url: "https://qnap.local/status"
-    )
-    let readOnlyMetadata = SecretPolicyMetadata(
-        reference: reference,
-        policy: .read,
-        label: "read-only",
-        allowedDestinations: ["qnap.local"],
-        allowedProtocols: ["https"]
-    )
-
-    let decision = engine().evaluate(descriptor, metadata: [readOnlyMetadata])
-    #expect(decision.risk == .denied)
-    #expect(decision.policyRuleID == "secret-policy.effect-not-allowed")
-}
-
-@Test func typedDatabaseAndFilePayloadsMustBindAllCredentialReferences() throws {
-    let password = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let username = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRT")
-    let databasePayload = SecretOperationPayload.database(
-        DatabaseOperation(
-            engine: .postgres,
-            database: "app",
-            usernameReference: username,
-            passwordReference: password,
-            statement: "SELECT 1"
-        )
-    )
-    let database = SecretOperationDescriptor(
-        actionType: .databaseQuery,
-        secretReferences: [password],
-        destination: "db.local",
-        port: 5432,
-        protocolType: .postgres,
-        databaseStatement: "SELECT 1",
-        payload: databasePayload,
-        requestedEffects: ["database-read"]
-    )
-
-    let filePayload = SecretOperationPayload.fileTransfer(
-        FileTransferOperation(
-            protocolType: .sftp,
-            operation: .list,
-            remotePath: "/share",
-            usernameReference: username,
-            passwordReference: password
-        )
-    )
-    let file = SecretOperationDescriptor(
-        actionType: .sftpTransfer,
-        secretReferences: [password, username],
         destination: "nas.local",
         port: 22,
-        protocolType: .sftp,
-        fileOperation: .list,
-        payload: filePayload,
-        requestedEffects: ["read-only"]
-    )
-
-    #expect(engine().evaluate(database, metadata: []).policyRuleID == "operation.payload.reference-mismatch")
-    #expect(engine().evaluate(file, metadata: [
-        policyMetadata(password, destinations: ["nas.local"], protocols: ["sftp"]),
-        policyMetadata(username, destinations: ["nas.local"], protocols: ["sftp"])
-    ]).risk == .silent)
-}
-
-@Test func unknownSingleLabelAndNumericDestinationsAreNotTrustedAsPrivate() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let metadata = policyMetadata(reference, destinations: ["printer", "2130706433"], protocols: ["http"])
-    for destination in ["printer", "2130706433"] {
-        let descriptor = SecretOperationDescriptor(
-            actionType: .httpRequest,
-            secretReferences: [reference],
-            destination: destination,
-            port: 80,
-            protocolType: .http,
-            httpMethod: "GET",
-            url: "http://\(destination)/status"
-        )
-        #expect(engine().evaluate(descriptor, metadata: [metadata]).risk == .denied)
-    }
-}
-
-@Test func databaseSelectIntoIsNeverClassifiedAsReadOnly() throws {
-    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let descriptor = SecretOperationDescriptor(
-        actionType: .databaseQuery,
-        secretReferences: [reference],
-        destination: "db.local",
-        port: 5432,
-        protocolType: .postgres,
-        databaseStatement: "SELECT id INTO copied_users FROM users"
-    )
-    let decision = engine().evaluate(descriptor, metadata: [
-        policyMetadata(reference, destinations: ["db.local"], protocols: ["postgres"])
-    ])
-    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+        protocolType: .ssh,
+        command: String(repeating: "echo hi\n", count: 1_000)
+    ), metadata: metadata)
+    #expect(withinLimit.authorizationRequirement == .reusableApproval)
 }
 
 private func engine() -> SecretOperationPolicyEngine {

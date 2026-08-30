@@ -657,9 +657,11 @@ const SshCommandInput = z
     port: z.number().int().min(1).max(65_535).optional(),
     username: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/).optional(),
     passwordRef: SecretReference,
-    command: z.string().min(1).max(2_000),
+    // Raw remote command: single-line or multi-line (newlines, quotes,
+    // pipelines, redirects, heredocs, interpreters are all allowed). SVLT
+    // never parses shell syntax; the remote login shell does.
+    command: z.string().min(1).max(65_536),
     sessionID: z.string().min(1).max(128).optional(),
-    risk: z.enum(["read"]).optional(),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
@@ -1515,7 +1517,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Uses a secret:// password inside SVLTAgent for a restricted local/private-network SSH command. Plaintext is never returned.",
+        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. The command is passed byte-for-byte to the remote login shell; dangerous commands require a fresh device-owner approval, ordinary commands share a 5-minute window. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -1526,7 +1528,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_batch_with_secret",
       title: "SSH Command Batch With Secret",
       description:
-        "Runs a preflighted structured SSH command batch through one SVLT-managed ControlMaster session. Commands are separate executable/argument records; shell chaining is not accepted and plaintext is never returned.",
+        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics; interpreters are allowed and trigger the normal approval levels. Plaintext is never returned.",
       inputSchema: SshCommandBatchInput,
       outputSchema: LocalSshOutput,
       async handler(input) {

@@ -1,16 +1,24 @@
 import Foundation
 import VaultCore
 
-/// The single local decision point for operations that may use a secret.
-/// Callers may provide an agent assessment, but the assessment is only a
-/// bounded hint.  The local result is always combined with it using max().
+/// SVLT policy classifies authorization requirements; it does not replace
+/// the device owner's decision.
+///
+/// Semantic risk may promote an operation from silent to reusable to fresh
+/// approval, and it may attach warning text for the approval prompt, but it
+/// must not hard-deny an otherwise technically executable request.
+///
+/// Hard failures are reserved for malformed, contradictory, stale, or
+/// identity-invalid requests (`PolicyDecision.technicalFailure`). The device
+/// owner makes the final allow/deny decision through Touch ID / password for
+/// everything else.
 public struct SecretOperationPolicyEngine: Sendable {
     public struct Configuration: Sendable {
         public let maxCommandLength: Int
         public let safeDownloadDirectory: URL
 
         public init(
-            maxCommandLength: Int = 2_000,
+            maxCommandLength: Int = 65_536,
             safeDownloadDirectory: URL? = nil
         ) {
             self.maxCommandLength = maxCommandLength
@@ -54,7 +62,15 @@ public struct SecretOperationPolicyEngine: Sendable {
 
         var reasons = local.reasons
         if agentRisk != .silent {
-            reasons.append("Agent 声明风险为 \(agentRisk.rawValue)，只能升高不能降低本地判断")
+            if agentRisk == .denied {
+                reasons.append("⚠️ Agent 自身认为此操作风险很高；最终是否执行由设备所有者决定")
+            } else {
+                reasons.append("Agent 提示此操作需要审批（\(agentRisk.rawValue)）")
+            }
+            let agentReason = descriptor.agentAssessment.reason
+            if !agentReason.isEmpty {
+                reasons.append("Agent 原因：\(agentReason)")
+            }
         }
 
         return PolicyDecision(
@@ -64,18 +80,16 @@ public struct SecretOperationPolicyEngine: Sendable {
             requiredApproval: effectiveRequirement.requiresApproval,
             policyRuleID: local.policyRuleID,
             authorizationRequirement: effectiveRequirement,
-            requiresFreshApprovalOnFirstUse: local.requiresFreshApprovalOnFirstUse
-                && effectiveRequirement == .reusableApproval
+            requiresFreshApprovalOnFirstUse: false,
+            technicalFailure: local.technicalFailure
         )
     }
 
     /// The Agent's declared risk is a bounded hint, not authorization. It can
     /// raise the local decision, but it must not reshape the lease semantics
-    /// the local policy already granted: an honest `approvalRequired` report
-    /// must not push a locally reusable operation out of the five-minute
-    /// execution window, and it must not mint reusable approval for a locally
-    /// silent operation either. Only the local classifier grants
-    /// reusable-lease semantics.
+    /// the local policy already granted, and it must not deny the request on
+    /// the device owner's behalf: an Agent "denied" hint becomes a fresh
+    /// approval with a visible warning, never a refusal.
     private static func effectiveAuthorizationRequirement(
         local: AuthorizationRequirement,
         agentRisk: OperationRisk
@@ -84,7 +98,14 @@ public struct SecretOperationPolicyEngine: Sendable {
         case .silent:
             return local
         case .denied:
-            return .denied
+            switch local {
+            case .denied:
+                return .denied
+            case .none, .reusableApproval:
+                return .freshApprovalRequired
+            case .freshApprovalRequired:
+                return .freshApprovalRequired
+            }
         case .approvalRequired:
             switch local {
             case .none:
@@ -108,12 +129,11 @@ public struct SecretOperationPolicyEngine: Sendable {
         normalizedDestination: String?
     ) -> PolicyDecision {
         if let invalidShape = invalidOperationShape(descriptor) {
-            return decision(.denied, [invalidShape.reason], invalidShape.ruleID, normalizedDestination)
+            return decision(.denied, [invalidShape.reason], invalidShape.ruleID, normalizedDestination, technicalFailure: true)
         }
 
         let localRisk: OperationRisk
         let localRequirement: AuthorizationRequirement
-        var requiresFreshApprovalOnFirstUse = false
         var reasons: [String]
         let ruleID: String
 
@@ -126,8 +146,8 @@ public struct SecretOperationPolicyEngine: Sendable {
              .migrateMasterKey, .importRecoveryKey, .exportRecoveryKey,
              .restoreVault, .clearVault, .batchDelete, .resetVault:
             localRisk = .approvalRequired
-            reasons = ["明文暴露、数据删除或安全设置变更必须本机审批"]
-            ruleID = "sensitive-control.approval"
+            reasons = ["明文暴露、数据删除或安全设置变更，每次都需要设备所有者重新认证"]
+            ruleID = "sensitive-control.fresh-approval"
             localRequirement = descriptor.actionType == .exportPlaintext
                 ? .reusableApproval
                 : .freshApprovalRequired
@@ -140,71 +160,92 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = commandDecision.ruleID
             localRequirement = commandDecision.authorizationRequirement
         case .httpRequest, .apiRequest:
-            let httpDecision = httpDecision(descriptor, metadata: metadata)
-            localRisk = httpDecision.risk
-            reasons = httpDecision.reasons
-            ruleID = httpDecision.ruleID
-            // A profile-approved insecure HTTP target is reusable only after
-            // its first use establishes fresh device-owner presence.  The
-            // transport opt-in may promote a silent request to reusable, but
-            // it must never downgrade a method-specific fresh approval (for
-            // example DELETE) or a denied operation.  The first-use marker
-            // therefore only stays set when the effective local requirement
-            // remained reusable: fresh operations never establish a lease.
-            let baseRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
-            let transportRequirement: AuthorizationRequirement =
-                httpDecision.requiresFreshApprovalOnFirstUse ? .reusableApproval : .none
-            localRequirement = AuthorizationRequirement.max(baseRequirement, transportRequirement)
-            requiresFreshApprovalOnFirstUse = httpDecision.requiresFreshApprovalOnFirstUse
-                && localRequirement == .reusableApproval
+            let httpOutcome = httpDecision(descriptor)
+            localRisk = httpOutcome.risk
+            reasons = httpOutcome.reasons
+            ruleID = httpOutcome.ruleID
+            localRequirement = httpOutcome.requirement
         case .databaseQuery:
-            let databaseDecision = databaseDecision(descriptor.effectiveDatabaseStatement)
-            localRisk = databaseDecision.risk
-            reasons = databaseDecision.reasons
-            ruleID = databaseDecision.ruleID
-            localRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
+            let databaseOutcome = databaseDecision(descriptor.effectiveDatabaseStatement)
+            localRisk = databaseOutcome.risk
+            reasons = databaseOutcome.reasons
+            ruleID = databaseOutcome.ruleID
+            localRequirement = databaseOutcome.requirement
         case .sftpTransfer:
-            let transferDecision = sftpDecision(descriptor)
-            localRisk = transferDecision.risk
-            reasons = transferDecision.reasons
-            ruleID = transferDecision.ruleID
-            localRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
+            let transferOutcome = sftpDecision(descriptor)
+            localRisk = transferOutcome.risk
+            reasons = transferOutcome.reasons
+            ruleID = transferOutcome.ruleID
+            localRequirement = transferOutcome.requirement
         case .browserLogin, .localAppFill:
             localRisk = .silent
             reasons = ["绑定目标上的普通登录或表单填充"]
             ruleID = "bound-login.silent"
             localRequirement = .none
         case .localExecution:
-            localRisk = .denied
-            reasons = ["通用 shell 不得获得 Secret 明文"]
-            ruleID = "generic-shell.denied"
-            localRequirement = .denied
+            localRisk = .approvalRequired
+            reasons = [
+                "⚠️ 此操作会把凭据交给本地任意进程；该进程可能读取、保存、转换或传输凭据",
+                "批准后 SVLT 无法保证 Agent 不获得该凭据；本次释放会被审计记录为 userApprovedSecretRelease"
+            ]
+            ruleID = "local-execution.user-approved-secret-release"
+            localRequirement = .freshApprovalRequired
         case .trustedProcess:
             localRisk = .approvalRequired
-            reasons = ["Trusted Process 只能通过预先配置的签名 profile 使用 Secret"]
-            ruleID = "trusted-process.approval"
+            reasons = ["Trusted Process 会把 Secret 交给预先登记的签名进程；每次都需要设备所有者重新认证"]
+            ruleID = "trusted-process.fresh-approval"
             localRequirement = .freshApprovalRequired
+        }
+
+        // A technical failure means the request itself is malformed or cannot
+        // be verified; binding checks are meaningless for it.
+        if localRisk == .denied || localRequirement == .denied {
+            return decision(
+                .denied,
+                reasons,
+                ruleID,
+                normalizedDestination,
+                technicalFailure: true
+            )
         }
 
         let binding = bindingDecision(
             descriptor,
             metadata: metadata,
-            normalizedDestination: normalizedDestination,
-            baseRisk: localRisk
+            normalizedDestination: normalizedDestination
         )
-        reasons.append(contentsOf: binding.reasons)
         let effectiveRequirement = AuthorizationRequirement.max(
             localRequirement,
-            binding.risk.authorizationRequirement
+            binding.requirement
         )
+        if effectiveRequirement == .denied {
+            // Binding verification can only fail hard for technical reasons
+            // (missing or contradictory credential identity information).
+            return decision(
+                .denied,
+                reasons + binding.reasons,
+                binding.ruleID,
+                normalizedDestination,
+                technicalFailure: true
+            )
+        }
+        let effectiveRisk: OperationRisk = {
+            switch effectiveRequirement {
+            case .none: return .silent
+            case .reusableApproval, .freshApprovalRequired: return .approvalRequired
+            case .denied: return .denied
+            }
+        }()
+        // When the binding check contributed nothing (bound destination, no
+        // mismatch), the semantic rule that classified the operation stays the
+        // reported rule ID; a binding promotion reports its own.
+        let finalRuleID = binding.requirement == .none ? ruleID : binding.ruleID
         return decision(
-            OperationRisk.max(localRisk, binding.risk),
-            reasons,
-            binding.risk == .denied ? binding.ruleID : ruleID,
+            effectiveRisk,
+            reasons + binding.reasons,
+            finalRuleID,
             normalizedDestination,
-            authorizationRequirement: effectiveRequirement,
-            requiresFreshApprovalOnFirstUse: requiresFreshApprovalOnFirstUse
-                && effectiveRequirement == .reusableApproval
+            authorizationRequirement: effectiveRequirement
         )
     }
 
@@ -239,9 +280,6 @@ public struct SecretOperationPolicyEngine: Sendable {
                   !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return ("SSH 操作缺少目标主机", "ssh.destination.missing")
             }
-            if destination.contains("secret://") {
-                return ("目标主机不能携带 Secret 引用", "ssh.destination.secret-reference")
-            }
             if let destinationPort = explicitPort(in: destination),
                let declaredPort = descriptor.port,
                destinationPort != declaredPort {
@@ -269,9 +307,6 @@ public struct SecretOperationPolicyEngine: Sendable {
                SecretOperationDescriptor.normalizeDestination(destination) != actualDestination {
                 return ("操作目标与 URL 主机不一致", "http.destination-mismatch")
             }
-            if rawURL.contains("secret://") {
-                return ("URL 不能携带 Secret 引用", "http.url.secret-reference")
-            }
         case .browserLogin:
             guard descriptor.protocolType == .browser,
                   let rawURL = descriptor.url,
@@ -281,8 +316,7 @@ public struct SecretOperationPolicyEngine: Sendable {
                   !host.isEmpty,
                   scheme == "http" || scheme == "https",
                   url.user == nil,
-                  url.password == nil,
-                  !rawURL.contains("secret://") else {
+                  url.password == nil else {
                 return ("浏览器登录目标无效", "browser.url.invalid")
             }
         case .databaseQuery:
@@ -321,18 +355,6 @@ public struct SecretOperationPolicyEngine: Sendable {
             }
         default:
             break
-        }
-
-        let sensitiveFields = [
-            descriptor.destination,
-            descriptor.command,
-            descriptor.url,
-            descriptor.databaseStatement,
-            descriptor.fileTarget,
-            descriptor.localAppBundleID
-        ].compactMap { $0 }
-        if sensitiveFields.contains(where: { $0.contains("secret://") }) {
-            return ("操作参数不能把 Secret 引用放入命令、URL 或目标字段", "operation.secret-reference-placement")
         }
 
         return nil
@@ -429,14 +451,17 @@ public struct SecretOperationPolicyEngine: Sendable {
         return nil
     }
 
+    /// Destination/protocol/policy bindings no longer refuse anything: a
+    /// mismatch only promotes the operation to a fresh approval with the
+    /// mismatch facts shown, and the device owner decides for this execution.
+    /// Approving never mutates the saved binding.
     private func bindingDecision(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
-        normalizedDestination: String?,
-        baseRisk: OperationRisk
-    ) -> (risk: OperationRisk, reasons: [String], ruleID: String) {
+        normalizedDestination: String?
+    ) -> (requirement: AuthorizationRequirement, reasons: [String], ruleID: String) {
         guard actionNeedsSecret(descriptor.actionType) else {
-            return (.silent, [], "no-secret.required")
+            return (.none, [], "no-secret.required")
         }
 
         guard !descriptor.secretReferences.isEmpty else {
@@ -446,51 +471,36 @@ public struct SecretOperationPolicyEngine: Sendable {
         var metadataByReference: [SecretReference: SecretPolicyMetadata] = [:]
         for item in metadata {
             guard metadataByReference[item.reference] == nil else {
-                return (.denied, ["Secret 元数据包含重复引用，无法安全复核"], "secret-metadata.duplicate")
+                return (.denied, ["Secret 元数据包含重复引用，无法确认凭据身份"], "secret-metadata.duplicate")
             }
             metadataByReference[item.reference] = item
         }
+
+        var requirement = AuthorizationRequirement.none
+        var reasons: [String] = []
         for reference in descriptor.secretReferences {
             guard let secret = metadataByReference[reference] else {
-                return (.denied, ["Secret 元数据缺失，无法进行本地复核"], "secret-metadata.missing")
+                return (.denied, ["Secret 元数据缺失，无法确认凭据身份"], "secret-metadata.missing")
             }
 
             if let protocolType = descriptor.protocolType,
                !secret.allowedProtocols.isEmpty,
                !isAllowedProtocol(protocolType, for: descriptor, allowedProtocols: secret.allowedProtocols) {
-                return (
-                    .denied,
-                    ["Secret 未绑定当前协议"],
-                    "destination.protocol-not-allowed"
+                requirement = .freshApprovalRequired
+                reasons.append(
+                    "凭据未绑定当前协议（已保存：\(secret.allowedProtocols.joined(separator: "/"))；本次：\(protocolType.rawValue)），设备所有者确认后本次执行"
                 )
             }
 
             if !isAllowedSecretPolicy(secret.policy, action: descriptor.actionType) {
-                return (
-                    .denied,
-                    ["Secret 的本地 policy 不允许当前副作用"],
-                    "secret-policy.effect-not-allowed"
+                requirement = .freshApprovalRequired
+                reasons.append(
+                    "凭据被用户标记为 \(secret.policy.rawValue)；本次副作用需要设备所有者确认"
                 )
             }
 
             guard let normalizedDestination else {
-                if baseRisk == .silent {
-                    return (.denied, ["需要目的地绑定的操作缺少目的地"], "destination.missing")
-                }
                 continue
-            }
-
-            if (descriptor.actionType == .httpRequest
-                || descriptor.actionType == .apiRequest
-                || descriptor.actionType == .databaseQuery
-                || descriptor.actionType == .sftpTransfer
-                || descriptor.actionType == .browserLogin),
-               isPublicDestination(normalizedDestination) {
-                return (
-                    .denied,
-                    ["本地 HTTP/浏览器凭据操作只允许本机或内网可信目标"],
-                    "destination.local-only-public-denied"
-                )
             }
 
             let exactBinding = secret.allowedDestinations.contains {
@@ -500,68 +510,125 @@ public struct SecretOperationPolicyEngine: Sendable {
                 continue
             }
 
-            if rejectsUnboundPublicDestination(for: descriptor.actionType),
-               isPublicDestination(normalizedDestination) {
-                return (
-                    .denied,
-                    ["Secret 目的地不在 allowlist，且目标不是本机或内网可信目标"],
-                    "destination.public-unbound"
-                )
+            // The export root is the validated security boundary, not a
+            // credential destination: an export lease stays on the ordinary
+            // five-minute window (a standing product decision), so a
+            // destination mismatch only asks for the ordinary approval.
+            if descriptor.actionType == .exportPlaintext {
+                if requirement == .none {
+                    requirement = .reusableApproval
+                    reasons.append("导出根目录不在凭据绑定中；导出授权按现有 5 分钟窗口执行")
+                }
+                continue
             }
 
+            requirement = .freshApprovalRequired
+            if isPublicDestination(normalizedDestination) {
+                reasons.append("目标 \(normalizedDestination) 不在该凭据已保存的绑定中，且是公网地址；设备所有者确认后本次执行")
+            } else {
+                reasons.append("目标 \(normalizedDestination) 不在该凭据已保存的绑定中；设备所有者确认后本次执行")
+            }
+        }
+
+        if requirement == .none {
+            return (.none, [], "destination.bound")
+        }
+        return (requirement, reasons, "destination.owner-confirmation")
+    }
+
+    private func httpDecision(
+        _ descriptor: SecretOperationDescriptor
+    ) -> (risk: OperationRisk, requirement: AuthorizationRequirement, reasons: [String], ruleID: String) {
+        guard let url = descriptor.url,
+              let parsedURL = URL(string: url),
+              parsedURL.user == nil,
+              parsedURL.password == nil,
+              parsedURL.host != nil,
+              (parsedURL.scheme?.lowercased() == "http" || parsedURL.scheme?.lowercased() == "https")
+        else {
+            return (.denied, .denied, ["HTTP URL 无效或包含 URL 内嵌凭据"], "http.url.invalid")
+        }
+
+        let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
+        let carriesSecret = !descriptor.secretReferences.isEmpty
+
+        if hasCredentialQueryParameter(parsedURL) {
             return (
                 .approvalRequired,
-                ["Secret 目的地未精确绑定，需要本机审批"],
-                "destination.unbound-approval"
+                .freshApprovalRequired,
+                ["URL query 携带凭据类参数，可能被记录在服务器日志或代理中；设备所有者确认后执行"],
+                "http.credential-query.fresh-approval"
             )
         }
 
-        return (.silent, [], "destination.bound")
-    }
+        if parsedURL.scheme?.lowercased() == "http", carriesSecret {
+            return (
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["目标使用未加密 HTTP，凭据可能以明文在网络中传输；设备所有者确认后执行"],
+                "http.insecure-transport.fresh-approval"
+            )
+        }
 
-    private func authorizationRequirement(
-        for descriptor: SecretOperationDescriptor,
-        risk: OperationRisk
-    ) -> AuthorizationRequirement {
-        guard risk != .denied else { return .denied }
-        switch descriptor.actionType {
-        case .exportPlaintext:
-            return .reusableApproval
-        case .revealPlaintext, .copyPlaintext, .deleteSecret,
-             .changeSecretPolicy, .changeDestinationBinding, .changeAllowlist,
-             .changeAuthorizationRules, .changeKeychain, .migrateMasterKey,
-             .importRecoveryKey, .exportRecoveryKey, .restoreVault, .clearVault,
-             .batchDelete, .resetVault:
-            return .freshApprovalRequired
-        case .httpRequest, .apiRequest:
-            return (descriptor.effectiveHTTPMethod ?? "GET").uppercased() == "DELETE"
-                ? .freshApprovalRequired
-                : risk.authorizationRequirement
-        case .databaseQuery:
-            return databaseRequiresFreshApproval(descriptor.effectiveDatabaseStatement)
-                ? .freshApprovalRequired
-                : risk.authorizationRequirement
-        case .sftpTransfer:
-            switch descriptor.effectiveFileOperation {
-            case .delete, .overwrite:
-                return .freshApprovalRequired
-            default:
-                return risk.authorizationRequirement
-            }
-        case .trustedProcess:
-            return .freshApprovalRequired
-        case .sshCommand:
-            return descriptor.sshCommandBatch == nil
-                ? sshCommandClassifier.classify(command: descriptor.command).authorizationRequirement
-                : sshCommandClassifier.classify(batch: descriptor.sshCommandBatch).authorizationRequirement
+        switch method {
+        case "GET", "HEAD":
+            return (.silent, .none, ["HTTP GET/HEAD 被本地解析为无副作用读取"], "http.read-only.silent")
+        case "DELETE":
+            return (
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["HTTP DELETE 可能删除远端资源，每次都需要设备所有者重新认证"],
+                "http.delete.fresh-approval"
+            )
         default:
-            return risk.authorizationRequirement
+            return (
+                .approvalRequired,
+                .reusableApproval,
+                ["HTTP 请求可能产生副作用，首次需要本机审批，之后可在执行窗口内复用"],
+                "http.write.reusable-approval"
+            )
         }
     }
 
-    private func databaseRequiresFreshApproval(_ query: String?) -> Bool {
-        guard let query else { return true }
-        return !isReadOnlyDatabaseQuery(query)
+    private func databaseDecision(
+        _ query: String?
+    ) -> (risk: OperationRisk, requirement: AuthorizationRequirement, reasons: [String], ruleID: String) {
+        guard let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return (.denied, .denied, ["数据库查询为空"], "database.query.missing")
+        }
+        if isClearlyDestructiveSQL(query) {
+            return (
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["数据库查询包含明确的破坏性语义，每次都需要设备所有者重新认证"],
+                "database.destructive.fresh-approval"
+            )
+        }
+        if isReadOnlyDatabaseQuery(query) {
+            return (.silent, .none, ["数据库查询被本地解析为只读语句"], "database.read-only.silent")
+        }
+        return (
+            .approvalRequired,
+            .reusableApproval,
+            ["数据库查询可能改变数据库状态，首次需要本机审批，之后可在执行窗口内复用"],
+            "database.write.reusable-approval"
+        )
+    }
+
+    /// Only locally provable destructive SQL promotes to fresh. Unknown or
+    /// unparseable SQL stays on the ordinary path — the device owner decides,
+    /// not the parser.
+    private func isClearlyDestructiveSQL(_ query: String) -> Bool {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.range(of: #"(?i)\b(drop|truncate|alter)\b"#, options: .regularExpression) != nil {
+            return true
+        }
+        let firstKeyword = normalized.range(
+            of: #"(?i)^\s*(delete|update)\b"#,
+            options: .regularExpression
+        )
+        guard firstKeyword != nil else { return false }
+        return normalized.range(of: #"(?i)\bwhere\b"#, options: .regularExpression) == nil
     }
 
     private func isReadOnlyDatabaseQuery(_ query: String) -> Bool {
@@ -570,137 +637,71 @@ public struct SecretOperationPolicyEngine: Sendable {
         let withoutTrailingSemicolon = normalized.hasSuffix(";")
             ? String(normalized.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
             : normalized
+        // Only a single statement can be proven read-only locally; anything
+        // else takes the ordinary approval path.
         guard !withoutTrailingSemicolon.contains(";") else { return false }
-        guard withoutTrailingSemicolon.range(of: #"--|/\*|\*/"#, options: .regularExpression) == nil else {
-            return false
-        }
         guard withoutTrailingSemicolon.range(
             of: #"(?i)^\s*(select|with|show|describe|explain)\b"#,
             options: .regularExpression
         ) != nil else {
             return false
         }
-        // `SELECT ... INTO` creates a table in PostgreSQL, while MySQL's
-        // `INTO OUTFILE` writes a file. Treat every INTO form as a write until
-        // a real dialect-aware parser/driver enforces read-only transactions.
         let forbidden = #"(?i)\b(insert|update|delete|drop|alter|create|truncate|copy|grant|revoke|replace|merge|attach|detach|load|call|execute|do|set|lock|vacuum|into|for\s+update|for\s+share)\b"#
         return withoutTrailingSemicolon.range(of: forbidden, options: .regularExpression) == nil
     }
 
-    private func httpDecision(
-        _ descriptor: SecretOperationDescriptor,
-        metadata: [SecretPolicyMetadata]
-    ) -> (
-        risk: OperationRisk,
-        reasons: [String],
-        ruleID: String,
-        requiresFreshApprovalOnFirstUse: Bool
-    ) {
-        guard let url = descriptor.url,
-              let parsedURL = URL(string: url),
-              parsedURL.user == nil,
-              parsedURL.password == nil,
-              (parsedURL.scheme?.lowercased() == "http" || parsedURL.scheme?.lowercased() == "https")
-        else {
-            return (.denied, ["HTTP URL 无效或包含 URL 内嵌凭据"], "http.url.invalid", false)
-        }
-
-        if hasCredentialQueryParameter(parsedURL) {
-            return (.denied, ["禁止通过 URL query 传递 token 或凭据"], "http.url-credential-query.denied", false)
-        }
-
-        if parsedURL.scheme?.lowercased() == "http", !descriptor.secretReferences.isEmpty {
-            let host = parsedURL.host ?? ""
-            let effectivePort = parsedURL.port ?? 80
-            guard let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
-                url,
-                defaultPort: effectivePort,
-                allowURLPath: true
-            )
-            else {
-                return (.denied, ["HTTP 目标主机无效"], "http.destination.invalid", false)
-            }
-            let profileAllowsInsecureHTTP = descriptor.secretReferences.allSatisfy { reference in
-                guard let secret = metadata.first(where: { $0.reference == reference }),
-                      secret.httpTransportSecurityPolicy.permitsInsecureHTTP(toHost: host) else {
-                    return false
-                }
-                return secret.allowedDestinations.contains {
-                    SecretOperationDescriptor.normalizeHTTPOrigin(
-                        $0,
-                        expectedScheme: "http",
-                        defaultPort: 80,
-                        requireExplicitPort: true
-                    ) == requestedOrigin
-                }
-            }
-            guard profileAllowsInsecureHTTP else {
-                return (
-                    .denied,
-                    ["禁止将 Secret 发送到未由用户 profile 明确允许的未加密 HTTP 目标"],
-                    "http.insecure-transport.denied",
-                    false
-                )
-            }
-        }
-
-        let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
-        if method == "GET" || method == "HEAD" {
-            let isInsecure = parsedURL.scheme?.lowercased() == "http" && !descriptor.secretReferences.isEmpty
-            return (
-                .silent,
-                isInsecure
-                    ? ["HTTP GET/HEAD 是读取操作，但目标使用用户 profile 明确允许的未加密 HTTP；首次使用必须本机认证"]
-                    : ["HTTP GET/HEAD 被本地解析为无副作用读取"],
-                isInsecure ? "http.insecure-transport.first-use" : "http.read-only.silent",
-                isInsecure
-            )
-        }
-
-        let isInsecure = parsedURL.scheme?.lowercased() == "http" && !descriptor.secretReferences.isEmpty
-        return (
-            .approvalRequired,
-            isInsecure
-                ? ["HTTP 方法可能产生副作用且目标使用未加密 HTTP；首次使用必须本机认证"]
-                : ["HTTP 方法可能产生副作用，需要本机审批"],
-            isInsecure ? "http.insecure-transport.first-use" : "http.write.approval",
-            isInsecure
-        )
-    }
-
-    private func databaseDecision(_ query: String?) -> (risk: OperationRisk, reasons: [String], ruleID: String) {
-        guard let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return (.denied, ["数据库查询为空"], "database.query.missing")
-        }
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let withoutTrailingSemicolon = trimmed.hasSuffix(";") ? String(trimmed.dropLast()) : trimmed
-        if withoutTrailingSemicolon.contains(";") || withoutTrailingSemicolon.range(of: #"--|/\*|\*/"#, options: .regularExpression) != nil {
-            return (.denied, ["数据库查询包含多语句或注释绕过风险"], "database.multi-statement.denied")
-        }
-        if isReadOnlyDatabaseQuery(withoutTrailingSemicolon) {
-            return (.silent, ["数据库查询被本地解析为单条只读语句"], "database.read-only.silent")
-        }
-        return (.approvalRequired, ["数据库查询可能写入或改变数据库状态"], "database.write.approval")
-    }
-
-    private func sftpDecision(_ descriptor: SecretOperationDescriptor) -> (risk: OperationRisk, reasons: [String], ruleID: String) {
+    private func sftpDecision(
+        _ descriptor: SecretOperationDescriptor
+    ) -> (risk: OperationRisk, requirement: AuthorizationRequirement, reasons: [String], ruleID: String) {
         switch descriptor.effectiveFileOperation {
-        case .list:
-            return (.silent, ["SFTP list 被本地解析为只读操作"], "sftp.list.silent")
+        case .list, .read:
+            return (.silent, .none, ["SFTP 操作被本地解析为只读"], "sftp.read.silent")
         case .download:
             guard let target = descriptor.fileTarget,
                   isWithinSafeDownloadDirectory(target)
             else {
-                return (.approvalRequired, ["SFTP 下载目标不在 SVLT 专用安全目录"], "sftp.download.approval")
+                return (
+                    .approvalRequired,
+                    .freshApprovalRequired,
+                    ["SFTP 下载目标\(descriptor.fileTarget.map { " \($0)" } ?? "")不在默认安全目录；设备所有者确认本次路径后执行"],
+                    "sftp.download.fresh-approval"
+                )
             }
             guard !FileManager.default.fileExists(atPath: URL(fileURLWithPath: target).standardizedFileURL.path) else {
-                return (.approvalRequired, ["SFTP 下载目标已存在，禁止静默覆盖"], "sftp.download.overwrite-approval")
+                return (
+                    .approvalRequired,
+                    .freshApprovalRequired,
+                    ["SFTP 下载目标已存在，覆盖需要设备所有者确认"],
+                    "sftp.download.overwrite.fresh-approval"
+                )
             }
-            return (.silent, ["SFTP 下载写入专用安全目录且不覆盖现有文件"], "sftp.download.silent")
-        case .upload, .overwrite, .delete, .write, .move:
-            return (.approvalRequired, ["SFTP/SCP 操作会写入、覆盖或删除数据"], "sftp.write.approval")
-        case .read, .none:
-            return (.silent, ["SFTP 读取操作"], "sftp.read.silent")
+            return (
+                .approvalRequired,
+                .reusableApproval,
+                ["SFTP 下载写入专用安全目录且不覆盖现有文件，首次需要本机审批"],
+                "sftp.download.reusable-approval"
+            )
+        case .upload:
+            return (
+                .approvalRequired,
+                .reusableApproval,
+                ["SFTP 上传为新文件写入，首次需要本机审批，之后可在执行窗口内复用"],
+                "sftp.upload.reusable-approval"
+            )
+        case .write, .overwrite, .delete, .move:
+            return (
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["SFTP/SCP 操作会覆盖、删除或移动远端数据，每次都需要设备所有者重新认证"],
+                "sftp.destructive.fresh-approval"
+            )
+        case .none:
+            return (
+                .approvalRequired,
+                .reusableApproval,
+                ["SFTP 传输为普通操作，首次需要本机审批，之后可在执行窗口内复用"],
+                "sftp.transfer.reusable-approval"
+            )
         }
     }
 
@@ -736,8 +737,7 @@ public struct SecretOperationPolicyEngine: Sendable {
             return true
         }
         // `http-loopback` is a profile transport-policy marker, not a new
-        // wire protocol. It still needs to satisfy the ordinary HTTP binding
-        // check before the narrower loopback host check runs below.
+        // wire protocol. It still satisfies the ordinary HTTP binding check.
         if protocolType == .http,
            allowedProtocols.contains(where: { $0.lowercased() == "http-loopback" }) {
             return true
@@ -815,18 +815,9 @@ public struct SecretOperationPolicyEngine: Sendable {
         }
         // A hostname with no dot is not proof of a private/local target. Keep
         // the explicit localhost/.local allowlist above, but classify every
-        // other unknown or single-label name as public/untrusted.
+        // other unknown or single-label name as public/untrusted for the
+        // warning text only.
         return true
-    }
-
-    private func rejectsUnboundPublicDestination(for action: SecretOperationAction) -> Bool {
-        switch action {
-        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer, .browserLogin,
-             .trustedProcess:
-            return true
-        default:
-            return false
-        }
     }
 
     private func explicitPort(in destination: String) -> Int? {
@@ -859,7 +850,7 @@ public struct SecretOperationPolicyEngine: Sendable {
         _ ruleID: String,
         _ destination: String?,
         authorizationRequirement: AuthorizationRequirement? = nil,
-        requiresFreshApprovalOnFirstUse: Bool = false
+        technicalFailure: Bool = false
     ) -> PolicyDecision {
         PolicyDecision(
             risk: risk,
@@ -868,12 +859,12 @@ public struct SecretOperationPolicyEngine: Sendable {
             requiredApproval: (authorizationRequirement ?? risk.authorizationRequirement).requiresApproval,
             policyRuleID: ruleID,
             authorizationRequirement: authorizationRequirement,
-            requiresFreshApprovalOnFirstUse: requiresFreshApprovalOnFirstUse
+            requiresFreshApprovalOnFirstUse: false,
+            technicalFailure: technicalFailure
         )
     }
 
     private static func sanitizeReason(_ reason: String) -> String {
         String(reason.replacingOccurrences(of: "\n", with: " ").prefix(240))
     }
-
 }

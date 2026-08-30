@@ -302,11 +302,11 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 status: expectAvailable ? .supported : .unavailable,
                 operations: [.sshCommand],
                 reason: expectAvailable
-                    ? "structured SSH commands through an in-memory scoped ControlMaster"
+                    ? "raw single/multi-line commands and structured batches through an in-memory scoped ControlMaster; the device owner decides execution"
                     : "macOS expect executable is unavailable",
                 features: SecretOperationCapabilityFeatures(
                     auth: ["password"],
-                    body: ["structuredCommands"],
+                    body: ["rawCommand", "multilineCommand", "structuredCommands"],
                     response: ["stdout", "stderr", "perCommandResults"],
                     transportSessionReuse: true
                 )
@@ -366,7 +366,9 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 if let batch = descriptor.sshCommandBatch {
                     try batch.validate()
                 } else if let command = descriptor.command {
-                    _ = try SSHRemoteCommandEncoder.parseLegacy(command)
+                    // Technical validation only: non-empty, no NUL, size
+                    // limit. Shell syntax is never inspected here.
+                    _ = try SSHRemoteCommandEncoder.rawRemoteCommand(command)
                 } else {
                     return .invalidParameters
                 }
@@ -412,21 +414,24 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             throw SecretOperationExecutionError.invalidParameter
         }
 
-        let commands: [SSHCommandSpec]
+        let remoteCommands: [String]
         let stopOnFailure: Bool
         do {
             if let batch = descriptor.sshCommandBatch {
                 try batch.validate()
-                commands = batch.commands
+                remoteCommands = try batch.commands.map { try SSHRemoteCommandEncoder.encode($0) }
                 stopOnFailure = batch.stopOnFailure
             } else if let command = descriptor.command {
-                commands = [try SSHRemoteCommandEncoder.parseLegacy(command)]
+                // The raw command is executed byte-for-byte: it is passed as
+                // a single ssh remote-command argv element, so the local
+                // shell never interprets it and the remote login shell sees
+                // exactly what the caller wrote — including newlines, quotes,
+                // pipelines, redirects, and heredocs.
+                remoteCommands = [try SSHRemoteCommandEncoder.rawRemoteCommand(command)]
                 stopOnFailure = true
             } else {
                 throw SSHCommandBatchValidationError.empty
             }
-        } catch SSHRemoteCommandEncodingError.unsupportedLegacySyntax {
-            throw SecretOperationExecutionError.batchValidationFailed
         } catch {
             throw SecretOperationExecutionError.batchValidationFailed
         }
@@ -442,25 +447,19 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         )
 
         var commandResults: [SSHCommandResult] = []
-        commandResults.reserveCapacity(commands.count)
+        commandResults.reserveCapacity(remoteCommands.count)
         var sessionID = descriptor.sessionID
         var firstFailureIndex: Int?
         var totalOutputBytes = 0
         let batchDeadline = ContinuousClock.now.advanced(by: batchTotalTimeout)
 
-        for (index, command) in commands.enumerated() {
+        for (index, remoteCommand) in remoteCommands.enumerated() {
             let commandStart = ContinuousClock.now
             guard commandStart < batchDeadline else {
                 throw SecretOperationExecutionError.timedOut
             }
             let remainingBatchTime = commandStart.duration(to: batchDeadline)
             let commandTimeout = min(operationTimeout, remainingBatchTime)
-            let remoteCommand: String
-            do {
-                remoteCommand = try SSHRemoteCommandEncoder.encode(command)
-            } catch {
-                throw SecretOperationExecutionError.batchValidationFailed
-            }
 
             let requestedSessionID = index == 0 ? descriptor.sessionID : sessionID
             let execution: SSHSessionCommandExecution
@@ -526,7 +525,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             if outcome.status != "COMPLETED" {
                 firstFailureIndex = firstFailureIndex ?? index
                 if stopOnFailure {
-                    for notExecutedIndex in (index + 1)..<commands.count {
+                    for notExecutedIndex in (index + 1)..<remoteCommands.count {
                         commandResults.append(
                             SSHCommandResult(index: notExecutedIndex, status: "NOT_EXECUTED")
                         )
@@ -836,7 +835,10 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
         set timeout $timeoutSeconds
         log_user 1
-        if {[catch {spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ControlMaster=yes -o ControlPersist=300 -o ControlPath=$controlPath -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" $command}]} {
+        # "$command" keeps the entire remote command as ONE ssh argv element:
+        # the local shell never interprets it, and the remote login shell
+        # receives it byte-for-byte, including newlines and quotes.
+        if {[catch {spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ControlMaster=yes -o ControlPersist=300 -o ControlPath=$controlPath -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" "$command"}]} {
             exit \(SSHWrapperExitCode.wrapperFailed)
         }
         expect {

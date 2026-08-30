@@ -61,7 +61,7 @@ private func batchMetadata(_ reference: SecretReference) -> [SecretPolicyMetadat
     #expect(!summary.contains("secret://"))
 }
 
-@Test func sshBatchSummaryBoundsDisplayedCommandsAndArguments() async throws {
+@Test func sshBatchSummaryShowsEveryCommandAndArgumentInFull() async throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let longArgument = "/share/" + String(repeating: "a", count: 300)
     var commands = (0..<7).map { index in
@@ -87,17 +87,19 @@ private func batchMetadata(_ reference: SecretReference) -> [SecretPolicyMetadat
         decision: decision
     )
 
+    // The owner approves the exact batch, so every command and every
+    // argument is displayed in full — nothing is summarized away.
     #expect(summary.contains("SSH 批处理（7 条）"))
-    #expect(summary.contains("其余 2 条命令未在摘要展开"))
-    #expect(summary.contains("还有 3 个参数"))
-    // The long path must be truncated, and the batch detail stays bounded so
-    // a hostile batch cannot flood the approval prompt (1_600-byte detail
-    // plus the fixed prompt scaffolding around it).
-    #expect(summary.contains("…"))
-    #expect(!summary.contains(longArgument))
-    #expect(summary.utf8.count <= 2_400)
-    // Control characters must never reach the approval prompt.
-    #expect(!summary.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F })
+    for index in 1...6 {
+        #expect(summary.contains("/tmp/svlt-\(index)"), "command \(index) must be shown")
+    }
+    #expect(summary.contains(longArgument))
+    #expect(summary.contains("x7"))
+    #expect(summary.contains("rm"))
+    // The overall prompt stays byte-bounded at the command ceiling, and
+    // control characters never reach the approval prompt.
+    #expect(summary.utf8.count <= 65_536 + 2_000)
+    #expect(!summary.unicodeScalars.contains { $0.value < 0x20 && $0 != "\n" && $0 != "\t" })
 }
 
 @Test func sshBatchSummaryNeverIncludesCredentialLabelsOrReferencesFromArguments() async throws {

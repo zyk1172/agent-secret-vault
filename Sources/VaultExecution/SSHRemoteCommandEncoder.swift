@@ -3,56 +3,58 @@ import VaultCore
 
 public enum SSHRemoteCommandEncodingError: Error, Equatable, Sendable {
     case invalidCommand
-    case unsupportedLegacySyntax
-    case unsupportedShellExecutable
+    case commandTooLong
 }
 
-/// Converts structured argv-like input to the one remote command string that
-/// OpenSSH ultimately gives to the remote login shell. Every field is quoted
-/// independently using POSIX single-quote rules; no raw shell fragment is
-/// accepted.
+/// Produces the one remote command string that OpenSSH ultimately gives to
+/// the remote login shell.
+///
+/// SVLT does not re-parse, re-interpret, or second-guess remote commands:
+///
+/// - A raw single-line or multi-line command is validated for technical
+///   sanity only (non-empty, UTF-8, no NUL, size limit) and is passed
+///   byte-for-byte as a single `ssh` argv element, so the local shell never
+///   interprets it and the remote login shell sees exactly what the caller
+///   wrote.
+/// - A structured batch command keeps its argv semantics: every field is
+///   quoted independently with POSIX single-quote rules, so
+///   `executable=bash, arguments=["-c", "..."]` runs exactly that argv on the
+///   remote host.
+///
+/// There is deliberately no syntax blocklist here: shell syntax, quotes,
+/// pipelines, redirects, heredocs, interpreters, and unknown commands are the
+/// remote login shell's job, and the authorization level is the policy
+/// engine's job — not the encoder's.
 public enum SSHRemoteCommandEncoder {
-    public static func encode(_ command: SSHCommandSpec) throws -> String {
-        try command.validate()
-        let executable = URL(fileURLWithPath: command.executable).lastPathComponent.lowercased()
-        guard !shellExecutables.contains(executable) else {
-            throw SSHRemoteCommandEncodingError.unsupportedShellExecutable
+    /// The technical size ceiling for one raw remote command.
+    public static let maxRawCommandBytes = 65_536
+
+    /// Validates and returns the raw command unchanged. Newlines, quotes,
+    /// backslashes, `$`, globs, pipelines, redirects, and heredocs are
+    /// preserved exactly; only NUL and oversize input are technical errors.
+    public static func rawRemoteCommand(_ command: String) throws -> String {
+        guard !command.isEmpty else {
+            throw SSHRemoteCommandEncodingError.invalidCommand
         }
-        return ([command.executable] + command.arguments).map(quote).joined(separator: " ")
+        guard !command.contains("\u{0}") else {
+            throw SSHRemoteCommandEncodingError.invalidCommand
+        }
+        guard command.utf8.count <= maxRawCommandBytes else {
+            throw SSHRemoteCommandEncodingError.commandTooLong
+        }
+        return command
     }
 
-    /// Compatibility bridge for the original one-string tool. It accepts only
-    /// simple whitespace-separated argv and then applies the same quoting as a
-    /// structured request. Shell syntax, quotes, and backslashes require the
-    /// structured API instead of being interpreted by SVLT.
-    public static func parseLegacy(_ command: String) throws -> SSHCommandSpec {
-        guard !command.isEmpty,
-              !command.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F })
-        else {
-            throw SSHRemoteCommandEncodingError.invalidCommand
-        }
-        let forbidden = [";", "&&", "||", "|", ">", "<", "`", "$(", "${", "&", "*", "?", "[", "]", "'", "\"", "\\"]
-        guard !forbidden.contains(where: command.contains) else {
-            throw SSHRemoteCommandEncodingError.unsupportedLegacySyntax
-        }
-        let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-        guard let executable = tokens.first else {
-            throw SSHRemoteCommandEncodingError.invalidCommand
-        }
-        let spec = SSHCommandSpec(executable: executable, arguments: Array(tokens.dropFirst()))
-        try spec.validate()
-        let executableName = URL(fileURLWithPath: spec.executable).lastPathComponent.lowercased()
-        guard !shellExecutables.contains(executableName) else {
-            throw SSHRemoteCommandEncodingError.unsupportedShellExecutable
-        }
-        return spec
+    /// Converts structured argv-like input to the remote command string. The
+    /// remote login shell receives the quoted argv; the interpreter choice
+    /// (including `sh`/`bash`/`python`/...) belongs to the caller and is only
+    /// reflected in the authorization level, never refused here.
+    public static func encode(_ command: SSHCommandSpec) throws -> String {
+        try command.validate()
+        return ([command.executable] + command.arguments).map(quote).joined(separator: " ")
     }
 
     public static func quote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
-
-    private static let shellExecutables: Set<String> = [
-        "sh", "bash", "zsh", "fish", "ksh", "dash", "ash", "csh", "tcsh"
-    ]
 }
