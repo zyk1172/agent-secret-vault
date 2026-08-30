@@ -2,10 +2,10 @@ import Foundation
 import VaultCore
 
 /// Conservative classifier for SSH commands. Known read-only commands are
-/// silent, known reversible writes use the scoped reusable approval lease, and
-/// destructive or unparseable commands require a fresh device-owner decision.
-/// Shell composition is rejected by the policy engine rather than treated as
-/// a command that can be made safe by quoting.
+/// silent, argument-aware ordinary writes (plus mkdir/touch) use the scoped
+/// reusable approval lease, and destructive or unparseable commands require a
+/// fresh device-owner decision. Shell composition is rejected by the policy
+/// engine rather than treated as a command that can be made safe by quoting.
 public struct SSHCommandRiskClassification: Equatable, Sendable {
     public let risk: OperationRisk
     public let authorizationRequirement: AuthorizationRequirement
@@ -137,6 +137,20 @@ public struct SSHCommandRiskClassifier: Sendable {
             )
         }
 
+        // Argument-aware ordinary writes: the service-control and container
+        // lifecycle forms below are locally proven reversible, so they may
+        // enter the five-minute execution window. Every unrecognized write
+        // keeps the fresh path; an incomplete blacklist must never widen the
+        // reusable boundary on its own.
+        if isOrdinaryWrite(executable: executable, arguments: arguments) {
+            return SSHCommandRiskClassification(
+                risk: .approvalRequired,
+                authorizationRequirement: .reusableApproval,
+                reasons: ["SSH 命令被本地解析为普通可逆写操作，可在执行窗口内复用审批"],
+                ruleID: "ssh.ordinary-write.reusable-approval"
+            )
+        }
+
         if Self.reversibleWriteCommands.contains(executable) {
             return SSHCommandRiskClassification(
                 risk: .approvalRequired,
@@ -190,6 +204,24 @@ public struct SSHCommandRiskClassifier: Sendable {
             return false
         }
         return subcommand == "ps" || subcommand == "inspect" || subcommand == "images"
+    }
+
+    /// Only command forms the local classifier can prove reversible. File
+    /// copying/moving and permission or ownership changes can overwrite or
+    /// re-scope existing data and therefore never qualify; a target-specific
+    /// App-owned policy profile is the intended future home for widening
+    /// these boundaries, not a growing global table.
+    private func isOrdinaryWrite(executable: String, arguments: [String]) -> Bool {
+        switch executable {
+        case "systemctl":
+            guard let subcommand = arguments.first else { return false }
+            return Self.reversibleServiceSubcommands.contains(subcommand)
+        case "docker":
+            guard let subcommand = arguments.first else { return false }
+            return Self.reversibleContainerSubcommands.contains(subcommand)
+        default:
+            return false
+        }
     }
 
     private func classifyFind(arguments: [String]) -> SSHCommandRiskClassification {
@@ -348,6 +380,14 @@ public struct SSHCommandRiskClassifier: Sendable {
         // complete argument-aware proof they must take the unknown-command
         // fresh-approval path instead of reusing a five-minute lease.
         "mkdir", "touch"
+    ]
+
+    private static let reversibleServiceSubcommands: Set<String> = [
+        "start", "restart", "reload"
+    ]
+
+    private static let reversibleContainerSubcommands: Set<String> = [
+        "start", "restart", "stop", "pause", "unpause"
     ]
 
     private static let shellExecutables: Set<String> = [

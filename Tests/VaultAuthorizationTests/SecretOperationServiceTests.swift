@@ -307,6 +307,47 @@ import VaultIPC
     #expect(!modes.contains(.executionWindowReuse))
 }
 
+@Test func containerLifecycleWritesReuseTheWindowAndRemovalStaysFresh() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 8_000)
+    let clock = ServiceTestClock(start)
+    let monotonicStart: UInt64 = 80_000_000_000
+    clock.monotonicNow = monotonicStart
+    let authorizationSession = AuthorizationSession(
+        executionTTL: 300,
+        monotonicNow: { clock.monotonicNow },
+        now: { clock.now }
+    )
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    let restart = fixture.ssh(command: "docker restart web", agentRisk: .approvalRequired)
+    let output = try await fixture.service.performSecretOperation(restart)
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let scope = fixture.executionScope(for: restart)
+    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
+    #expect(originalExpiry == start.addingTimeInterval(300))
+
+    clock.now = start.addingTimeInterval(100)
+    clock.monotonicNow = monotonicStart + 100_000_000_000
+    let startContainer = fixture.ssh(command: "docker start web", agentRisk: .approvalRequired)
+    let reused = try await fixture.service.performSecretOperation(startContainer)
+    #expect(reused.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 2)
+
+    clock.now = start.addingTimeInterval(200)
+    clock.monotonicNow = monotonicStart + 200_000_000_000
+    let remove = fixture.ssh(command: "docker rm -f web", agentRisk: .approvalRequired)
+    let removal = try await fixture.service.performSecretOperation(remove)
+    #expect(removal.status == "COMPLETED")
+    #expect(await fixture.approver.count == 2)
+    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
+}
+
 @Test func concurrentEligibleOperationsShareOneApproval() async throws {
     let fixture = try await OperationServiceFixture(approval: .delayed)
     defer { fixture.remove() }

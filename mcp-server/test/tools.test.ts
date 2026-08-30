@@ -743,6 +743,52 @@ describe("MCP tool contracts", () => {
     expect(JSON.stringify(request)).not.toContain("restoreReferences");
   });
 
+  it("carries an explicit approvalRequired assessment into the SSH descriptor", async () => {
+    const client = new FakeClient([operationResponse({ exitCode: 0, stdout: "", stderr: "" })]);
+    const result = await tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      command: "mkdir /share/svlt-test",
+      agentAssessment: {
+        declaredRisk: "approvalRequired",
+        reason: "creates a directory",
+        intendedEffect: "remote write"
+      }
+    });
+
+    expect(result.structuredContent).toMatchObject({ status: "COMPLETED", redacted: true });
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    // The Swift policy engine merges this hint with the local requirement;
+    // the wire contract must preserve it verbatim instead of downgrading it.
+    expect(request.descriptor.agentAssessment).toEqual({
+      declaredRisk: "approvalRequired",
+      reason: "creates a directory",
+      intendedEffect: "remote write"
+    });
+  });
+
+  it("fills the conservative default assessment when the agent omits one", async () => {
+    const client = new FakeClient([operationResponse({ exitCode: 0, stdout: "", stderr: "" })]);
+    await tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      command: "hostname"
+    });
+
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor.agentAssessment).toEqual({
+      declaredRisk: "silent",
+      reason: "No additional agent risk hint",
+      intendedEffect: "purpose-built local secret operation"
+    });
+  });
+
   it("preserves only bounded redacted diagnostics for failed SSH actions", async () => {
     const client = new FakeClient([operationResponse({
       status: "WRAPPER_FAILED",

@@ -103,8 +103,66 @@ import VaultCore
     #expect(!decision.requiresFreshApprovalOnFirstUse)
 }
 
-@Test func operationHashIsIndependentOfTheAgentRiskReport() throws {
+@Test func serviceAndContainerLifecycleWritesEnterTheReusableWindow() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    let reusableCommands = [
+        "systemctl start jellyfin",
+        "systemctl restart jellyfin",
+        "systemctl reload nginx",
+        "docker start web",
+        "docker restart web",
+        "docker stop web",
+        "docker pause web",
+        "docker unpause web"
+    ]
+
+    for command in reusableCommands {
+        let decision = engine().evaluate(SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: command
+        ), metadata: metadata)
+        #expect(decision.authorizationRequirement == .reusableApproval, "command: \(command)")
+        #expect(decision.policyRuleID == "ssh.ordinary-write.reusable-approval", "command: \(command)")
+    }
+}
+
+@Test func destructiveAndOverwritingFormsStayFreshAroundTheReusableWindow() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    let freshCommands = [
+        "systemctl stop jellyfin",
+        "systemctl disable jellyfin",
+        "systemctl mask jellyfin",
+        "docker rm web",
+        "docker rm -f web",
+        "docker volume rm data",
+        "docker system prune",
+        "cp -f /tmp/a /etc/passwd",
+        "mv /tmp/a /etc/passwd",
+        "chmod 000 /etc/passwd",
+        "chown root /etc/passwd",
+        "qnap-tool restart service"
+    ]
+
+    for command in freshCommands {
+        let decision = engine().evaluate(SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: command
+        ), metadata: metadata)
+        #expect(decision.authorizationRequirement == .freshApprovalRequired, "command: \(command)")
+    }
+}
+
+@Test func operationHashIsIndependentOfTheAgentRiskReport() throws {    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let base = SecretOperationDescriptor(
         actionType: .apiRequest,
         secretReferences: [reference],
