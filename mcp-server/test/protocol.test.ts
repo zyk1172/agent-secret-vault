@@ -478,7 +478,7 @@ describe("IPC request schema", () => {
         label: "QNAP credential",
         policy: "credential",
         allowedDestinations: ["qnap.local", "192.168.2.240"],
-        allowedProtocols: ["ssh", "https"]
+        allowedProtocols: ["ssh", "https", "http-loopback"]
       },
       {
         type: "revealReferences",

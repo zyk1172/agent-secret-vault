@@ -649,7 +649,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         let executorAction = isExecutionLeaseEligible(descriptor.actionType)
-        let executorCapability = executorAction
+        let executorCapability = isExecutorBackedAction(descriptor.actionType)
             ? operationExecutor.preflight(descriptor)
             : .supported
         if executorCapability == .unavailable {
@@ -1110,7 +1110,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 operations: [.exportPlaintext],
                 reason: exportRootIsReady
                     ? "App-owned export writer creates a new owner-only file below the configured export root"
-                    : "配置的导出根目录不存在、包含 symlink 或不是 owner-only 目录"
+                    : "配置的导出根目录不存在、包含 symlink 或不是 owner-only 目录",
+                features: SecretOperationCapabilityFeatures(
+                    response: ["exportStatus", "path"],
+                    transportSessionReuse: false
+                )
             )]
     }
 
@@ -3770,6 +3774,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func policyMetadata(
         for references: [SecretReference]
     ) async throws -> [SecretPolicyMetadata] {
+        guard Set(references).count == references.count else {
+            throw VaultAppServicesRevealError.invalidReference
+        }
         guard let recordResolver else {
             throw VaultAppServicesRevealError.revealUnavailable
         }
@@ -3805,6 +3812,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         do {
             parsedReferences = try references.map(SecretReference.init)
         } catch {
+            throw VaultAppServicesRevealError.invalidReference
+        }
+        guard Set(parsedReferences).count == parsedReferences.count else {
             throw VaultAppServicesRevealError.invalidReference
         }
         try validateRevealContext(context, referenceCount: parsedReferences.count)
@@ -3949,6 +3959,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
              .sftpTransfer,
              .browserLogin,
              .localAppFill:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isExecutorBackedAction(_ action: SecretOperationAction) -> Bool {
+        switch action {
+        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer,
+             .browserLogin, .localAppFill, .localExecution, .trustedProcess:
             return true
         default:
             return false
@@ -4165,7 +4185,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             case .operationDenied, .actionExecutorUnavailable, .actionExecutionFailed,
                  .invalidOperationParameters, .sessionNotFound, .sessionExpired,
                  .sessionScopeMismatch, .sessionControlUnavailable, .sessionLimitReached,
-                 .batchValidationFailed, .redirectRequiresReview, .outputQuarantined:
+                 .batchValidationFailed, .redirectRequiresReview, .outputQuarantined,
+                 .insecureTransportDenied:
                 await emitAudit(
                     action: "本机授权失败",
                     target: decision.normalizedDestination ?? "local",
@@ -4439,6 +4460,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .outputQuarantined
         case .redirectRequiresReview:
             return .redirectRequiresReview
+        case .insecureTransportDenied:
+            return .insecureTransportDenied
         case .unavailable, .unsupportedAction, .missingSecretReference,
              .invalidSecretUTF8, .timedOut, .processFailed:
             return .actionExecutionFailed
@@ -4543,10 +4566,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let detail = safeDisplayLabel(operationDetail(for: descriptor))
         let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
         guard let executionWindowDuration else {
+            if decision.requiresFreshApprovalOnFirstUse {
+                return "\(base)；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；这是首次使用，必须本机认证"
+            }
             return base
         }
         let seconds = executionWindowDuration.formatted(.number.precision(.fractionLength(0...3)))
-        return "\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒；不会授权其他凭据、目标或协议"
+        let insecureWarning = decision.requiresFreshApprovalOnFirstUse
+            ? "；警告：目标使用未加密 HTTP，凭据可能以明文在网络中传输；首次使用必须本机认证"
+            : ""
+        return "\(base)\(insecureWarning)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒；不会授权其他凭据、目标或协议"
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {
@@ -4652,6 +4681,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         do {
             validatedReferences = try references.map { try SecretReference($0).description }
         } catch {
+            throw VaultAppServicesRevealError.invalidReference
+        }
+        guard Set(validatedReferences).count == validatedReferences.count else {
             throw VaultAppServicesRevealError.invalidReference
         }
 

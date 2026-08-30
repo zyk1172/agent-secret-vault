@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import VaultExecution
 import VaultIPC
 @testable import VaultService
 
@@ -18,6 +19,24 @@ import VaultIPC
     #expect(configuration.credentialAuthorizationTTL == 600)
     #expect(configuration.externalSendAuthorizationTTL == 60)
     #expect(configuration.executionAuthorizationTTL == 300)
+}
+
+@Test func daemonConfigurationCarriesOnlyAppOwnedHTTPProjectionProfiles() {
+    let profile = HTTPResponseProjectionProfile(
+        id: "status-profile",
+        origin: "https://qnap.local",
+        allowedJSONPointers: ["/status"]
+    )
+    let configuration = VaultDaemonConfiguration(
+        vaultRootURL: URL(filePath: "/tmp/svlt-config-vault"),
+        auditRootURL: URL(filePath: "/tmp/svlt-config-audit"),
+        ipcConfiguration: UnixSocketServerConfiguration(
+            directoryURL: URL(filePath: "/tmp/svlt-config-ipc")
+        ),
+        httpResponseProjectionProfiles: [profile]
+    )
+
+    #expect(configuration.httpResponseProjectionProfiles == [profile])
 }
 
 @Test func daemonStartsWithIPCAvailableButVaultLockedWithoutEagerAuthentication() async throws {

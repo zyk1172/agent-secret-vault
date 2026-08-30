@@ -4,6 +4,7 @@ import VaultCore
 @testable import VaultExecution
 
 private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
+private let httpTestHost = "svlt.local"
 
 @Test func typedHTTPAdapterReusesTransportAndNeverPreviewsAuthenticatedBody() async throws {
     let reference = try SecretReference(httpTestReference)
@@ -21,11 +22,11 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
         SecretOperationDescriptor(
             actionType: .apiRequest,
             secretReferences: [reference],
-            destination: "svlt.test",
+            destination: httpTestHost,
             port: 80,
             protocolType: .http,
             httpMethod: "GET",
-            url: "http://svlt.test/ok",
+            url: "http://\(httpTestHost)/ok?limit=10",
             sessionID: sessionID,
             payload: payload,
             requestedEffects: ["read-only"]
@@ -35,13 +36,13 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     let context = SecretOperationExecutionContext(principal: "test-principal", securityGeneration: 1)
     let first = try await adapter.execute(
         makeDescriptor(),
-        metadata: [],
+        metadata: [httpMetadata(reference)],
         context: context,
         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
     let second = try await adapter.execute(
         makeDescriptor(sessionID: first.sessionID),
-        metadata: [],
+        metadata: [httpMetadata(reference)],
         context: context,
         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
@@ -62,11 +63,11 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     let descriptor = SecretOperationDescriptor(
         actionType: .apiRequest,
         secretReferences: [reference],
-        destination: "svlt.test",
+        destination: httpTestHost,
         port: 80,
         protocolType: .http,
         httpMethod: "GET",
-        url: "http://svlt.test/redirect",
+        url: "http://\(httpTestHost)/redirect",
         payload: .http(
             HTTPOperation(
                 method: .get,
@@ -80,8 +81,76 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     await #expect(throws: SecretOperationExecutionError.redirectRequiresReview) {
         _ = try await adapter.execute(
             descriptor,
-            metadata: [],
+            metadata: [httpMetadata(reference)],
             context: context,
+            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+        )
+    }
+}
+
+@Test func typedHTTPAdapterRejectsInsecureSecretTransportWithoutProfileOptIn() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/ok",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+            )
+        )
+    )
+
+    await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
+        _ = try await adapter.execute(
+            descriptor,
+            metadata: [],
+            context: SecretOperationExecutionContext(principal: "insecure-http", securityGeneration: 1),
+            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+        )
+    }
+}
+
+@Test func typedHTTPAdapterRejectsInsecureSecretTransportOnAnUnprofiledPort() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/ok",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+            )
+        )
+    )
+
+    await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
+        _ = try await adapter.execute(
+            descriptor,
+            metadata: [SecretPolicyMetadata(
+                reference: reference,
+                policy: .credential,
+                label: "HTTP test credential",
+                allowedDestinations: ["\(httpTestHost):8080"],
+                allowedProtocols: ["http"]
+            )],
+            context: SecretOperationExecutionContext(principal: "insecure-port", securityGeneration: 1),
             resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
         )
     }
@@ -97,11 +166,11 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     let descriptor = SecretOperationDescriptor(
         actionType: .apiRequest,
         secretReferences: [reference],
-        destination: "svlt.test",
+        destination: httpTestHost,
         port: 80,
         protocolType: .http,
         httpMethod: "GET",
-        url: "http://svlt.test/large",
+        url: "http://\(httpTestHost)/large",
         payload: .http(
             HTTPOperation(
                 method: .get,
@@ -116,7 +185,7 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     await #expect(throws: SecretOperationExecutionError.outputLimitExceeded) {
         _ = try await adapter.execute(
             descriptor,
-            metadata: [],
+            metadata: [httpMetadata(reference)],
             context: context,
             resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
         )
@@ -131,11 +200,11 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
         SecretOperationDescriptor(
             actionType: .apiRequest,
             secretReferences: [reference],
-            destination: "svlt.test",
+            destination: httpTestHost,
             port: 80,
             protocolType: .http,
             httpMethod: "GET",
-            url: "http://svlt.test/ok",
+            url: "http://\(httpTestHost)/ok",
             payload: .http(
                 HTTPOperation(
                     method: .get,
@@ -160,11 +229,11 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     )
     let unsupportedResponsePolicyDescriptor = SecretOperationDescriptor(
         actionType: .apiRequest,
-        destination: "svlt.test",
+        destination: httpTestHost,
         port: 80,
         protocolType: .http,
         httpMethod: "GET",
-        url: "http://svlt.test/ok",
+        url: "http://\(httpTestHost)/ok",
         payload: .http(
             HTTPOperation(
                 responsePolicy: HTTPResponsePolicy(
@@ -179,11 +248,11 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
 
     let descriptor = SecretOperationDescriptor(
         actionType: .apiRequest,
-        destination: "svlt.test",
+        destination: httpTestHost,
         port: 80,
         protocolType: .http,
         httpMethod: "GET",
-        url: "http://svlt.test/unicode",
+        url: "http://\(httpTestHost)/unicode",
         payload: .http(
             HTTPOperation(
                 responsePolicy: HTTPResponsePolicy(kind: .sanitizedPreview, maxBytes: 3)
@@ -200,6 +269,132 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     #expect(Data((output.bodyPreview ?? "").utf8).count <= 3)
 }
 
+@Test func typedHTTPAdapterReturnsOnlyProfileApprovedJSONProjectionForAuthenticatedResponse() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let profile = HTTPResponseProjectionProfile(
+        id: "status-profile",
+        origin: "http://\(httpTestHost)",
+        allowedJSONPointers: ["/status", "/data"]
+    )
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration),
+        responseProjectionProfiles: [profile]
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/projected",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference),
+                responsePolicy: HTTPResponsePolicy(
+                    kind: .projectedJSON,
+                    fields: ["/status"],
+                    profileID: profile.id
+                )
+            )
+        )
+    )
+
+    let output = try await adapter.execute(
+        descriptor,
+        metadata: [httpMetadata(reference)],
+        context: SecretOperationExecutionContext(principal: "projection", securityGeneration: 1),
+        resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+    )
+
+    #expect(output.bodyPreview == "{\"status\":\"ok\"}")
+    #expect(!(output.bodyPreview ?? "").contains("access_token"))
+}
+
+@Test func typedHTTPAdapterQuarantinesSensitiveFieldsInsideProjectedJSON() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let profile = HTTPResponseProjectionProfile(
+        id: "data-profile",
+        origin: "http://\(httpTestHost)",
+        allowedJSONPointers: ["/data"]
+    )
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration),
+        responseProjectionProfiles: [profile]
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/sensitive",
+        payload: .http(
+            HTTPOperation(
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference),
+                responsePolicy: HTTPResponsePolicy(
+                    kind: .projectedJSON,
+                    fields: ["/data"],
+                    profileID: profile.id
+                )
+            )
+        )
+    )
+
+    await #expect(throws: SecretOperationExecutionError.outputQuarantined) {
+        _ = try await adapter.execute(
+            descriptor,
+            metadata: [httpMetadata(reference)],
+            context: SecretOperationExecutionContext(principal: "projection-sensitive", securityGeneration: 1),
+            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+        )
+    }
+}
+
+@Test func typedHTTPAdapterRejectsSensitiveProjectedFieldEvenWhenProfileListsIt() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let profile = HTTPResponseProjectionProfile(
+        id: "unsafe-profile",
+        origin: "http://(httpTestHost)",
+        allowedJSONPointers: ["/access_token"]
+    )
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration),
+        responseProjectionProfiles: [profile]
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://(httpTestHost)/projected",
+        payload: .http(
+            HTTPOperation(
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference),
+                responsePolicy: HTTPResponsePolicy(
+                    kind: .projectedJSON,
+                    fields: ["/access_token"],
+                    profileID: profile.id
+                )
+            )
+        )
+    )
+
+    #expect(adapter.preflight(descriptor) == .invalidParameters)
+    await #expect(throws: SecretOperationExecutionError.invalidParameter) {
+        _ = try await adapter.execute(
+            descriptor,
+            metadata: [httpMetadata(reference)],
+            context: SecretOperationExecutionContext(principal: "projection-unsafe", securityGeneration: 1),
+            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+        )
+    }
+}
+
 @Test func concurrentRedirectsKeepTheirOwnRejectionState() async throws {
     let reference = try SecretReference(httpTestReference)
     let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
@@ -207,11 +402,11 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     let descriptor = SecretOperationDescriptor(
         actionType: .apiRequest,
         secretReferences: [reference],
-        destination: "svlt.test",
+        destination: httpTestHost,
         port: 80,
         protocolType: .http,
         httpMethod: "GET",
-        url: "http://svlt.test/redirect",
+        url: "http://\(httpTestHost)/redirect",
         payload: .http(
             HTTPOperation(
                 method: .get,
@@ -228,7 +423,7 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
                 do {
                     _ = try await adapter.execute(
                         descriptor,
-                        metadata: [],
+                        metadata: [httpMetadata(reference)],
                         context: context,
                         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
                     )
@@ -254,9 +449,19 @@ private func testURLSessionConfiguration() -> URLSessionConfiguration {
     return configuration
 }
 
+private func httpMetadata(_ reference: SecretReference) -> SecretPolicyMetadata {
+    SecretPolicyMetadata(
+        reference: reference,
+        policy: .credential,
+        label: "HTTP test credential",
+        allowedDestinations: ["\(httpTestHost):80"],
+        allowedProtocols: ["http"]
+    )
+}
+
 private final class DeterministicHTTPURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "svlt.test"
+        request.url?.host == httpTestHost
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -274,7 +479,7 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
         let isUnicode = url.path == "/unicode"
         let statusCode = isRedirect ? 302 : 200
         let headers = isRedirect
-            ? ["Location": "http://svlt.test/ok"]
+            ? ["Location": "http://\(httpTestHost)/ok"]
             : ["Content-Type": "application/json"]
         guard let response = HTTPURLResponse(
             url: url,
@@ -292,6 +497,10 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
                 ? Data("0123456789abcdef".utf8)
                 : isUnicode
                     ? Data("中a".utf8)
+                : url.path == "/projected"
+                    ? Data("{\"status\":\"ok\",\"access_token\":\"derived-secret\"}".utf8)
+                : url.path == "/sensitive"
+                    ? Data("{\"data\":{\"token\":\"derived-secret\"}}".utf8)
                 : Data("{\"ok\":true}".utf8)
             client?.urlProtocol(self, didLoad: data)
         }

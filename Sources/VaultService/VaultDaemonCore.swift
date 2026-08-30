@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import VaultAuthorization
 import VaultCore
+import VaultExecution
 import VaultIPC
 
 public enum VaultDaemonCoreError: Error, Equatable, Sendable {
@@ -18,6 +19,9 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
     public let externalSendAuthorizationTTL: TimeInterval
     public let executionAuthorizationTTL: TimeInterval
     public let readAuthorizationTTL: TimeInterval?
+    /// App-owned, non-secret response projection profiles. An empty list is
+    /// deliberately metadata-only; the daemon never invents an allowlist.
+    public let httpResponseProjectionProfiles: [HTTPResponseProjectionProfile]
 
     public init(
         vaultRootURL: URL,
@@ -27,7 +31,8 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
         executionAuthorizationTTL: TimeInterval = 300,
-        readAuthorizationTTL: TimeInterval? = nil
+        readAuthorizationTTL: TimeInterval? = nil,
+        httpResponseProjectionProfiles: [HTTPResponseProjectionProfile] = []
     ) {
         let normalizedVaultRootURL = vaultRootURL.standardizedFileURL
         self.vaultRootURL = normalizedVaultRootURL
@@ -41,6 +46,7 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
         self.externalSendAuthorizationTTL = externalSendAuthorizationTTL
         self.executionAuthorizationTTL = executionAuthorizationTTL
         self.readAuthorizationTTL = readAuthorizationTTL
+        self.httpResponseProjectionProfiles = httpResponseProjectionProfiles
     }
 
     public static func `default`() throws -> VaultDaemonConfiguration {
@@ -243,6 +249,11 @@ public actor VaultDaemonCore {
                 credentialTTL: configuration.credentialAuthorizationTTL,
                 externalSendTTL: configuration.externalSendAuthorizationTTL,
                 executionTTL: configuration.executionAuthorizationTTL
+            ),
+            operationExecutor: LocalSecretOperationExecutor(
+                adapterRegistry: SecretOperationAdapterRegistry(
+                    responseProjectionProfiles: configuration.httpResponseProjectionProfiles
+                )
             ),
             credentialAuthorizationTTL: configuration.credentialAuthorizationTTL,
             externalSendAuthorizationTTL: configuration.externalSendAuthorizationTTL,

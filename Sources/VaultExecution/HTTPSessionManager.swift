@@ -37,7 +37,9 @@ public struct HTTPSessionScope: Hashable, Sendable {
         self.host = host.lowercased()
         self.port = port
         self.authenticationProfile = authenticationProfile
-        self.secretReferenceIDs = Array(Set(secretReferenceIDs)).sorted()
+        // The policy boundary rejects duplicate references. Do not silently
+        // turn malformed input into a different transport scope here.
+        self.secretReferenceIDs = secretReferenceIDs.sorted()
         self.securityGeneration = securityGeneration
     }
 }

@@ -114,6 +114,9 @@ public enum SecretOperationAction: String, Codable, CaseIterable, Sendable {
     case batchDelete
     case resetVault
     case localExecution
+    /// An allowlisted signed process is a distinct future adapter boundary.
+    /// `localExecution` remains the permanently denied generic-shell action.
+    case trustedProcess
 }
 
 /// Stable, sanitized failure states exposed on the local IPC boundary.  The
@@ -136,6 +139,7 @@ public enum SecretOperationError: Error, Equatable, Sendable {
     case batchValidationFailed
     case redirectRequiresReview
     case outputQuarantined
+    case insecureTransportDenied
 
     public var responseCode: String {
         switch self {
@@ -171,6 +175,8 @@ public enum SecretOperationError: Error, Equatable, Sendable {
             return "REDIRECT_REQUIRES_REVIEW"
         case .outputQuarantined:
             return "ACTION_OUTPUT_QUARANTINED"
+        case .insecureTransportDenied:
+            return "INSECURE_HTTP_DENIED"
         }
     }
 }
@@ -186,6 +192,98 @@ public enum SecretOperationProtocol: String, Codable, CaseIterable, Sendable {
     case browser
     case localApp
     case file
+}
+
+/// Transport policy for HTTP requests that carry a secret. The saved
+/// `allowedProtocols` binding is the current profile boundary: an explicit
+/// `http` entry opts a private/local destination into insecure HTTP. An Agent
+/// request cannot create or widen this policy by adding a request parameter.
+public enum HTTPTransportSecurityPolicy: String, Codable, CaseIterable, Sendable {
+    case httpsRequired
+    case allowInsecureLoopback
+    case allowInsecurePrivateNetwork
+
+    public static func fromAllowedProtocols(_ allowedProtocols: [String]) -> Self {
+        let normalized = Set(allowedProtocols.map { $0.lowercased() })
+        if normalized.contains("http-loopback") {
+            return .allowInsecureLoopback
+        }
+        if normalized.contains("http") {
+            return .allowInsecurePrivateNetwork
+        }
+        return .httpsRequired
+    }
+
+    public func permitsInsecureHTTP(toHost host: String) -> Bool {
+        let normalizedHost = Self.normalizedHost(host)
+        switch self {
+        case .httpsRequired:
+            return false
+        case .allowInsecureLoopback:
+            return Self.isLoopbackHost(normalizedHost)
+        case .allowInsecurePrivateNetwork:
+            return Self.isLoopbackHost(normalizedHost) || Self.isPrivateHost(normalizedHost)
+        }
+    }
+
+    private static func normalizedHost(_ host: String) -> String {
+        host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+    }
+
+    private static func isLoopbackHost(_ host: String) -> Bool {
+        host == "localhost"
+            || host.hasSuffix(".localhost")
+            || host == "::1"
+            || host.split(separator: ".").count == 4
+                && ipv4Parts(host).first == 127
+    }
+
+    private static func isPrivateHost(_ host: String) -> Bool {
+        if host.hasSuffix(".local") || host.hasSuffix(".lan")
+            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") {
+            return true
+        }
+        if host.contains(":") {
+            return host == "::"
+                || host.hasPrefix("fc")
+                || host.hasPrefix("fd")
+                || host.hasPrefix("fe8")
+                || host.hasPrefix("fe9")
+                || host.hasPrefix("fea")
+                || host.hasPrefix("feb")
+        }
+        let parts = ipv4Parts(host)
+        guard parts.count == 4 else { return false }
+        let first = parts[0]
+        let second = parts[1]
+        return first == 0
+            || first == 10
+            || first == 127
+            || (first == 100 && (64...127).contains(second))
+            || (first == 169 && second == 254)
+            || (first == 172 && (16...31).contains(second))
+            || (first == 192 && second == 168)
+    }
+
+    private static func ipv4Parts(_ host: String) -> [Int] {
+        let components = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 4,
+              components.allSatisfy({ component in
+                  !component.isEmpty
+                      && (component.count == 1 || component.first != "0")
+                      && component.allSatisfy(\.isNumber)
+              }) else {
+            return []
+        }
+        let parts = components.compactMap { Int($0) }
+        guard parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else {
+            return []
+        }
+        return parts
+    }
 }
 
 public enum SSHCommandBatchValidationError: Error, Equatable, Sendable {
@@ -301,6 +399,10 @@ public struct SecretPolicyMetadata: Codable, Equatable, Sendable {
     public let label: String?
     public let allowedDestinations: [String]
     public let allowedProtocols: [String]
+
+    public var httpTransportSecurityPolicy: HTTPTransportSecurityPolicy {
+        HTTPTransportSecurityPolicy.fromAllowedProtocols(allowedProtocols)
+    }
 
     public init(
         reference: SecretReference,
@@ -521,6 +623,112 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         return value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
     }
 
+    /// Canonicalizes an HTTP origin for profile-bound transport checks. A
+    /// bare profile destination is accepted only when it includes an
+    /// explicit port; a bare host must never widen an insecure HTTP profile to
+    /// every port on that host. The scheme is supplied for legacy host[:port]
+    /// bindings because protocol allowlists store it separately.
+    public static func normalizeHTTPOrigin(
+        _ value: String?,
+        expectedScheme: String? = nil,
+        defaultPort: Int? = nil,
+        requireExplicitPort: Bool = false,
+        allowURLPath: Bool = false
+    ) -> String? {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              raw.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value != 0x7F }) else {
+            return nil
+        }
+
+        let normalizedExpectedScheme = expectedScheme?.lowercased()
+        guard normalizedExpectedScheme == nil
+                || normalizedExpectedScheme == "http"
+                || normalizedExpectedScheme == "https" else {
+            return nil
+        }
+
+        var scheme: String
+        var host: String
+        var explicitPort: Int?
+        var hadAbsoluteScheme = false
+
+        if let url = URL(string: raw),
+           let parsedScheme = url.scheme?.lowercased(),
+           parsedScheme == "http" || parsedScheme == "https" {
+            guard url.user == nil,
+                  url.password == nil,
+                  (allowURLPath || url.query == nil),
+                  url.fragment == nil,
+                  (allowURLPath || url.path.isEmpty || url.path == "/"),
+                  let parsedHost = url.host,
+                  !parsedHost.isEmpty else {
+                return nil
+            }
+            scheme = parsedScheme
+            host = parsedHost
+            explicitPort = url.port
+            hadAbsoluteScheme = true
+        } else {
+            guard let normalizedExpectedScheme else { return nil }
+            guard !raw.contains("/") && !raw.contains("?") && !raw.contains("#") && !raw.contains("@") else {
+                return nil
+            }
+            scheme = normalizedExpectedScheme
+
+            if raw.hasPrefix("[") {
+                guard let closingBracket = raw.firstIndex(of: "]") else { return nil }
+                host = String(raw[raw.index(after: raw.startIndex)..<closingBracket])
+                let suffix = raw[raw.index(after: closingBracket)...]
+                if suffix.isEmpty {
+                    explicitPort = nil
+                } else {
+                    guard suffix.first == ":",
+                          let parsedPort = Int(suffix.dropFirst()) else {
+                        return nil
+                    }
+                    explicitPort = parsedPort
+                }
+            } else {
+                let parts = raw.split(separator: ":", omittingEmptySubsequences: false)
+                if parts.count == 2, let parsedPort = Int(parts[1]) {
+                    host = String(parts[0])
+                    explicitPort = parsedPort
+                } else if parts.count == 1 {
+                    host = raw
+                    explicitPort = nil
+                } else {
+                    // Unbracketed IPv6 is ambiguous when a port may follow.
+                    return nil
+                }
+            }
+        }
+
+        guard normalizedExpectedScheme == nil || scheme == normalizedExpectedScheme,
+              !host.isEmpty,
+              !host.contains("/") else {
+            return nil
+        }
+        let normalizedHost = host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]."))
+            .lowercased()
+        guard !normalizedHost.isEmpty,
+              normalizedHost.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value != 0x7F }) else {
+            return nil
+        }
+
+        // A full `http://host`/`https://host` profile is already an exact
+        // origin because the scheme determines its default port. Only the
+        // legacy bare `host` form must provide an explicit port before it can
+        // opt into an insecure HTTP origin.
+        guard !requireExplicitPort || explicitPort != nil || hadAbsoluteScheme else { return nil }
+        let port = explicitPort
+            ?? (hadAbsoluteScheme ? (scheme == "https" ? 443 : 80) : (defaultPort ?? (scheme == "https" ? 443 : 80)))
+        guard (1...65_535).contains(port) else { return nil }
+        let formattedHost = normalizedHost.contains(":") ? "[\(normalizedHost)]" : normalizedHost
+        return "\(scheme)://\(formattedHost):\(port)"
+    }
+
     private static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -533,6 +741,10 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
     public let requiredApproval: Bool
     public let authorizationRequirement: AuthorizationRequirement
     public let policyRuleID: String
+    /// Some profile-bound transports require fresh user presence the first
+    /// time a reusable scope is used. The scope may then be reused only after
+    /// that fresh approval; this flag is separate from risk severity.
+    public let requiresFreshApprovalOnFirstUse: Bool
 
     public init(
         risk: OperationRisk,
@@ -540,7 +752,8 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
         normalizedDestination: String?,
         requiredApproval: Bool,
         policyRuleID: String,
-        authorizationRequirement: AuthorizationRequirement? = nil
+        authorizationRequirement: AuthorizationRequirement? = nil,
+        requiresFreshApprovalOnFirstUse: Bool = false
     ) {
         self.risk = risk
         self.reasons = reasons
@@ -548,10 +761,12 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
         self.requiredApproval = requiredApproval
         self.authorizationRequirement = authorizationRequirement ?? risk.authorizationRequirement
         self.policyRuleID = policyRuleID
+        self.requiresFreshApprovalOnFirstUse = requiresFreshApprovalOnFirstUse
     }
 
     private enum CodingKeys: String, CodingKey {
-        case risk, reasons, normalizedDestination, requiredApproval, authorizationRequirement, policyRuleID
+        case risk, reasons, normalizedDestination, requiredApproval, authorizationRequirement, policyRuleID,
+             requiresFreshApprovalOnFirstUse
     }
 
     public init(from decoder: any Decoder) throws {
@@ -563,7 +778,8 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
             normalizedDestination: try container.decodeIfPresent(String.self, forKey: .normalizedDestination),
             requiredApproval: try container.decodeIfPresent(Bool.self, forKey: .requiredApproval) ?? (risk != .silent),
             policyRuleID: try container.decode(String.self, forKey: .policyRuleID),
-            authorizationRequirement: try container.decodeIfPresent(AuthorizationRequirement.self, forKey: .authorizationRequirement)
+            authorizationRequirement: try container.decodeIfPresent(AuthorizationRequirement.self, forKey: .authorizationRequirement),
+            requiresFreshApprovalOnFirstUse: try container.decodeIfPresent(Bool.self, forKey: .requiresFreshApprovalOnFirstUse) ?? false
         )
     }
 
@@ -575,5 +791,6 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
         try container.encode(requiredApproval, forKey: .requiredApproval)
         try container.encode(authorizationRequirement, forKey: .authorizationRequirement)
         try container.encode(policyRuleID, forKey: .policyRuleID)
+        try container.encode(requiresFreshApprovalOnFirstUse, forKey: .requiresFreshApprovalOnFirstUse)
     }
 }

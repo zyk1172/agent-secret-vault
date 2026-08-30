@@ -162,9 +162,19 @@ describe("MCP tool contracts", () => {
       type: "secretOperationCapabilities",
       capabilities: [{
         kind: "http",
+        version: 1,
         status: "supported",
         operations: ["httpRequest"],
-        reason: "typed HTTP"
+        reason: "typed HTTP",
+        features: {
+          auth: ["basic", "bearer", "apiKeyHeader"],
+          body: ["none", "raw", "json", "form"],
+          response: ["metadataOnly", "projectedJSON"],
+          transportSessionReuse: true,
+          derivedCredentialCapture: false,
+          publicNetworkEgress: false,
+          insecurePrivateNetworkHTTPProfileOptIn: true
+        }
       }, {
         kind: "database",
         status: "unavailable",
@@ -178,9 +188,19 @@ describe("MCP tool contracts", () => {
       status: "OK",
       capabilities: [{
         kind: "http",
+        version: 1,
         status: "supported",
         operations: ["httpRequest"],
-        reason: "typed HTTP"
+        reason: "typed HTTP",
+        features: {
+          auth: ["basic", "bearer", "apiKeyHeader"],
+          body: ["none", "raw", "json", "form"],
+          response: ["metadataOnly", "projectedJSON"],
+          transportSessionReuse: true,
+          derivedCredentialCapture: false,
+          publicNetworkEgress: false,
+          insecurePrivateNetworkHTTPProfileOptIn: true
+        }
       }, {
         kind: "database",
         status: "unavailable",
@@ -908,6 +928,35 @@ describe("MCP tool contracts", () => {
     });
   });
 
+  it("does not add an implicit Bearer scheme to custom API-key headers", async () => {
+    const client = new FakeClient([operationResponse({ httpStatus: 200 })]);
+    await tool(client, "api_request_with_token").handler({
+      url: "https://qnap.local/api/status",
+      tokenRef: reference,
+      headerName: "X-API-Key"
+    });
+
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor.parameters).toMatchObject({
+      tokenRef: reference,
+      headerName: "X-API-Key"
+    });
+    expect(request.descriptor.parameters).not.toHaveProperty("headerScheme");
+    expect(request.descriptor.payload).toMatchObject({
+      type: "http",
+      operation: {
+        auth: {
+          kind: "apiKeyHeader",
+          headerName: "X-API-Key",
+          valueReference: reference
+        }
+      }
+    });
+    expect((request.descriptor.payload as { operation: { auth: { scheme?: string } } }).operation.auth.scheme).toBeUndefined();
+  });
+
   it("rejects credential-shaped URLs and secret references in API bodies", async () => {
     const urlClient = new FakeClient([]);
     const urlResult = await tool(urlClient, "api_request_with_token").handler({
@@ -958,6 +1007,28 @@ describe("MCP tool contracts", () => {
     if (sftp.type === "executeSecretOperation") {
       expect(sftp.descriptor.fileOperation).toBe("list");
     }
+  });
+
+  it("rejects duplicate secret references in adapter-specific inputs before IPC", async () => {
+    const sftpClient = new FakeClient([]);
+    await expect(tool(sftpClient, "sftp_transfer_with_secret").handler({
+      operation: "list",
+      host: "qnap.local",
+      remotePath: "/share",
+      usernameRef: reference,
+      passwordRef: reference
+    })).rejects.toThrow(/different references/i);
+    expect(sftpClient.requests).toHaveLength(0);
+
+    const localAppClient = new FakeClient([]);
+    await expect(tool(localAppClient, "local_app_form_fill_with_secret").handler({
+      bundleId: "com.example.App",
+      fields: [
+        { name: "username", valueRef: reference },
+        { name: "password", valueRef: reference }
+      ]
+    })).rejects.toThrow(/used only once|duplicate/i);
+    expect(localAppClient.requests).toHaveLength(0);
   });
 
   it("keeps local reveal as an app-owned request and never asks MCP for plaintext", async () => {

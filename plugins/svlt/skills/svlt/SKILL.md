@@ -33,6 +33,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 用户在 App 中选定的 v3 `敏感信息.md` 是 SVLT managed catalog。Agent 只能经 MCP 使用 `secret://` 或允许返回的非敏感元数据；不得读取 managed Markdown 或本地 sidecar 来发现、验证或猜测 opaque ID。
 - Catalog 的合法 writer 可以是 App、MCP、Obsidian、编辑器或脚本；无论渠道都必须产生符合 v3 marker/schema 的 Markdown，不得伪造 marker/`secret://`、写入 plaintext，Agent 的 mutation 仍必须走 SVLT operation-bound authorization。
 - `secret://` 是不透明句柄；不要猜测、分类、摘要、解码、比较或改写背后的值。
+- 同一 operation 中不得重复提交同一个 `secret://`；不要为了“去重”静默改变调用语义，重复引用应修正后重新提交。
 - SVLT MCP/search/response/log/audit 不返回秘密明文。秘密字段只能是 opaque `secret://` 引用；Catalog JSON 不得写入秘密明文。
 - 用户明确选择的当前明文可以由用户指定的外部工具/工作区按其安全规则使用；SVLT 不自动创建 Secret、替换输入或阻止操作。其他仓库、日志、持久化、网络和工具规则仍然有效。
 - 不得把通过 SVLT 解密得到的明文交给普通 shell、curl、URL、header、环境变量、日志、审计或聊天。禁止的是 Agent 自己把 `secret://` 洗成明文绕过 SVLT 专用操作。
@@ -53,7 +54,11 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 ### 非 SSH 执行器与能力清单
 
 - 在任何非 SSH 执行前先调用 `vault_capabilities`。daemon 返回的 capability manifest 才是实际能力来源；`unavailable` 不是“稍后重试即可”的支持状态，也不能因此请求明文或换成普通 shell/CLI。
-- HTTP/API 只能使用 typed payload：Basic、Bearer、API-key header、Cookie 等由 SVLT 分别校验。不要自行添加任意 header、把凭据放进 URL/query，或把 `secret://` 放进 body；重定向会停止并要求重新审查。带认证的响应默认只返回状态/Content-Type，不把响应 body 当成安全的脱敏结果。
+- 能力清单中的 `version` 与 `features` 是实际 adapter 的非敏感能力说明；不要只因为 MCP tool 存在就假设某个 auth、body、response projection、session 或 capture 能力存在。
+- HTTP/API 只能使用 typed payload：Basic、Bearer、API-key header、Cookie 等由 SVLT 分别校验。HTTPS 是 Secret-bearing request 的默认传输；未加密 HTTP 只有在用户保存的 Secret profile 明确允许 `http`/`http-loopback` 且目标精确匹配时才可用，不能在 tool call 中自行添加 allow-insecure 参数，首次使用会要求 fresh approval。不要自行添加任意 header、把凭据放进 URL/query，或把 `secret://` 放进 body；重定向会停止并要求重新审查。
+- 带认证的 HTTP 响应默认只返回状态/Content-Type。只有 capability manifest 声明 `projectedJSON` 且 App-owned profile ID 与 allowlisted JSON fields 同时匹配时，才能返回投影字段；不要请求 token、access_token、refresh_token、password、secret、cookie、session、authorization 等字段。`captureCredential`/派生 Cookie session 在本版本仍不可用。
+- `Authorization` header 默认使用 `Bearer`；`X-API-Key`、`X-Auth-Token` 等 custom API-key header 默认只发送原始 token，只有明确安全的 scheme 才会加前缀。不要用自定义 header 绕过 profile/Policy。
+- 通用 `localExecution` 永久拒绝 Secret 明文；`trustedProcess` 是独立的未来 adapter 边界，只有能力清单声明已配置的 signed profile 时才可用，禁止退回 shell、AppleScript、剪贴板或通用脚本。
 - `database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
 - 导出工具只返回本地路径/状态；plaintext resolution 和安全文件写入留在 App/daemon 边界内。不要读取导出文件再把内容放入聊天或普通工具。
 - HTTP transport `sessionID` 只是 SVLT 内部连接复用句柄，不代表请求已授权。每次请求仍须通过 principal、secretRef、目标、策略和授权要求检查；transport session 不会让 DELETE 或其他 destructive action 免于 fresh approval。

@@ -63,7 +63,9 @@ public struct SecretOperationPolicyEngine: Sendable {
             normalizedDestination: normalizedDestination,
             requiredApproval: effectiveRequirement.requiresApproval,
             policyRuleID: local.policyRuleID,
-            authorizationRequirement: effectiveRequirement
+            authorizationRequirement: effectiveRequirement,
+            requiresFreshApprovalOnFirstUse: local.requiresFreshApprovalOnFirstUse
+                && effectiveRequirement == .reusableApproval
         )
     }
 
@@ -95,6 +97,7 @@ public struct SecretOperationPolicyEngine: Sendable {
 
         let localRisk: OperationRisk
         let localRequirement: AuthorizationRequirement
+        var requiresFreshApprovalOnFirstUse = false
         var reasons: [String]
         let ruleID: String
 
@@ -121,11 +124,16 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = commandDecision.ruleID
             localRequirement = commandDecision.authorizationRequirement
         case .httpRequest, .apiRequest:
-            let httpDecision = httpDecision(descriptor)
+            let httpDecision = httpDecision(descriptor, metadata: metadata)
             localRisk = httpDecision.risk
             reasons = httpDecision.reasons
             ruleID = httpDecision.ruleID
-            localRequirement = authorizationRequirement(for: descriptor, risk: localRisk)
+            // A profile-approved insecure HTTP target is reusable only after
+            // its first use establishes fresh device-owner presence.
+            localRequirement = httpDecision.requiresFreshApprovalOnFirstUse
+                ? .reusableApproval
+                : authorizationRequirement(for: descriptor, risk: localRisk)
+            requiresFreshApprovalOnFirstUse = httpDecision.requiresFreshApprovalOnFirstUse
         case .databaseQuery:
             let databaseDecision = databaseDecision(descriptor.effectiveDatabaseStatement)
             localRisk = databaseDecision.risk
@@ -148,6 +156,11 @@ public struct SecretOperationPolicyEngine: Sendable {
             reasons = ["通用 shell 不得获得 Secret 明文"]
             ruleID = "generic-shell.denied"
             localRequirement = .denied
+        case .trustedProcess:
+            localRisk = .approvalRequired
+            reasons = ["Trusted Process 只能通过预先配置的签名 profile 使用 Secret"]
+            ruleID = "trusted-process.approval"
+            localRequirement = .freshApprovalRequired
         }
 
         let binding = bindingDecision(
@@ -157,21 +170,27 @@ public struct SecretOperationPolicyEngine: Sendable {
             baseRisk: localRisk
         )
         reasons.append(contentsOf: binding.reasons)
+        let effectiveRequirement = AuthorizationRequirement.max(
+            localRequirement,
+            binding.risk.authorizationRequirement
+        )
         return decision(
             OperationRisk.max(localRisk, binding.risk),
             reasons,
             binding.risk == .denied ? binding.ruleID : ruleID,
             normalizedDestination,
-            authorizationRequirement: AuthorizationRequirement.max(
-                localRequirement,
-                binding.risk.authorizationRequirement
-            )
+            authorizationRequirement: effectiveRequirement,
+            requiresFreshApprovalOnFirstUse: requiresFreshApprovalOnFirstUse
+                && effectiveRequirement == .reusableApproval
         )
     }
 
     private func invalidOperationShape(
         _ descriptor: SecretOperationDescriptor
     ) -> (reason: String, ruleID: String)? {
+        guard Set(descriptor.secretReferences).count == descriptor.secretReferences.count else {
+            return ("操作不能重复使用同一个 secret:// 引用", "secret-reference.duplicate")
+        }
         if let port = descriptor.port, !(1...65_535).contains(port) {
             return ("端口不在有效范围内", "operation.port.invalid")
         }
@@ -376,7 +395,7 @@ public struct SecretOperationPolicyEngine: Sendable {
                 return ("导出 typed payload 不允许覆盖目标文件", "export.payload.invalid")
             }
         case let .trustedProcess(operation):
-            guard descriptor.actionType == .localExecution,
+            guard descriptor.actionType == .trustedProcess,
                   !operation.profileID.isEmpty,
                   operation.arguments.count <= 32
             else {
@@ -401,7 +420,13 @@ public struct SecretOperationPolicyEngine: Sendable {
             return (.denied, ["需要 Secret 的操作没有提供 secret:// 引用"], "secret-reference.missing")
         }
 
-        let metadataByReference = Dictionary(uniqueKeysWithValues: metadata.map { ($0.reference, $0) })
+        var metadataByReference: [SecretReference: SecretPolicyMetadata] = [:]
+        for item in metadata {
+            guard metadataByReference[item.reference] == nil else {
+                return (.denied, ["Secret 元数据包含重复引用，无法安全复核"], "secret-metadata.duplicate")
+            }
+            metadataByReference[item.reference] = item
+        }
         for reference in descriptor.secretReferences {
             guard let secret = metadataByReference[reference] else {
                 return (.denied, ["Secret 元数据缺失，无法进行本地复核"], "secret-metadata.missing")
@@ -500,6 +525,8 @@ public struct SecretOperationPolicyEngine: Sendable {
             default:
                 return risk.authorizationRequirement
             }
+        case .trustedProcess:
+            return .freshApprovalRequired
         case .sshCommand:
             return descriptor.sshCommandBatch == nil
                 ? sshCommandClassifier.classify(command: descriptor.command).authorizationRequirement
@@ -537,26 +564,85 @@ public struct SecretOperationPolicyEngine: Sendable {
         return withoutTrailingSemicolon.range(of: forbidden, options: .regularExpression) == nil
     }
 
-    private func httpDecision(_ descriptor: SecretOperationDescriptor) -> (risk: OperationRisk, reasons: [String], ruleID: String) {
+    private func httpDecision(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata]
+    ) -> (
+        risk: OperationRisk,
+        reasons: [String],
+        ruleID: String,
+        requiresFreshApprovalOnFirstUse: Bool
+    ) {
         guard let url = descriptor.url,
               let parsedURL = URL(string: url),
               parsedURL.user == nil,
               parsedURL.password == nil,
               (parsedURL.scheme?.lowercased() == "http" || parsedURL.scheme?.lowercased() == "https")
         else {
-            return (.denied, ["HTTP URL 无效或包含 URL 内嵌凭据"], "http.url.invalid")
+            return (.denied, ["HTTP URL 无效或包含 URL 内嵌凭据"], "http.url.invalid", false)
         }
 
         if hasCredentialQueryParameter(parsedURL) {
-            return (.denied, ["禁止通过 URL query 传递 token 或凭据"], "http.url-credential-query.denied")
+            return (.denied, ["禁止通过 URL query 传递 token 或凭据"], "http.url-credential-query.denied", false)
+        }
+
+        if parsedURL.scheme?.lowercased() == "http", !descriptor.secretReferences.isEmpty {
+            let host = parsedURL.host ?? ""
+            let effectivePort = parsedURL.port ?? 80
+            guard let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
+                url,
+                defaultPort: effectivePort,
+                allowURLPath: true
+            )
+            else {
+                return (.denied, ["HTTP 目标主机无效"], "http.destination.invalid", false)
+            }
+            let profileAllowsInsecureHTTP = descriptor.secretReferences.allSatisfy { reference in
+                guard let secret = metadata.first(where: { $0.reference == reference }),
+                      secret.httpTransportSecurityPolicy.permitsInsecureHTTP(toHost: host) else {
+                    return false
+                }
+                return secret.allowedDestinations.contains {
+                    SecretOperationDescriptor.normalizeHTTPOrigin(
+                        $0,
+                        expectedScheme: "http",
+                        defaultPort: 80,
+                        requireExplicitPort: true
+                    ) == requestedOrigin
+                }
+            }
+            guard profileAllowsInsecureHTTP else {
+                return (
+                    .denied,
+                    ["禁止将 Secret 发送到未由用户 profile 明确允许的未加密 HTTP 目标"],
+                    "http.insecure-transport.denied",
+                    false
+                )
+            }
         }
 
         let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
         if method == "GET" || method == "HEAD" {
-            return (.silent, ["HTTP GET/HEAD 被本地解析为无副作用读取"], "http.read-only.silent")
+            let isInsecure = parsedURL.scheme?.lowercased() == "http" && !descriptor.secretReferences.isEmpty
+            return (
+                .silent,
+                isInsecure
+                    ? ["HTTP GET/HEAD 是读取操作，但目标使用用户 profile 明确允许的未加密 HTTP；首次使用必须本机认证"]
+                    : ["HTTP GET/HEAD 被本地解析为无副作用读取"],
+                isInsecure ? "http.insecure-transport.first-use" : "http.read-only.silent",
+                isInsecure
+            )
         }
 
-        return (.approvalRequired, ["HTTP 方法可能产生副作用，需要本机审批"], "http.write.approval")
+        let isInsecure = parsedURL.scheme?.lowercased() == "http" && !descriptor.secretReferences.isEmpty
+        return (
+            .approvalRequired,
+            isInsecure
+                ? ["HTTP 方法可能产生副作用且目标使用未加密 HTTP；首次使用必须本机认证"]
+                : ["HTTP 方法可能产生副作用，需要本机审批"],
+            isInsecure ? "http.insecure-transport.first-use" : "http.write.approval",
+            isInsecure
+        )
     }
 
     private func databaseDecision(_ query: String?) -> (risk: OperationRisk, reasons: [String], ruleID: String) {
@@ -611,7 +697,7 @@ public struct SecretOperationPolicyEngine: Sendable {
     private func isAllowedSecretPolicy(_ policy: SecretPolicy, action: SecretOperationAction) -> Bool {
         switch action {
         case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer,
-             .browserLogin, .localAppFill:
+             .browserLogin, .localAppFill, .trustedProcess:
             return policy == .credential || policy == .externalSend
         default:
             return true
@@ -624,6 +710,13 @@ public struct SecretOperationPolicyEngine: Sendable {
         allowedProtocols: [String]
     ) -> Bool {
         if allowedProtocols.contains(where: { $0.lowercased() == protocolType.rawValue.lowercased() }) {
+            return true
+        }
+        // `http-loopback` is a profile transport-policy marker, not a new
+        // wire protocol. It still needs to satisfy the ordinary HTTP binding
+        // check before the narrower loopback host check runs below.
+        if protocolType == .http,
+           allowedProtocols.contains(where: { $0.lowercased() == "http-loopback" }) {
             return true
         }
         guard descriptor.actionType == .browserLogin,
@@ -705,7 +798,8 @@ public struct SecretOperationPolicyEngine: Sendable {
 
     private func rejectsUnboundPublicDestination(for action: SecretOperationAction) -> Bool {
         switch action {
-        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer, .browserLogin:
+        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer, .browserLogin,
+             .trustedProcess:
             return true
         default:
             return false
@@ -741,7 +835,8 @@ public struct SecretOperationPolicyEngine: Sendable {
         _ reasons: [String],
         _ ruleID: String,
         _ destination: String?,
-        authorizationRequirement: AuthorizationRequirement? = nil
+        authorizationRequirement: AuthorizationRequirement? = nil,
+        requiresFreshApprovalOnFirstUse: Bool = false
     ) -> PolicyDecision {
         PolicyDecision(
             risk: risk,
@@ -749,7 +844,8 @@ public struct SecretOperationPolicyEngine: Sendable {
             normalizedDestination: destination,
             requiredApproval: (authorizationRequirement ?? risk.authorizationRequirement).requiresApproval,
             policyRuleID: ruleID,
-            authorizationRequirement: authorizationRequirement
+            authorizationRequirement: authorizationRequirement,
+            requiresFreshApprovalOnFirstUse: requiresFreshApprovalOnFirstUse
         )
     }
 

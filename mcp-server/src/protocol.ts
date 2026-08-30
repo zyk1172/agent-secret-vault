@@ -16,6 +16,30 @@ export type CapabilityToken = z.infer<typeof CapabilityToken>;
 export const SecretReference = z.string().regex(secretReferencePattern);
 export type SecretReference = z.infer<typeof SecretReference>;
 
+function rejectDuplicateSecretReferences(
+  references: string[],
+  context: z.RefinementCtx
+): void {
+  const seen = new Set<string>();
+  references.forEach((reference, index) => {
+    if (!seen.add(reference)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index],
+        message: "Duplicate secret:// references are not allowed."
+      });
+    }
+  });
+}
+
+export const UniqueSecretReferences = z
+  .array(SecretReference)
+  .superRefine(rejectDuplicateSecretReferences);
+export const NonEmptyUniqueSecretReferences = z
+  .array(SecretReference)
+  .min(1)
+  .superRefine(rejectDuplicateSecretReferences);
+
 export const SecretPolicy = z.enum(["read", "externalSend", "credential"]);
 export type SecretPolicy = z.infer<typeof SecretPolicy>;
 
@@ -581,7 +605,8 @@ export const SecretOperationAction = z.enum([
   "clearVault",
   "batchDelete",
   "resetVault",
-  "localExecution"
+  "localExecution",
+  "trustedProcess"
 ]);
 export type SecretOperationAction = z.infer<typeof SecretOperationAction>;
 
@@ -598,6 +623,15 @@ export const SecretOperationProtocol = z.enum([
   "file"
 ]);
 export type SecretOperationProtocol = z.infer<typeof SecretOperationProtocol>;
+
+// This is profile configuration, not a descriptor protocol. `http-loopback`
+// opts a saved credential profile into HTTP only for loopback hosts; an Agent
+// request cannot add it dynamically.
+export const SecretAllowedProtocol = z.union([
+  SecretOperationProtocol,
+  z.literal("http-loopback")
+]);
+export type SecretAllowedProtocol = z.infer<typeof SecretAllowedProtocol>;
 
 export const SSHCommandSpec = z
   .object({
@@ -659,10 +693,20 @@ export const SecretAdapterKind = z.enum([
 export type SecretAdapterKind = z.infer<typeof SecretAdapterKind>;
 
 export const SecretOperationCapability = z.object({
+  version: z.number().int().positive().optional(),
   kind: SecretAdapterKind,
   status: SecretOperationExecutionCapability,
   operations: z.array(SecretOperationAction).max(32),
-  reason: z.string().max(240).nullable().optional()
+  reason: z.string().max(240).nullable().optional(),
+  features: z.object({
+    auth: z.array(z.string().max(64)).max(32),
+    body: z.array(z.string().max(64)).max(32),
+    response: z.array(z.string().max(64)).max(32),
+    transportSessionReuse: z.boolean(),
+    derivedCredentialCapture: z.boolean(),
+    publicNetworkEgress: z.boolean(),
+    insecurePrivateNetworkHTTPProfileOptIn: z.boolean()
+  }).strict().optional()
 }).strict();
 export type SecretOperationCapability = z.infer<typeof SecretOperationCapability>;
 
@@ -712,12 +756,29 @@ export const HTTPBody = z.object({
 export type HTTPBody = z.infer<typeof HTTPBody>;
 
 export const HTTPResponsePolicy = z.object({
-  kind: z.enum(["metadataOnly", "sanitizedPreview", "structuredFields", "captureCredential"]),
+  kind: z.enum(["metadataOnly", "sanitizedPreview", "structuredFields", "projectedJSON", "captureCredential"]),
   maxBytes: z.number().int().min(0).max(1_048_576).default(16_384),
   fields: z.array(z.string().min(1).max(128)).max(32).default([]),
   source: z.enum(["json", "header"]).nullable().optional(),
-  selector: z.string().max(256).nullable().optional()
-}).strict();
+  selector: z.string().max(256).nullable().optional(),
+  profileID: z.string().min(1).max(128).nullable().optional()
+}).strict().superRefine((value, context) => {
+  const isProjection = value.kind === "projectedJSON" || value.kind === "structuredFields";
+  if (isProjection && (value.profileID === undefined || value.profileID === null || value.fields.length === 0)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["profileID"],
+      message: "A profileID and at least one profile-approved field are required for JSON projection."
+    });
+  }
+  if (!isProjection && (value.profileID !== undefined || value.fields.length > 0)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["fields"],
+      message: "Response fields are only valid for JSON projection."
+    });
+  }
+});
 export type HTTPResponsePolicy = z.infer<typeof HTTPResponsePolicy>;
 
 export const HTTPOperation = z.object({
@@ -802,14 +863,14 @@ export const ExportOperation = z.object({
   kind: z.enum(["persistent", "ephemeral", "directDelivery"]),
   destinationRoot: z.string().max(1_024).nullable().optional(),
   overwrite: z.boolean(),
-  secretReferences: z.array(SecretReference).default([])
+  secretReferences: UniqueSecretReferences.default([])
 }).strict();
 export type ExportOperation = z.infer<typeof ExportOperation>;
 
 export const TrustedProcessOperation = z.object({
   profileID: z.string().min(1).max(128),
   arguments: z.array(z.string().max(4_096)).max(32).default([]),
-  secretReferences: z.array(SecretReference).default([])
+  secretReferences: UniqueSecretReferences.default([])
 }).strict();
 export type TrustedProcessOperation = z.infer<typeof TrustedProcessOperation>;
 
@@ -827,7 +888,7 @@ export type SecretOperationPayload = z.infer<typeof SecretOperationPayload>;
 export const SecretOperationDescriptor = z
   .object({
     actionType: SecretOperationAction,
-    secretReferences: z.array(SecretReference),
+    secretReferences: UniqueSecretReferences,
     destination: z.string().nullable().optional(),
     port: z.number().int().nullable().optional(),
     protocolType: SecretOperationProtocol.nullable().optional(),
@@ -994,20 +1055,20 @@ export const IpcRequest = z.discriminatedUnion("type", [
       label: z.string().nullable().optional(),
       policy: SecretPolicy,
       allowedDestinations: z.array(z.string().min(1)).max(32),
-      allowedProtocols: z.array(SecretOperationProtocol).max(16)
+      allowedProtocols: z.array(SecretAllowedProtocol).max(16)
     })
     .strict(),
   z
     .object({
       type: z.literal("revealReferences"),
-      references: z.array(SecretReference).min(1),
+      references: NonEmptyUniqueSecretReferences,
       context: RevealContext
     })
     .strict(),
   z
     .object({
       type: z.literal("exportResolvedText"),
-      references: z.array(SecretReference).min(1),
+      references: NonEmptyUniqueSecretReferences,
       context: RevealContext,
       destinationPath: z.string().min(1)
     })
@@ -1015,7 +1076,7 @@ export const IpcRequest = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("scanOrphans"),
-      markdownReferences: z.array(SecretReference)
+      markdownReferences: UniqueSecretReferences
     })
     .strict(),
   z

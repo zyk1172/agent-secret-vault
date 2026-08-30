@@ -34,7 +34,9 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
         generation: UInt64
     ) {
         self.principal = principal
-        self.secretReferenceIDs = Array(Set(secretReferenceIDs)).sorted()
+        // Duplicate references are rejected by the policy boundary. Preserve
+        // the input here instead of silently deduplicating an invalid scope.
+        self.secretReferenceIDs = secretReferenceIDs.sorted()
         self.normalizedDestination = normalizedDestination
         self.port = port
         self.username = username

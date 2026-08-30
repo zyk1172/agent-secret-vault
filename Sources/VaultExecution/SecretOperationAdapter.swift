@@ -15,22 +15,100 @@ public enum SecretAdapterKind: String, Codable, CaseIterable, Sendable {
     case trustedProcess
 }
 
+/// Non-sensitive feature detail advertised by the concrete adapter registry.
+/// This is descriptive capability data, never an authorization grant.
+public struct SecretOperationCapabilityFeatures: Codable, Equatable, Sendable {
+    public let auth: [String]
+    public let body: [String]
+    public let response: [String]
+    public let transportSessionReuse: Bool
+    public let derivedCredentialCapture: Bool
+    public let publicNetworkEgress: Bool
+    public let insecurePrivateNetworkHTTPProfileOptIn: Bool
+
+    public init(
+        auth: [String] = [],
+        body: [String] = [],
+        response: [String] = [],
+        transportSessionReuse: Bool = false,
+        derivedCredentialCapture: Bool = false,
+        publicNetworkEgress: Bool = false,
+        insecurePrivateNetworkHTTPProfileOptIn: Bool = false
+    ) {
+        self.auth = Self.sanitize(auth)
+        self.body = Self.sanitize(body)
+        self.response = Self.sanitize(response)
+        self.transportSessionReuse = transportSessionReuse
+        self.derivedCredentialCapture = derivedCredentialCapture
+        self.publicNetworkEgress = publicNetworkEgress
+        self.insecurePrivateNetworkHTTPProfileOptIn = insecurePrivateNetworkHTTPProfileOptIn
+    }
+
+    public static let empty = SecretOperationCapabilityFeatures()
+
+    private static func sanitize(_ values: [String]) -> [String] {
+        var result: [String] = []
+        var seen = Set<String>()
+        for value in values {
+            let sanitized = String(value
+                .filter { $0 != "\n" && $0 != "\r" && $0 != "\t" }
+                .prefix(64))
+            guard !sanitized.isEmpty, seen.insert(sanitized).inserted else { continue }
+            result.append(sanitized)
+            if result.count == 32 { break }
+        }
+        return result
+    }
+}
+
 public struct SecretOperationCapability: Codable, Equatable, Sendable {
+    public let version: Int
     public let kind: SecretAdapterKind
     public let status: SecretOperationExecutionCapability
     public let operations: [SecretOperationAction]
     public let reason: String?
+    public let features: SecretOperationCapabilityFeatures
 
     public init(
         kind: SecretAdapterKind,
         status: SecretOperationExecutionCapability,
         operations: [SecretOperationAction],
-        reason: String? = nil
+        reason: String? = nil,
+        version: Int = 1,
+        features: SecretOperationCapabilityFeatures = .empty
     ) {
+        self.version = max(1, version)
         self.kind = kind
         self.status = status
         self.operations = operations
         self.reason = reason.map(Self.sanitizeReason)
+        self.features = features
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, kind, status, operations, reason, features
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            kind: try container.decode(SecretAdapterKind.self, forKey: .kind),
+            status: try container.decode(SecretOperationExecutionCapability.self, forKey: .status),
+            operations: try container.decode([SecretOperationAction].self, forKey: .operations),
+            reason: try container.decodeIfPresent(String.self, forKey: .reason),
+            version: try container.decodeIfPresent(Int.self, forKey: .version) ?? 1,
+            features: try container.decodeIfPresent(SecretOperationCapabilityFeatures.self, forKey: .features) ?? .empty
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(status, forKey: .status)
+        try container.encode(operations, forKey: .operations)
+        try container.encodeIfPresent(reason, forKey: .reason)
+        try container.encode(features, forKey: .features)
     }
 
     private static func sanitizeReason(_ value: String) -> String {
@@ -103,9 +181,15 @@ public struct UnavailableSecretOperationAdapter: SecretOperationAdapter {
 public struct SecretOperationAdapterRegistry: @unchecked Sendable {
     private let adapters: [any SecretOperationAdapter]
 
-    public init(httpSessionManager: HTTPSessionManager = HTTPSessionManager()) {
+    public init(
+        httpSessionManager: HTTPSessionManager = HTTPSessionManager(),
+        responseProjectionProfiles: [HTTPResponseProjectionProfile] = []
+    ) {
         adapters = [
-            HTTPSecretOperationAdapter(sessionManager: httpSessionManager),
+            HTTPSecretOperationAdapter(
+                sessionManager: httpSessionManager,
+                responseProjectionProfiles: responseProjectionProfiles
+            ),
             UnavailableSecretOperationAdapter(
                 kind: .database,
                 operations: [.databaseQuery],
@@ -128,7 +212,7 @@ public struct SecretOperationAdapterRegistry: @unchecked Sendable {
             ),
             UnavailableSecretOperationAdapter(
                 kind: .trustedProcess,
-                operations: [.localExecution],
+                operations: [.trustedProcess],
                 reason: "没有配置 allowlisted signed trusted-process profile"
             )
         ]

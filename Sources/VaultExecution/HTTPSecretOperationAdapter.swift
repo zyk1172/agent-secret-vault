@@ -1,6 +1,23 @@
 import Foundation
 import VaultCore
 
+/// A user-owned, immutable response allowlist. It is injected by the App's
+/// profile layer rather than accepted from an individual MCP request. The
+/// profile contains no credential value and only permits non-sensitive JSON
+/// Pointer fields for one exact origin; invalid profiles are discarded by the
+/// adapter before capability advertisement.
+public struct HTTPResponseProjectionProfile: Codable, Equatable, Sendable {
+    public let id: String
+    public let origin: String
+    public let allowedJSONPointers: [String]
+
+    public init(id: String, origin: String, allowedJSONPointers: [String]) {
+        self.id = id
+        self.origin = origin
+        self.allowedJSONPointers = allowedJSONPointers
+    }
+}
+
 /// HTTP is deliberately limited to a small set of typed authentication
 /// strategies. There is no arbitrary header dictionary: that prevents an
 /// Agent from smuggling credentials through Host, Cookie, proxy, or forwarding
@@ -13,22 +30,53 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
     private let outputSanitizer: OutputSanitizer
     private let defaultTimeout: Duration
     private let outputLimitBytes: Int
+    private let responseProjectionProfiles: [String: HTTPResponseProjectionProfile]
+    private let invalidResponseProjectionProfileIDs: Set<String>
 
     public init(
         sessionManager: HTTPSessionManager = HTTPSessionManager(),
         outputSanitizer: OutputSanitizer = OutputSanitizer(),
         defaultTimeout: Duration = .seconds(30),
-        outputLimitBytes: Int = 1_048_576
+        outputLimitBytes: Int = 1_048_576,
+        responseProjectionProfiles: [HTTPResponseProjectionProfile] = []
     ) {
         self.sessionManager = sessionManager
         self.outputSanitizer = outputSanitizer
         self.defaultTimeout = defaultTimeout
         self.outputLimitBytes = max(1, outputLimitBytes)
+        var profiles: [String: HTTPResponseProjectionProfile] = [:]
+        var invalidProfileIDs = Set<String>()
+        for profile in responseProjectionProfiles {
+            guard !invalidProfileIDs.contains(profile.id) else { continue }
+            guard Self.isValidProjectionProfile(profile) else {
+                invalidProfileIDs.insert(profile.id)
+                continue
+            }
+            if profiles[profile.id] != nil {
+                profiles.removeValue(forKey: profile.id)
+                invalidProfileIDs.insert(profile.id)
+            } else {
+                profiles[profile.id] = profile
+            }
+        }
+        self.responseProjectionProfiles = profiles
+        self.invalidResponseProjectionProfileIDs = invalidProfileIDs
         self.capability = SecretOperationCapability(
             kind: .http,
             status: .supported,
             operations: [.httpRequest, .apiRequest],
-            reason: "typed HTTP Basic/Bearer/API-key requests with redirect rejection"
+            reason: "typed HTTP Basic/Bearer/API-key requests with redirect rejection",
+            features: SecretOperationCapabilityFeatures(
+                auth: ["basic", "bearer", "apiKeyHeader", "staticCookie"],
+                body: ["none", "raw", "json", "form"],
+                response: profiles.isEmpty
+                    ? ["metadataOnly"]
+                    : ["metadataOnly", "projectedJSON"],
+                transportSessionReuse: true,
+                derivedCredentialCapture: false,
+                publicNetworkEgress: false,
+                insecurePrivateNetworkHTTPProfileOptIn: true
+            )
         )
     }
 
@@ -45,11 +93,24 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
 
     public func execute(
         _ descriptor: SecretOperationDescriptor,
-        metadata _: [SecretPolicyMetadata],
+        metadata: [SecretPolicyMetadata],
         context: SecretOperationExecutionContext,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput {
-        let plan = try makePlan(for: descriptor)
+        let plan: RequestPlan
+        do {
+            plan = try makePlan(for: descriptor)
+        } catch HTTPAdapterError.unsupportedStrategy {
+            throw SecretOperationExecutionError.unavailable
+        } catch HTTPAdapterError.invalidParameter {
+            throw SecretOperationExecutionError.invalidParameter
+        }
+        try validateTransportSecurity(
+            plan.url,
+            auth: plan.auth,
+            descriptor: descriptor,
+            metadata: metadata
+        )
         var secretBuffers: [Data] = []
         defer {
             for index in secretBuffers.indices {
@@ -199,10 +260,16 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                 )
             } else if descriptor.actionType == .apiRequest,
                       let tokenReference = reference(for: "tokenRef", in: descriptor) {
+                let headerName = descriptor.parameters["headerName"] ?? "Authorization"
+                let scheme = descriptor.parameters["headerScheme"]
+                    ?? (headerName.caseInsensitiveCompare("Authorization") == .orderedSame ? "Bearer" : nil)
                 auth = HTTPAuthStrategy(
-                    kind: .bearer,
+                    kind: headerName.caseInsensitiveCompare("Authorization") == .orderedSame
+                        ? .bearer
+                        : .apiKeyHeader,
                     valueReference: tokenReference,
-                    scheme: descriptor.parameters["headerScheme"] ?? "Bearer"
+                    headerName: headerName,
+                    scheme: scheme
                 )
             } else {
                 auth = .none
@@ -215,7 +282,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                 method: method,
                 auth: try validateAuth(auth, descriptor: descriptor),
                 body: try validateBody(body),
-                responsePolicy: try validateResponsePolicy(responsePolicy),
+                responsePolicy: try validateResponsePolicy(responsePolicy, for: url),
                 timeout: defaultTimeout
             )
         }
@@ -227,7 +294,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             method: method,
             auth: try validateAuth(auth, descriptor: descriptor),
             body: try validateBody(body),
-            responsePolicy: try validateResponsePolicy(responsePolicy),
+            responsePolicy: try validateResponsePolicy(responsePolicy, for: url),
             timeout: .milliseconds(timeoutMilliseconds)
         )
     }
@@ -348,7 +415,10 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         return body
     }
 
-    private func validateResponsePolicy(_ policy: HTTPResponsePolicy) throws -> HTTPResponsePolicy {
+    private func validateResponsePolicy(
+        _ policy: HTTPResponsePolicy,
+        for url: URL
+    ) throws -> HTTPResponsePolicy {
         guard (0...outputLimitBytes).contains(policy.maxBytes),
               policy.fields.count <= 32,
               policy.fields.allSatisfy({ field in
@@ -366,17 +436,23 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         }
         switch policy.kind {
         case .metadataOnly:
-            guard policy.fields.isEmpty, policy.source == nil else {
+            guard policy.fields.isEmpty, policy.source == nil, policy.profileID == nil else {
                 throw HTTPAdapterError.invalidParameter
             }
         case .sanitizedPreview:
-            guard policy.maxBytes > 0, policy.fields.isEmpty, policy.source == nil else {
+            guard policy.maxBytes > 0,
+                  policy.fields.isEmpty,
+                  policy.source == nil,
+                  policy.profileID == nil else {
                 throw HTTPAdapterError.invalidParameter
             }
-        case .structuredFields:
+        case .structuredFields, .projectedJSON:
             guard policy.maxBytes > 0,
                   !policy.fields.isEmpty,
-                  policy.source == nil || policy.source == .json else {
+                  policy.source == nil || policy.source == .json,
+                  let profileID = policy.profileID,
+                  !profileID.isEmpty,
+                  projectionProfileAllows(policy, profileID: profileID, for: url) else {
                 throw HTTPAdapterError.invalidParameter
             }
         case .captureCredential:
@@ -385,10 +461,73 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         if policy.source == .header {
             throw HTTPAdapterError.unsupportedStrategy
         }
-        if policy.kind == .structuredFields {
-            guard !policy.fields.isEmpty else { throw HTTPAdapterError.invalidParameter }
-        }
         return policy
+    }
+
+    private func validateTransportSecurity(
+        _ url: URL,
+        auth: HTTPAuthStrategy,
+        descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata]
+    ) throws {
+        guard url.scheme?.lowercased() == "http", auth.kind != .none else { return }
+        guard let host = url.host,
+              !descriptor.secretReferences.isEmpty,
+              let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
+                  url.absoluteString,
+                  defaultPort: url.port ?? 80,
+                  allowURLPath: true
+              ),
+              descriptor.secretReferences.allSatisfy({ reference in
+                  guard let secret = metadata.first(where: { $0.reference == reference }),
+                        secret.httpTransportSecurityPolicy.permitsInsecureHTTP(toHost: host) else {
+                      return false
+                  }
+                  return secret.allowedDestinations.contains {
+                      SecretOperationDescriptor.normalizeHTTPOrigin(
+                          $0,
+                          expectedScheme: "http",
+                          defaultPort: 80,
+                          requireExplicitPort: true
+                      ) == requestedOrigin
+                  }
+              }) else {
+            throw SecretOperationExecutionError.insecureTransportDenied
+        }
+    }
+
+    private static func isValidProjectionProfile(_ profile: HTTPResponseProjectionProfile) -> Bool {
+        guard !profile.id.isEmpty,
+              profile.id.utf8.count <= 128,
+              Self.normalizedOrigin(profile.origin) != nil,
+              !profile.allowedJSONPointers.isEmpty,
+              profile.allowedJSONPointers.count <= 64 else {
+            return false
+        }
+        let canonical = profile.allowedJSONPointers.compactMap(Self.canonicalJSONPointer)
+        return canonical.count == profile.allowedJSONPointers.count
+            && Set(canonical).count == canonical.count
+            && canonical.allSatisfy { !Self.containsSensitiveJSONPointer($0) }
+    }
+
+    private func projectionProfileAllows(
+        _ policy: HTTPResponsePolicy,
+        profileID: String,
+        for url: URL
+    ) -> Bool {
+        guard !invalidResponseProjectionProfileIDs.contains(profileID),
+              let profile = responseProjectionProfiles[profileID],
+              Self.isValidProjectionProfile(profile),
+              let profileOrigin = Self.normalizedOrigin(profile.origin),
+              profileOrigin == Self.normalizedOrigin(url),
+              !profile.allowedJSONPointers.isEmpty else {
+            return false
+        }
+        let allowed = Set(profile.allowedJSONPointers.compactMap(Self.canonicalJSONPointer))
+        return policy.fields.allSatisfy { field in
+            guard let canonical = Self.canonicalJSONPointer(field) else { return false }
+            return !Self.containsSensitiveJSONPointer(canonical) && allowed.contains(canonical)
+        }
     }
 
     private func applyBody(_ body: HTTPBody, to request: inout URLRequest) throws {
@@ -500,22 +639,36 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         hasSecretAuth: Bool
     ) throws -> String? {
         // A credential-bearing response can contain cookies, access tokens, or
-        // refresh tokens that are not among the request secrets. Metadata-only
-        // is therefore mandatory until a typed capture store exists.
-        guard !hasSecretAuth else { return nil }
+        // refresh tokens that are not among the request secrets. A profile
+        // projection is the only authenticated response path; it is checked
+        // against an App-owned allowlist before reaching this method.
+        if hasSecretAuth && policy.kind != .projectedJSON && policy.kind != .structuredFields {
+            return nil
+        }
         switch policy.kind {
         case .metadataOnly:
             return nil
         case .sanitizedPreview:
             return utf8Prefix(body, maxBytes: policy.maxBytes)
-        case .structuredFields:
+        case .structuredFields, .projectedJSON:
             guard let data = body.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else {
                 throw SecretOperationExecutionError.outputQuarantined
             }
-            let selected = policy.fields.reduce(into: [String: Any]()) { result, field in
-                if let value = object[field] { result[field] = value }
+            var selected: [String: Any] = [:]
+            let fields = policy.fields
+                .compactMap(Self.canonicalJSONPointer)
+                .sorted { lhs, rhs in
+                    lhs.split(separator: "/").count < rhs.split(separator: "/").count
+                }
+            for field in fields {
+                let components = Self.jsonPointerComponents(field)
+                guard let value = Self.jsonValue(at: components, in: object) else { continue }
+                guard !Self.containsSensitiveResponseData(value) else {
+                    throw SecretOperationExecutionError.outputQuarantined
+                }
+                Self.insertProjection(value, at: components, into: &selected)
             }
             let selectedData = try JSONSerialization.data(withJSONObject: selected, options: [.sortedKeys])
             guard selectedData.count <= policy.maxBytes,
@@ -526,6 +679,129 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         case .captureCredential:
             throw SecretOperationExecutionError.unavailable
         }
+    }
+
+    private static func normalizedOrigin(_ rawOrigin: String) -> String? {
+        guard let url = URL(string: rawOrigin),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = url.host,
+              !host.isEmpty,
+              url.user == nil,
+              url.password == nil,
+              url.query == nil,
+              url.fragment == nil,
+              url.path.isEmpty || url.path == "/" else {
+            return nil
+        }
+        let port = url.port ?? (scheme == "https" ? 443 : 80)
+        return "\(scheme)://\(host.lowercased()):\(port)"
+    }
+
+    private static func normalizedOrigin(_ url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(),
+              let host = url.host,
+              !host.isEmpty else { return nil }
+        let port = url.port ?? (scheme == "https" ? 443 : 80)
+        return "\(scheme)://\(host.lowercased()):\(port)"
+    }
+
+    private static func canonicalJSONPointer(_ field: String) -> String? {
+        let value = field.hasPrefix("/") ? field : "/\(field)"
+        guard value.utf8.count <= 128,
+              value != "/",
+              value.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }),
+              !value.contains("\\") else {
+            return nil
+        }
+        let components = jsonPointerComponents(value)
+        guard !components.isEmpty,
+              components.count <= 16,
+              components.allSatisfy({ !$0.isEmpty && !$0.allSatisfy(\.isNumber) }) else {
+            return nil
+        }
+        return "/" + components.map {
+            $0.replacingOccurrences(of: "~", with: "~0")
+                .replacingOccurrences(of: "/", with: "~1")
+        }.joined(separator: "/")
+    }
+
+    private static func containsSensitiveJSONPointer(_ pointer: String) -> Bool {
+        jsonPointerComponents(pointer).contains(where: isSensitiveResponseKey)
+    }
+
+    private static func jsonPointerComponents(_ pointer: String) -> [String] {
+        guard pointer.first == "/" else { return [] }
+        return pointer.dropFirst().split(separator: "/", omittingEmptySubsequences: false).map {
+            $0.replacingOccurrences(of: "~1", with: "/")
+                .replacingOccurrences(of: "~0", with: "~")
+        }
+    }
+
+    private static func jsonValue(at components: [String], in object: [String: Any]) -> Any? {
+        var current: Any = object
+        for component in components {
+            guard let dictionary = current as? [String: Any],
+                  let next = dictionary[component] else {
+                return nil
+            }
+            current = next
+        }
+        return current
+    }
+
+    private static func insertProjection(
+        _ value: Any,
+        at components: [String],
+        into result: inout [String: Any]
+    ) {
+        guard let first = components.first else { return }
+        if components.count == 1 {
+            result[first] = value
+            return
+        }
+        var child = result[first] as? [String: Any] ?? [:]
+        insertProjection(value, at: Array(components.dropFirst()), into: &child)
+        result[first] = child
+    }
+
+    private static func containsSensitiveResponseData(_ value: Any) -> Bool {
+        if let dictionary = value as? [String: Any] {
+            for (key, child) in dictionary {
+                if isSensitiveResponseKey(key) || containsSensitiveResponseData(child) {
+                    return true
+                }
+            }
+            return false
+        }
+        if let array = value as? [Any] {
+            return array.contains(where: containsSensitiveResponseData)
+        }
+        if let string = value as? String {
+            return string.contains("secret://")
+        }
+        return false
+    }
+
+    private static func isSensitiveResponseKey(_ key: String) -> Bool {
+        let normalized = String(key
+            .lowercased()
+            .map { $0.isLetter || $0.isNumber ? $0 : Character("_") })
+            .split(separator: "_", omittingEmptySubsequences: true)
+            .joined(separator: "_")
+        let sensitive = [
+            "token", "password", "passwd", "pwd", "secret", "api_key", "apikey", "cookie",
+            "set_cookie", "session", "session_id", "sessionid", "sid", "authorization", "auth",
+            "credential", "private_key", "privatekey", "client_secret", "jwt", "bearer"
+        ]
+        return sensitive.contains(normalized)
+            || normalized.contains("token")
+            || normalized.contains("secret")
+            || normalized.contains("password")
+            || normalized.contains("cookie")
+            || normalized.contains("session")
+            || normalized.contains("credential")
+            || normalized.contains("authorization")
     }
 
     private func reference(for parameter: String, in descriptor: SecretOperationDescriptor) -> SecretReference? {

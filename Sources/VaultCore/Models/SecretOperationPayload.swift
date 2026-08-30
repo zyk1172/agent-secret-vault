@@ -211,6 +211,10 @@ public struct HTTPResponsePolicy: Codable, Equatable, Sendable {
         case metadataOnly
         case sanitizedPreview
         case structuredFields
+        /// Profile-owned JSON Pointer projection. The profile is selected by
+        /// ID, while the requested fields must be a subset of its immutable
+        /// allowlist in the adapter.
+        case projectedJSON
         case captureCredential
     }
 
@@ -224,19 +228,22 @@ public struct HTTPResponsePolicy: Codable, Equatable, Sendable {
     public let fields: [String]
     public let source: CredentialSource?
     public let selector: String?
+    public let profileID: String?
 
     public init(
         kind: Kind,
         maxBytes: Int = 16_384,
         fields: [String] = [],
         source: CredentialSource? = nil,
-        selector: String? = nil
+        selector: String? = nil,
+        profileID: String? = nil
     ) {
         self.kind = kind
         self.maxBytes = maxBytes
         self.fields = fields
         self.source = source
         self.selector = selector
+        self.profileID = profileID
     }
 
     public static let metadataOnly = HTTPResponsePolicy(kind: .metadataOnly)

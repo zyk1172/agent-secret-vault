@@ -19,6 +19,7 @@ public enum SecretOperationExecutionError: Error, Equatable, Sendable {
     case processFailed
     case outputQuarantined
     case redirectRequiresReview
+    case insecureTransportDenied
 }
 
 public enum SecretOperationExecutionCapability: String, Codable, Equatable, Sendable {
@@ -275,7 +276,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         switch descriptor.actionType {
         case .sshCommand:
             return try await executeSSH(descriptor, context: context, resolve: resolve)
-        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill, .localExecution:
+        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
+             .localExecution, .trustedProcess:
             return try await adapterRegistry.execute(
                 descriptor,
                 metadata: metadata,
@@ -301,7 +303,13 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 operations: [.sshCommand],
                 reason: expectAvailable
                     ? "structured SSH commands through an in-memory scoped ControlMaster"
-                    : "macOS expect executable is unavailable"
+                    : "macOS expect executable is unavailable",
+                features: SecretOperationCapabilityFeatures(
+                    auth: ["password"],
+                    body: ["structuredCommands"],
+                    response: ["stdout", "stderr", "perCommandResults"],
+                    transportSessionReuse: true
+                )
             )
         ] + adapterRegistry.capabilityManifest()
     }
@@ -372,7 +380,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 return .invalidParameters
             }
             return .supported
-        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill, .localExecution:
+        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
+             .localExecution, .trustedProcess:
             return adapterRegistry.preflight(descriptor)
         default:
             return .unavailable

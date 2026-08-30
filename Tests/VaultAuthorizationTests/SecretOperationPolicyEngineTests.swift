@@ -67,7 +67,7 @@ import VaultCore
     #expect(engine().evaluate(descriptor, metadata: [metadata]).risk == .denied)
 }
 
-@Test func boundHTTPReadIsSilentButWriteNeedsApproval() throws {
+@Test func boundHTTPReadIsSilentButInsecureSecretUseRequiresFirstApproval() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
     let read = SecretOperationDescriptor(
@@ -89,8 +89,177 @@ import VaultCore
         url: "http://qnap.local:8080/api/restart"
     )
 
-    #expect(engine().evaluate(read, metadata: [metadata]).risk == .silent)
+    let readDecision = engine().evaluate(read, metadata: [metadata])
+    #expect(readDecision.risk == .approvalRequired)
+    #expect(readDecision.authorizationRequirement == .reusableApproval)
+    #expect(readDecision.requiresFreshApprovalOnFirstUse)
     #expect(engine().evaluate(write, metadata: [metadata]).risk == .approvalRequired)
+}
+
+@Test func insecureHTTPWithoutAnExplicitSavedProfileIsDenied() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://qnap.local:8080/api/status"
+    )
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: [])
+    ])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.policyRuleID == "http.insecure-transport.denied")
+}
+
+@Test func loopbackHTTPProfileIsExplicitAndNarrowlyBound() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "localhost:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://localhost:8080/api/status"
+    )
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["localhost:8080"], protocols: ["http-loopback"])
+    ])
+
+    #expect(decision.authorizationRequirement == .reusableApproval)
+    #expect(decision.requiresFreshApprovalOnFirstUse)
+}
+
+@Test func insecureHTTPProfileAllowsNonCredentialQueryParameters() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://qnap.local:8080/api/status?limit=10"
+    )
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
+    ])
+
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .reusableApproval)
+    #expect(decision.requiresFreshApprovalOnFirstUse)
+}
+
+@Test func insecureHTTPProfileCannotWidenFromOnePortToAnother() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8081",
+        port: 8081,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://qnap.local:8081/api/status"
+    )
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http"])
+    ])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.policyRuleID == "http.insecure-transport.denied")
+}
+
+@Test func insecureHTTPAbsoluteProfileWithoutPortStaysOnDefaultPort() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://qnap.local:8080/api/status"
+    )
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["http://qnap.local"], protocols: ["http"])
+    ])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.policyRuleID == "http.insecure-transport.denied")
+}
+
+@Test func HTTPOriginNormalizationSeparatesRequestPathsFromProfileOrigins() {
+    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
+        "http://qnap.local:8080/api/status",
+        defaultPort: 8080,
+        allowURLPath: true
+    ) == "http://qnap.local:8080")
+    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
+        "http://qnap.local:8080/api/status",
+        defaultPort: 8080
+    ) == nil)
+    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
+        "qnap.local:8080",
+        expectedScheme: "http",
+        requireExplicitPort: true
+    ) == "http://qnap.local:8080")
+    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
+        "qnap.local",
+        expectedScheme: "http",
+        defaultPort: 8080,
+        requireExplicitPort: true
+    ) == nil)
+    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
+        "http://qnap.local/api/status",
+        expectedScheme: "http",
+        requireExplicitPort: true
+    ) == nil)
+    #expect(SecretOperationDescriptor.normalizeHTTPOrigin(
+        "http://qnap.local",
+        expectedScheme: "http",
+        defaultPort: 8080,
+        requireExplicitPort: true
+    ) == "http://qnap.local:80")
+}
+
+@Test func duplicateSecretReferencesAreRejectedWithoutTrapping() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference, reference],
+        destination: "qnap.local",
+        port: 443,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://qnap.local/status"
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])
+    ])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.policyRuleID == "secret-reference.duplicate")
+}
+
+@Test func trustedProcessIsDistinctFromPermanentlyDeniedGenericShell() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let trustedPayload = SecretOperationPayload.trustedProcess(
+        TrustedProcessOperation(profileID: "signed-helper", secretReferences: [reference])
+    )
+    let trusted = SecretOperationDescriptor(
+        actionType: .trustedProcess,
+        secretReferences: [reference],
+        payload: trustedPayload
+    )
+    let generic = SecretOperationDescriptor(actionType: .localExecution, secretReferences: [reference])
+
+    #expect(engine().evaluate(trusted, metadata: [policyMetadata(reference, destinations: [], protocols: [])]).authorizationRequirement == .freshApprovalRequired)
+    #expect(engine().evaluate(generic, metadata: [policyMetadata(reference, destinations: [], protocols: [])]).risk == .denied)
 }
 
 @Test func HTTPBindingCannotBeSpoofedByASeparateDestinationField() throws {

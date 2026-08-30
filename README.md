@@ -190,8 +190,10 @@ different provider or provide plaintext for the current operation; SVLT does
 not force conversion or substitution in that case.
 
 - `ssh_command_with_secret` for restricted local/private-network SSH.
-- `local_http_request_with_secret` for restricted local/private HTTP(S)
-  GET/HEAD checks with Basic Auth.
+- `local_http_request_with_secret` for restricted, policy-reviewed HTTP(S)
+  requests with Basic Auth. HTTPS is the default; plaintext HTTP requires an
+  explicit saved profile binding to the exact local/private destination and a
+  fresh first-use approval.
 - `api_request_with_token` for restricted allowlisted API requests with a token.
 - `database_query_with_secret` for restricted read-only database queries through
   a purpose-built runner.
@@ -223,7 +225,7 @@ must never be returned to the agent.
   `approvalRequired`, or `denied` by `SecretOperationPolicyEngine`.
 - `effectiveRisk = max(agentRisk, localRisk)`: the Agent hint may raise risk but
   never lowers a local approval or denial.
-- Bound read-only SSH/HTTP/database/SFTP operations can run silently. An
+- Bound read-only SSH/HTTPS/database/SFTP operations can run silently. An
   eligible purpose-built Agent execution whose policy result is
   `approvalRequired` may use one fresh device-owner approval to open a fixed,
   non-sliding 300-second in-memory execution window. The window is scoped to
@@ -234,6 +236,17 @@ must never be returned to the agent.
 - The ordinary Agent IPC type and transport contain no plaintext-bearing
   response. Session reveal and Catalog plaintext responses are available only
   through the separately authenticated, code-signed App-control socket.
+- Secret-bearing HTTP over plaintext `http://` is never enabled by an Agent
+  request flag. It requires a user-saved `http`/`http-loopback` profile marker,
+  an exact destination binding, and fresh device-owner approval on first use.
+  Authenticated responses are metadata-only unless an App-owned response
+  projection profile allowlists the requested JSON pointers. The production
+  daemon receives those non-secret profiles through `VaultDaemonConfiguration`;
+  its default empty configuration advertises metadata-only responses. Derived
+  credential/cookie capture is not implemented in this release.
+- `localExecution` remains permanently denied. `trustedProcess` is a separate
+  future adapter boundary and is unavailable until a signed process profile is
+  configured.
 - Plaintext reveal/copy, deletes, security-setting changes, and Catalog Agent
   writes retain their exact, one-shot `ApprovalTicket` authorization boundary.
   Local plaintext export has a separate, fixed 300-second in-memory lease:

@@ -34,8 +34,11 @@ import {
   SecretOperationOutput,
   SecretOperationStage,
   SecretOperationProtocol,
+  SecretAllowedProtocol,
   SecretReference,
   SecretReferenceMetadata,
+  UniqueSecretReferences,
+  NonEmptyUniqueSecretReferences,
   SSHCommandBatch,
   SSHCommandSpec,
   SSHSessionStatus
@@ -553,7 +556,7 @@ const AutoHandleOutput = z
     status: z.string().min(1),
     action: z.string().min(1),
     referenceCount: z.number().int().min(0),
-    references: z.array(SecretReference),
+    references: UniqueSecretReferences,
     redactedText: z.string().optional()
   })
   .strict()
@@ -572,7 +575,7 @@ const RevealInput = z
 const ParagraphRevealInput = z
   .object({
     text: z.string().min(1).optional(),
-    references: z.array(SecretReference).min(1).optional(),
+    references: NonEmptyUniqueSecretReferences.optional(),
     template: z.string().min(1).optional(),
     reason: z.string().min(1),
     agentAssessment: optionalAgentRiskAssessment
@@ -585,7 +588,7 @@ const ParagraphRevealInput = z
 const ExportResolvedTextInput = z
   .object({
     text: z.string().min(1).optional(),
-    references: z.array(SecretReference).min(1).optional(),
+    references: NonEmptyUniqueSecretReferences.optional(),
     template: z.string().min(1).optional(),
     reason: z.string().min(1),
     destinationPath: z.string().min(1),
@@ -601,7 +604,7 @@ const CreateInput = z
     label: z.string().nullable().optional(),
     policy: SecretPolicy,
     allowedDestinations: z.array(z.string().min(1)).max(32).optional(),
-    allowedProtocols: z.array(SecretOperationProtocol).max(16).optional()
+    allowedProtocols: z.array(SecretAllowedProtocol).max(16).optional()
   })
   .strict();
 
@@ -620,12 +623,32 @@ const LocalHttpInput = z
     passwordRef: SecretReference.optional(),
     sessionID: z.string().min(1).max(128).optional(),
     includeBodyPreview: z.boolean().optional(),
+    responseProfileID: z.string().min(1).max(128).optional(),
+    responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
+    const hasProfile = value.responseProfileID !== undefined;
+    const hasFields = value.responseFields !== undefined;
+    if (hasProfile !== hasFields || (hasProfile && value.responseFields?.length === 0)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["responseProfileID"],
+        message: "responseProfileID and non-empty responseFields must be provided together."
+      });
+    }
   });
 
 const SshCommandInput = z
@@ -684,10 +707,23 @@ const ApiRequestInput = z
     headerScheme: z.string().min(1).max(64).optional(),
     body: z.string().max(65_536).optional(),
     includeBodyPreview: z.boolean().optional(),
+    responseProfileID: z.string().min(1).max(128).optional(),
+    responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const hasProfile = value.responseProfileID !== undefined;
+    const hasFields = value.responseFields !== undefined;
+    if (hasProfile !== hasFields || (hasProfile && value.responseFields?.length === 0)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["responseProfileID"],
+        message: "responseProfileID and non-empty responseFields must be provided together."
+      });
+    }
+  });
 
 const DatabaseQueryInput = z
   .object({
@@ -706,6 +742,15 @@ const DatabaseQueryInput = z
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
   });
 
 const FileTransferInput = z
@@ -725,6 +770,15 @@ const FileTransferInput = z
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
   });
 
 const BrowserLoginInput = z
@@ -744,6 +798,15 @@ const BrowserLoginInput = z
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
   })
   .refine((value) => value.submit !== true || value.submitSelector !== undefined, {
     message: "submitSelector is required when submit is true."
@@ -771,6 +834,19 @@ const LocalAppFillInput = z
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
+  .superRefine((value, context) => {
+    const seen = new Set<string>();
+    value.fields.forEach((field, index) => {
+      if (field.valueRef !== undefined && seen.has(field.valueRef)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", index, "valueRef"],
+          message: "Each secret:// reference may be used only once in a local App request."
+        });
+      }
+      if (field.valueRef !== undefined) seen.add(field.valueRef);
+    });
+  })
   .refine((value) => value.appName !== undefined || value.bundleId !== undefined, {
     message: "appName or bundleId is required."
   });
@@ -1505,7 +1581,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_http_request_with_secret",
       title: "Local HTTP Request With Secret",
       description:
-        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. Call vault_capabilities first; plaintext is never returned.",
+        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. HTTPS is the default; insecure HTTP requires a user-saved exact local/private profile and fresh first-use approval. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: LocalHttpInput,
       outputSchema: LocalHttpOutput,
       async handler(input) {
@@ -1516,7 +1592,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "api_request_with_token",
       title: "API Request With Token",
       description:
-        "Capability-gated typed API request using a secret:// token inside SVLTAgent. Call vault_capabilities first; plaintext is never returned.",
+        "Capability-gated typed API request using a secret:// token inside SVLTAgent. HTTPS is the default; insecure HTTP requires a user-saved exact local/private profile and fresh first-use approval. Authorization defaults to Bearer, while custom API-key headers use the raw token unless a safe scheme is explicit. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: ApiRequestInput,
       outputSchema: ApiRequestOutput,
       async handler(input) {
@@ -1936,6 +2012,8 @@ async function handleLocalHttpRequest(
     ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
     ...(parsed.passwordRef === undefined ? {} : { passwordRef: parsed.passwordRef }),
     ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
+    ...(parsed.responseProfileID === undefined ? {} : { responseProfileID: parsed.responseProfileID }),
+    ...(parsed.responseFields === undefined ? {} : { responseFields: JSON.stringify(parsed.responseFields) }),
     ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const output = await executeOpaqueOperation(client, {
@@ -1961,9 +2039,12 @@ async function handleLocalHttpRequest(
             },
         body: { kind: "none", fields: {} },
         responsePolicy: {
-          kind: parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
+          kind: parsed.responseProfileID !== undefined
+            ? "projectedJSON"
+            : parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
           maxBytes: 16_384,
-          fields: []
+          fields: parsed.responseFields ?? [],
+          ...(parsed.responseProfileID === undefined ? {} : { profileID: parsed.responseProfileID })
         },
         ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
       }
@@ -1996,12 +2077,17 @@ async function handleApiRequestWithToken(
   if (parsed.body?.includes("secret://") === true) {
     return structuredResult({ status: "PLAINTEXT_REFERENCE_NOT_ALLOWED" });
   }
+  const headerName = parsed.headerName ?? "Authorization";
+  const headerScheme = parsed.headerScheme
+    ?? (headerName.toLowerCase() === "authorization" ? "Bearer" : undefined);
   const parameters: Record<string, string> = {
     tokenRef: parsed.tokenRef,
-    headerName: parsed.headerName ?? "Authorization",
-    headerScheme: parsed.headerScheme ?? "Bearer",
+    headerName,
+    ...(headerScheme === undefined ? {} : { headerScheme }),
     ...(parsed.body === undefined ? {} : { body: parsed.body }),
     ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
+    ...(parsed.responseProfileID === undefined ? {} : { responseProfileID: parsed.responseProfileID }),
+    ...(parsed.responseFields === undefined ? {} : { responseFields: JSON.stringify(parsed.responseFields) }),
     ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const output = await executeOpaqueOperation(client, {
@@ -2018,20 +2104,23 @@ async function handleApiRequestWithToken(
       operation: {
         method: parsed.method ?? "GET",
         auth: {
-          kind: (parsed.headerName ?? "Authorization").toLowerCase() === "authorization"
+          kind: headerName.toLowerCase() === "authorization"
             ? "bearer"
             : "apiKeyHeader",
           valueReference: parsed.tokenRef,
-          headerName: parsed.headerName ?? "Authorization",
-          scheme: parsed.headerScheme ?? "Bearer"
+          headerName,
+          ...(headerScheme === undefined ? {} : { scheme: headerScheme })
         },
         body: parsed.body === undefined
           ? { kind: "none", fields: {} }
           : { kind: "raw", content: parsed.body, fields: {} },
         responsePolicy: {
-          kind: parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
+          kind: parsed.responseProfileID !== undefined
+            ? "projectedJSON"
+            : parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
           maxBytes: 16_384,
-          fields: []
+          fields: parsed.responseFields ?? [],
+          ...(parsed.responseProfileID === undefined ? {} : { profileID: parsed.responseProfileID })
         },
         ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
       }
@@ -2297,7 +2386,10 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Never use shell chaining such as ;, &&, ||, |, >, <, backticks, $(), ${}, sh -c, or bash -c to combine secret-backed commands.",
       "A reusable approval lease is separate from the SSH transport session. Destructive or semantically ambiguous commands may require fresh approval even when either one is active; fresh approval does not extend the ordinary lease.",
       "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display metadata only; it never becomes the security principal.",
-      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed local/private HTTP requests; arbitrary headers, URL credentials, credential query parameters, and secret:// body fragments are not accepted. Authenticated response bodies are metadata-only until a typed capture store exists.",
+      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. HTTPS is the default transport for Secret-bearing requests; insecure HTTP is accepted only when the saved Secret profile explicitly allows http or http-loopback for the exact local/private destination. Never add an insecure-HTTP flag to a tool call. The first use of an approved insecure profile requires fresh device-owner authentication.",
+      "HTTP tools reject arbitrary secret headers, URL credentials, credential query parameters, and secret:// body fragments. Authorization defaults to Bearer; a custom API-key header receives the raw token unless a profile/request explicitly supplies a safe scheme.",
+      "Authenticated HTTP responses are metadata-only by default. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
+      "The generic localExecution action is permanently denied. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
       "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
       "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with local file grants and path checks; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",
       "Use browser_web_login_with_secret only when a signed native-messaging browser adapter is advertised; never use AppleScript, clipboard, or injected page JavaScript for SVLT plaintext.",
