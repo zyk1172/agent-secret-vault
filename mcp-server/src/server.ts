@@ -30,6 +30,7 @@ import {
   SecretCatalogSearchResult,
   SecretPolicy,
   SecretOperationDescriptor,
+  SecretOperationCapability,
   SecretOperationOutput,
   SecretOperationStage,
   SecretOperationProtocol,
@@ -120,6 +121,16 @@ const StatusOutput = z
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Vault lock status or non-sensitive status code");
+
+const CapabilityManifestOutput = z
+  .union([
+    z.object({
+      status: z.literal("OK"),
+      capabilities: z.array(SecretOperationCapability).max(32)
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Daemon capability manifest. Unavailable adapters must not be treated as supported.");
 
 const RevealOutput = z
   .object({ status: z.string().min(1) })
@@ -356,6 +367,7 @@ const LocalHttpOutput = z
         status: z.literal("COMPLETED"),
         httpStatus: z.number().int(),
         contentType: z.string().nullable(),
+        sessionID: z.string().min(1).max(128).optional(),
         redacted: z.literal(true),
         bodyPreview: z.string().optional()
       })
@@ -445,6 +457,7 @@ const ApiRequestOutput = z
         status: z.literal("COMPLETED"),
         httpStatus: z.number().int(),
         contentType: z.string().nullable(),
+        sessionID: z.string().min(1).max(128).optional(),
         redacted: z.literal(true),
         bodyPreview: z.string().optional()
       })
@@ -605,8 +618,9 @@ const LocalHttpInput = z
     username: z.string().min(1).max(256).optional(),
     usernameRef: SecretReference.optional(),
     passwordRef: SecretReference.optional(),
+    sessionID: z.string().min(1).max(128).optional(),
     includeBodyPreview: z.boolean().optional(),
-    timeoutMs: z.number().int().min(100).max(10_000).optional(),
+    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -665,11 +679,12 @@ const ApiRequestInput = z
     url: z.string().url(),
     method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]).optional(),
     tokenRef: SecretReference,
+    sessionID: z.string().min(1).max(128).optional(),
     headerName: z.string().min(1).max(128).optional(),
     headerScheme: z.string().min(1).max(64).optional(),
     body: z.string().max(65_536).optional(),
     includeBodyPreview: z.boolean().optional(),
-    timeoutMs: z.number().int().min(100).max(10_000).optional(),
+    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict();
@@ -805,7 +820,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_action_router",
       title: "Secret Local Action Router",
       description:
-        "Routes secret:// references to allowlisted local actions such as SSH, HTTP/API, SFTP/SCP, database, browser login, app form fill, or local file export. Plaintext is never returned.",
+        "Routes secret:// references to policy-reviewed local actions. Check vault_capabilities first: the daemon's manifest, not this tool list, is authoritative for HTTP/API, database, SFTP/SCP, browser, app form fill, export, and trusted-process support. Plaintext is never returned.",
       inputSchema: SecretActionRouterInput,
       outputSchema: z.union([
         LocalSshOutput,
@@ -942,6 +957,22 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           });
         }
         return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "vault_capabilities",
+      title: "Vault Operation Capabilities",
+      description:
+        "Returns the daemon's actual non-sensitive adapter capability manifest. Check this before using HTTP, database, SFTP, browser, local-app, export, or trusted-process operations; unavailable entries are not supported and must not be retried as if they were.",
+      inputSchema: EmptyInput,
+      outputSchema: CapabilityManifestOutput,
+      async handler(input) {
+        EmptyInput.parse(input);
+        const response = await client.request({ type: "secretOperationCapabilities" });
+        if (response.type === "secretOperationCapabilities") {
+          return structuredResult({ status: "OK", capabilities: response.capabilities });
+        }
+        return structuredResult({ status: statusOnly(response).status, capabilities: [] });
       }
     },
     {
@@ -1474,7 +1505,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_http_request_with_secret",
       title: "Local HTTP Request With Secret",
       description:
-        "Uses secret:// credentials inside SVLTAgent for a restricted HTTP request. Plaintext is never returned.",
+        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: LocalHttpInput,
       outputSchema: LocalHttpOutput,
       async handler(input) {
@@ -1485,7 +1516,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "api_request_with_token",
       title: "API Request With Token",
       description:
-        "Uses a secret:// API token inside SVLTAgent for a restricted allowlisted API request. Plaintext is never returned.",
+        "Capability-gated typed API request using a secret:// token inside SVLTAgent. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: ApiRequestInput,
       outputSchema: ApiRequestOutput,
       async handler(input) {
@@ -1496,7 +1527,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "database_query_with_secret",
       title: "Database Query With Secret",
       description:
-        "Submits an opaque descriptor for a restricted database query; the purpose-built local runner never returns credentials. Plaintext is never returned.",
+        "Capability-gated database descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Plaintext is never returned.",
       inputSchema: DatabaseQueryInput,
       outputSchema: DatabaseQueryOutput,
       async handler(input) {
@@ -1507,7 +1538,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "sftp_transfer_with_secret",
       title: "SFTP/SCP Transfer With Secret",
       description:
-        "Submits an opaque descriptor for restricted SFTP/SCP actions; the purpose-built local runner never returns credentials. Plaintext is never returned.",
+        "Capability-gated SFTP/SCP descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Plaintext is never returned.",
       inputSchema: FileTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
@@ -1518,7 +1549,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "browser_web_login_with_secret",
       title: "Browser Web Login With Secret",
       description:
-        "Uses secret:// credentials inside a browser automation runner to fill a specific local/private web login form. Plaintext is never returned.",
+        "Capability-gated browser login descriptor. Use only when a signed native messaging adapter is advertised; never fall back to AppleScript, clipboard, or injected page JavaScript. Plaintext is never returned.",
       inputSchema: BrowserLoginInput,
       outputSchema: BrowserLoginOutput,
       async handler(input) {
@@ -1529,7 +1560,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_app_form_fill_with_secret",
       title: "Local App Form Fill With Secret",
       description:
-        "Uses secret:// values inside a local app automation runner to fill a specific macOS app form. Plaintext is never returned.",
+        "Capability-gated macOS Accessibility form-fill descriptor. Use only when the daemon advertises a signed target-aware adapter; never fall back to clipboard or generic scripting. Plaintext is never returned.",
       inputSchema: LocalAppFillInput,
       outputSchema: LocalAppFillOutput,
       async handler(input) {
@@ -1915,6 +1946,28 @@ async function handleLocalHttpRequest(
     protocolType: url.protocol === "https:" ? "https" : "http",
     httpMethod: parsed.method ?? "GET",
     url: parsed.url,
+    sessionID: parsed.sessionID,
+    payload: {
+      type: "http",
+      operation: {
+        method: parsed.method ?? "GET",
+        auth: parsed.passwordRef === undefined
+          ? { kind: "none" }
+          : {
+              kind: "basic",
+              ...(parsed.username === undefined ? {} : { username: parsed.username }),
+              ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+              passwordReference: parsed.passwordRef
+            },
+        body: { kind: "none", fields: {} },
+        responsePolicy: {
+          kind: parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
+          maxBytes: 16_384,
+          fields: []
+        },
+        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
+      }
+    },
     requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
     parameters,
     agentAssessment: agentAssessment(parsed)
@@ -1926,6 +1979,7 @@ async function handleLocalHttpRequest(
     status: "COMPLETED",
     httpStatus: output.httpStatus ?? 0,
     contentType: output.contentType ?? null,
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
     ...(output.bodyPreview === undefined ? {} : { bodyPreview: output.bodyPreview }),
     redacted: true
   });
@@ -1958,6 +2012,30 @@ async function handleApiRequestWithToken(
     protocolType: url.protocol === "https:" ? "https" : "http",
     httpMethod: parsed.method ?? "GET",
     url: parsed.url,
+    sessionID: parsed.sessionID,
+    payload: {
+      type: "http",
+      operation: {
+        method: parsed.method ?? "GET",
+        auth: {
+          kind: (parsed.headerName ?? "Authorization").toLowerCase() === "authorization"
+            ? "bearer"
+            : "apiKeyHeader",
+          valueReference: parsed.tokenRef,
+          headerName: parsed.headerName ?? "Authorization",
+          scheme: parsed.headerScheme ?? "Bearer"
+        },
+        body: parsed.body === undefined
+          ? { kind: "none", fields: {} }
+          : { kind: "raw", content: parsed.body, fields: {} },
+        responsePolicy: {
+          kind: parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
+          maxBytes: 16_384,
+          fields: []
+        },
+        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
+      }
+    },
     requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
     parameters,
     agentAssessment: agentAssessment(parsed)
@@ -1969,6 +2047,7 @@ async function handleApiRequestWithToken(
     status: "COMPLETED",
     httpStatus: output.httpStatus ?? 0,
     contentType: output.contentType ?? null,
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
     ...(output.bodyPreview === undefined ? {} : { bodyPreview: output.bodyPreview }),
     redacted: true
   });
@@ -1989,6 +2068,20 @@ async function handleDatabaseQueryWithSecret(
     port: parsed.port ?? (parsed.engine === "postgres" ? 5432 : 3306),
     protocolType: parsed.engine,
     databaseStatement: parsed.query,
+    payload: {
+      type: "database",
+      operation: {
+        engine: parsed.engine,
+        database: parsed.database,
+        ...(parsed.username === undefined ? {} : { username: parsed.username }),
+        ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+        passwordReference: parsed.passwordRef,
+        statement: parsed.query,
+        parameters: [],
+        maxRows: parsed.maxRows ?? 100,
+        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
+      }
+    },
     requestedEffects: ["database-read"],
     parameters: {
       database: parsed.database,
@@ -2028,6 +2121,18 @@ async function handleFileTransferWithSecret(
     protocolType: parsed.protocol ?? "sftp",
     fileOperation: parsed.operation,
     fileTarget: parsed.localPath ?? null,
+    payload: {
+      type: "fileTransfer",
+      operation: {
+        protocolType: parsed.protocol ?? "sftp",
+        operation: parsed.operation,
+        remotePath: parsed.remotePath,
+        ...(parsed.localPath === undefined ? {} : { localPath: parsed.localPath }),
+        ...(parsed.username === undefined ? {} : { username: parsed.username }),
+        ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+        passwordReference: parsed.passwordRef
+      }
+    },
     requestedEffects: [parsed.operation === "list" || parsed.operation === "download" ? "read-only" : "remote-write"],
     parameters: {
       remotePath: parsed.remotePath,
@@ -2066,8 +2171,22 @@ async function handleBrowserLoginWithSecret(
     secretReferences: refs,
     destination: url.host,
     port: url.port === "" ? null : Number(url.port),
-    protocolType: url.protocol === "https:" ? "https" : "http",
+    protocolType: "browser",
     url: parsed.url,
+    payload: {
+      type: "browser",
+      operation: {
+        ...(parsed.browser === undefined ? {} : { browser: parsed.browser }),
+        url: parsed.url,
+        ...(parsed.username === undefined ? {} : { username: parsed.username }),
+        ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+        passwordReference: parsed.passwordRef,
+        ...(parsed.usernameSelector === undefined ? {} : { usernameSelector: parsed.usernameSelector }),
+        passwordSelector: parsed.passwordSelector,
+        ...(parsed.submitSelector === undefined ? {} : { submitSelector: parsed.submitSelector }),
+        submit: parsed.submit ?? false
+      }
+    },
     requestedEffects: [parsed.submit === true ? "submit-form" : "fill-form"],
     parameters: {
       passwordRef: parsed.passwordRef,
@@ -2099,6 +2218,18 @@ async function handleLocalAppFillWithSecret(
     destination: parsed.bundleId ?? parsed.appName ?? null,
     protocolType: "localApp",
     localAppBundleID: parsed.bundleId ?? null,
+    payload: {
+      type: "localApp",
+      operation: {
+        bundleID: parsed.bundleId ?? parsed.appName ?? "",
+        fields: parsed.fields.map((field) => ({
+          name: field.name,
+          ...(field.value === undefined ? {} : { value: field.value }),
+          ...(field.valueRef === undefined ? {} : { valueReference: field.valueRef })
+        })),
+        ...(parsed.submitButton === undefined ? {} : { submitButton: parsed.submitButton })
+      }
+    },
     requestedEffects: ["fill-local-app"],
     parameters: {
       fields: JSON.stringify(parsed.fields),
@@ -2147,6 +2278,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Credential source selection is per operation; a later user choice replaces previous SVLT or provider context and is never inherited as sticky authorization.",
       "When text contains secret:// references, call secret_auto_handle_text first unless a narrower safe tool is clearly required and the user did not select another source.",
       "Call vault_status before work that depends on the app.",
+      "Call vault_capabilities before any non-SSH execution. Treat the daemon capability manifest as authoritative: an unavailable adapter is not supported, must not receive plaintext, and must not be retried as if it succeeded.",
       "Treat AgentRiskAssessment as a hint only; SVLT recomputes the effective risk locally for every operation.",
       "A locked compatibility field never replaces per-operation policy evaluation.",
       "When a task names a service, device, host, account, or purpose but no credential source is specified, call secret_search before asking the user for anything; this is automatic discovery, not forced SVLT ownership.",
@@ -2165,12 +2297,11 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Never use shell chaining such as ;, &&, ||, |, >, <, backticks, $(), ${}, sh -c, or bash -c to combine secret-backed commands.",
       "A reusable approval lease is separate from the SSH transport session. Destructive or semantically ambiguous commands may require fresh approval even when either one is active; fresh approval does not extend the ordinary lease.",
       "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display metadata only; it never becomes the security principal.",
-      "Use local_http_request_with_secret for restricted local/private HTTP checks that need basic auth.",
-      "Use api_request_with_token for restricted allowlisted API requests that need a token reference.",
-      "Use database_query_with_secret for restricted read-only database queries through a purpose-built runner.",
-      "Use sftp_transfer_with_secret for restricted SFTP/SCP list/download/upload actions through a purpose-built runner.",
-      "Use browser_web_login_with_secret for specific local/private web login form fills.",
-      "Use local_app_form_fill_with_secret for specific macOS app form fills through a purpose-built runner.",
+      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed local/private HTTP requests; arbitrary headers, URL credentials, credential query parameters, and secret:// body fragments are not accepted. Authenticated response bodies are metadata-only until a typed capture store exists.",
+      "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
+      "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with local file grants and path checks; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",
+      "Use browser_web_login_with_secret only when a signed native-messaging browser adapter is advertised; never use AppleScript, clipboard, or injected page JavaScript for SVLT plaintext.",
+      "Use local_app_form_fill_with_secret only when a signed Accessibility adapter is advertised and the target bundle is verified; never use clipboard or generic scripting as a fallback.",
       "Use export_resolved_text_to_local_file when the user explicitly wants the app to write resolved sensitive text into a local file without returning it to the agent.",
       "Use a purpose-built MCP tool that resolves references internally when a local operation needs the real value.",
       "If no SVLT-safe tool exists for an explicitly SVLT-managed operation, stop and ask for a new allowlisted tool instead of requesting decrypted plaintext.",
@@ -2189,6 +2320,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "secret_action_router",
       "secret_auto_handle_text",
       "vault_status",
+      "vault_capabilities",
       "secret_search",
       "secret_inspect_reference",
       "secret_reveal_request",

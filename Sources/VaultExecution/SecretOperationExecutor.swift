@@ -149,6 +149,11 @@ public protocol SecretOperationExecuting: Sendable {
     /// device-owner approval so an unavailable runner cannot prime a lease.
     func preflight(_ descriptor: SecretOperationDescriptor) -> SecretOperationExecutionCapability
 
+    /// The daemon-facing, non-sensitive capability manifest. A capability is
+    /// never inferred from an MCP tool name; it comes from the concrete
+    /// adapter registry used by this executor.
+    func capabilities() -> [SecretOperationCapability]
+
     func execute(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
@@ -176,11 +181,14 @@ public protocol SecretOperationExecuting: Sendable {
 }
 
 public extension SecretOperationExecuting {
-    /// Preserve the protocol for purpose-built test or future executors that
-    /// are known to support every descriptor they receive.
+    /// An executor must opt in to every supported action. Returning supported
+    /// by default could prime an authorization lease for an action that an
+    /// older compatibility executor does not understand.
     func preflight(_: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
-        .supported
+        .unavailable
     }
+
+    func capabilities() -> [SecretOperationCapability] { [] }
 
     func execute(
         _ descriptor: SecretOperationDescriptor,
@@ -220,6 +228,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     private let outputLimitBytes: Int
     private let batchOutputLimitBytes: Int
     private let batchTotalTimeout: Duration
+    private let adapterRegistry: SecretOperationAdapterRegistry
 
     public init(
         processRunner: any ProcessRunning = FoundationProcessRunner(),
@@ -228,7 +237,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         outputLimitBytes: Int = 1_048_576,
         batchOutputLimitBytes: Int = 4_194_304,
         batchTotalTimeout: Duration = .seconds(60),
-        sshSessionManager: SSHSessionManager? = nil
+        sshSessionManager: SSHSessionManager? = nil,
+        adapterRegistry: SecretOperationAdapterRegistry? = nil
     ) {
         self.processRunner = processRunner
         self.outputSanitizer = outputSanitizer
@@ -237,6 +247,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         self.batchOutputLimitBytes = max(outputLimitBytes, batchOutputLimitBytes)
         self.batchTotalTimeout = batchTotalTimeout
         self.sshSessionManager = sshSessionManager ?? SSHSessionManager(processRunner: processRunner)
+        self.adapterRegistry = adapterRegistry ?? SecretOperationAdapterRegistry()
     }
 
     public func execute(
@@ -264,10 +275,13 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         switch descriptor.actionType {
         case .sshCommand:
             return try await executeSSH(descriptor, context: context, resolve: resolve)
-        case .httpRequest, .apiRequest:
-            return try await executeHTTP(descriptor, resolve: resolve)
-        case .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill:
-            throw SecretOperationExecutionError.unavailable
+        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill, .localExecution:
+            return try await adapterRegistry.execute(
+                descriptor,
+                metadata: metadata,
+                context: context,
+                resolve: resolve
+            )
         default:
             throw SecretOperationExecutionError.unsupportedAction
         }
@@ -275,6 +289,21 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
 
     public func invalidateSecurityState() async {
         await sshSessionManager.invalidateAll()
+        await adapterRegistry.invalidateSecurityState()
+    }
+
+    public func capabilities() -> [SecretOperationCapability] {
+        let expectAvailable = FileManager.default.isExecutableFile(atPath: Self.expectExecutablePath)
+        return [
+            SecretOperationCapability(
+                kind: .ssh,
+                status: expectAvailable ? .supported : .unavailable,
+                operations: [.sshCommand],
+                reason: expectAvailable
+                    ? "structured SSH commands through an in-memory scoped ControlMaster"
+                    : "macOS expect executable is unavailable"
+            )
+        ] + adapterRegistry.capabilityManifest()
     }
 
     public func sshSessionStatuses(
@@ -343,10 +372,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 return .invalidParameters
             }
             return .supported
-        case .httpRequest, .apiRequest:
-            return .supported
-        case .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill:
-            return .unavailable
+        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill, .localExecution:
+            return adapterRegistry.preflight(descriptor)
         default:
             return .unavailable
         }
@@ -662,126 +689,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         return true
     }
 
-    private func executeHTTP(
-        _ descriptor: SecretOperationDescriptor,
-        resolve: @escaping @Sendable (SecretReference) async throws -> Data
-    ) async throws -> SecretOperationOutput {
-        guard let rawURL = descriptor.url,
-              let url = URL(string: rawURL),
-              url.user == nil,
-              url.password == nil
-        else {
-            throw SecretOperationExecutionError.invalidParameter
-        }
-
-        var secretBuffers: [Data] = []
-        defer {
-            for index in secretBuffers.indices {
-                secretBuffers[index].resetBytes(in: 0..<secretBuffers[index].count)
-            }
-        }
-
-        let operationTimeout = try timeout(for: descriptor)
-        var request = URLRequest(url: url)
-        request.httpMethod = (descriptor.httpMethod ?? "GET").uppercased()
-        request.timeoutInterval = operationTimeout.timeInterval
-        if let body = descriptor.parameters["body"] {
-            guard !body.contains("secret://") else {
-                throw SecretOperationExecutionError.invalidParameter
-            }
-            request.httpBody = Data(body.utf8)
-        }
-
-        if descriptor.actionType == .httpRequest,
-           let passwordReference = reference(for: "passwordRef", in: descriptor) {
-            let passwordData = try await resolve(passwordReference)
-            secretBuffers.append(passwordData)
-            let username: String
-            if let usernameReference = reference(for: "usernameRef", in: descriptor) {
-                let usernameData = try await resolve(usernameReference)
-                secretBuffers.append(usernameData)
-                guard let resolvedUsername = String(data: usernameData, encoding: .utf8) else {
-                    throw SecretOperationExecutionError.invalidSecretUTF8
-                }
-                username = resolvedUsername
-            } else if let plainUsername = descriptor.parameters["username"], !plainUsername.isEmpty {
-                username = plainUsername
-            } else {
-                throw SecretOperationExecutionError.invalidParameter
-            }
-            guard let password = String(data: passwordData, encoding: .utf8)
-            else {
-                throw SecretOperationExecutionError.invalidSecretUTF8
-            }
-            let basicCredentials = "\(username):\(password)"
-            secretBuffers.append(Data(basicCredentials.utf8))
-            let basic = Data(basicCredentials.utf8).base64EncodedString()
-            secretBuffers.append(Data("Basic \(basic)".utf8))
-            request.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
-        } else if descriptor.actionType == .apiRequest,
-                  let tokenReference = reference(for: "tokenRef", in: descriptor) {
-            let tokenData = try await resolve(tokenReference)
-            secretBuffers.append(tokenData)
-            guard let token = String(data: tokenData, encoding: .utf8) else {
-                throw SecretOperationExecutionError.invalidSecretUTF8
-            }
-            let headerName = descriptor.parameters["headerName"] ?? "Authorization"
-            let scheme = descriptor.parameters["headerScheme"] ?? "Bearer"
-            let headerValue = scheme.isEmpty ? token : "\(scheme) \(token)"
-            secretBuffers.append(Data(headerValue.utf8))
-            request.setValue(headerValue, forHTTPHeaderField: headerName)
-        }
-
-        let session = URLSession(
-            configuration: .ephemeral,
-            delegate: NoRedirectURLSessionDelegate(),
-            delegateQueue: nil
-        )
-        defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw SecretOperationExecutionError.processFailed
-        }
-
-        guard data.count <= outputLimitBytes else {
-            throw SecretOperationExecutionError.outputQuarantined
-        }
-
-        if (300...399).contains(httpResponse.statusCode) {
-            // We intentionally stop before sending the credential to a new
-            // host.  The caller must submit a new descriptor so the local
-            // engine can evaluate the new destination and, if appropriate,
-            // request a fresh approval.
-            throw SecretOperationExecutionError.redirectRequiresReview
-        }
-
-        let sanitized = try sanitize(
-            ProcessResult(exitCode: 0, stdout: data, stderr: Data()),
-            secrets: secretBuffers
-        )
-        guard case let .sanitized(result) = sanitized,
-              let body = String(data: result.stdout, encoding: .utf8)
-        else {
-            throw SecretOperationExecutionError.outputQuarantined
-        }
-
-        let bodyPreview = descriptor.parameters["includeBodyPreview"] == "true" ? body : nil
-        return SecretOperationOutput(
-            status: "COMPLETED",
-            httpStatus: httpResponse.statusCode,
-            contentType: httpResponse.value(forHTTPHeaderField: "Content-Type"),
-            bodyPreview: bodyPreview.map { String($0.prefix(16_384)) },
-            redacted: true
-        )
-    }
-
-    private func sanitize(
-        _ result: ProcessResult,
-        secrets: [Data]
-    ) throws -> SanitizedProcessResult {
-        outputSanitizer.sanitize(result, secrets: secrets)
-    }
-
     private func reference(
         for parameter: String,
         in descriptor: SecretOperationDescriptor
@@ -941,18 +848,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         if {[catch {wait} result]} { exit \(SSHWrapperExitCode.wrapperFailed) }
         exit [lindex $result 3]
         """
-    }
-}
-
-private final class NoRedirectURLSessionDelegate: NSObject, URLSessionTaskDelegate {
-    func urlSession(
-        _: URLSession,
-        task _: URLSessionTask,
-        willPerformHTTPRedirection _: HTTPURLResponse,
-        newRequest _: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
     }
 }
 

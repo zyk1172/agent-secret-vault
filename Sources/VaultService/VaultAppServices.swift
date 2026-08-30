@@ -32,6 +32,8 @@ public enum VaultAppServicesExportError: Error, Equatable, Sendable {
     case invalidDestination
     case destinationNotAllowed
     case fileAlreadyExists
+    case directorySecurityInvalid
+    case writeFailed
 }
 
 public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
@@ -1097,6 +1099,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             operation: .secureExecute,
             status: .completed
         )
+    }
+
+    public func secretOperationCapabilities() async -> [SecretOperationCapability] {
+        let exportRootIsReady = SecureExportWriter().canWrite(to: exportDirectory)
+        return operationExecutor.capabilities()
+            + [SecretOperationCapability(
+                kind: .export,
+                status: exportRootIsReady ? .supported : .unavailable,
+                operations: [.exportPlaintext],
+                reason: exportRootIsReady
+                    ? "App-owned export writer creates a new owner-only file below the configured export root"
+                    : "配置的导出根目录不存在、包含 symlink 或不是 owner-only 目录"
+            )]
     }
 
     public func deleteRecord(_ reference: String) async throws {
@@ -3530,6 +3545,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         destinationPath: String
     ) async throws -> String {
         let destination = try validatedExportDestination(destinationPath)
+        // Export is not an executor adapter, so perform its capability check
+        // explicitly before issuing any device-owner approval. A missing,
+        // shared, or symlinked root must never consume an approval ticket or
+        // establish a reusable export lease for an operation that cannot be
+        // committed safely.
+        guard SecureExportWriter().canWrite(to: exportDirectory) else {
+            throw VaultAppServicesExportError.directorySecurityInvalid
+        }
         let operationGeneration = securityGeneration
         let operationContext = RevealContext(
             reason: context.reason,
@@ -3711,7 +3734,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             guard operationGeneration == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
             }
-            try resolvedText.write(to: destination, atomically: true, encoding: .utf8)
+            do {
+                try SecureExportWriter().write(
+                    Data(resolvedText.utf8),
+                    to: destination,
+                    under: exportDirectory
+                )
+            } catch SecureExportWriterError.fileAlreadyExists {
+                throw VaultAppServicesExportError.fileAlreadyExists
+            } catch SecureExportWriterError.invalidRoot {
+                throw VaultAppServicesExportError.directorySecurityInvalid
+            } catch {
+                throw VaultAppServicesExportError.writeFailed
+            }
         } catch {
             await abandonExecutionAuthorization(scope: scope)
             throw error
@@ -4175,6 +4210,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             username: username,
             protocolType: protocolType,
             actionFamily: descriptor.actionType.rawValue,
+            operationFingerprint: descriptor.actionType == .httpRequest
+                || descriptor.actionType == .apiRequest
+                || descriptor.actionType == .databaseQuery
+                || descriptor.actionType == .sftpTransfer
+                ? descriptor.operationHash
+                : nil,
             generation: generation
         )
     }
@@ -4520,16 +4561,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         case .sshCommand:
             return descriptor.command ?? "未提供命令"
         case .httpRequest, .apiRequest, .browserLogin:
-            let method = (descriptor.httpMethod ?? "GET").uppercased()
+            let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
             return "\(method) \(descriptor.normalizedPath ?? "/")"
         case .databaseQuery:
-            return descriptor.databaseStatement?
+            return descriptor.effectiveDatabaseStatement?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
                 .first
                 .map(String.init) ?? "数据库查询"
         case .sftpTransfer:
-            return "\(descriptor.fileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
+            return "\(descriptor.effectiveFileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
         case .localAppFill:
             return descriptor.localAppBundleID ?? "本地 App 表单"
         default:

@@ -339,6 +339,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
     /// every command.
     public let sessionID: String?
     public let sshCommandBatch: SSHCommandBatch?
+    public let payload: SecretOperationPayload?
     public let requestedEffects: [String]
     public let parameters: [String: String]
     public let agentAssessment: AgentRiskAssessment
@@ -358,6 +359,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         localAppBundleID: String? = nil,
         sessionID: String? = nil,
         sshCommandBatch: SSHCommandBatch? = nil,
+        payload: SecretOperationPayload? = nil,
         requestedEffects: [String] = [],
         parameters: [String: String] = [:],
         agentAssessment: AgentRiskAssessment = .conservativeDefault
@@ -376,6 +378,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         self.localAppBundleID = localAppBundleID
         self.sessionID = sessionID
         self.sshCommandBatch = sshCommandBatch
+        self.payload = payload
         self.requestedEffects = requestedEffects
         self.parameters = parameters
         self.agentAssessment = agentAssessment
@@ -390,6 +393,23 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
             return parsedURL.path.isEmpty ? "/" : parsedURL.path
         }
         return fileTarget
+    }
+
+    /// Typed payloads are canonical for new callers while legacy fields remain
+    /// readable for compatibility with older MCP clients.
+    public var effectiveHTTPMethod: String? {
+        if case let .http(operation)? = payload { return operation.method.rawValue }
+        return httpMethod
+    }
+
+    public var effectiveDatabaseStatement: String? {
+        if case let .database(operation)? = payload { return operation.statement }
+        return databaseStatement
+    }
+
+    public var effectiveFileOperation: SecretFileOperation? {
+        if case let .fileTransfer(operation)? = payload { return operation.operation }
+        return fileOperation
     }
 
     public var commandHash: String? {
@@ -429,6 +449,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         let fileTarget: String?
         let localAppBundleID: String?
         let sshCommandBatch: SSHCommandBatch?
+        let payload: SecretOperationPayload?
         let requestedEffects: [String]
         let parameters: [String: String]
         let agentAssessment: AgentRiskAssessment
@@ -447,6 +468,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
             fileTarget = descriptor.fileTarget
             localAppBundleID = descriptor.localAppBundleID
             sshCommandBatch = descriptor.sshCommandBatch
+            payload = descriptor.payload
             requestedEffects = descriptor.requestedEffects
             parameters = descriptor.parameters
             agentAssessment = descriptor.agentAssessment
@@ -469,6 +491,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
             localAppBundleID: localAppBundleID,
             sessionID: sessionID,
             sshCommandBatch: sshCommandBatch,
+            payload: payload,
             requestedEffects: requestedEffects,
             parameters: parameters,
             agentAssessment: agentAssessment

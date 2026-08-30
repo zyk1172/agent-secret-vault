@@ -50,6 +50,16 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - MCP 连接建立后应声明客户端名称与版本；Audit/UI 只显示 `Codex（自报）`、`Pi（自报）` 等 display metadata。该 identity 不是可信 security principal，也不能改变 lease 隔离。
 - 以上是行为指导，不是安全边界；即使 Agent 不遵守，Swift Policy Engine、IPC principal 校验和 SVLT 执行器也必须拒绝越界请求。
 
+### 非 SSH 执行器与能力清单
+
+- 在任何非 SSH 执行前先调用 `vault_capabilities`。daemon 返回的 capability manifest 才是实际能力来源；`unavailable` 不是“稍后重试即可”的支持状态，也不能因此请求明文或换成普通 shell/CLI。
+- HTTP/API 只能使用 typed payload：Basic、Bearer、API-key header、Cookie 等由 SVLT 分别校验。不要自行添加任意 header、把凭据放进 URL/query，或把 `secret://` 放进 body；重定向会停止并要求重新审查。带认证的响应默认只返回状态/Content-Type，不把响应 body 当成安全的脱敏结果。
+- `database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
+- 导出工具只返回本地路径/状态；plaintext resolution 和安全文件写入留在 App/daemon 边界内。不要读取导出文件再把内容放入聊天或普通工具。
+- HTTP transport `sessionID` 只是 SVLT 内部连接复用句柄，不代表请求已授权。每次请求仍须通过 principal、secretRef、目标、策略和授权要求检查；transport session 不会让 DELETE 或其他 destructive action 免于 fresh approval。
+- 非 SSH 请求仍需准确填写 `intendedEffect` 和风险。`reusableApproval`、`freshApprovalRequired`、`denied` 是独立语义；高危/不可逆操作即使普通 lease 仍有效，也必须接受 fresh approval，且不会延长原 lease。
+- MCP 连接建立时声明 client name/version。Audit 中的 `Codex（自报）`、`Pi（自报）`、`Hermes（自报）` 只是显示 metadata；不得把它当成 security principal，也不能用它绕过 scope 隔离。
+
 ## Catalog Markdown 布局
 
 - SVLT 自己生成或受控插入的 `敏感信息.md` 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局。Note、说明、callout、用户段落和 WikiLink 是 unmanaged，不属于 Index/Entry/Field semantic model，也不计入搜索、计数或 App UI；已有未知用户 Markdown 即使位于两个 Index 之间也保持原位。

@@ -64,6 +64,7 @@ public struct CapabilityToken: Codable, Equatable, Sendable {
 public enum IPCRequest: Codable, Equatable, Sendable {
     case status
     case workbenchStatus
+    case secretOperationCapabilities
     case savedReferences
     /// Compatibility spelling for older in-process callers.  It still emits
     /// the v2 Entry-centric payload and never returns the old flat shape.
@@ -171,6 +172,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     private enum RequestType: String, Codable {
         case status
         case workbenchStatus
+        case secretOperationCapabilities
         case savedReferences
         case searchCatalog
         case catalogSearch
@@ -218,6 +220,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .status
         case .workbenchStatus:
             self = .workbenchStatus
+        case .secretOperationCapabilities:
+            self = .secretOperationCapabilities
         case .savedReferences:
             self = .savedReferences
         case .searchCatalog:
@@ -380,6 +384,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             try container.encode(RequestType.status, forKey: .type)
         case .workbenchStatus:
             try container.encode(RequestType.workbenchStatus, forKey: .type)
+        case .secretOperationCapabilities:
+            try container.encode(RequestType.secretOperationCapabilities, forKey: .type)
         case .savedReferences:
             try container.encode(RequestType.savedReferences, forKey: .type)
         case let .searchCatalog(query, field, limit):
@@ -670,6 +676,7 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
 public enum IPCResponse: Codable, Equatable, Sendable {
     case status(locked: Bool)
     case workbenchStatus(WorkbenchStatus)
+    case secretOperationCapabilities([SecretOperationCapability])
     case savedReferences([SecretReferenceMetadata])
     case catalogSearchResult(SecretCatalogSearchResult)
     case catalogIndexListResult(SecretCatalogIndexListResult)
@@ -704,6 +711,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case type
+        case capabilities
         case locked
         case status
         case references
@@ -728,6 +736,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     private enum ResponseType: String, Codable {
         case status
         case workbenchStatus
+        case secretOperationCapabilities
         case savedReferences
         case catalogSearchResult
         case catalogIndexListResult
@@ -762,6 +771,10 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .status(locked: try container.decode(Bool.self, forKey: .locked))
         case .workbenchStatus:
             self = .workbenchStatus(try container.decode(WorkbenchStatus.self, forKey: .status))
+        case .secretOperationCapabilities:
+            self = .secretOperationCapabilities(
+                try container.decode([SecretOperationCapability].self, forKey: .capabilities)
+            )
         case .savedReferences:
             self = .savedReferences(try container.decode([SecretReferenceMetadata].self, forKey: .references))
         case .catalogSearchResult:
@@ -834,6 +847,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .workbenchStatus(status):
             try container.encode(ResponseType.workbenchStatus, forKey: .type)
             try container.encode(status, forKey: .status)
+        case let .secretOperationCapabilities(capabilities):
+            try container.encode(ResponseType.secretOperationCapabilities, forKey: .type)
+            try container.encode(capabilities, forKey: .capabilities)
         case let .savedReferences(references):
             try container.encode(ResponseType.savedReferences, forKey: .type)
             try container.encode(references, forKey: .references)

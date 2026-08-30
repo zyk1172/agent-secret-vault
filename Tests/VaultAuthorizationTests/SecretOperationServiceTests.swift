@@ -610,11 +610,15 @@ private final class OperationServiceFixture: @unchecked Sendable {
         usesMasterKeyProvider: Bool = false,
         now: @escaping @Sendable () -> Date = Date.init
     ) async throws {
-        root = FileManager.default.temporaryDirectory
+        root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("svlt-operation-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         exportDirectory = root.appendingPathComponent("Exports", isDirectory: true)
-        try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: exportDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         let store = FileRecordStore(baseDirectory: root)
         self.store = store
         key = SymmetricKey(data: Data(repeating: 0x44, count: 32))

@@ -377,6 +377,150 @@ import VaultCore
     #expect(base.operationHash == withSession.operationHash)
 }
 
+@Test func typedHTTPPayloadCannotDisagreeWithLegacyMethodOrUsePublicDestination() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let payload = SecretOperationPayload.http(
+        HTTPOperation(
+            method: .get,
+            auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+        )
+    )
+    let metadata = policyMetadata(reference, destinations: ["8.8.8.8"], protocols: ["http"])
+
+    let conflicting = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "8.8.8.8",
+        port: 80,
+        protocolType: .http,
+        httpMethod: "POST",
+        url: "http://8.8.8.8/status",
+        payload: payload,
+        requestedEffects: ["remote-write"]
+    )
+    let publicTarget = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "8.8.8.8",
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://8.8.8.8/status",
+        payload: payload,
+        requestedEffects: ["read-only"]
+    )
+
+    #expect(engine().evaluate(conflicting, metadata: [metadata]).risk == .denied)
+    #expect(engine().evaluate(publicTarget, metadata: [metadata]).risk == .denied)
+}
+
+@Test func silentHTTPStillRequiresAnAllowedSecretPolicy() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local",
+        port: 443,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://qnap.local/status"
+    )
+    let readOnlyMetadata = SecretPolicyMetadata(
+        reference: reference,
+        policy: .read,
+        label: "read-only",
+        allowedDestinations: ["qnap.local"],
+        allowedProtocols: ["https"]
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [readOnlyMetadata])
+    #expect(decision.risk == .denied)
+    #expect(decision.policyRuleID == "secret-policy.effect-not-allowed")
+}
+
+@Test func typedDatabaseAndFilePayloadsMustBindAllCredentialReferences() throws {
+    let password = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let username = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRT")
+    let databasePayload = SecretOperationPayload.database(
+        DatabaseOperation(
+            engine: .postgres,
+            database: "app",
+            usernameReference: username,
+            passwordReference: password,
+            statement: "SELECT 1"
+        )
+    )
+    let database = SecretOperationDescriptor(
+        actionType: .databaseQuery,
+        secretReferences: [password],
+        destination: "db.local",
+        port: 5432,
+        protocolType: .postgres,
+        databaseStatement: "SELECT 1",
+        payload: databasePayload,
+        requestedEffects: ["database-read"]
+    )
+
+    let filePayload = SecretOperationPayload.fileTransfer(
+        FileTransferOperation(
+            protocolType: .sftp,
+            operation: .list,
+            remotePath: "/share",
+            usernameReference: username,
+            passwordReference: password
+        )
+    )
+    let file = SecretOperationDescriptor(
+        actionType: .sftpTransfer,
+        secretReferences: [password, username],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .sftp,
+        fileOperation: .list,
+        payload: filePayload,
+        requestedEffects: ["read-only"]
+    )
+
+    #expect(engine().evaluate(database, metadata: []).policyRuleID == "operation.payload.reference-mismatch")
+    #expect(engine().evaluate(file, metadata: [
+        policyMetadata(password, destinations: ["nas.local"], protocols: ["sftp"]),
+        policyMetadata(username, destinations: ["nas.local"], protocols: ["sftp"])
+    ]).risk == .silent)
+}
+
+@Test func unknownSingleLabelAndNumericDestinationsAreNotTrustedAsPrivate() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = policyMetadata(reference, destinations: ["printer", "2130706433"], protocols: ["http"])
+    for destination in ["printer", "2130706433"] {
+        let descriptor = SecretOperationDescriptor(
+            actionType: .httpRequest,
+            secretReferences: [reference],
+            destination: destination,
+            port: 80,
+            protocolType: .http,
+            httpMethod: "GET",
+            url: "http://\(destination)/status"
+        )
+        #expect(engine().evaluate(descriptor, metadata: [metadata]).risk == .denied)
+    }
+}
+
+@Test func databaseSelectIntoIsNeverClassifiedAsReadOnly() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .databaseQuery,
+        secretReferences: [reference],
+        destination: "db.local",
+        port: 5432,
+        protocolType: .postgres,
+        databaseStatement: "SELECT id INTO copied_users FROM users"
+    )
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["db.local"], protocols: ["postgres"])
+    ])
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+}
+
 private func engine() -> SecretOperationPolicyEngine {
     SecretOperationPolicyEngine()
 }

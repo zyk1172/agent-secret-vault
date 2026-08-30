@@ -16,6 +16,10 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
     public let username: String?
     public let protocolType: String?
     public let actionFamily: String
+    /// Canonical operation identity for protocols where reusing an approval
+    /// across paths, methods, headers, or bodies would be unsafe. SSH leaves
+    /// this nil so ordinary policy-reviewed commands can share the lease.
+    public let operationFingerprint: String?
     public let generation: UInt64
 
     public init(
@@ -26,6 +30,7 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
         username: String? = nil,
         protocolType: String?,
         actionFamily: String,
+        operationFingerprint: String? = nil,
         generation: UInt64
     ) {
         self.principal = principal
@@ -35,6 +40,7 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
         self.username = username
         self.protocolType = protocolType
         self.actionFamily = actionFamily
+        self.operationFingerprint = operationFingerprint
         self.generation = generation
     }
 }

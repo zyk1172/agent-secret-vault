@@ -39,6 +39,7 @@ describe("MCP tool contracts", () => {
     const names = createVaultToolDefinitions(new FakeClient([])).map((item) => item.name);
     expect(names).toEqual(expect.arrayContaining([
       "vault_status",
+      "vault_capabilities",
       "secret_search",
       "secret_catalog_search",
       "secret_catalog_get",
@@ -154,6 +155,40 @@ describe("MCP tool contracts", () => {
       ready: true,
       approvalPending: false
     });
+  });
+
+  it("requests the daemon capability manifest before claiming adapter support", async () => {
+    const client = new FakeClient([{
+      type: "secretOperationCapabilities",
+      capabilities: [{
+        kind: "http",
+        status: "supported",
+        operations: ["httpRequest"],
+        reason: "typed HTTP"
+      }, {
+        kind: "database",
+        status: "unavailable",
+        operations: ["databaseQuery"],
+        reason: "driver unavailable"
+      }]
+    }]);
+
+    const result = await tool(client, "vault_capabilities").handler({});
+    expect(result.structuredContent).toEqual({
+      status: "OK",
+      capabilities: [{
+        kind: "http",
+        status: "supported",
+        operations: ["httpRequest"],
+        reason: "typed HTTP"
+      }, {
+        kind: "database",
+        status: "unavailable",
+        operations: ["databaseQuery"],
+        reason: "driver unavailable"
+      }]
+    });
+    expect(client.requests).toEqual([{ type: "secretOperationCapabilities" }]);
   });
 
   it("returns destination binding as non-sensitive metadata", async () => {

@@ -47,6 +47,14 @@ public actor VaultIPCClient {
         return status
     }
 
+    public func secretOperationCapabilities() async throws -> [SecretOperationCapability] {
+        let response = try await send(.secretOperationCapabilities)
+        guard case let .secretOperationCapabilities(capabilities) = response else {
+            throw unexpected(response)
+        }
+        return capabilities
+    }
+
     public func savedSecretReferences() async throws -> [SecretReferenceMetadata] {
         let response = try await send(.savedReferences)
         guard case let .savedReferences(references) = response else {

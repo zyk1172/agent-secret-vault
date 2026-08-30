@@ -190,3 +190,15 @@ private actor SpyWorkbenchService: WorkbenchServicing {
 
     #expect(response == .failure(code: "ACTION_EXECUTION_FAILED"))
 }
+
+@Test func handlerExposesOnlyTheNonSensitiveAdapterCapabilityManifest() async throws {
+    let service = SpyWorkbenchService()
+    let handler = IPCRequestHandler(service: service)
+
+    let response = try await handler.handle(.secretOperationCapabilities)
+
+    #expect(response == .secretOperationCapabilities([]))
+    let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
+    #expect(!encoded.contains("ControlPath"))
+    #expect(!encoded.contains("plaintext"))
+}

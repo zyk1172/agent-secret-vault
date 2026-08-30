@@ -639,6 +639,33 @@ export const SSHSessionStatus = z
   .strict();
 export type SSHSessionStatus = z.infer<typeof SSHSessionStatus>;
 
+export const SecretOperationExecutionCapability = z.enum([
+  "supported",
+  "unavailable",
+  "invalidParameters"
+]);
+export type SecretOperationExecutionCapability = z.infer<typeof SecretOperationExecutionCapability>;
+
+export const SecretAdapterKind = z.enum([
+  "ssh",
+  "http",
+  "database",
+  "sftp",
+  "browser",
+  "localApp",
+  "export",
+  "trustedProcess"
+]);
+export type SecretAdapterKind = z.infer<typeof SecretAdapterKind>;
+
+export const SecretOperationCapability = z.object({
+  kind: SecretAdapterKind,
+  status: SecretOperationExecutionCapability,
+  operations: z.array(SecretOperationAction).max(32),
+  reason: z.string().max(240).nullable().optional()
+}).strict();
+export type SecretOperationCapability = z.infer<typeof SecretOperationCapability>;
+
 export const SecretFileOperation = z.enum([
   "list",
   "read",
@@ -650,6 +677,152 @@ export const SecretFileOperation = z.enum([
   "delete"
 ]);
 export type SecretFileOperation = z.infer<typeof SecretFileOperation>;
+
+export const HTTPMethod = z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
+export type HTTPMethod = z.infer<typeof HTTPMethod>;
+
+export const HTTPAuthStrategy = z.object({
+  kind: z.enum([
+    "none",
+    "basic",
+    "bearer",
+    "apiKeyHeader",
+    "cookie",
+    "customHeader",
+    "oauth2ClientCredentials",
+    "oauth2RefreshToken",
+    "clientCertificate",
+    "hmacSigning"
+  ]),
+  username: z.string().max(256).nullable().optional(),
+  usernameReference: SecretReference.nullable().optional(),
+  passwordReference: SecretReference.nullable().optional(),
+  valueReference: SecretReference.nullable().optional(),
+  headerName: z.string().max(128).nullable().optional(),
+  scheme: z.string().max(64).nullable().optional(),
+  cookieName: z.string().max(128).nullable().optional()
+}).strict();
+export type HTTPAuthStrategy = z.infer<typeof HTTPAuthStrategy>;
+
+export const HTTPBody = z.object({
+  kind: z.enum(["none", "raw", "json", "form"]),
+  content: z.string().max(65_536).nullable().optional(),
+  fields: z.record(z.string().max(256), z.string().max(4_096)).default({})
+}).strict();
+export type HTTPBody = z.infer<typeof HTTPBody>;
+
+export const HTTPResponsePolicy = z.object({
+  kind: z.enum(["metadataOnly", "sanitizedPreview", "structuredFields", "captureCredential"]),
+  maxBytes: z.number().int().min(0).max(1_048_576).default(16_384),
+  fields: z.array(z.string().min(1).max(128)).max(32).default([]),
+  source: z.enum(["json", "header"]).nullable().optional(),
+  selector: z.string().max(256).nullable().optional()
+}).strict();
+export type HTTPResponsePolicy = z.infer<typeof HTTPResponsePolicy>;
+
+export const HTTPOperation = z.object({
+  method: HTTPMethod,
+  auth: HTTPAuthStrategy,
+  body: HTTPBody,
+  responsePolicy: HTTPResponsePolicy,
+  timeoutMs: z.number().int().min(100).max(30_000).nullable().optional()
+}).strict();
+export type HTTPOperation = z.infer<typeof HTTPOperation>;
+
+export const DatabaseParameterValue = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("string"), value: z.string().max(4_096) }).strict(),
+  z.object({ type: z.literal("integer"), value: z.number().int() }).strict(),
+  z.object({ type: z.literal("double"), value: z.number().finite() }).strict(),
+  z.object({ type: z.literal("boolean"), value: z.boolean() }).strict(),
+  z.object({ type: z.literal("secretReference"), value: SecretReference }).strict(),
+  z.object({ type: z.literal("null") }).strict()
+]);
+export type DatabaseParameterValue = z.infer<typeof DatabaseParameterValue>;
+
+export const DatabaseParameter = z.object({
+  name: z.string().min(1).max(128),
+  value: DatabaseParameterValue
+}).strict();
+export type DatabaseParameter = z.infer<typeof DatabaseParameter>;
+
+export const DatabaseOperation = z.object({
+  engine: z.enum(["postgres", "mysql"]),
+  database: z.string().min(1).max(256),
+  username: z.string().max(256).nullable().optional(),
+  usernameReference: SecretReference.nullable().optional(),
+  passwordReference: SecretReference.nullable().optional(),
+  statement: z.string().min(1).max(20_000),
+  parameters: z.array(DatabaseParameter).max(64).default([]),
+  maxRows: z.number().int().min(1).max(10_000).default(100),
+  timeoutMs: z.number().int().min(100).max(30_000).nullable().optional()
+}).strict();
+export type DatabaseOperation = z.infer<typeof DatabaseOperation>;
+
+export const FileTransferOperation = z.object({
+  protocolType: z.enum(["sftp", "scp"]),
+  operation: SecretFileOperation,
+  remotePath: z.string().min(1).max(4_096),
+  localPath: z.string().max(4_096).nullable().optional(),
+  localFileGrantID: z.string().max(128).nullable().optional(),
+  username: z.string().max(256).nullable().optional(),
+  usernameReference: SecretReference.nullable().optional(),
+  passwordReference: SecretReference.nullable().optional()
+}).strict();
+export type FileTransferOperation = z.infer<typeof FileTransferOperation>;
+
+export const BrowserLoginOperation = z.object({
+  profileID: z.string().max(128).nullable().optional(),
+  browser: z.string().max(32).nullable().optional(),
+  url: z.string().url().nullable().optional(),
+  username: z.string().max(256).nullable().optional(),
+  usernameReference: SecretReference.nullable().optional(),
+  passwordReference: SecretReference.nullable().optional(),
+  usernameSelector: z.string().max(256).nullable().optional(),
+  passwordSelector: z.string().max(256).nullable().optional(),
+  submitSelector: z.string().max(256).nullable().optional(),
+  submit: z.boolean()
+}).strict();
+export type BrowserLoginOperation = z.infer<typeof BrowserLoginOperation>;
+
+export const LocalAppFillField = z.object({
+  name: z.string().min(1).max(128),
+  value: z.string().max(4_096).nullable().optional(),
+  valueReference: SecretReference.nullable().optional()
+}).strict();
+export type LocalAppFillField = z.infer<typeof LocalAppFillField>;
+
+export const LocalAppFillOperation = z.object({
+  bundleID: z.string().min(1).max(256),
+  fields: z.array(LocalAppFillField).max(64),
+  submitButton: z.string().max(128).nullable().optional()
+}).strict();
+export type LocalAppFillOperation = z.infer<typeof LocalAppFillOperation>;
+
+export const ExportOperation = z.object({
+  kind: z.enum(["persistent", "ephemeral", "directDelivery"]),
+  destinationRoot: z.string().max(1_024).nullable().optional(),
+  overwrite: z.boolean(),
+  secretReferences: z.array(SecretReference).default([])
+}).strict();
+export type ExportOperation = z.infer<typeof ExportOperation>;
+
+export const TrustedProcessOperation = z.object({
+  profileID: z.string().min(1).max(128),
+  arguments: z.array(z.string().max(4_096)).max(32).default([]),
+  secretReferences: z.array(SecretReference).default([])
+}).strict();
+export type TrustedProcessOperation = z.infer<typeof TrustedProcessOperation>;
+
+export const SecretOperationPayload = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("http"), operation: HTTPOperation }).strict(),
+  z.object({ type: z.literal("database"), operation: DatabaseOperation }).strict(),
+  z.object({ type: z.literal("fileTransfer"), operation: FileTransferOperation }).strict(),
+  z.object({ type: z.literal("browser"), operation: BrowserLoginOperation }).strict(),
+  z.object({ type: z.literal("localApp"), operation: LocalAppFillOperation }).strict(),
+  z.object({ type: z.literal("export"), operation: ExportOperation }).strict(),
+  z.object({ type: z.literal("trustedProcess"), operation: TrustedProcessOperation }).strict()
+]);
+export type SecretOperationPayload = z.infer<typeof SecretOperationPayload>;
 
 export const SecretOperationDescriptor = z
   .object({
@@ -667,6 +840,7 @@ export const SecretOperationDescriptor = z
     localAppBundleID: z.string().nullable().optional(),
     sessionID: z.string().min(1).max(128).nullable().optional(),
     sshCommandBatch: SSHCommandBatch.nullable().optional(),
+    payload: SecretOperationPayload.nullable().optional(),
     requestedEffects: z.array(z.string()),
     parameters: z.record(z.string(), z.string()),
     agentAssessment: AgentRiskAssessment
@@ -677,6 +851,7 @@ export type SecretOperationDescriptor = z.infer<typeof SecretOperationDescriptor
 export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("status") }).strict(),
   z.object({ type: z.literal("workbenchStatus") }).strict(),
+  z.object({ type: z.literal("secretOperationCapabilities") }).strict(),
   z
     .object({
       type: z.literal("sshSessionStatus"),
@@ -899,7 +1074,7 @@ export const SecretOperationOutput = z
       stdout: z.string().optional(),
       stderr: z.string().optional()
     }).strict()).max(32).optional(),
-    redacted: z.boolean()
+    redacted: z.literal(true)
   })
   .strict();
 export type SecretOperationOutput = z.infer<typeof SecretOperationOutput>;
@@ -921,6 +1096,12 @@ export const IpcResponse = z.discriminatedUnion("type", [
     .object({
       type: z.literal("workbenchStatus"),
       status: WorkbenchStatus
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("secretOperationCapabilities"),
+      capabilities: z.array(SecretOperationCapability).max(32)
     })
     .strict(),
   z
