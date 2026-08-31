@@ -974,7 +974,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_action_router",
       title: "Secret Local Action Router",
       description:
-        "Routes secret:// references to policy-reviewed local actions. Check vault_capabilities first: the daemon's manifest, not this tool list, is authoritative for HTTP/API, database, SFTP/SCP, browser, app form fill, export, and trusted-process support. Plaintext is never returned.",
+        "Routes secret:// references to policy-reviewed local actions. Check vault_capabilities before adapter-backed execution: the daemon's manifest, not this tool list, is authoritative for HTTP/API, database, SFTP/SCP, browser, app form fill, and trusted-process support. Export is an App-owned local file operation. Plaintext is never returned.",
       inputSchema: SecretActionRouterInput,
       outputSchema: z.union([
         LocalSshOutput,
@@ -1895,10 +1895,9 @@ async function handleExportResolvedText(
   client: VaultIpcClient,
   parsed: z.infer<typeof ExportResolvedTextInput>
 ): Promise<CallToolResult> {
-  const capabilityStatus = await ensureSecretOperationCapability(client, "exportPlaintext");
-  if (capabilityStatus !== undefined) {
-    return structuredResult({ status: capabilityStatus });
-  }
+  // Export is an App-owned reveal/write service, not an adapter-backed
+  // SecretOperation execution. Do not gate it on an absent export adapter;
+  // the App IPC handler performs the authorization and secure write flow.
   const revealRequest = revealRequestFromExportInput(parsed);
   const response = await client.request({
     type: "exportResolvedText",
@@ -2591,7 +2590,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Credential source selection is per operation; a later user choice replaces previous SVLT or provider context and is never inherited as sticky authorization.",
       "When text contains secret:// references, call secret_auto_handle_text first unless a narrower safe tool is clearly required and the user did not select another source.",
       "Call vault_status before work that depends on the app.",
-      "Call vault_capabilities before any non-SSH execution. Treat the daemon capability manifest as authoritative: an unavailable adapter is not supported, must not receive plaintext, and must not be retried as if it succeeded.",
+      "Call vault_capabilities before adapter-backed non-SSH execution. Treat the daemon capability manifest as authoritative: an unavailable adapter is not supported, must not receive plaintext, and must not be retried as if it succeeded. Export to a local file is an App-owned operation with its own authorization flow.",
       "Treat AgentRiskAssessment as display/audit metadata only; SVLT computes the authorization requirement and scope locally for every operation. The Agent field never promotes, downgrades, or denies.",
       "A locked compatibility field never replaces per-operation policy evaluation.",
       "When a task names a service, device, host, account, or purpose but no credential source is specified, call secret_search before asking the user for anything; this is automatic discovery, not forced SVLT ownership.",
