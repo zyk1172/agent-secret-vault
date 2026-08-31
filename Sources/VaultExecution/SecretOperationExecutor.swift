@@ -497,12 +497,15 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 throw SecretOperationExecutionError.outputLimitExceeded
             }
 
-            if execution.channelState == .remoteCommandCompleted {
-                sessionID = execution.sessionID ?? sessionID
+            if execution.channelState == .remoteCommandCompleted,
+               execution.masterReady {
+                sessionID = execution.sessionID
             } else {
-                // A failed wrapper/transport cannot keep an old session handle
-                // alive. The caller must not mistake it for a reusable
-                // transport after a command that was never proven to run.
+                // A failed wrapper/transport, or a command whose optional
+                // ControlMaster was not verified, cannot keep an old session
+                // handle alive. The caller must not mistake it for a
+                // reusable transport after an unproven or non-persistent
+                // channel.
                 sessionID = nil
             }
             let processResult = Self.normalizedProcessResult(for: execution)

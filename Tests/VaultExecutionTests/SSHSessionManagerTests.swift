@@ -31,7 +31,9 @@ import VaultCore
     }
 
     #expect(first.sessionID != nil)
+    #expect(first.masterReady)
     #expect(second.sessionID == first.sessionID)
+    #expect(second.masterReady)
     #expect(await firstFlags.requiresAuthentication == true)
     #expect(await secondFlags.requiresAuthentication == false)
     #expect(await firstFlags.controlPath?.contains("nas.local") == false)
@@ -144,6 +146,7 @@ import VaultCore
 
     #expect(execution.processResult.stdout == Data("command ran".utf8))
     #expect(execution.sessionID == nil)
+    #expect(!execution.masterReady)
     #expect(await manager.statuses(for: "agent-process").isEmpty)
     let invocations = await runner.invocations
     #expect(invocations.contains { $0.arguments.contains("check") })
@@ -168,6 +171,7 @@ import VaultCore
 
     #expect(execution.processResult.exitCode == 0)
     #expect(execution.channelState == .wrapperFailed)
+    #expect(!execution.masterReady)
     #expect(execution.sessionID == nil)
     let invocations = await runner.invocations
     #expect(invocations.contains { $0.arguments.contains("check") } == false)
@@ -193,6 +197,7 @@ import VaultCore
 
     #expect(execution.processResult.exitCode == 0)
     #expect(execution.channelState == .transportFailed)
+    #expect(!execution.masterReady)
     #expect(execution.sessionID == nil)
     #expect(await manager.statuses(for: scope.principal).isEmpty)
 }
@@ -260,6 +265,8 @@ import VaultCore
     #expect(second.processResult.stdout == Data("second command".utf8))
     #expect(first.sessionID == nil)
     #expect(second.sessionID == nil)
+    #expect(!first.masterReady)
+    #expect(!second.masterReady)
     #expect(await accesses.value(for: "first") == true)
     // The waiter reconnects as a normal first-channel operation instead of
     // assuming an unavailable ControlMaster was a failed command.
@@ -297,6 +304,8 @@ import VaultCore
     #expect(first.processResult.stdout == Data("first".utf8))
     #expect(second.processResult.stdout == Data("reconnected".utf8))
     #expect(second.sessionID != sessionID)
+    #expect(first.masterReady)
+    #expect(second.masterReady)
     #expect(await firstAccess.requiresAuthentication == true)
     #expect(await secondAccess.requiresAuthentication == true)
     #expect(await runner.invocations.filter { $0.arguments.contains("check") }.count == 3)

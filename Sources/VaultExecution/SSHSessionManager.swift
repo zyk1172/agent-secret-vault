@@ -79,32 +79,12 @@ public struct SSHSessionAccess: Sendable, Equatable {
 public struct SSHSessionCommandExecution: Sendable, Equatable {
     public let processResult: ProcessResult
     public let channelState: SSHChannelState
+    /// Whether the manager verified a reusable ControlMaster for this result.
+    /// This is independent from remote command completion: a command may run
+    /// successfully even when the optional reuse socket could not persist.
+    public let masterReady: Bool
     public let sessionID: String?
     let outputFingerprints: [SecretOutputFingerprint]
-
-    /// Compatibility projection for callers compiled against the original
-    /// boolean transport result. New code should use `channelState` so a
-    /// wrapper failure cannot be confused with a completed remote command.
-    @available(*, deprecated, message: "Use channelState")
-    public var transportReady: Bool {
-        channelState == .remoteCommandCompleted
-    }
-
-    /// Compatibility initializer for existing in-process test doubles and
-    /// adapters. A false value is conservatively treated as a transport
-    /// failure; it is never eligible to publish or reuse a session.
-    @available(*, deprecated, message: "Use the channelState initializer")
-    public init(
-        processResult: ProcessResult,
-        transportReady: Bool,
-        sessionID: String? = nil
-    ) {
-        self.init(
-            processResult: processResult,
-            channelState: transportReady ? .remoteCommandCompleted : .transportFailed,
-            sessionID: sessionID
-        )
-    }
 
     public init(
         processResult: ProcessResult,
@@ -123,19 +103,22 @@ public struct SSHSessionCommandExecution: Sendable, Equatable {
         processResult: ProcessResult,
         channelState: SSHChannelState,
         sessionID: String? = nil,
+        masterReady: Bool = false,
         outputFingerprints: [SecretOutputFingerprint]
     ) {
         self.processResult = processResult
         self.channelState = channelState
+        self.masterReady = masterReady
         self.sessionID = sessionID
         self.outputFingerprints = outputFingerprints
     }
 
-    func assigningSessionID(_ id: String?) -> Self {
+    func assigningSessionID(_ id: String?, masterReady: Bool? = nil) -> Self {
         Self(
             processResult: processResult,
             channelState: channelState,
             sessionID: id,
+            masterReady: masterReady ?? self.masterReady,
             outputFingerprints: outputFingerprints
         )
     }
@@ -146,6 +129,7 @@ public struct SSHSessionCommandExecution: Sendable, Equatable {
             processResult: processResult,
             channelState: channelState,
             sessionID: sessionID,
+            masterReady: masterReady,
             outputFingerprints: fingerprints
         )
     }
@@ -447,7 +431,7 @@ public actor SSHSessionManager {
             do {
                 let result = try await operation(access)
                 guard let self else {
-                    return result.assigningSessionID(nil)
+                    return result.assigningSessionID(nil, masterReady: false)
                 }
                 return await self.finishOpening(
                     scope: scope,
@@ -473,7 +457,7 @@ public actor SSHSessionManager {
         result: SSHSessionCommandExecution
     ) async -> SSHSessionCommandExecution {
         guard openingTasks[scope]?.recordID == record.id else {
-            return result.assigningSessionID(nil)
+            return result.assigningSessionID(nil, masterReady: false)
         }
 
         guard result.channelState == .remoteCommandCompleted else {
@@ -483,7 +467,7 @@ public actor SSHSessionManager {
             // may never have been a live master.
             records.removeValue(forKey: record.id)
             removeControlPath(record.controlPath)
-            return result.assigningSessionID(nil)
+            return result.assigningSessionID(nil, masterReady: false)
         }
 
         // The first channel may complete successfully even when the
@@ -492,12 +476,12 @@ public actor SSHSessionManager {
         // preserve the real command result.
         guard await checkControl(record) else {
             guard openingTasks[scope]?.recordID == record.id else {
-                return result.assigningSessionID(nil)
+                return result.assigningSessionID(nil, masterReady: false)
             }
             openingTasks.removeValue(forKey: scope)
             records.removeValue(forKey: record.id)
             await closeControl(record)
-            return result.assigningSessionID(nil)
+            return result.assigningSessionID(nil, masterReady: false)
         }
 
         // `checkControl` above awaits. `invalidateAll()` may cancel this
@@ -506,7 +490,7 @@ public actor SSHSessionManager {
         // flight while cleaning up this old one.
         guard openingTasks[scope]?.recordID == record.id,
               var current = records[record.id] else {
-            return result.assigningSessionID(nil)
+            return result.assigningSessionID(nil, masterReady: false)
         }
         current.state = .active
         current.lastUsedAt = now()
@@ -514,7 +498,7 @@ public actor SSHSessionManager {
         current.outputFingerprints = result.outputFingerprints
         records[record.id] = current
         openingTasks.removeValue(forKey: scope)
-        return result.assigningSessionID(record.id)
+        return result.assigningSessionID(record.id, masterReady: true)
     }
 
     private func finishFailedOpening(scope: SSHSessionScope, record: Record) {
@@ -542,19 +526,19 @@ public actor SSHSessionManager {
         let result = try await operation(access)
         guard result.channelState == .remoteCommandCompleted else {
             await closeRecord(record)
-            return result.assigningSessionID(nil)
+            return result.assigningSessionID(nil, masterReady: false)
         }
         guard var current = records[record.id] else {
             // The record vanished (reaped concurrently) but the command
             // already ran: return the real result instead of failing it.
-            return result.assigningSessionID(nil)
+            return result.assigningSessionID(nil, masterReady: false)
         }
         current.lastUsedAt = now()
         current.lastUsedTick = monotonicNow()
         records[record.id] = current
         return result
             .assigningFingerprintsIfMissing(record.outputFingerprints)
-            .assigningSessionID(record.id)
+            .assigningSessionID(record.id, masterReady: true)
     }
 
     private func enforceLimits(for principal: String) throws {
