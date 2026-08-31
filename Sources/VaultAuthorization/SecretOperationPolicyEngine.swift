@@ -133,7 +133,7 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = commandDecision.ruleID
             localRequirement = commandDecision.authorizationRequirement
         case .httpRequest, .apiRequest:
-            let httpOutcome = httpDecision(descriptor, metadata: metadata)
+            let httpOutcome = httpDecision(descriptor)
             localRisk = httpOutcome.risk
             reasons = httpOutcome.reasons
             ruleID = httpOutcome.ruleID
@@ -492,11 +492,12 @@ public struct SecretOperationPolicyEngine: Sendable {
     }
 
     /// Destination/protocol/credential-policy information is display-only
-    /// (§31/§32): a mismatch opens a new execution scope whose first use takes
-    /// the ordinary approval and a visible hint; it never promotes to fresh
-    /// and never denies. Approving never mutates the saved binding. Only
-    /// unverifiable credential identity (missing/contradictory metadata)
-    /// fails hard as a technical error.
+    /// (§31/§32): a mismatch opens a new execution scope with a visible hint;
+    /// the mismatch itself never changes the approval requirement and never
+    /// denies. An operation-specific rule may still require fresh approval.
+    /// Approving never mutates the saved binding. Only unverifiable credential
+    /// identity (missing/contradictory metadata) fails hard as a technical
+    /// error.
     private func bindingDecision(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
@@ -549,11 +550,10 @@ public struct SecretOperationPolicyEngine: Sendable {
                 continue
             }
 
-            if isPublicDestination(normalizedDestination) {
-                reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中，且是公网地址；本次审批进入新的执行 scope")
-            } else {
-                reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中；本次审批进入新的执行 scope")
-            }
+            // Do not label a hostname as public/private here. DNS and the
+            // eventual connection address are outside this descriptor-only
+            // policy pass; the owner sees the exact destination and decides.
+            reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中；本次审批进入新的执行 scope")
         }
 
         return (.none, reasons, "destination.bound")
@@ -569,18 +569,21 @@ public struct SecretOperationPolicyEngine: Sendable {
     public enum HTTPFreshRules {
         public static let delete = "http.fresh.delete"
         public static let insecureSecretTransport = "http.fresh.insecure-secret-transport"
+        public static let credentialInURL = "http.fresh.credential-in-url"
+        public static let secretNetworkSend = "http.fresh.secret-network-send"
         public static let explicitSecretRelease = "http.fresh.explicit-secret-release"
 
         public static let all: [String] = [
             delete,
             insecureSecretTransport,
+            credentialInURL,
+            secretNetworkSend,
             explicitSecretRelease
         ]
     }
 
     private func httpDecision(
-        _ descriptor: SecretOperationDescriptor,
-        metadata: [SecretPolicyMetadata]
+        _ descriptor: SecretOperationDescriptor
     ) -> (risk: OperationRisk, requirement: AuthorizationRequirement, reasons: [String], ruleID: String) {
         guard let url = descriptor.url,
               let parsedURL = URL(string: url),
@@ -594,52 +597,23 @@ public struct SecretOperationPolicyEngine: Sendable {
 
         let carriesSecret = !descriptor.secretReferences.isEmpty
 
-        // URL credentials are a hard boundary, not a fresh-approval category:
-        // URL/query values can be copied into proxy, server, browser, or
-        // access logs before the adapter gets a chance to sanitize output.
+        // Fixed fresh rules (§33). A credential query is owner-controlled, but
+        // still gets an explicit warning because proxies and server logs may
+        // record it; it is not an autonomous policy refusal.
         if hasCredentialQueryParameter(parsedURL) {
             return (
-                .denied,
-                .denied,
-                ["URL query 不允许携带凭据类参数"],
-                "http.credential-in-url.denied"
-            )
-        }
-
-        // Secret-bearing HTTP/API requests are only permitted for a
-        // private/loopback target. Public egress must be rejected before any
-        // authorization path can release a Secret.
-        if carriesSecret, isPublicDestination(parsedURL.host ?? "") {
-            return (
-                .denied,
-                .denied,
-                ["携带 Secret 的 HTTP/API 请求禁止发送到公网目标"],
-                "http.public-destination.denied"
-            )
-        }
-
-        // A request cannot opt into insecure HTTP by itself. Every referenced
-        // Secret must have a saved profile that permits this exact host class;
-        // missing metadata is left to the binding validator below.
-        if parsedURL.scheme?.lowercased() == "http", carriesSecret,
-           !descriptor.secretReferences.allSatisfy({ reference in
-               guard let secret = metadata.first(where: { $0.reference == reference }) else {
-                   return false
-               }
-               return secret.httpTransportSecurityPolicy.permitsInsecureHTTP(toHost: parsedURL.host ?? "")
-           }) {
-            return (
-                .denied,
-                .denied,
-                ["保存的 Secret profile 不允许对该私有目标使用不安全 HTTP"],
-                "http.insecure-profile.denied"
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["URL query 携带凭据类参数，可能被记录在服务器日志或代理中；设备所有者确认后执行"],
+                HTTPFreshRules.credentialInURL
             )
         }
 
         // Fixed fresh rules (§33). Everything else — GET/HEAD/POST/PUT/PATCH,
-        // private destinations, unknown paths, and custom headers accepted by
-        // the typed adapter — remains on the ordinary path. An explicitly
-        // allowed insecure profile is still a fresh-approval boundary.
+        // public destinations, unknown paths, and custom headers accepted by
+        // the typed adapter — remains on the owner-approval path. The
+        // executor separately enforces an exact saved origin for plaintext
+        // HTTP after that approval; it is not a hostname-based policy gate.
         if parsedURL.scheme?.lowercased() == "http", carriesSecret {
             return (
                 .approvalRequired,
@@ -656,6 +630,15 @@ public struct SecretOperationPolicyEngine: Sendable {
                 .freshApprovalRequired,
                 ["HTTP DELETE 可能删除远端资源，每次都需要设备所有者重新认证"],
                 HTTPFreshRules.delete
+            )
+        }
+
+        if carriesSecret {
+            return (
+                .approvalRequired,
+                .freshApprovalRequired,
+                ["Secret 将离开本机发送到 HTTP(S) 目标；每次发送都需要设备所有者重新认证"],
+                HTTPFreshRules.secretNetworkSend
             )
         }
 
@@ -823,66 +806,6 @@ public struct SecretOperationPolicyEngine: Sendable {
             return false
         }
         return allowedProtocols.contains(where: { $0.lowercased() == scheme })
-    }
-
-    private func isPublicDestination(_ destination: String) -> Bool {
-        let host: String = {
-            let candidate = destination.contains("://") ? destination : "//\(destination)"
-            if let parsedHost = URLComponents(string: candidate)?.host {
-                return parsedHost
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-                    .lowercased()
-            }
-            return destination.split(separator: ":", maxSplits: 1).first.map(String.init)?.lowercased() ?? destination.lowercased()
-        }()
-        if host.hasPrefix("/") || host.hasPrefix("file/") {
-            return false
-        }
-        if host == "localhost" || host.hasSuffix(".localhost")
-            || host.hasSuffix(".local") || host.hasSuffix(".lan")
-            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") {
-            return false
-        }
-        if host.contains(":") {
-            let compact = host.replacingOccurrences(of: " ", with: "")
-            let isPrivateIPv6 = compact == "::"
-                || compact == "::1"
-                || compact.hasPrefix("fc")
-                || compact.hasPrefix("fd")
-                || (compact.hasPrefix("fe8") || compact.hasPrefix("fe9")
-                    || compact.hasPrefix("fea") || compact.hasPrefix("feb"))
-            return !isPrivateIPv6
-        }
-        let looksLikeNumericIPv4 = host.unicodeScalars.allSatisfy { $0.value == 0x2E || (0x30...0x39).contains($0.value) }
-        if looksLikeNumericIPv4 {
-            let components = host.split(separator: ".", omittingEmptySubsequences: false)
-            guard components.count == 4,
-                  components.allSatisfy({ component in
-                      !component.isEmpty
-                          && (component.count == 1 || component.first != "0")
-                          && component.allSatisfy { $0.isNumber }
-                  }) else {
-                return true
-            }
-            let parts = components.compactMap { Int($0) }
-            guard parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else {
-                return true
-            }
-            let first = parts[0]
-            let second = parts[1]
-            if first == 0 || first == 10 || first == 127 || (first == 100 && (64...127).contains(second))
-                || (first == 192 && second == 168) || (first == 169 && second == 254)
-                || (first == 172 && (16...31).contains(second)) {
-                return false
-            }
-            return true
-        }
-        // A hostname with no dot is not proof of a private/local target. Keep
-        // the explicit localhost/.local allowlist above, but classify every
-        // other unknown or single-label name as public/untrusted for the
-        // warning text only.
-        return true
     }
 
     private func explicitPort(in destination: String) -> Int? {

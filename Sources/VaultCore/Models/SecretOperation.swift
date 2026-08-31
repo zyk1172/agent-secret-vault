@@ -196,10 +196,11 @@ public enum SecretOperationProtocol: String, Codable, CaseIterable, Sendable {
     case file
 }
 
-/// Transport policy for HTTP requests that carry a secret. The saved
-/// `allowedProtocols` binding is the current profile boundary: an explicit
-/// `http` entry opts a private/local destination into insecure HTTP. An Agent
-/// request cannot create or widen this policy by adding a request parameter.
+/// Descriptive transport markers retained in Secret metadata. An explicit
+/// `http` entry is an owner-saved opt-in for insecure HTTP; the exact origin
+/// check is performed by the HTTP executor. Host-class helpers below are not
+/// proof of DNS resolution or actual network egress and must not be used as a
+/// substitute for that exact profile check.
 public enum HTTPTransportSecurityPolicy: String, Codable, CaseIterable, Sendable {
     case httpsRequired
     case allowInsecureLoopback

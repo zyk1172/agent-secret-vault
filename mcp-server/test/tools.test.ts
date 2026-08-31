@@ -1037,14 +1037,34 @@ describe("MCP tool contracts", () => {
     expect((request.descriptor.payload as { operation: { auth: { scheme?: string } } }).operation.auth.scheme).toBeUndefined();
   });
 
-  it("rejects credential-shaped URLs and secret references in API bodies", async () => {
-    const urlClient = new FakeClient([]);
+  it("routes credential query URLs through owner approval and rejects URL authority credentials", async () => {
+    const urlClient = new FakeClient([
+      capabilityResponse("apiRequest"),
+      operationResponse({ httpStatus: 200 })
+    ]);
     const urlResult = await tool(urlClient, "api_request_with_token").handler({
       url: "https://qnap.local/api?token=secret",
       tokenRef: reference
     });
-    expect(urlResult.structuredContent).toEqual({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
-    expect(urlClient.requests).toHaveLength(0);
+    expect(urlResult.structuredContent).toEqual({
+      status: "COMPLETED",
+      httpStatus: 200,
+      contentType: null,
+      redacted: true
+    });
+    expect(urlClient.requests).toHaveLength(2);
+    expect(urlClient.requests[1]).toMatchObject({
+      type: "executeSecretOperation",
+      descriptor: { url: "https://qnap.local/api?token=secret" }
+    });
+
+    const authorityClient = new FakeClient([]);
+    const authorityResult = await tool(authorityClient, "api_request_with_token").handler({
+      url: "https://user:pass@qnap.local/api",
+      tokenRef: reference
+    });
+    expect(authorityResult.structuredContent).toEqual({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
+    expect(authorityClient.requests).toHaveLength(0);
 
     const bodyClient = new FakeClient([]);
     const bodyResult = await tool(bodyClient, "api_request_with_token").handler({
@@ -1095,15 +1115,28 @@ describe("MCP tool contracts", () => {
     expect(trustedClient.requests).toHaveLength(1);
   });
 
-  it("rejects credential query parameters in local HTTP before capability lookup", async () => {
-    const client = new FakeClient([]);
+  it("routes credential query parameters through owner approval for local HTTP", async () => {
+    const client = new FakeClient([
+      capabilityResponse("httpRequest"),
+      operationResponse({ httpStatus: 200 })
+    ]);
     const result = await tool(client, "local_http_request_with_secret").handler({
       url: "https://qnap.local/api?token=secret",
+      username: "admin",
       passwordRef: reference
     });
 
-    expect(result.structuredContent).toEqual({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
-    expect(client.requests).toHaveLength(0);
+    expect(result.structuredContent).toEqual({
+      status: "COMPLETED",
+      httpStatus: 200,
+      contentType: null,
+      redacted: true
+    });
+    expect(client.requests).toHaveLength(2);
+    expect(client.requests[1]).toMatchObject({
+      type: "executeSecretOperation",
+      descriptor: { url: "https://qnap.local/api?token=secret" }
+    });
   });
 
   it("preserves a sanitized HTTP redirect location at the MCP boundary", async () => {
@@ -1112,7 +1145,9 @@ describe("MCP tool contracts", () => {
       operationResponse({
         status: "REDIRECT_REQUIRES_REVIEW",
         httpStatus: 302,
-        redirectLocation: "https://qnap.local/next"
+        redirectLocation: "https://qnap.local/next",
+        contentType: "text/plain",
+        bodyPreview: "ignored"
       })
     ]);
     const result = await tool(client, "api_request_with_token").handler({

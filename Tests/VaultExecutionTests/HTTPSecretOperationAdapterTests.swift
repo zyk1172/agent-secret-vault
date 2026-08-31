@@ -5,6 +5,7 @@ import VaultCore
 
 private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
 private let httpTestHost = "svlt.local"
+private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
 
 @Test func typedHTTPAdapterReusesTransportAndNeverPreviewsAuthenticatedBody() async throws {
     let reference = try SecretReference(httpTestReference)
@@ -84,13 +85,45 @@ private let httpTestHost = "svlt.local"
         context: context,
         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
-    // §37: a surfaced redirect always stops with the absolute Location so a
+    // §37: every surfaced redirect stops with the absolute Location so a
     // new exact request can be authorized. The production delegate also
     // refuses same-origin redirects; no resolved credential is forwarded.
     #expect(output.status == "REDIRECT_REQUIRES_REVIEW")
     #expect(output.redirectLocation == "http://\(httpTestHost)/ok")
 }
-@Test func typedHTTPAdapterExecutesInsecureTransportForAnExplicitSavedProfile() async throws {
+@Test func typedHTTPAdapterDoesNotCompleteRedirectWithoutLocation() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/redirect-missing-location",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+            )
+        )
+    )
+
+    let output = try await adapter.execute(
+        descriptor,
+        metadata: [httpMetadata(reference)],
+        context: SecretOperationExecutionContext(principal: "malformed-redirect", securityGeneration: 1),
+        resolve: { _ in Data(httpTestSecret.utf8) }
+    )
+
+    #expect(output.status == "MALFORMED_REDIRECT")
+    #expect(output.httpStatus == 302)
+    #expect(output.redirectLocation == nil)
+}
+@Test func typedHTTPAdapterExecutesInsecureTransportBecauseTransportRiskIsTheOwnerDecision() async throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter(
         sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
@@ -129,7 +162,7 @@ private let httpTestHost = "svlt.local"
     #expect(output.status == "COMPLETED")
 }
 
-@Test func typedHTTPAdapterRejectsInsecureHTTPWhenProfileDoesNotOptIn() async throws {
+@Test func typedHTTPAdapterRequiresTheExactSavedOriginForInsecureSecretTransport() async throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter(
         sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
@@ -150,19 +183,69 @@ private let httpTestHost = "svlt.local"
         )
     )
 
-    await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
-        _ = try await adapter.execute(
-            descriptor,
-            metadata: [SecretPolicyMetadata(
-                reference: reference,
-                policy: .credential,
-                label: "HTTP test credential",
-                allowedDestinations: ["\(httpTestHost):80"],
-                allowedProtocols: ["https"]
-            )],
-            context: SecretOperationExecutionContext(principal: "insecure-http-denied", securityGeneration: 1),
-            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+    for allowedDestination in ["other.local:80", "\(httpTestHost):81", httpTestHost] {
+        await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
+            _ = try await adapter.execute(
+                descriptor,
+                metadata: [SecretPolicyMetadata(
+                    reference: reference,
+                    policy: .credential,
+                    label: "HTTP test credential",
+                    allowedDestinations: [allowedDestination],
+                    allowedProtocols: ["http"]
+                )],
+                context: SecretOperationExecutionContext(
+                    principal: "insecure-profile-\(allowedDestination)",
+                    securityGeneration: 1
+                ),
+                resolve: { _ in Data(httpTestSecret.utf8) }
+            )
+        }
+    }
+}
+
+@Test func typedHTTPAdapterQuarantinesSecretsInBodyLocationAndContentType() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let paths = [
+        "/leak-body",
+        "/leak-location",
+        "/leak-encoded-location",
+        "/leak-lowercase-encoded-location",
+        "/leak-double-encoded-location",
+        "/leak-content-type"
+    ]
+
+    for path in paths {
+        let descriptor = SecretOperationDescriptor(
+            actionType: .apiRequest,
+            secretReferences: [reference],
+            destination: httpTestHost,
+            port: 80,
+            protocolType: .http,
+            httpMethod: "GET",
+            url: "http://\(httpTestHost)\(path)",
+            payload: .http(
+                HTTPOperation(
+                    method: .get,
+                    auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+                )
+            )
         )
+
+        await #expect(throws: SecretOperationExecutionError.outputQuarantined) {
+            _ = try await adapter.execute(
+                descriptor,
+                metadata: [httpMetadata(reference)],
+                context: SecretOperationExecutionContext(
+                    principal: "response-leak-\(path)",
+                    securityGeneration: 1
+                ),
+                resolve: { _ in Data(httpTestSecret.utf8) }
+            )
+        }
     }
 }
 
@@ -609,13 +692,36 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
 
         let isRedirect = url.path == "/redirect"
         let isCrossRedirect = url.path == "/cross-redirect"
+        let isLeakingLocation = url.path == "/leak-location"
+        let isLeakingEncodedLocation = url.path == "/leak-encoded-location"
+        let isLeakingLowercaseEncodedLocation = url.path == "/leak-lowercase-encoded-location"
+        let isLeakingDoubleEncodedLocation = url.path == "/leak-double-encoded-location"
+        let isLeakingContentType = url.path == "/leak-content-type"
+        let isLeakingBody = url.path == "/leak-body"
         let isLarge = url.path == "/large"
         let isUnicode = url.path == "/unicode"
-        let statusCode = isRedirect || isCrossRedirect ? 302 : 200
+        let isRedirectResponse = isRedirect
+            || isCrossRedirect
+            || isLeakingLocation
+            || isLeakingEncodedLocation
+            || isLeakingLowercaseEncodedLocation
+            || isLeakingDoubleEncodedLocation
+            || url.path == "/redirect-missing-location"
+        let statusCode = isRedirectResponse ? 302 : 200
         let headers = isRedirect
             ? ["Location": "http://\(httpTestHost)/ok"]
             : isCrossRedirect
                 ? ["Location": "http://other.example/ok"]
+                : isLeakingLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=\(httpTestSecret)"]
+                : isLeakingEncodedLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=ASV%5FHTTP%5FTEST%5FTOKEN"]
+                : isLeakingLowercaseEncodedLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=ASV%5fHTTP%5fTEST%5fTOKEN"]
+                : isLeakingDoubleEncodedLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=ASV%255FHTTP%255FTEST%255FTOKEN"]
+                : isLeakingContentType
+                    ? ["Content-Type": "text/plain; token=\(httpTestSecret)"]
                 : ["Content-Type": "application/json"]
         guard let response = HTTPURLResponse(
             url: url,
@@ -628,11 +734,13 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
         }
 
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !isRedirect {
+        if !isRedirectResponse {
             let data = isLarge
                 ? Data("0123456789abcdef".utf8)
                 : isUnicode
                     ? Data("中a".utf8)
+                : isLeakingBody
+                    ? Data(httpTestSecret.utf8)
                 : url.path == "/projected"
                     ? Data("{\"status\":\"ok\",\"access_token\":\"derived-secret\"}".utf8)
                 : url.path == "/sensitive"

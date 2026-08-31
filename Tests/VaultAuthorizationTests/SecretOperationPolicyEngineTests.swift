@@ -375,11 +375,17 @@ import VaultExecution
     let engine = SecretOperationPolicyEngine()
     let metadata = [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["http", "https"])]
 
-    // §33: ordinary methods (including GET) are reusable 300-second
-    // operations; only the fixed fresh rules promote to fresh.
-    #expect(engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api/status"), metadata: metadata).authorizationRequirement == .reusableApproval)
-    #expect(engine.evaluate(descriptor(method: "POST", url: "https://qnap.local:8080/api/restart"), metadata: metadata).authorizationRequirement == .reusableApproval)
-    #expect(engine.evaluate(descriptor(method: "PUT", url: "https://qnap.local:8080/api/config"), metadata: metadata).authorizationRequirement == .reusableApproval)
+    // §33: every Secret-bearing network send gets an explicit owner
+    // decision. The destination is shown to the owner; hostname spelling is
+    // never used as proof that the eventual connection is private.
+    let ordinaryHTTPS = engine.evaluate(
+        descriptor(method: "GET", url: "https://qnap.local:8080/api/status"),
+        metadata: metadata
+    )
+    #expect(ordinaryHTTPS.authorizationRequirement == .freshApprovalRequired)
+    #expect(ordinaryHTTPS.policyRuleID == "http.fresh.secret-network-send")
+    #expect(engine.evaluate(descriptor(method: "POST", url: "https://qnap.local:8080/api/restart"), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+    #expect(engine.evaluate(descriptor(method: "PUT", url: "https://qnap.local:8080/api/config"), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
 
     let delete = engine.evaluate(descriptor(method: "DELETE", url: "https://qnap.local:8080/api/items/1"), metadata: metadata)
     #expect(delete.authorizationRequirement == .freshApprovalRequired)
@@ -391,10 +397,35 @@ import VaultExecution
     #expect(insecure.reasons.contains { $0.contains("明文") })
 
     let credentialQuery = engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api?token=abc"), metadata: metadata)
-    #expect(credentialQuery.risk == .denied)
-    #expect(credentialQuery.authorizationRequirement == .denied)
-    #expect(credentialQuery.technicalFailure)
-    #expect(credentialQuery.policyRuleID == "http.credential-in-url.denied")
+    #expect(credentialQuery.risk == .approvalRequired)
+    #expect(credentialQuery.authorizationRequirement == .freshApprovalRequired)
+    #expect(credentialQuery.technicalFailure == false)
+    #expect(credentialQuery.policyRuleID == "http.fresh.credential-in-url")
+}
+
+@Test func HTTPTransportRiskIsOwnerApprovedBeforeTheExactProfileGate() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "nas-a.local:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://nas-a.local:8080/status",
+        parameters: ["tokenRef": reference.description]
+    )
+
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas-b.local:8080"], protocols: ["https"])]
+    )
+
+    // Missing/mismatched insecure profiles are enforced by the executor only
+    // after the owner-facing fresh approval path, not as a policy denial.
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.technicalFailure == false)
+    #expect(decision.policyRuleID == "http.fresh.insecure-secret-transport")
 }
 
 @Test func httpDestinationMismatchOpensANewOrdinaryScopeWithAWarning() throws {
@@ -411,7 +442,7 @@ import VaultExecution
         url: "https://unbound-nas.local:8080/api",
         parameters: ["tokenRef": reference.description]
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])])
-    #expect(unboundPrivate.authorizationRequirement == .reusableApproval)
+    #expect(unboundPrivate.authorizationRequirement == .freshApprovalRequired)
     #expect(unboundPrivate.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
 
     let unboundPublic = engine.evaluate(SecretOperationDescriptor(
@@ -424,13 +455,13 @@ import VaultExecution
         url: "https://8.8.8.8/status",
         parameters: ["tokenRef": reference.description]
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])])
-    #expect(unboundPublic.risk == .denied)
-    #expect(unboundPublic.authorizationRequirement == .denied)
-    #expect(unboundPublic.technicalFailure)
-    #expect(unboundPublic.policyRuleID == "http.public-destination.denied")
+    #expect(unboundPublic.authorizationRequirement == .freshApprovalRequired)
+    #expect(unboundPublic.policyRuleID == "http.fresh.secret-network-send")
+    #expect(unboundPublic.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
+    #expect(unboundPublic.reasons.contains { !$0.contains("公网地址") })
 }
 
-@Test func insecureHTTPRequiresAnExplicitSavedProfileOptIn() throws {
+@Test func insecureHTTPRequiresFreshApprovalBeforeExecutorProfileCheck() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let descriptor = SecretOperationDescriptor(
         actionType: .apiRequest,
@@ -447,10 +478,10 @@ import VaultExecution
         policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])
     ])
 
-    #expect(decision.risk == .denied)
-    #expect(decision.authorizationRequirement == .denied)
-    #expect(decision.technicalFailure)
-    #expect(decision.policyRuleID == "http.insecure-profile.denied")
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.technicalFailure == false)
+    #expect(decision.policyRuleID == "http.fresh.insecure-secret-transport")
 }
 
 @Test func sshDestinationMismatchOpensANewOrdinaryScopeWithAWarning() throws {
@@ -818,7 +849,7 @@ private func policyMetadata(
 
 @Test func freshRuleRegistriesNeverExceedFiveCategoriesPerLayer() {
     #expect(SSHFreshRules.all.count <= 5)
-    #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count == 3)
+    #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count == 5)
     #expect(SecretOperationPolicyEngine.DatabaseFreshRules.all.count <= 5)
     #expect(SecretOperationPolicyEngine.SFTPFreshRules.all.count <= 5)
 }

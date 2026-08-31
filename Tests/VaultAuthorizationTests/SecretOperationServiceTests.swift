@@ -21,18 +21,20 @@ import VaultIPC
     #expect(await fixture.executor.count == 1)
 }
 
-@Test func disallowedInsecureHTTPStopsBeforeApprovalOrExecution() async throws {
+@Test func insecureHTTPProfileMismatchDoesNotSelfDenyBeforeOwnerApproval() async throws {
     let fixture = try await OperationServiceFixture(allowedProtocols: ["https"])
     defer { fixture.remove() }
 
-    do {
-        _ = try await fixture.service.performSecretOperation(fixture.http(method: "GET", path: "/status"))
-        Issue.record("Insecure HTTP was accepted without a saved profile opt-in.")
-    } catch let error as SecretOperationError {
-        #expect(error == .insecureTransportDenied)
-    }
-    #expect(await fixture.approver.count == 0)
-    #expect(await fixture.executor.count == 0)
+    // The policy layer must show the plaintext-transport risk and let the
+    // device owner decide. The concrete HTTP executor enforces the exact
+    // saved origin profile after that approval; this service fixture uses a
+    // recording executor and therefore only verifies the authorization path.
+    let output = try await fixture.service.performSecretOperation(
+        fixture.http(method: "GET", path: "/status")
+    )
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 1)
 }
 
 @Test func undeclaredLegacySecretReferenceIsRejectedBeforeOwnerApproval() async throws {
@@ -306,6 +308,31 @@ import VaultIPC
     let deleteSummary = await fixture.approver.summaries.last ?? ""
     #expect(deleteSummary.contains("未加密 HTTP"))
     #expect(!deleteSummary.contains("复用最多"))
+}
+
+@Test func publicHTTPSSecretSendUsesFreshOwnerApprovalInsteadOfPolicyDenial() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [fixture.reference],
+        destination: "api.example.com",
+        port: 443,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://api.example.com/v1/status",
+        requestedEffects: ["read-only"],
+        parameters: ["tokenRef": fixture.reference.description]
+    )
+
+    let output = try await fixture.service.performSecretOperation(descriptor)
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 1)
+    let summary = await fixture.approver.summaries.first ?? ""
+    #expect(summary.contains("Secret 将离开本机发送到 HTTP(S) 目标"))
 }
 
 @Test func agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() async throws {

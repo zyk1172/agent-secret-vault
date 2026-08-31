@@ -27,6 +27,8 @@ public struct SecretOutputFingerprint: Equatable, Sendable {
 }
 
 public struct OutputSanitizer: Sendable {
+    private static let maxPercentDecodeDepth = 2
+    private static let maxPercentDecodableOutputBytes = 1_048_576
     private let redaction = "[REDACTED_SECRET]"
 
     public init() {}
@@ -150,10 +152,34 @@ public struct OutputSanitizer: Sendable {
         secretStrings: [String]
     ) -> Bool {
         zip(secrets, secretStrings).contains { secretData, secretString in
-            encodedVariants(for: secretData, secretString: secretString).contains {
-                output.contains($0)
+            if encodedVariants(for: secretData, secretString: secretString).contains(where: output.contains) {
+                return true
             }
+            return containsPercentDecodedSecret(in: output, secret: secretString)
         }
+    }
+
+    /// Detect percent-encoded copies without trying to enumerate every
+    /// possible mixed-case escape spelling. Decoding is deliberately bounded
+    /// so attacker-controlled output cannot turn this check into unbounded
+    /// work or recursive canonicalization.
+    private func containsPercentDecodedSecret(in output: String, secret: String) -> Bool {
+        guard output.utf8.count <= Self.maxPercentDecodableOutputBytes else {
+            return false
+        }
+
+        var candidate = output
+        for _ in 0..<Self.maxPercentDecodeDepth {
+            guard let decoded = candidate.removingPercentEncoding,
+                  decoded != candidate else {
+                return false
+            }
+            if decoded.contains(secret) {
+                return true
+            }
+            candidate = decoded
+        }
+        return false
     }
 
     private func containsFingerprint(

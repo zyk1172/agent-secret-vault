@@ -84,7 +84,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                     : ["metadataOnly", "projectedJSON"],
                 transportSessionReuse: true,
                 derivedCredentialCapture: false,
-                publicNetworkEgress: false,
+                publicNetworkEgress: true,
                 insecurePrivateNetworkHTTPProfileOptIn: true
             )
         )
@@ -115,6 +115,10 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         } catch HTTPAdapterError.invalidParameter {
             throw SecretOperationExecutionError.invalidParameter
         }
+        // The policy engine decides whether the device owner must approve the
+        // request. This adapter still enforces the saved insecure-transport
+        // profile as a technical boundary after approval: a profile for one
+        // exact origin must never widen to another host or port.
         do {
             try validateTransport(plan.url, descriptor: descriptor, metadata: metadata)
         } catch HTTPAdapterError.insecureTransportDenied {
@@ -173,41 +177,52 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             throw SecretOperationExecutionError.outputLimitExceeded
         }
 
-        let sanitizedBody: String
-        switch outputSanitizer.sanitize(
-            ProcessResult(exitCode: 0, stdout: response.data, stderr: Data()),
-            secrets: secretBuffers
-        ) {
-        case .quarantined:
-            throw SecretOperationExecutionError.outputQuarantined
-        case let .sanitized(result):
-            guard let body = String(data: result.stdout, encoding: .utf8) else {
-                throw SecretOperationExecutionError.outputQuarantined
-            }
-            sanitizedBody = body
-        }
+        let responseFingerprints = secretBuffers.flatMap(OutputSanitizer.fingerprints(for:))
+        let sanitizedBody = try sanitizedResponseBody(
+            response.data,
+            secrets: secretBuffers,
+            fingerprints: responseFingerprints
+        )
+        let contentType = try sanitizedResponseText(
+            response.contentType,
+            secrets: secretBuffers,
+            fingerprints: responseFingerprints
+        )
+        let redirectLocation = try sanitizedResponseText(
+            response.redirectLocation,
+            secrets: secretBuffers,
+            fingerprints: responseFingerprints
+        )
 
         let bodyPreview = try responsePreview(
             plan.responsePolicy,
             body: sanitizedBody,
             hasSecretAuth: hasSecretAuth
         )
-        // §37: every redirect stops here with the absolute Location. The
-        // agent re-submits a new exact request to that URL, which goes through
-        // the authorization flow on its own; SVLT never silently follows.
+        // §37: every redirect stops here with the absolute Location. A
+        // redirect without a valid Location is a malformed server response,
+        // never a successful request.
         if (300...399).contains(response.statusCode) {
+            guard let redirectLocation else {
+                return SecretOperationOutput(
+                    status: "MALFORMED_REDIRECT",
+                    httpStatus: response.statusCode,
+                    sessionID: response.sessionID,
+                    redacted: true
+                )
+            }
             return SecretOperationOutput(
                 status: "REDIRECT_REQUIRES_REVIEW",
                 httpStatus: response.statusCode,
                 sessionID: response.sessionID,
-                redirectLocation: response.redirectLocation,
+                redirectLocation: redirectLocation,
                 redacted: true
             )
         }
         return SecretOperationOutput(
             status: response.statusCode >= 400 ? "HTTP_ERROR" : "COMPLETED",
             httpStatus: response.statusCode,
-            contentType: response.contentType,
+            contentType: contentType,
             bodyPreview: bodyPreview,
             sessionID: response.sessionID,
             redacted: true
@@ -233,6 +248,70 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         case insecureTransportDenied
     }
 
+    /// An insecure HTTP profile is an explicit owner-saved transport opt-in,
+    /// not a host-class allowlist. Compare the complete canonical origin so a
+    /// profile for `nas-a:8080` cannot be reused for `nas-b` or another port.
+    /// This check deliberately does not infer public/private reachability from
+    /// a hostname: the policy has already required fresh owner approval, and
+    /// DNS resolution is not a stable egress security boundary here.
+    private func validateTransport(
+        _ url: URL,
+        descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata]
+    ) throws {
+        guard url.scheme?.lowercased() == "http",
+              !descriptor.secretReferences.isEmpty else {
+            return
+        }
+
+        guard let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
+            url.absoluteString,
+            expectedScheme: "http",
+            defaultPort: 80,
+            allowURLPath: true
+        ) else {
+            throw HTTPAdapterError.invalidParameter
+        }
+
+        var metadataByReference: [SecretReference: SecretPolicyMetadata] = [:]
+        for item in metadata {
+            guard metadataByReference[item.reference] == nil else {
+                throw HTTPAdapterError.invalidParameter
+            }
+            metadataByReference[item.reference] = item
+        }
+
+        for reference in descriptor.secretReferences {
+            guard let secret = metadataByReference[reference] else {
+                throw HTTPAdapterError.insecureTransportDenied
+            }
+
+            let protocolMarkers = Set(secret.allowedProtocols.map { $0.lowercased() })
+            guard protocolMarkers.contains("http") || protocolMarkers.contains("http-loopback") else {
+                throw HTTPAdapterError.insecureTransportDenied
+            }
+
+            if protocolMarkers.contains("http-loopback"),
+               !HTTPTransportSecurityPolicy.allowInsecureLoopback.permitsInsecureHTTP(
+                   toHost: url.host ?? ""
+               ) {
+                throw HTTPAdapterError.insecureTransportDenied
+            }
+
+            let exactOrigin = secret.allowedDestinations.contains {
+                SecretOperationDescriptor.normalizeHTTPOrigin(
+                    $0,
+                    expectedScheme: "http",
+                    defaultPort: 80,
+                    requireExplicitPort: true
+                ) == requestedOrigin
+            }
+            guard exactOrigin else {
+                throw HTTPAdapterError.insecureTransportDenied
+            }
+        }
+    }
+
     private func makePlan(for descriptor: SecretOperationDescriptor) throws -> RequestPlan {
         guard descriptor.actionType == .httpRequest || descriptor.actionType == .apiRequest,
               let rawURL = descriptor.url,
@@ -242,10 +321,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               url.host?.isEmpty == false,
-              !rawURL.contains("secret://"),
-              !Self.hasCredentialQueryParameter(url),
-              descriptor.secretReferences.isEmpty
-                  || HTTPTransportSecurityPolicy.isPrivateOrLoopbackHost(url.host ?? "")
+              !rawURL.contains("secret://")
         else {
             throw HTTPAdapterError.invalidParameter
         }
@@ -323,26 +399,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             responsePolicy: try validateResponsePolicy(responsePolicy, for: url, method: method),
             timeout: .milliseconds(timeoutMilliseconds)
         )
-    }
-
-    private func validateTransport(
-        _ url: URL,
-        descriptor: SecretOperationDescriptor,
-        metadata: [SecretPolicyMetadata]
-    ) throws {
-        guard descriptor.secretReferences.isEmpty
-                || HTTPTransportSecurityPolicy.isPrivateOrLoopbackHost(url.host ?? "") else {
-            throw HTTPAdapterError.invalidParameter
-        }
-        if url.scheme?.lowercased() == "http", !descriptor.secretReferences.isEmpty {
-            let allowsInsecureHTTP = descriptor.secretReferences.allSatisfy { reference in
-                metadata.first(where: { $0.reference == reference })?.httpTransportSecurityPolicy
-                    .permitsInsecureHTTP(toHost: url.host ?? "") == true
-            }
-            guard allowsInsecureHTTP else {
-                throw HTTPAdapterError.insecureTransportDenied
-            }
-        }
     }
 
     private func parseMethod(_ rawValue: String?) throws -> HTTPMethod {
@@ -713,6 +769,51 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         }
     }
 
+    private func sanitizedResponseBody(
+        _ data: Data,
+        secrets: [Data],
+        fingerprints: [SecretOutputFingerprint]
+    ) throws -> String {
+        let safeData = try sanitizedResponseData(data, secrets: secrets, fingerprints: fingerprints)
+        guard let body = String(data: safeData, encoding: .utf8) else {
+            throw SecretOperationExecutionError.outputQuarantined
+        }
+        return body
+    }
+
+    /// Response headers are remote-controlled strings just like the body.
+    /// They must pass the same fingerprint guard before being exposed to MCP.
+    private func sanitizedResponseText(
+        _ value: String?,
+        secrets: [Data],
+        fingerprints: [SecretOutputFingerprint]
+    ) throws -> String? {
+        guard let value else { return nil }
+        _ = try sanitizedResponseData(Data(value.utf8), secrets: secrets, fingerprints: fingerprints)
+        return value
+    }
+
+    /// Server-controlled response data is checked twice: the retained digest
+    /// guard covers an SSH-session-style opaque fingerprint, while the
+    /// resolved secret guard can detect bounded percent-decoding variants.
+    /// Raw matches are quarantined here instead of returning the sanitizer's
+    /// redacted placeholder as an apparently valid server response.
+    private func sanitizedResponseData(
+        _ data: Data,
+        secrets: [Data],
+        fingerprints: [SecretOutputFingerprint]
+    ) throws -> Data {
+        let result = ProcessResult(exitCode: 0, stdout: data, stderr: Data())
+        guard case .sanitized = outputSanitizer.sanitize(result, fingerprints: fingerprints) else {
+            throw SecretOperationExecutionError.outputQuarantined
+        }
+        guard case let .sanitized(sanitized) = outputSanitizer.sanitize(result, secrets: secrets),
+              sanitized.stdout == data else {
+            throw SecretOperationExecutionError.outputQuarantined
+        }
+        return data
+    }
+
     private static func normalizedOrigin(_ rawOrigin: String) -> String? {
         guard let url = URL(string: rawOrigin),
               let scheme = url.scheme?.lowercased(),
@@ -736,18 +837,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
               !host.isEmpty else { return nil }
         let port = url.port ?? (scheme == "https" ? 443 : 80)
         return "\(scheme)://\(host.lowercased()):\(port)"
-    }
-
-    private static func hasCredentialQueryParameter(_ url: URL) -> Bool {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return true
-        }
-        return components.queryItems?.contains { item in
-            item.name.range(
-                of: #"(?i)password|passwd|pwd|token|secret|api[_-]?key|authorization|cookie"#,
-                options: .regularExpression
-            ) != nil
-        } == true
     }
 
     private static func canonicalEndpointPath(_ rawPath: String) -> String? {
