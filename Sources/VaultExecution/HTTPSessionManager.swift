@@ -49,8 +49,8 @@ public struct HTTPTransportResponse: Sendable {
     public let statusCode: Int
     public let contentType: String?
     public let sessionID: String
-    /// Absolute Location of a cross-origin redirect that stopped for a
-    /// device-owner decision (§37). Nil for non-redirect responses.
+    /// Absolute Location of a redirect that stopped for a device-owner
+    /// decision (§37). Nil for non-redirect responses.
     public let redirectLocation: String?
 
     public init(
@@ -140,14 +140,10 @@ public actor HTTPSessionManager {
         current.lastUsedTick = monotonicNow()
         records[current.id] = current
 
-        // URLSession's session delegate is shared by every task. Use a fresh
-        // task delegate/tracker for this request so concurrent redirects cannot
-        // reset or consume one another's rejection state.
-        let redirectTracker = HTTPRedirectTracker(originalOrigin: request.url)
         do {
             let (bytes, response) = try await current.session.bytes(
                 for: request,
-                delegate: HTTPOriginAwareRedirectDelegate(tracker: redirectTracker)
+                delegate: HTTPRedirectStoppingDelegate()
             )
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw SecretOperationExecutionError.processFailed
@@ -160,10 +156,10 @@ public actor HTTPSessionManager {
                 }
                 data.append(byte)
             }
-            // A surfaced 3xx is a cross-origin redirect the delegate refused.
-            // Return it with the absolute Location so the caller can form a
-            // new exact request; the device owner approves that request
-            // through the ordinary authorization flow (§37).
+            // A surfaced 3xx is a redirect the delegate refused. Return it
+            // with the absolute Location so the caller can form a new exact
+            // request; the device owner approves that request through the
+            // ordinary authorization flow (§37).
             if (300...399).contains(httpResponse.statusCode) {
                 let location = httpResponse.value(forHTTPHeaderField: "Location")
                     .flatMap { URL(string: $0, relativeTo: request.url)?.absoluteString }
@@ -269,58 +265,17 @@ public actor HTTPSessionManager {
     }
 }
 
-final class HTTPRedirectTracker: @unchecked Sendable {
-    private let lock = NSLock()
-    private var rejected = false
-
-    /// The original request origin: same-origin redirects may follow
-    /// transparently; cross-origin redirects must stop for an owner decision.
-    let originalOrigin: URL?
-
-    init(originalOrigin: URL?) {
-        self.originalOrigin = originalOrigin
-    }
-
-    var didRejectRedirect: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return rejected
-    }
-
-    func markRejected() {
-        lock.lock()
-        rejected = true
-        lock.unlock()
-    }
-}
-
-private final class HTTPOriginAwareRedirectDelegate: NSObject, URLSessionTaskDelegate {
-    private let tracker: HTTPRedirectTracker
-
-    init(tracker: HTTPRedirectTracker) {
-        self.tracker = tracker
-    }
-
+private final class HTTPRedirectStoppingDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(
         _: URLSession,
         task _: URLSessionTask,
         willPerformHTTPRedirection _: HTTPURLResponse,
-        newRequest: URLRequest,
+        newRequest _: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        if Self.isSameOrigin(newRequest.url, as: tracker.originalOrigin) {
-            completionHandler(newRequest)
-            return
-        }
-        tracker.markRejected()
+        // Never forward a request (and therefore never forward a resolved
+        // credential) to a redirect target. The caller receives Location and
+        // must explicitly submit a new operation with a new policy scope.
         completionHandler(nil)
-    }
-
-    private static func isSameOrigin(_ candidate: URL?, as origin: URL?) -> Bool {
-        guard let candidate, let origin else { return false }
-        return candidate.scheme?.lowercased() == origin.scheme?.lowercased()
-            && candidate.host?.lowercased() == origin.host?.lowercased()
-            && (candidate.port ?? (candidate.scheme?.lowercased() == "https" ? 443 : 80))
-                == (origin.port ?? (origin.scheme?.lowercased() == "https" ? 443 : 80))
     }
 }

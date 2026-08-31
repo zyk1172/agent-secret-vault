@@ -21,6 +21,20 @@ import VaultIPC
     #expect(await fixture.executor.count == 1)
 }
 
+@Test func disallowedInsecureHTTPStopsBeforeApprovalOrExecution() async throws {
+    let fixture = try await OperationServiceFixture(allowedProtocols: ["https"])
+    defer { fixture.remove() }
+
+    do {
+        _ = try await fixture.service.performSecretOperation(fixture.http(method: "GET", path: "/status"))
+        Issue.record("Insecure HTTP was accepted without a saved profile opt-in.")
+    } catch let error as SecretOperationError {
+        #expect(error == .insecureTransportDenied)
+    }
+    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.executor.count == 0)
+}
+
 @Test func undeclaredLegacySecretReferenceIsRejectedBeforeOwnerApproval() async throws {
     let fixture = try await OperationServiceFixture()
     defer { fixture.remove() }

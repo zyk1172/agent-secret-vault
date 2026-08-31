@@ -391,8 +391,10 @@ import VaultExecution
     #expect(insecure.reasons.contains { $0.contains("明文") })
 
     let credentialQuery = engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api?token=abc"), metadata: metadata)
-    #expect(credentialQuery.authorizationRequirement == .freshApprovalRequired)
-    #expect(credentialQuery.policyRuleID == "http.fresh.credential-in-url")
+    #expect(credentialQuery.risk == .denied)
+    #expect(credentialQuery.authorizationRequirement == .denied)
+    #expect(credentialQuery.technicalFailure)
+    #expect(credentialQuery.policyRuleID == "http.credential-in-url.denied")
 }
 
 @Test func httpDestinationMismatchOpensANewOrdinaryScopeWithAWarning() throws {
@@ -422,8 +424,33 @@ import VaultExecution
         url: "https://8.8.8.8/status",
         parameters: ["tokenRef": reference.description]
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])])
-    #expect(unboundPublic.authorizationRequirement == .reusableApproval)
-    #expect(unboundPublic.reasons.contains { $0.contains("公网地址") })
+    #expect(unboundPublic.risk == .denied)
+    #expect(unboundPublic.authorizationRequirement == .denied)
+    #expect(unboundPublic.technicalFailure)
+    #expect(unboundPublic.policyRuleID == "http.public-destination.denied")
+}
+
+@Test func insecureHTTPRequiresAnExplicitSavedProfileOptIn() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://qnap.local:8080/status",
+        parameters: ["tokenRef": reference.description]
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])
+    ])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.authorizationRequirement == .denied)
+    #expect(decision.technicalFailure)
+    #expect(decision.policyRuleID == "http.insecure-profile.denied")
 }
 
 @Test func sshDestinationMismatchOpensANewOrdinaryScopeWithAWarning() throws {
@@ -791,7 +818,7 @@ private func policyMetadata(
 
 @Test func freshRuleRegistriesNeverExceedFiveCategoriesPerLayer() {
     #expect(SSHFreshRules.all.count <= 5)
-    #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count == 4)
+    #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count == 3)
     #expect(SecretOperationPolicyEngine.DatabaseFreshRules.all.count <= 5)
     #expect(SecretOperationPolicyEngine.SFTPFreshRules.all.count <= 5)
 }

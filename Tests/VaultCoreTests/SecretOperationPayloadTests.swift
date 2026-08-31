@@ -63,6 +63,32 @@ private let payloadReference = "secret://0123456789ABCDEFGHJKMNPQRS"
     #expect(references == Set([usernameReference, passwordReference]))
 }
 
+@Test func localExecutionPayloadRoundTripsWithoutPlaintext() throws {
+    let reference = try SecretReference(payloadReference)
+    let payload = SecretOperationPayload.localExecution(
+        LocalExecutionOperation(
+            executable: "/private/tmp/svlt-check",
+            arguments: ["--check-only"],
+            secretReferences: [reference]
+        )
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .localExecution,
+        secretReferences: [reference],
+        destination: "/private/tmp/svlt-check",
+        payload: payload,
+        requestedEffects: ["user-approved-secret-release"]
+    )
+
+    let encoded = try JSONEncoder().encode(descriptor)
+    let encodedText = String(decoding: encoded, as: UTF8.self)
+    #expect(encodedText.contains("localExecution"))
+    #expect(!encodedText.contains("ASV_CANARY_PLAINTEXT"))
+    let decoded = try JSONDecoder().decode(SecretOperationDescriptor.self, from: encoded)
+    #expect(decoded == descriptor)
+    #expect(decoded.secretReferences == [reference])
+}
+
 @Test func typedRequestIdentityChangesWhenHTTPBodyChangesButNotWhenTransportHandleChanges() throws {
     let reference = try SecretReference(payloadReference)
     func makeDescriptor(body: String, sessionID: String? = nil) -> SecretOperationDescriptor {

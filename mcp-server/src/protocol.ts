@@ -688,6 +688,7 @@ export const SecretAdapterKind = z.enum([
   "browser",
   "localApp",
   "export",
+  "localExecution",
   "trustedProcess"
 ]);
 export type SecretAdapterKind = z.infer<typeof SecretAdapterKind>;
@@ -874,6 +875,13 @@ export const TrustedProcessOperation = z.object({
 }).strict();
 export type TrustedProcessOperation = z.infer<typeof TrustedProcessOperation>;
 
+export const LocalExecutionOperation = z.object({
+  executable: z.string().min(1).max(4_096),
+  arguments: z.array(z.string().max(4_096)).max(32).default([]),
+  secretReferences: NonEmptyUniqueSecretReferences
+}).strict();
+export type LocalExecutionOperation = z.infer<typeof LocalExecutionOperation>;
+
 export const SecretOperationPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("http"), operation: HTTPOperation }).strict(),
   z.object({ type: z.literal("database"), operation: DatabaseOperation }).strict(),
@@ -881,6 +889,7 @@ export const SecretOperationPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("browser"), operation: BrowserLoginOperation }).strict(),
   z.object({ type: z.literal("localApp"), operation: LocalAppFillOperation }).strict(),
   z.object({ type: z.literal("export"), operation: ExportOperation }).strict(),
+  z.object({ type: z.literal("localExecution"), operation: LocalExecutionOperation }).strict(),
   z.object({ type: z.literal("trustedProcess"), operation: TrustedProcessOperation }).strict()
 ]);
 export type SecretOperationPayload = z.infer<typeof SecretOperationPayload>;
@@ -1126,6 +1135,7 @@ export const SecretOperationOutput = z
     localPath: z.string().optional(),
     remotePath: z.string().optional(),
     sessionID: z.string().min(1).max(128).optional(),
+    redirectLocation: z.string().url().optional(),
     failedIndex: z.number().int().min(0).optional(),
     results: z.array(z.object({
       index: z.number().int().min(0),

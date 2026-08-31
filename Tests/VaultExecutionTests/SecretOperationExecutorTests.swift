@@ -89,6 +89,34 @@ import VaultCore
     #expect(result.exitCode == 122)
 }
 
+@Test func sshExpectTransportPreservesControlPathSpaces() async throws {
+    let result = try await FoundationProcessRunner().run(
+        ProcessInvocation(
+            executable: "/usr/bin/expect",
+            arguments: ["-c", LocalSecretOperationExecutor.expectSSHScript()]
+        ),
+        stdin: LocalSecretOperationExecutor.expectSSHInput(
+            host: "127.0.0.1",
+            port: 1,
+            command: "printf 'SVLT_SSH_CONTROL_PATH_OK\\n'",
+            controlPath: "/private/tmp/SVLT Application Support/s-socket",
+            username: "tester",
+            password: "ASV_CANARY_CONTROL_PATH",
+            timeoutSeconds: 1
+        ),
+        timeout: .seconds(2),
+        outputLimitBytes: 16_384
+    )
+
+    let output = String(decoding: result.stdout + result.stderr, as: UTF8.self)
+    // Port 1 is intentionally disposable: the SSH client should reach the
+    // connection attempt and fail with its normal transport status, not fail
+    // while OpenSSH parses a ControlPath containing spaces.
+    #expect(result.exitCode == 255)
+    #expect(!output.contains("keyword controlpath extra arguments"))
+    #expect(!output.contains("spawn id"))
+}
+
 @Test func sshExecutorReportsNonzeroExitAsFailed() async throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let runner = CapturingProcessRunner(

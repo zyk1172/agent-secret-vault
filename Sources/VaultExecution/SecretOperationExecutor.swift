@@ -94,9 +94,9 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
     public let sessionID: String?
     public let failedIndex: Int?
     public let results: [SSHCommandResult]?
-    /// Set when a cross-origin HTTP redirect stopped for an owner decision
-    /// (§37). The agent re-submits a new exact request to this URL; that
-    /// request is authorized through the ordinary flow.
+    /// Set when an HTTP redirect stopped for an owner decision (§37). The
+    /// agent re-submits a new exact request to this URL; that request is
+    /// authorized through the ordinary flow.
     public let redirectLocation: String?
     public let redacted: Bool
 
@@ -634,7 +634,11 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ControlMaster=auto",
                         "-o", "ControlPersist=300",
-                        "-o", "ControlPath=\(access.controlPath)",
+                        // `-S` passes the socket path as a dedicated argv
+                        // value. OpenSSH's `-o ControlPath=...` parser treats
+                        // spaces in macOS Application Support paths as extra
+                        // config words even when the argv element is intact.
+                        "-S", access.controlPath,
                         "-o", "ConnectTimeout=\(timeoutSeconds)",
                         "-p", String(port),
                         "--",
@@ -841,10 +845,25 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
         set timeout $timeoutSeconds
         log_user 1
-        # "$command" keeps the entire remote command as ONE ssh argv element:
-        # the local shell never interprets it, and the remote login shell
+        # Build an actual Tcl list and expand it as argv. This is important
+        # because the macOS Application Support path may contain spaces;
+        # string-concatenating a spawn command would split ControlPath before
+        # OpenSSH sees it. The final command remains ONE ssh argv element, so
+        # the local shell never interprets it and the remote login shell
         # receives it byte-for-byte, including newlines and quotes.
-        if {[catch {spawn /usr/bin/ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ControlMaster=yes -o ControlPersist=300 -o ControlPath=$controlPath -o ConnectTimeout=$timeoutSeconds -p $port -- "$username@$host" "$command"}]} {
+        set sshArguments [list \
+            /usr/bin/ssh \
+            -o BatchMode=no \
+            -o StrictHostKeyChecking=accept-new \
+            -o ControlMaster=yes \
+            -o ControlPersist=300 \
+            -S $controlPath \
+            -o ConnectTimeout=$timeoutSeconds \
+            -p $port \
+            -- \
+            "$username@$host" \
+            $command]
+        if {[catch {spawn {*}$sshArguments}]} {
             exit \(SSHWrapperExitCode.wrapperFailed)
         }
         expect {

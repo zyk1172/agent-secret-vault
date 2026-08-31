@@ -28,13 +28,13 @@ opaque descriptor
 | 状态、使用策略、引用元数据 | `silent` | 不解密、不返回 Secret |
 | 已绑定或未绑定目标的 Secret-bearing SSH/HTTP/API/数据库/SFTP 操作 | `reusableApproval` | 首次认证打开当前 scope 的固定 300 秒窗口；目标/协议提示不额外升级 |
 | SSH 电源控制、文件删除、块设备/文件系统破坏、存储/RAID 破坏、容器破坏 | `freshApprovalRequired` | 只匹配固定五类；raw shell、多行、wrapper 和未知命令本身不构成额外类别 |
-| HTTP `DELETE`、明文 `http://` 携 Secret、凭据 query 参数 | `freshApprovalRequired` | 固定 HTTP fresh registry；跨 origin redirect 只是 transport stop |
+| HTTP `DELETE`、已明确允许的明文 `http://` 携 Secret | `freshApprovalRequired` | 固定 HTTP fresh registry；不安全 profile 缺失、公网目标和凭据 query 参数在释放 Secret 前拒绝；redirect 只是 transport stop |
 | 数据库 DROP/TRUNCATE/DELETE/破坏性 ALTER/权限账户管理 | `freshApprovalRequired` | 固定数据库 fresh registry |
 | SFTP 删除、覆盖、替换目标 | `freshApprovalRequired` | 固定 SFTP fresh registry |
 | 明文显示、复制、删除或安全设置变更 | `freshApprovalRequired` | 使用 `deviceOwnerAuthentication` |
 | `localExecution`（交给任意本地进程） | `freshApprovalRequired` | 明确标记 `userApprovedSecretRelease`，由设备所有者决定 |
 
-Secret metadata 支持 `allowedDestinations` 和 `allowedProtocols`。目的地使用规范化后的主机和端口做精确匹配；不匹配是提示并进入新的普通 scope，元数据缺失或引用集合无法验证才是技术性失败。HTTP 禁止自动跟随跨 origin 重定向，发现新主机时必须重新提交一个独立操作。
+Secret metadata 支持 `allowedDestinations` 和 `allowedProtocols`。目的地使用规范化后的主机和端口做精确匹配；一般不匹配是提示并进入新的普通 scope，元数据缺失或引用集合无法验证才是技术性失败。HTTP 的公网 Secret 发送、不安全 HTTP profile 缺失和凭据 query 参数属于明确的 transport 安全边界，会在释放 Secret 前拒绝；HTTP 禁止自动跟随任何重定向，发现新目标时必须重新提交一个独立操作。
 
 ## ApprovalTicket
 

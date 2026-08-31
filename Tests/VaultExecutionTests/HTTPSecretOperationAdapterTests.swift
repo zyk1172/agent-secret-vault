@@ -56,7 +56,7 @@ private let httpTestHost = "svlt.local"
     #expect(await manager.activeSessionCount(for: "test-principal") == 1)
 }
 
-@Test func typedHTTPAdapterFollowsSameOriginRedirectsAutomatically() async throws {
+@Test func typedHTTPAdapterStopsEveryRedirectForExplicitResubmission() async throws {
     let reference = try SecretReference(httpTestReference)
     let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
     let adapter = HTTPSecretOperationAdapter(sessionManager: manager)
@@ -85,13 +85,12 @@ private let httpTestHost = "svlt.local"
         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
     // §37: a surfaced redirect always stops with the absolute Location so a
-    // new exact request can be authorized. (The URLProtocol test harness
-    // surfaces redirects directly; in production the origin-aware delegate
-    // follows same-origin hops and only cross-origin stops here.)
+    // new exact request can be authorized. The production delegate also
+    // refuses same-origin redirects; no resolved credential is forwarded.
     #expect(output.status == "REDIRECT_REQUIRES_REVIEW")
     #expect(output.redirectLocation == "http://\(httpTestHost)/ok")
 }
-@Test func typedHTTPAdapterExecutesInsecureTransportBecauseTransportRiskIsTheOwnerDecision() async throws {
+@Test func typedHTTPAdapterExecutesInsecureTransportForAnExplicitSavedProfile() async throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter(
         sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
@@ -128,6 +127,43 @@ private let httpTestHost = "svlt.local"
         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
     #expect(output.status == "COMPLETED")
+}
+
+@Test func typedHTTPAdapterRejectsInsecureHTTPWhenProfileDoesNotOptIn() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/ok",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+            )
+        )
+    )
+
+    await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
+        _ = try await adapter.execute(
+            descriptor,
+            metadata: [SecretPolicyMetadata(
+                reference: reference,
+                policy: .credential,
+                label: "HTTP test credential",
+                allowedDestinations: ["\(httpTestHost):80"],
+                allowedProtocols: ["https"]
+            )],
+            context: SecretOperationExecutionContext(principal: "insecure-http-denied", securityGeneration: 1),
+            resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
+        )
+    }
 }
 
 @Test func typedHTTPAdapterEnforcesStreamingResponseLimit() async throws {
@@ -502,7 +538,7 @@ private let httpTestHost = "svlt.local"
             statuses.append(status)
         }
     }
-    // §33/§37: a cross-origin redirect is a new authorization subject; the
+    // §33/§37: every redirect is a new authorization subject; the
     // adapter returns REDIRECT_REQUIRES_REVIEW with the absolute Location so
     // the agent can re-submit a new exact request for owner approval.
     #expect(statuses.count == 2)

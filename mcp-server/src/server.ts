@@ -30,6 +30,7 @@ import {
   SecretCatalogSearchResult,
   SecretPolicy,
   SecretOperationDescriptor,
+  SecretOperationAction,
   SecretOperationCapability,
   SecretOperationOutput,
   SecretOperationStage,
@@ -375,6 +376,13 @@ const LocalHttpOutput = z
         bodyPreview: z.string().optional()
       })
       .strict(),
+    z.object({
+      status: z.literal("REDIRECT_REQUIRES_REVIEW"),
+      httpStatus: z.number().int().optional(),
+      redirectLocation: z.string().url().optional(),
+      sessionID: z.string().min(1).max(128).optional(),
+      redacted: z.literal(true)
+    }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Local HTTP result. Secret material is used only inside SVLTAgent and is never returned.");
@@ -465,6 +473,13 @@ const ApiRequestOutput = z
         bodyPreview: z.string().optional()
       })
       .strict(),
+    z.object({
+      status: z.literal("REDIRECT_REQUIRES_REVIEW"),
+      httpStatus: z.number().int().optional(),
+      redirectLocation: z.string().url().optional(),
+      sessionID: z.string().min(1).max(128).optional(),
+      redacted: z.literal(true)
+    }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("API request result. Token material is used only inside SVLTAgent and plaintext is never returned.");
@@ -527,6 +542,16 @@ const LocalAppFillOutput = z
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Local app form fill result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
+
+const LocalProcessOutput = z
+  .union([
+    z.object({
+      status: z.literal("COMPLETED"),
+      redacted: z.literal(true)
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Local process result. A secret is never returned to the Agent.");
 
 const AgentPolicyOutput = z
   .object({
@@ -714,7 +739,9 @@ const ApiRequestInput = z
     sessionID: z.string().min(1).max(128).optional(),
     headerName: z.string().min(1).max(128).optional(),
     headerScheme: z.string().min(1).max(64).optional(),
-    body: z.string().max(65_536).optional(),
+    body: z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 65_536, {
+      message: "body must be at most 65536 UTF-8 bytes"
+    }).optional(),
     includeBodyPreview: z.boolean().optional(),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
@@ -860,6 +887,42 @@ const LocalAppFillInput = z
     message: "appName or bundleId is required."
   });
 
+const LocalExecutionInput = z
+  .object({
+    executable: z.string().trim().min(1).max(4_096),
+    arguments: z.array(z.string().max(4_096)).max(32).default([]),
+    secretReferences: NonEmptyUniqueSecretReferences,
+    agentAssessment: optionalAgentRiskAssessment
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.executable.includes("secret://") || value.arguments.some((argument) => argument.includes("secret://"))) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["arguments"],
+        message: "Local process metadata cannot contain secret:// values."
+      });
+    }
+  });
+
+const TrustedProcessInput = z
+  .object({
+    profileID: z.string().trim().min(1).max(128),
+    arguments: z.array(z.string().max(4_096)).max(32).default([]),
+    secretReferences: NonEmptyUniqueSecretReferences,
+    agentAssessment: optionalAgentRiskAssessment
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.profileID.includes("secret://") || value.arguments.some((argument) => argument.includes("secret://"))) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["arguments"],
+        message: "Trusted process metadata cannot contain secret:// values."
+      });
+    }
+  });
+
 const SecretActionRouterInput = z
   .discriminatedUnion("intent", [
     SshCommandInput.extend({
@@ -888,6 +951,12 @@ const SecretActionRouterInput = z
     }).strict(),
     LocalAppFillInput.extend({
       intent: z.literal("local_app_form_fill")
+    }).strict(),
+    LocalExecutionInput.extend({
+      intent: z.literal("local_execution")
+    }).strict(),
+    TrustedProcessInput.extend({
+      intent: z.literal("trusted_process")
     }).strict()
   ]);
 
@@ -915,7 +984,8 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
         DatabaseQueryOutput,
         FileTransferOutput,
         BrowserLoginOutput,
-        LocalAppFillOutput
+        LocalAppFillOutput,
+        LocalProcessOutput
       ]),
       async handler(input) {
         const parsed = SecretActionRouterInput.parse(input);
@@ -942,6 +1012,12 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
         }
         if (parsed.intent === "browser_web_login") {
           return handleBrowserLoginWithSecret(client, parsed);
+        }
+        if (parsed.intent === "local_execution") {
+          return handleLocalExecutionWithSecret(client, parsed);
+        }
+        if (parsed.intent === "trusted_process") {
+          return handleTrustedProcessWithSecret(client, parsed);
         }
         return handleLocalAppFillWithSecret(client, parsed);
       }
@@ -1651,6 +1727,28 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       async handler(input) {
         return handleLocalAppFillWithSecret(client, LocalAppFillInput.parse(input));
       }
+    },
+    {
+      name: "local_execution_with_secret",
+      title: "Local Execution With Secret",
+      description:
+        "Capability-gated localExecution descriptor. It requires a fresh owner approval and an explicit userApprovedSecretRelease audit boundary; unavailable adapters must not fall back to shell, AppleScript, clipboard, or generic scripting. Plaintext is never returned.",
+      inputSchema: LocalExecutionInput,
+      outputSchema: LocalProcessOutput,
+      async handler(input) {
+        return handleLocalExecutionWithSecret(client, LocalExecutionInput.parse(input));
+      }
+    },
+    {
+      name: "trusted_process_with_secret",
+      title: "Trusted Process With Secret",
+      description:
+        "Capability-gated signed trusted-process descriptor. It is usable only when the daemon advertises a configured signed process profile; otherwise it returns ACTION_EXECUTOR_UNAVAILABLE and never falls back to localExecution or shell. Plaintext is never returned.",
+      inputSchema: TrustedProcessInput,
+      outputSchema: LocalProcessOutput,
+      async handler(input) {
+        return handleTrustedProcessWithSecret(client, TrustedProcessInput.parse(input));
+      }
     }
   ];
 }
@@ -1797,6 +1895,10 @@ async function handleExportResolvedText(
   client: VaultIpcClient,
   parsed: z.infer<typeof ExportResolvedTextInput>
 ): Promise<CallToolResult> {
+  const capabilityStatus = await ensureSecretOperationCapability(client, "exportPlaintext");
+  if (capabilityStatus !== undefined) {
+    return structuredResult({ status: capabilityStatus });
+  }
   const revealRequest = revealRequestFromExportInput(parsed);
   const response = await client.request({
     type: "exportResolvedText",
@@ -1829,10 +1931,40 @@ function agentAssessment(input: AgentRiskInput): z.infer<typeof AgentRiskAssessm
   };
 }
 
+async function ensureSecretOperationCapability(
+  client: VaultIpcClient,
+  action: z.infer<typeof SecretOperationAction>
+): Promise<string | undefined> {
+  const response = await client.request({ type: "secretOperationCapabilities" });
+  if (response.type !== "secretOperationCapabilities") {
+    return response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE";
+  }
+
+  const matching = response.capabilities.filter((capability) => capability.operations.includes(action));
+  if (matching.some((capability) => capability.status === "supported")) {
+    return undefined;
+  }
+  if (matching.some((capability) => capability.status === "invalidParameters")) {
+    return "ARGUMENT_VALIDATION";
+  }
+  return "ACTION_EXECUTOR_UNAVAILABLE";
+}
+
 async function executeOpaqueOperation(
   client: VaultIpcClient,
   descriptor: z.infer<typeof SecretOperationDescriptor>
 ): Promise<z.infer<typeof SecretOperationOutput> | { status: string }> {
+  // SSH is the only exception because its existing transport tool is already
+  // the capability-owned execution boundary. Every other execution must
+  // perform a fresh capability preflight for this call; an unavailable
+  // adapter stops here and never reaches the daemon's approval/decryption
+  // path.
+  if (descriptor.actionType !== "sshCommand") {
+    const capabilityStatus = await ensureSecretOperationCapability(client, descriptor.actionType);
+    if (capabilityStatus !== undefined) {
+      return { status: capabilityStatus };
+    }
+  }
   const response = await client.request({
     type: "executeSecretOperation",
     descriptor
@@ -1878,6 +2010,16 @@ function sshDiagnosticResult(output: z.infer<typeof SecretOperationOutput>): Rec
     ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
     ...(output.failedIndex === undefined ? {} : { failedIndex: output.failedIndex }),
     ...(results === undefined ? {} : { results }),
+    redacted: true
+  };
+}
+
+function httpRedirectResult(output: z.infer<typeof SecretOperationOutput>): Record<string, unknown> {
+  return {
+    status: output.status,
+    ...(output.httpStatus === undefined ? {} : { httpStatus: output.httpStatus }),
+    ...(output.redirectLocation === undefined ? {} : { redirectLocation: output.redirectLocation }),
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
     redacted: true
   };
 }
@@ -2010,11 +2152,11 @@ async function handleLocalHttpRequest(
     ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
     ...(parsed.passwordRef === undefined ? [] : [parsed.passwordRef])
   ];
+  if (url.username !== "" || url.password !== "" || hasCredentialQueryParameter(url)) {
+    return structuredResult({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
+  }
   if ((parsed.username !== undefined || parsed.usernameRef !== undefined) !== (parsed.passwordRef !== undefined)) {
     return structuredResult({ status: "BASIC_AUTH_REQUIRES_USERNAME_AND_PASSWORD" });
-  }
-  if (url.username !== "" || url.password !== "") {
-    return structuredResult({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
   }
   const parameters: Record<string, string> = {
     ...(parsed.username === undefined ? {} : { username: parsed.username }),
@@ -2062,7 +2204,13 @@ async function handleLocalHttpRequest(
     parameters,
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
+    return structuredResult({ status: output.status });
+  }
+  if (output.status === "REDIRECT_REQUIRES_REVIEW") {
+    return structuredResult(httpRedirectResult(output));
+  }
+  if (output.status !== "COMPLETED") {
     return structuredResult({ status: output.status });
   }
   return structuredResult({
@@ -2138,7 +2286,13 @@ async function handleApiRequestWithToken(
     parameters,
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
+    return structuredResult({ status: output.status });
+  }
+  if (output.status === "REDIRECT_REQUIRES_REVIEW") {
+    return structuredResult(httpRedirectResult(output));
+  }
+  if (output.status !== "COMPLETED") {
     return structuredResult({ status: output.status });
   }
   return structuredResult({
@@ -2149,6 +2303,67 @@ async function handleApiRequestWithToken(
     ...(output.bodyPreview === undefined ? {} : { bodyPreview: output.bodyPreview }),
     redacted: true
   });
+}
+
+async function handleLocalExecutionWithSecret(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof LocalExecutionInput>
+): Promise<CallToolResult> {
+  const output = await executeOpaqueOperation(client, {
+    actionType: "localExecution",
+    secretReferences: parsed.secretReferences,
+    destination: parsed.executable,
+    payload: {
+      type: "localExecution",
+      operation: {
+        executable: parsed.executable,
+        arguments: parsed.arguments,
+        secretReferences: parsed.secretReferences
+      }
+    },
+    requestedEffects: ["user-approved-secret-release"],
+    parameters: {
+      executable: parsed.executable,
+      arguments: JSON.stringify(parsed.arguments)
+    },
+    agentAssessment: agentAssessment(parsed)
+  });
+  return processActionResult(output);
+}
+
+async function handleTrustedProcessWithSecret(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof TrustedProcessInput>
+): Promise<CallToolResult> {
+  const output = await executeOpaqueOperation(client, {
+    actionType: "trustedProcess",
+    secretReferences: parsed.secretReferences,
+    destination: parsed.profileID,
+    payload: {
+      type: "trustedProcess",
+      operation: {
+        profileID: parsed.profileID,
+        arguments: parsed.arguments,
+        secretReferences: parsed.secretReferences
+      }
+    },
+    requestedEffects: ["trusted-process-secret-release"],
+    parameters: {
+      profileID: parsed.profileID,
+      arguments: JSON.stringify(parsed.arguments)
+    },
+    agentAssessment: agentAssessment(parsed)
+  });
+  return processActionResult(output);
+}
+
+function processActionResult(
+  output: z.infer<typeof SecretOperationOutput> | { status: string }
+): CallToolResult {
+  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+    return structuredResult({ status: output.status });
+  }
+  return structuredResult({ status: "COMPLETED", redacted: true });
 }
 
 async function handleDatabaseQueryWithSecret(

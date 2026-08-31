@@ -84,7 +84,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                     : ["metadataOnly", "projectedJSON"],
                 transportSessionReuse: true,
                 derivedCredentialCapture: false,
-                publicNetworkEgress: true,
+                publicNetworkEgress: false,
                 insecurePrivateNetworkHTTPProfileOptIn: true
             )
         )
@@ -115,11 +115,13 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         } catch HTTPAdapterError.invalidParameter {
             throw SecretOperationExecutionError.invalidParameter
         }
-        // Transport risk (insecure HTTP, public destinations, credential
-        // query parameters) is classified by the policy engine and decided by
-        // the device owner before this adapter runs. The adapter is an
-        // executor, not a second approval layer: it only fails on technical
-        // grounds.
+        do {
+            try validateTransport(plan.url, descriptor: descriptor, metadata: metadata)
+        } catch HTTPAdapterError.insecureTransportDenied {
+            throw SecretOperationExecutionError.insecureTransportDenied
+        } catch {
+            throw SecretOperationExecutionError.invalidParameter
+        }
         var secretBuffers: [Data] = []
         defer {
             for index in secretBuffers.indices {
@@ -190,16 +192,15 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             body: sanitizedBody,
             hasSecretAuth: hasSecretAuth
         )
-        // §37: a cross-origin redirect stops here with the absolute Location.
-        // The agent re-submits a new exact request to that URL, which goes
-        // through the ordinary authorization flow on its own; SVLT never
-        // silently follows to another origin.
-        if (300...399).contains(response.statusCode), let redirectLocation = response.redirectLocation {
+        // §37: every redirect stops here with the absolute Location. The
+        // agent re-submits a new exact request to that URL, which goes through
+        // the authorization flow on its own; SVLT never silently follows.
+        if (300...399).contains(response.statusCode) {
             return SecretOperationOutput(
                 status: "REDIRECT_REQUIRES_REVIEW",
                 httpStatus: response.statusCode,
                 sessionID: response.sessionID,
-                redirectLocation: redirectLocation,
+                redirectLocation: response.redirectLocation,
                 redacted: true
             )
         }
@@ -229,6 +230,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
     private enum HTTPAdapterError: Error {
         case unsupportedStrategy
         case invalidParameter
+        case insecureTransportDenied
     }
 
     private func makePlan(for descriptor: SecretOperationDescriptor) throws -> RequestPlan {
@@ -240,7 +242,10 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               url.host?.isEmpty == false,
-              !rawURL.contains("secret://")
+              !rawURL.contains("secret://"),
+              !Self.hasCredentialQueryParameter(url),
+              descriptor.secretReferences.isEmpty
+                  || HTTPTransportSecurityPolicy.isPrivateOrLoopbackHost(url.host ?? "")
         else {
             throw HTTPAdapterError.invalidParameter
         }
@@ -318,6 +323,26 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             responsePolicy: try validateResponsePolicy(responsePolicy, for: url, method: method),
             timeout: .milliseconds(timeoutMilliseconds)
         )
+    }
+
+    private func validateTransport(
+        _ url: URL,
+        descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata]
+    ) throws {
+        guard descriptor.secretReferences.isEmpty
+                || HTTPTransportSecurityPolicy.isPrivateOrLoopbackHost(url.host ?? "") else {
+            throw HTTPAdapterError.invalidParameter
+        }
+        if url.scheme?.lowercased() == "http", !descriptor.secretReferences.isEmpty {
+            let allowsInsecureHTTP = descriptor.secretReferences.allSatisfy { reference in
+                metadata.first(where: { $0.reference == reference })?.httpTransportSecurityPolicy
+                    .permitsInsecureHTTP(toHost: url.host ?? "") == true
+            }
+            guard allowsInsecureHTTP else {
+                throw HTTPAdapterError.insecureTransportDenied
+            }
+        }
     }
 
     private func parseMethod(_ rawValue: String?) throws -> HTTPMethod {
@@ -711,6 +736,18 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
               !host.isEmpty else { return nil }
         let port = url.port ?? (scheme == "https" ? 443 : 80)
         return "\(scheme)://\(host.lowercased()):\(port)"
+    }
+
+    private static func hasCredentialQueryParameter(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return true
+        }
+        return components.queryItems?.contains { item in
+            item.name.range(
+                of: #"(?i)password|passwd|pwd|token|secret|api[_-]?key|authorization|cookie"#,
+                options: .regularExpression
+            ) != nil
+        } == true
     }
 
     private static func canonicalEndpointPath(_ rawPath: String) -> String? {

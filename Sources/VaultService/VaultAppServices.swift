@@ -160,6 +160,13 @@ private enum SecretOperationAuthorizationPath: Sendable {
             return "智能体专用操作"
         }
     }
+
+    func operationAuditAction(for action: SecretOperationAction) -> String {
+        guard action == .localExecution else {
+            return operationAuditAction
+        }
+        return "userApprovedSecretRelease"
+    }
 }
 
 private struct ExecutionApprovalFlight {
@@ -665,7 +672,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 referenceCount: descriptor.secretReferences.count,
                 result: "失败"
             )
-            throw SecretOperationError.invalidOperationParameters
+            throw policyDecisionError(for: decision)
         }
 
         let executorAction = isExecutionLeaseEligible(descriptor.actionType)
@@ -747,7 +754,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationMode: authorizationPath.auditMode,
                 status: .failure
             )
-            throw SecretOperationError.invalidOperationParameters
+            throw policyDecisionError(for: currentDecision)
         }
         guard operationGeneration == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
@@ -785,7 +792,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 metadata: currentMetadata
             )
             guard currentDecision.risk != .denied else {
-                throw SecretOperationError.invalidOperationParameters
+                throw policyDecisionError(for: currentDecision)
             }
             guard operationGeneration == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
@@ -845,7 +852,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     metadata: refreshedMetadata
                 )
                 guard refreshedDecision.risk != .denied else {
-                    throw SecretOperationError.invalidOperationParameters
+                    throw policyDecisionError(for: refreshedDecision)
                 }
                 guard operationGeneration == securityGeneration else {
                     throw SecretOperationError.authorizationCancelled
@@ -953,7 +960,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
             guard output.status == "COMPLETED" else {
                 await emitAudit(
-                    action: authorizationPath.operationAuditAction,
+                    action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                     target: currentDecision.normalizedDestination ?? "local",
                     referenceCount: descriptor.secretReferences.count,
                     result: output.status,
@@ -965,7 +972,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 return output
             }
             await emitAudit(
-                action: authorizationPath.operationAuditAction,
+                action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                 target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
                 result: output.status,
@@ -977,7 +984,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return output
         } catch SecretOperationExecutionError.unavailable {
             await emitAudit(
-                action: authorizationPath.operationAuditAction,
+                action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                 target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
                 result: "不可用",
@@ -989,7 +996,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.actionExecutorUnavailable
         } catch SecretOperationError.actionExecutorUnavailable {
             await emitAudit(
-                action: authorizationPath.operationAuditAction,
+                action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                 target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
                 result: "不可用",
@@ -1001,7 +1008,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.actionExecutorUnavailable
         } catch SecretOperationExecutionError.redirectRequiresReview {
             await emitAudit(
-                action: authorizationPath.operationAuditAction,
+                action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                 target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
                 result: "需要复核",
@@ -1013,7 +1020,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.redirectRequiresReview
         } catch SecretOperationExecutionError.outputQuarantined {
             await emitAudit(
-                action: authorizationPath.operationAuditAction,
+                action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                 target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
                 result: "已隔离",
@@ -1026,7 +1033,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } catch let error as SecretOperationExecutionError {
             let mappedError = mapExecutionError(error)
             await emitAudit(
-                action: authorizationPath.operationAuditAction,
+                action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                 target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
                 result: mappedError.responseCode,
@@ -1039,7 +1046,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } catch {
             if operationGeneration != securityGeneration {
                 await emitAudit(
-                    action: authorizationPath.operationAuditAction,
+                    action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                     target: currentDecision.normalizedDestination ?? "local",
                     referenceCount: descriptor.secretReferences.count,
                     result: "已取消",
@@ -1051,7 +1058,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw SecretOperationError.authorizationCancelled
             }
             await emitAudit(
-                action: authorizationPath.operationAuditAction,
+                action: authorizationPath.operationAuditAction(for: descriptor.actionType),
                 target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
                 result: "失败",
@@ -3956,7 +3963,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
              .databaseQuery,
              .sftpTransfer,
              .browserLogin,
-             .localAppFill:
+             .localAppFill,
+             .trustedProcess:
             return true
         default:
             return false
@@ -4435,6 +4443,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .authorizationCancelled
         }
         return .authorizationDenied
+    }
+
+    private func policyDecisionError(for decision: PolicyDecision) -> SecretOperationError {
+        switch decision.policyRuleID {
+        case "http.insecure-profile.denied":
+            return .insecureTransportDenied
+        default:
+            return .invalidOperationParameters
+        }
     }
 
     private func mapExecutionError(_ error: SecretOperationExecutionError) -> SecretOperationError {

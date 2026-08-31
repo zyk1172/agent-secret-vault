@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { type IpcRequest, type IpcResponse } from "../src/protocol.js";
+import {
+  type IpcRequest,
+  type IpcResponse,
+  type SecretOperationAction
+} from "../src/protocol.js";
 import {
   createVaultToolDefinitions,
   type VaultIpcClient
@@ -23,6 +27,31 @@ function operationResponse(extra: Record<string, unknown> = {}): IpcResponse {
   return {
     type: "secretOperation",
     output: { status: "COMPLETED", redacted: true, ...extra }
+  } as IpcResponse;
+}
+
+function capabilityResponse(
+  action: SecretOperationAction,
+  status: "supported" | "unavailable" | "invalidParameters" = "supported"
+): IpcResponse {
+  const kind = action === "apiRequest" || action === "httpRequest"
+    ? "http"
+    : action === "databaseQuery"
+      ? "database"
+      : action === "sftpTransfer"
+        ? "sftp"
+        : action === "browserLogin"
+          ? "browser"
+          : action === "localAppFill"
+            ? "localApp"
+            : action === "localExecution"
+              ? "localExecution"
+              : action === "trustedProcess"
+                ? "trustedProcess"
+                : "export";
+  return {
+    type: "secretOperationCapabilities",
+    capabilities: [{ kind, status, operations: [action], reason: "test fixture" }]
   } as IpcResponse;
 }
 
@@ -67,6 +96,8 @@ describe("MCP tool contracts", () => {
       "api_request_with_token",
       "database_query_with_secret",
       "sftp_transfer_with_secret",
+      "local_execution_with_secret",
+      "trusted_process_with_secret",
       "secret_reveal_request"
     ]));
     expect(names).not.toContain("restore_references");
@@ -954,7 +985,10 @@ describe("MCP tool contracts", () => {
   });
 
   it("carries HTTP method and destination into the operation descriptor", async () => {
-    const client = new FakeClient([operationResponse({ httpStatus: 200, contentType: "application/json" })]);
+    const client = new FakeClient([
+      capabilityResponse("apiRequest"),
+      operationResponse({ httpStatus: 200, contentType: "application/json" })
+    ]);
     await tool(client, "api_request_with_token").handler({
       url: "https://qnap.local/api/status",
       method: "POST",
@@ -962,7 +996,7 @@ describe("MCP tool contracts", () => {
       body: "{\"probe\":true}"
     });
 
-    const request = client.requests[0];
+    const request = client.requests[1];
     expect(request.type).toBe("executeSecretOperation");
     if (request.type !== "executeSecretOperation") return;
     expect(request.descriptor).toMatchObject({
@@ -975,14 +1009,14 @@ describe("MCP tool contracts", () => {
   });
 
   it("does not add an implicit Bearer scheme to custom API-key headers", async () => {
-    const client = new FakeClient([operationResponse({ httpStatus: 200 })]);
+    const client = new FakeClient([capabilityResponse("apiRequest"), operationResponse({ httpStatus: 200 })]);
     await tool(client, "api_request_with_token").handler({
       url: "https://qnap.local/api/status",
       tokenRef: reference,
       headerName: "X-API-Key"
     });
 
-    const request = client.requests[0];
+    const request = client.requests[1];
     expect(request.type).toBe("executeSecretOperation");
     if (request.type !== "executeSecretOperation") return;
     expect(request.descriptor.parameters).toMatchObject({
@@ -1022,9 +1056,83 @@ describe("MCP tool contracts", () => {
     expect(bodyClient.requests).toHaveLength(0);
   });
 
+  it("fails closed when a non-SSH capability is unavailable", async () => {
+    const client = new FakeClient([
+      capabilityResponse("databaseQuery", "unavailable"),
+      operationResponse({ rowCount: 1 })
+    ]);
+    const result = await tool(client, "database_query_with_secret").handler({
+      engine: "postgres",
+      host: "qnap.local",
+      database: "postgres",
+      username: "admin",
+      passwordRef: reference,
+      query: "SELECT 1"
+    });
+
+    expect(result.structuredContent).toEqual({ status: "ACTION_EXECUTOR_UNAVAILABLE" });
+    expect(client.requests).toHaveLength(1);
+    expect(client.requests[0].type).toBe("secretOperationCapabilities");
+  });
+
+  it("routes local process intents through capability gating without fallback", async () => {
+    const localClient = new FakeClient([capabilityResponse("localExecution", "unavailable")]);
+    const localResult = await tool(localClient, "local_execution_with_secret").handler({
+      executable: "/private/tmp/svlt-check",
+      arguments: ["--check-only"],
+      secretReferences: [reference]
+    });
+    expect(localResult.structuredContent).toEqual({ status: "ACTION_EXECUTOR_UNAVAILABLE" });
+    expect(localClient.requests).toHaveLength(1);
+
+    const trustedClient = new FakeClient([capabilityResponse("trustedProcess", "unavailable")]);
+    const trustedResult = await tool(trustedClient, "trusted_process_with_secret").handler({
+      profileID: "missing-signed-profile",
+      arguments: [],
+      secretReferences: [reference]
+    });
+    expect(trustedResult.structuredContent).toEqual({ status: "ACTION_EXECUTOR_UNAVAILABLE" });
+    expect(trustedClient.requests).toHaveLength(1);
+  });
+
+  it("rejects credential query parameters in local HTTP before capability lookup", async () => {
+    const client = new FakeClient([]);
+    const result = await tool(client, "local_http_request_with_secret").handler({
+      url: "https://qnap.local/api?token=secret",
+      passwordRef: reference
+    });
+
+    expect(result.structuredContent).toEqual({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("preserves a sanitized HTTP redirect location at the MCP boundary", async () => {
+    const client = new FakeClient([
+      capabilityResponse("apiRequest"),
+      operationResponse({
+        status: "REDIRECT_REQUIRES_REVIEW",
+        httpStatus: 302,
+        redirectLocation: "https://qnap.local/next"
+      })
+    ]);
+    const result = await tool(client, "api_request_with_token").handler({
+      url: "https://qnap.local/start",
+      tokenRef: reference
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "REDIRECT_REQUIRES_REVIEW",
+      httpStatus: 302,
+      redirectLocation: "https://qnap.local/next",
+      redacted: true
+    });
+  });
+
   it("uses operation descriptors for database and SFTP actions", async () => {
     const client = new FakeClient([
+      capabilityResponse("databaseQuery"),
       operationResponse({ rowCount: 1, rowsPreview: "hostname" }),
+      capabilityResponse("sftpTransfer"),
       operationResponse({ listingPreview: "file.txt" })
     ]);
 
@@ -1043,13 +1151,14 @@ describe("MCP tool contracts", () => {
       passwordRef: reference
     });
 
-    expect(client.requests).toHaveLength(2);
-    expect(client.requests.every((request) => request.type === "executeSecretOperation")).toBe(true);
-    const database = client.requests[0];
+    expect(client.requests).toHaveLength(4);
+    expect(client.requests[0].type).toBe("secretOperationCapabilities");
+    expect(client.requests[2].type).toBe("secretOperationCapabilities");
+    const database = client.requests[1];
     if (database.type === "executeSecretOperation") {
       expect(database.descriptor.databaseStatement).toMatch(/^SELECT/i);
     }
-    const sftp = client.requests[1];
+    const sftp = client.requests[3];
     if (sftp.type === "executeSecretOperation") {
       expect(sftp.descriptor.fileOperation).toBe("list");
     }

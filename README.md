@@ -258,13 +258,16 @@ must never be returned to the agent.
   destruction, container destruction) take a fresh approval with the full
   command shown. The SSH ControlMaster is a reuse optimization only — its
   failure never fails a command that already ran and never clears the lease.
-- Secret-bearing HTTP over plaintext `http://` triggers a fresh approval with a
-  plaintext-transport warning instead of a policy refusal. Authenticated
-  responses are metadata-only unless an App-owned response projection profile
-  allowlists the requested JSON pointers. The production daemon receives those
-  non-secret profiles through `VaultDaemonConfiguration`; its default empty
-  configuration advertises metadata-only responses. Derived credential/cookie
-  capture is not implemented in this release.
+- Secret-bearing HTTP over plaintext `http://` is denied unless every
+  referenced Secret has an explicit saved private/loopback transport profile
+  for that target; an allowed profile still requires fresh approval with a
+  plaintext-transport warning. Public Secret-bearing HTTP and credential query
+  parameters are always rejected. Authenticated responses are metadata-only
+  unless an App-owned response projection profile allowlists the requested JSON
+  pointers. The production daemon receives those non-secret profiles through
+  `VaultDaemonConfiguration`; its default empty configuration advertises
+  metadata-only responses. Derived credential/cookie capture is not implemented
+  in this release.
 - `localExecution` (handing a Secret to an arbitrary local process) is a
   very-high-risk fresh approval explicitly labeled `userApprovedSecretRelease`
   in audit and capability output; the device owner sees the process, arguments,

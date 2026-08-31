@@ -55,7 +55,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 
 - 在任何非 SSH 执行前先调用 `vault_capabilities`。daemon 返回的 capability manifest 才是实际能力来源；`unavailable` 不是“稍后重试即可”的支持状态，也不能因此请求明文或换成普通 shell/CLI。
 - 能力清单中的 `version` 与 `features` 是实际 adapter 的非敏感能力说明；不要只因为 MCP tool 存在就假设某个 auth、body、response projection、session 或 capture 能力存在。
-- HTTP/API 只能使用 typed payload：Basic、Bearer、API-key header、Cookie 等由 SVLT 分别校验。HTTPS 是默认传输；未加密 `http://` 不再被直接拒绝，但会触发 fresh approval 并明确提示"凭据可能以明文传输"，由设备所有者决定。凭据类 URL query 参数同样触发 fresh 警告。不要自行添加任意 header；重定向会停止并要求重新审查。
+- HTTP/API 只能使用 typed payload：Basic、Bearer、API-key header、Cookie 等由 SVLT 分别校验。HTTPS 是默认传输；携带 Secret 的 `http://` 只有在 Secret 已保存、且明确允许该私有/loopback 目标时才可执行，并会触发 fresh approval 和"凭据可能以明文传输"提示；缺少 profile、公网目标和凭据类 URL query 参数直接拒绝。不要自行添加任意 header；任何重定向都会停止并要求重新提交审查。
 - 带认证的 HTTP 响应默认只返回状态/Content-Type。只有 capability manifest 声明 `projectedJSON` 且 App-owned profile ID 与 allowlisted JSON fields 同时匹配时，才能返回投影字段；不要请求 token、access_token、refresh_token、password、secret、cookie、session、authorization 等字段。`captureCredential`/派生 Cookie session 在本版本仍不可用。
 - `Authorization` header 默认使用 `Bearer`；`X-API-Key`、`X-Auth-Token` 等 custom API-key header 默认只发送原始 token，只有明确安全的 scheme 才会加前缀。不要用自定义 header 绕过 profile/Policy。
 - 通用 `localExecution`（把 Secret 交给任意本地进程）是极高危操作：会触发 fresh approval，审批中明确提示"批准后 SVLT 无法保证 Agent 不获得该凭据"，审计标记 `userApprovedSecretRelease`；是否释放由设备所有者决定。`trustedProcess` 是独立的未来 adapter 边界，只有能力清单声明已配置的 signed profile 时才可用，禁止退回 shell、AppleScript、剪贴板或通用脚本。
