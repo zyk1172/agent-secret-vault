@@ -66,6 +66,8 @@ public struct FoundationProcessRunner: ProcessRunning {
                         completion.resume(throwing: ProcessRunError.outputLimitExceeded)
                     case .timedOut:
                         completion.resume(throwing: ProcessRunError.timedOut)
+                    case let .stdinWriteFailed(message):
+                        completion.resume(throwing: ProcessRunError.stdinWriteFailed(message))
                     case .none:
                         completion.resume(
                             returning: ProcessResult(
@@ -79,13 +81,27 @@ public struct FoundationProcessRunner: ProcessRunning {
 
                 do {
                     try process.run()
-                    try stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
-                    try stdinPipe.fileHandleForWriting.close()
                 } catch {
                     timeoutTask.cancel()
                     cleanup(stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
                     runState.terminate()
-                    completion.resume(throwing: ProcessRunError.launchFailed(error.localizedDescription))
+                    completion.resume(
+                        throwing: ProcessRunError.processLaunchFailed(error.localizedDescription)
+                    )
+                    return
+                }
+
+                do {
+                    try stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
+                    try stdinPipe.fileHandleForWriting.close()
+                } catch {
+                    timeoutTask.cancel()
+                    let message = error.localizedDescription
+                    guard runState.markStdinWriteFailedAndTerminate(message) else {
+                        cleanup(stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
+                        completion.resume(throwing: ProcessRunError.stdinWriteFailed(message))
+                        return
+                    }
                 }
             }
         } onCancel: {
@@ -154,6 +170,7 @@ private final class BoundedProcessOutput: @unchecked Sendable {
 private enum FoundationProcessFinishReason {
     case timedOut
     case outputLimitExceeded
+    case stdinWriteFailed(String)
 }
 
 private final class FoundationProcessRunState: @unchecked Sendable {
@@ -177,6 +194,30 @@ private final class FoundationProcessRunState: @unchecked Sendable {
 
     func markOutputLimitExceededAndTerminate() {
         markAndTerminate(.outputLimitExceeded, killFallback: true)
+    }
+
+    @discardableResult
+    func markStdinWriteFailedAndTerminate(_ message: String) -> Bool {
+        var processToKill: Process?
+        var wasRunning = false
+        lock.withLock {
+            if reason == nil {
+                reason = .stdinWriteFailed(message)
+            }
+            guard let process, process.isRunning else { return }
+
+            process.terminate()
+            processToKill = process
+            wasRunning = true
+        }
+
+        if let processToKill {
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                self.killIfNeeded(processToKill)
+            }
+        }
+        return wasRunning
     }
 
     func terminate() {
