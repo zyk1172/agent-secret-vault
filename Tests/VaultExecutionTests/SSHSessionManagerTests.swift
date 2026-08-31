@@ -17,7 +17,7 @@ import VaultCore
         await firstFlags.append(requiresAuthentication: access.requiresAuthentication, controlPath: access.controlPath)
         return SSHSessionCommandExecution(
             processResult: ProcessResult(exitCode: 0, stdout: Data("first".utf8), stderr: Data()),
-            transportReady: true
+            channelState: .remoteCommandCompleted
         )
     }
 
@@ -26,12 +26,14 @@ import VaultCore
         await secondFlags.append(requiresAuthentication: access.requiresAuthentication, controlPath: access.controlPath)
         return SSHSessionCommandExecution(
             processResult: ProcessResult(exitCode: 0, stdout: Data("second".utf8), stderr: Data()),
-            transportReady: true
+            channelState: .remoteCommandCompleted
         )
     }
 
     #expect(first.sessionID != nil)
+    #expect(first.masterReady)
     #expect(second.sessionID == first.sessionID)
+    #expect(second.masterReady)
     #expect(await firstFlags.requiresAuthentication == true)
     #expect(await secondFlags.requiresAuthentication == false)
     #expect(await firstFlags.controlPath?.contains("nas.local") == false)
@@ -116,7 +118,7 @@ import VaultCore
     let failed = try await manager.execute(scope: sessionScope()) { _ in
         SSHSessionCommandExecution(
             processResult: ProcessResult(exitCode: 124, stdout: Data(), stderr: Data()),
-            transportReady: false
+            channelState: .transportFailed
         )
     }
 
@@ -138,16 +140,85 @@ import VaultCore
     let execution = try await manager.execute(scope: sessionScope()) { _ in
         SSHSessionCommandExecution(
             processResult: ProcessResult(exitCode: 0, stdout: Data("command ran".utf8), stderr: Data()),
-            transportReady: true
+            channelState: .remoteCommandCompleted
         )
     }
 
     #expect(execution.processResult.stdout == Data("command ran".utf8))
     #expect(execution.sessionID == nil)
+    #expect(!execution.masterReady)
     #expect(await manager.statuses(for: "agent-process").isEmpty)
     let invocations = await runner.invocations
     #expect(invocations.contains { $0.arguments.contains("check") })
     #expect(invocations.contains { $0.arguments.contains("exit") })
+}
+
+@Test func SSHSessionManagerRejectsAnUnprovenZeroAndNeverPublishesItsSession() async throws {
+    let root = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let runner = SessionProcessRunner()
+    let manager = SSHSessionManager(processRunner: runner, sessionDirectory: root)
+
+    let execution = try await manager.execute(scope: sessionScope()) { _ in
+        // A process exit of zero is not enough evidence for a remote command.
+        // This models a wrapper that returned zero without reaching its
+        // completion protocol marker.
+        SSHSessionCommandExecution(
+            processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+            channelState: .wrapperFailed
+        )
+    }
+
+    #expect(execution.processResult.exitCode == 0)
+    #expect(execution.channelState == .wrapperFailed)
+    #expect(!execution.masterReady)
+    #expect(execution.sessionID == nil)
+    let invocations = await runner.invocations
+    #expect(invocations.contains { $0.arguments.contains("check") } == false)
+    #expect(invocations.contains { $0.arguments.contains("exit") } == false)
+    #expect(await manager.statuses(for: sessionScope().principal).isEmpty)
+}
+
+@Test func SSHSessionManagerRejectsAnUnprovenZeroOnAnExistingSession() async throws {
+    let root = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let runner = SessionProcessRunner()
+    let manager = SSHSessionManager(processRunner: runner, sessionDirectory: root)
+    let scope = sessionScope()
+    let opened = try await open(manager: manager, scope: scope)
+    let sessionID = try #require(opened.sessionID)
+
+    let execution = try await manager.execute(scope: scope, requestedSessionID: sessionID) { _ in
+        SSHSessionCommandExecution(
+            processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+            channelState: .transportFailed
+        )
+    }
+
+    #expect(execution.processResult.exitCode == 0)
+    #expect(execution.channelState == .transportFailed)
+    #expect(!execution.masterReady)
+    #expect(execution.sessionID == nil)
+    #expect(await manager.statuses(for: scope.principal).isEmpty)
+}
+
+@Test func SSHSessionManagerRejectsAControlPathThatExceedsTheUnixSocketLimit() async throws {
+    let root = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(String(repeating: "x", count: 80), isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manager = SSHSessionManager(processRunner: SessionProcessRunner(), sessionDirectory: root)
+
+    do {
+        _ = try await manager.execute(scope: sessionScope()) { _ in
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                channelState: .remoteCommandCompleted
+            )
+        }
+        Issue.record("An overlong ControlPath was accepted.")
+    } catch SSHSessionManagerError.controlDirectoryUnavailable {
+        // Expected: the full path, not just the random filename, is bounded.
+    }
 }
 
 @Test func SSHSessionManagerReconnectsAConcurrentWaiterWhenMasterHealthCheckFails() async throws {
@@ -164,7 +235,7 @@ import VaultCore
             await accesses.append("first", requiresAuthentication: access.requiresAuthentication)
             return SSHSessionCommandExecution(
                 processResult: ProcessResult(exitCode: 0, stdout: Data("first command".utf8), stderr: Data()),
-                transportReady: true
+                channelState: .remoteCommandCompleted
             )
         }
     }
@@ -178,7 +249,7 @@ import VaultCore
             await accesses.append("second", requiresAuthentication: access.requiresAuthentication)
             return SSHSessionCommandExecution(
                 processResult: ProcessResult(exitCode: 0, stdout: Data("second command".utf8), stderr: Data()),
-                transportReady: true
+                channelState: .remoteCommandCompleted
             )
         }
     }
@@ -194,6 +265,8 @@ import VaultCore
     #expect(second.processResult.stdout == Data("second command".utf8))
     #expect(first.sessionID == nil)
     #expect(second.sessionID == nil)
+    #expect(!first.masterReady)
+    #expect(!second.masterReady)
     #expect(await accesses.value(for: "first") == true)
     // The waiter reconnects as a normal first-channel operation instead of
     // assuming an unavailable ControlMaster was a failed command.
@@ -214,7 +287,7 @@ import VaultCore
         await firstAccess.append(requiresAuthentication: access.requiresAuthentication, controlPath: access.controlPath)
         return SSHSessionCommandExecution(
             processResult: ProcessResult(exitCode: 0, stdout: Data("first".utf8), stderr: Data()),
-            transportReady: true
+            channelState: .remoteCommandCompleted
         )
     }
     let sessionID = try #require(first.sessionID)
@@ -224,13 +297,15 @@ import VaultCore
         await secondAccess.append(requiresAuthentication: access.requiresAuthentication, controlPath: access.controlPath)
         return SSHSessionCommandExecution(
             processResult: ProcessResult(exitCode: 0, stdout: Data("reconnected".utf8), stderr: Data()),
-            transportReady: true
+            channelState: .remoteCommandCompleted
         )
     }
 
     #expect(first.processResult.stdout == Data("first".utf8))
     #expect(second.processResult.stdout == Data("reconnected".utf8))
     #expect(second.sessionID != sessionID)
+    #expect(first.masterReady)
+    #expect(second.masterReady)
     #expect(await firstAccess.requiresAuthentication == true)
     #expect(await secondAccess.requiresAuthentication == true)
     #expect(await runner.invocations.filter { $0.arguments.contains("check") }.count == 3)
@@ -259,7 +334,7 @@ import VaultCore
         _ = try await manager.execute(scope: otherScope) { _ in
             SSHSessionCommandExecution(
                 processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
-                transportReady: true
+                channelState: .remoteCommandCompleted
             )
         }
         Issue.record("The per-principal session limit was not enforced.")
@@ -273,7 +348,7 @@ import VaultCore
         _ = try await manager.execute(scope: otherScope, requestedSessionID: first.sessionID) { _ in
             SSHSessionCommandExecution(
                 processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
-                transportReady: true
+                channelState: .remoteCommandCompleted
             )
         }
         Issue.record("A session was reused across scopes.")
@@ -344,7 +419,7 @@ private func open(
     try await manager.execute(scope: scope) { _ in
         SSHSessionCommandExecution(
             processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
-            transportReady: true
+            channelState: .remoteCommandCompleted
         )
     }
 }
@@ -364,11 +439,9 @@ private func makeTemporaryDirectory() throws -> URL {
     // SSHSessionManager intentionally rejects symlinked parent components;
     // macOS's temporary directory is commonly reached through /var, which is
     // a symlink on this platform. Keep the test under the user's private home
-    // hierarchy so it exercises the same owner-only path contract as the
-    // production default directory.
+    // hierarchy and keep the generated path short enough for sockaddr_un.
     let directory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Caches", isDirectory: true)
-        .appendingPathComponent("svlt-ssh-session-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent(".svlt-test-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     return directory
 }

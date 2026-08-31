@@ -12,6 +12,7 @@ public enum SecretAdapterKind: String, Codable, CaseIterable, Sendable {
     case browser
     case localApp
     case export
+    case localExecution
     case trustedProcess
 }
 
@@ -209,6 +210,11 @@ public struct SecretOperationAdapterRegistry: @unchecked Sendable {
                 kind: .localApp,
                 operations: [.localAppFill],
                 reason: "没有完成目标 App 签名校验的 Accessibility executor"
+            ),
+            UnavailableSecretOperationAdapter(
+                kind: .localExecution,
+                operations: [.localExecution],
+                reason: "没有安装经过 SVLT 授权边界校验的 localExecution adapter"
             ),
             UnavailableSecretOperationAdapter(
                 kind: .trustedProcess,

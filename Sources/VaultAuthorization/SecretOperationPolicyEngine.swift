@@ -18,9 +18,10 @@ import VaultCore
 ///
 /// Semantic risk must not hard-deny an otherwise technically executable
 /// request. Hard failures are reserved for malformed, contradictory, stale,
-/// or identity-invalid requests (`PolicyDecision.technicalFailure`). The
-/// device owner makes the final allow/deny decision through Touch ID /
-/// password for everything else. SVLT executes that decision.
+/// identity-invalid, or explicitly unsafe transport-boundary requests
+/// (`PolicyDecision.technicalFailure`). The device owner makes the final
+/// allow/deny decision through Touch ID / password for everything else. SVLT
+/// executes that decision.
 public struct SecretOperationPolicyEngine: Sendable {
     public struct Configuration: Sendable {
         public let maxCommandLength: Int
@@ -191,7 +192,8 @@ public struct SecretOperationPolicyEngine: Sendable {
             metadata: metadata,
             normalizedDestination: normalizedDestination
         )
-        // Binding information is display-only (§31/§32): a destination,
+        // Except for the explicit HTTP transport gates above, binding
+        // information is display-only (§31/§32): a destination,
         // protocol, or credential-policy mismatch opens a new execution scope
         // whose first use takes the ordinary approval; it never promotes to
         // fresh and never denies. Only technical identity failures fail hard.
@@ -419,9 +421,32 @@ public struct SecretOperationPolicyEngine: Sendable {
         case let .trustedProcess(operation):
             guard descriptor.actionType == .trustedProcess,
                   !operation.profileID.isEmpty,
-                  operation.arguments.count <= 32
+                  operation.profileID.utf8.count <= 128,
+                  operation.arguments.count <= 32,
+                  !operation.profileID.contains("secret://"),
+                  operation.profileID.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar),
+                  operation.arguments.allSatisfy({ argument in
+                      argument.utf8.count <= 4_096
+                          && !argument.contains("secret://")
+                          && argument.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar)
+                  })
             else {
                 return ("trusted process typed payload 无效", "trusted-process.payload.invalid")
+            }
+        case let .localExecution(operation):
+            guard descriptor.actionType == .localExecution,
+                  !operation.executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  operation.executable.utf8.count <= 4_096,
+                  operation.arguments.count <= 32,
+                  !operation.executable.contains("secret://"),
+                  operation.executable.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar),
+                  operation.arguments.allSatisfy({ argument in
+                      argument.utf8.count <= 4_096
+                          && !argument.contains("secret://")
+                          && argument.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar)
+                  })
+            else {
+                return ("local execution typed payload 无效", "local-execution.payload.invalid")
             }
         }
 
@@ -535,12 +560,12 @@ public struct SecretOperationPolicyEngine: Sendable {
     }
 
     /// The complete, explicit registry of HTTP fresh rules (§33). Test code
-    /// asserts this list never grows past five categories. Cross-origin
-    /// redirects are transport stops, not a second policy category: the
-    /// adapter returns `REDIRECT_REQUIRES_REVIEW`, and any destination the
-    /// agent submits afterward is evaluated as its own ordinary or fresh
-    /// request. `explicit-secret-release` is reserved for a future
-    /// derived-credential adapter and is not produced today.
+    /// asserts this list never grows past five categories. Redirects are
+    /// transport stops, not a second policy category: the adapter returns
+    /// `REDIRECT_REQUIRES_REVIEW`, and any destination the agent submits
+    /// afterward is evaluated as its own ordinary or fresh request.
+    /// `explicit-secret-release` is reserved for a future derived-credential
+    /// adapter and is not produced today.
     public enum HTTPFreshRules {
         public static let delete = "http.fresh.delete"
         public static let insecureSecretTransport = "http.fresh.insecure-secret-transport"
@@ -584,6 +609,11 @@ public struct SecretOperationPolicyEngine: Sendable {
             )
         }
 
+        // Fixed fresh rules (§33). Everything else — GET/HEAD/POST/PUT/PATCH,
+        // public destinations, unknown paths, and custom headers accepted by
+        // the typed adapter — remains on the owner-approval path. The
+        // executor separately enforces an exact saved origin for plaintext
+        // HTTP after that approval; it is not a hostname-based policy gate.
         if parsedURL.scheme?.lowercased() == "http", carriesSecret {
             return (
                 .approvalRequired,
@@ -749,7 +779,7 @@ public struct SecretOperationPolicyEngine: Sendable {
     private func isAllowedSecretPolicy(_ policy: SecretPolicy, action: SecretOperationAction) -> Bool {
         switch action {
         case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer,
-             .browserLogin, .localAppFill, .trustedProcess:
+             .browserLogin, .localAppFill, .localExecution, .trustedProcess:
             return policy == .credential || policy == .externalSend
         default:
             return true
@@ -793,6 +823,10 @@ public struct SecretOperationPolicyEngine: Sendable {
         return components.queryItems?.contains { item in
             item.name.range(of: #"(?i)password|passwd|pwd|token|secret|api[_-]?key|authorization|cookie"#, options: .regularExpression) != nil
         } == true
+    }
+
+    private static func isSafeProcessMetadataScalar(_ scalar: UnicodeScalar) -> Bool {
+        scalar.value >= 0x20 && scalar.value != 0x7F && scalar.value != 0
     }
 
     private func referencesMatch(_ lhs: [SecretReference], _ rhs: [SecretReference]) -> Bool {

@@ -123,7 +123,7 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             try validateTransport(plan.url, descriptor: descriptor, metadata: metadata)
         } catch HTTPAdapterError.insecureTransportDenied {
             throw SecretOperationExecutionError.insecureTransportDenied
-        } catch HTTPAdapterError.invalidParameter {
+        } catch {
             throw SecretOperationExecutionError.invalidParameter
         }
         var secretBuffers: [Data] = []

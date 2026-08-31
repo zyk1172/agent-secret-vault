@@ -25,6 +25,16 @@ public struct ProcessResult: Equatable, Sendable {
 public enum ProcessRunError: Error, Equatable, Sendable {
     case timedOut
     case outputLimitExceeded
+    /// The executable could not be started. No child process was available
+    /// to receive the supplied input.
+    case processLaunchFailed(String)
+    /// The child process was started, but writing or closing its stdin failed.
+    /// This is deliberately distinct from a launch failure because the child
+    /// may already have performed work before its input pipe disappeared.
+    case stdinWriteFailed(String)
+    /// Kept for source compatibility with older ProcessRunning clients. New
+    /// runners must use one of the two explicit failure cases above.
+    @available(*, deprecated, message: "Use processLaunchFailed or stdinWriteFailed")
     case launchFailed(String)
 }
 

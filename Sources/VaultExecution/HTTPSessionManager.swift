@@ -49,8 +49,8 @@ public struct HTTPTransportResponse: Sendable {
     public let statusCode: Int
     public let contentType: String?
     public let sessionID: String
-    /// Absolute Location of a cross-origin redirect that stopped for a
-    /// device-owner decision (§37). Nil for non-redirect responses.
+    /// Absolute Location of a redirect that stopped for a device-owner
+    /// decision (§37). Nil for non-redirect responses.
     public let redirectLocation: String?
 
     public init(

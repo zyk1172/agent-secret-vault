@@ -57,7 +57,7 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
     #expect(await manager.activeSessionCount(for: "test-principal") == 1)
 }
 
-@Test func typedHTTPAdapterStopsSameOriginRedirectsForExplicitResubmission() async throws {
+@Test func typedHTTPAdapterStopsEveryRedirectForExplicitResubmission() async throws {
     let reference = try SecretReference(httpTestReference)
     let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
     let adapter = HTTPSecretOperationAdapter(sessionManager: manager)
@@ -91,7 +91,6 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
     #expect(output.status == "REDIRECT_REQUIRES_REVIEW")
     #expect(output.redirectLocation == "http://\(httpTestHost)/ok")
 }
-
 @Test func typedHTTPAdapterDoesNotCompleteRedirectWithoutLocation() async throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter(
@@ -622,7 +621,7 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
             statuses.append(status)
         }
     }
-    // §33/§37: a cross-origin redirect is a new authorization subject; the
+    // §33/§37: every redirect is a new authorization subject; the
     // adapter returns REDIRECT_REQUIRES_REVIEW with the absolute Location so
     // the agent can re-submit a new exact request for owner approval.
     #expect(statuses.count == 2)

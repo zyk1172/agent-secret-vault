@@ -397,7 +397,9 @@ import VaultExecution
     #expect(insecure.reasons.contains { $0.contains("明文") })
 
     let credentialQuery = engine.evaluate(descriptor(method: "GET", url: "https://qnap.local:8080/api?token=abc"), metadata: metadata)
+    #expect(credentialQuery.risk == .approvalRequired)
     #expect(credentialQuery.authorizationRequirement == .freshApprovalRequired)
+    #expect(credentialQuery.technicalFailure == false)
     #expect(credentialQuery.policyRuleID == "http.fresh.credential-in-url")
 }
 
@@ -457,6 +459,29 @@ import VaultExecution
     #expect(unboundPublic.policyRuleID == "http.fresh.secret-network-send")
     #expect(unboundPublic.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
     #expect(unboundPublic.reasons.contains { !$0.contains("公网地址") })
+}
+
+@Test func insecureHTTPRequiresFreshApprovalBeforeExecutorProfileCheck() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: "qnap.local:8080",
+        port: 8080,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://qnap.local:8080/status",
+        parameters: ["tokenRef": reference.description]
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])
+    ])
+
+    #expect(decision.risk == .approvalRequired)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.technicalFailure == false)
+    #expect(decision.policyRuleID == "http.fresh.insecure-secret-transport")
 }
 
 @Test func sshDestinationMismatchOpensANewOrdinaryScopeWithAWarning() throws {

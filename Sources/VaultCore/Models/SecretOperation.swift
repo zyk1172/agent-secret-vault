@@ -229,6 +229,15 @@ public enum HTTPTransportSecurityPolicy: String, Codable, CaseIterable, Sendable
         }
     }
 
+    /// Returns whether a host is explicitly local/private according to the
+    /// same classification used by the HTTP transport policy. Public
+    /// adapters use this as a fail-closed egress guard before resolving a
+    /// Secret.
+    public static func isPrivateOrLoopbackHost(_ host: String) -> Bool {
+        let normalizedHost = Self.normalizedHost(host)
+        return Self.isLoopbackHost(normalizedHost) || Self.isPrivateHost(normalizedHost)
+    }
+
     private static func normalizedHost(_ host: String) -> String {
         host
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))

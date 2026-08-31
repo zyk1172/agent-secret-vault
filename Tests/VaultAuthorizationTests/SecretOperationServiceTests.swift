@@ -21,6 +21,22 @@ import VaultIPC
     #expect(await fixture.executor.count == 1)
 }
 
+@Test func insecureHTTPProfileMismatchDoesNotSelfDenyBeforeOwnerApproval() async throws {
+    let fixture = try await OperationServiceFixture(allowedProtocols: ["https"])
+    defer { fixture.remove() }
+
+    // The policy layer must show the plaintext-transport risk and let the
+    // device owner decide. The concrete HTTP executor enforces the exact
+    // saved origin profile after that approval; this service fixture uses a
+    // recording executor and therefore only verifies the authorization path.
+    let output = try await fixture.service.performSecretOperation(
+        fixture.http(method: "GET", path: "/status")
+    )
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 1)
+}
+
 @Test func undeclaredLegacySecretReferenceIsRejectedBeforeOwnerApproval() async throws {
     let fixture = try await OperationServiceFixture()
     defer { fixture.remove() }

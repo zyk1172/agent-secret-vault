@@ -11,6 +11,7 @@ public enum SecretOperationPayload: Codable, Equatable, Sendable {
     case browser(BrowserLoginOperation)
     case localApp(LocalAppFillOperation)
     case export(ExportOperation)
+    case localExecution(LocalExecutionOperation)
     case trustedProcess(TrustedProcessOperation)
 
     private enum CodingKeys: String, CodingKey {
@@ -25,6 +26,7 @@ public enum SecretOperationPayload: Codable, Equatable, Sendable {
         case browser
         case localApp
         case export
+        case localExecution
         case trustedProcess
     }
 
@@ -43,6 +45,8 @@ public enum SecretOperationPayload: Codable, Equatable, Sendable {
             self = .localApp(try container.decode(LocalAppFillOperation.self, forKey: .operation))
         case .export:
             self = .export(try container.decode(ExportOperation.self, forKey: .operation))
+        case .localExecution:
+            self = .localExecution(try container.decode(LocalExecutionOperation.self, forKey: .operation))
         case .trustedProcess:
             self = .trustedProcess(try container.decode(TrustedProcessOperation.self, forKey: .operation))
         }
@@ -69,6 +73,9 @@ public enum SecretOperationPayload: Codable, Equatable, Sendable {
         case let .export(operation):
             try container.encode(PayloadType.export, forKey: .type)
             try container.encode(operation, forKey: .operation)
+        case let .localExecution(operation):
+            try container.encode(PayloadType.localExecution, forKey: .type)
+            try container.encode(operation, forKey: .operation)
         case let .trustedProcess(operation):
             try container.encode(PayloadType.trustedProcess, forKey: .type)
             try container.encode(operation, forKey: .operation)
@@ -89,6 +96,8 @@ public enum SecretOperationPayload: Codable, Equatable, Sendable {
         case let .localApp(operation):
             return operation.fields.compactMap(\.valueReference)
         case let .export(operation):
+            return operation.secretReferences
+        case let .localExecution(operation):
             return operation.secretReferences
         case let .trustedProcess(operation):
             return operation.secretReferences
@@ -480,6 +489,26 @@ public struct ExportOperation: Codable, Equatable, Sendable {
         self.kind = kind
         self.destinationRoot = destinationRoot
         self.overwrite = overwrite
+        self.secretReferences = secretReferences
+    }
+}
+
+/// A future local-process boundary. The executable and arguments are
+/// descriptive metadata until a dedicated, policy-enforcing adapter is
+/// installed; this payload must never be interpreted as permission to fall
+/// back to shell, AppleScript, clipboard, or an arbitrary process runner.
+public struct LocalExecutionOperation: Codable, Equatable, Sendable {
+    public let executable: String
+    public let arguments: [String]
+    public let secretReferences: [SecretReference]
+
+    public init(
+        executable: String,
+        arguments: [String] = [],
+        secretReferences: [SecretReference] = []
+    ) {
+        self.executable = executable
+        self.arguments = arguments
         self.secretReferences = secretReferences
     }
 }

@@ -271,7 +271,7 @@ must never be returned to the agent.
   are fingerprint-checked before reaching the Agent; a match quarantines the
   complete output. Other authenticated responses are metadata-only unless an
   App-owned response projection profile allowlists the requested JSON
-  pointers. The production daemon receives those non-secret profiles through
+pointers. The production daemon receives those non-secret profiles through
   `VaultDaemonConfiguration`; its default empty configuration advertises
   metadata-only responses. Derived credential/cookie capture is not implemented
   in this release.
