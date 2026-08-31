@@ -196,7 +196,7 @@ public struct SecretOperationPolicyEngine: Sendable {
         // whose first use takes the ordinary approval; it never promotes to
         // fresh and never denies. Only technical identity failures fail hard.
         let effectiveRequirement = localRequirement
-        if effectiveRequirement == .denied {
+        if binding.requirement == .denied {
             // Binding verification can only fail hard for technical reasons
             // (missing or contradictory credential identity information).
             return decision(
@@ -235,6 +235,9 @@ public struct SecretOperationPolicyEngine: Sendable {
 
         if let payloadError = invalidTypedPayload(descriptor) {
             return payloadError
+        }
+        if let referenceError = invalidExecutionReferenceSet(descriptor) {
+            return referenceError
         }
 
         switch descriptor.actionType {
@@ -425,6 +428,44 @@ public struct SecretOperationPolicyEngine: Sendable {
         return nil
     }
 
+    /// New protocol payloads carry their complete reference set directly.
+    /// Legacy SSH/HTTP fields carry opaque references in `parameters`, so
+    /// validate every parameter value that claims to be a `secret://` value
+    /// before approval as well. The descriptor list, the eventual execution
+    /// lease, and the resolver allowlist must describe exactly the same opaque
+    /// references; accepting an extra parameter reference would widen a
+    /// five-minute authorization scope. Descriptors used only for policy
+    /// classification may omit legacy adapter parameters; the adapter's own
+    /// preflight remains responsible for reporting a missing required field.
+    private func invalidExecutionReferenceSet(
+        _ descriptor: SecretOperationDescriptor
+    ) -> (reason: String, ruleID: String)? {
+        guard descriptor.payload == nil else { return nil }
+
+        var executionReferences: [SecretReference] = []
+        for rawValue in descriptor.parameters.values where rawValue.hasPrefix("secret://") {
+            guard let reference = try? SecretReference(rawValue) else {
+                return ("执行参数包含无效的 secret:// 引用", "operation.reference.invalid")
+            }
+            executionReferences.append(reference)
+        }
+
+        // Abstract policy descriptors often carry the canonical set without
+        // legacy adapter fields. There is no executable reference to compare
+        // in that shape; leave the adapter-specific required-field check to
+        // its preflight. As soon as a legacy reference is present, however,
+        // the complete set must match exactly.
+        guard !executionReferences.isEmpty else { return nil }
+
+        guard referencesMatch(executionReferences, descriptor.secretReferences) else {
+            return (
+                "执行参数中的 secret:// 引用必须与操作声明完全一致",
+                "operation.reference-mismatch"
+            )
+        }
+        return nil
+    }
+
     /// Destination/protocol/credential-policy information is display-only
     /// (§31/§32): a mismatch opens a new execution scope whose first use takes
     /// the ordinary approval and a visible hint; it never promotes to fresh
@@ -494,23 +535,22 @@ public struct SecretOperationPolicyEngine: Sendable {
     }
 
     /// The complete, explicit registry of HTTP fresh rules (§33). Test code
-    /// asserts this list never grows past five categories. `cross-origin-
-    /// redirect` is enforced at the redirect resume: the adapter stops with
-    /// REDIRECT_REQUIRES_REVIEW and the agent re-submits a new exact request
-    /// that is authorized on its own. `explicit-secret-release` is reserved
-    /// for a future derived-credential adapter and is not produced today.
+    /// asserts this list never grows past five categories. Cross-origin
+    /// redirects are transport stops, not a second policy category: the
+    /// adapter returns `REDIRECT_REQUIRES_REVIEW`, and any destination the
+    /// agent submits afterward is evaluated as its own ordinary or fresh
+    /// request. `explicit-secret-release` is reserved for a future
+    /// derived-credential adapter and is not produced today.
     public enum HTTPFreshRules {
         public static let delete = "http.fresh.delete"
         public static let insecureSecretTransport = "http.fresh.insecure-secret-transport"
         public static let credentialInURL = "http.fresh.credential-in-url"
-        public static let crossOriginRedirect = "http.fresh.cross-origin-redirect"
         public static let explicitSecretRelease = "http.fresh.explicit-secret-release"
 
         public static let all: [String] = [
             delete,
             insecureSecretTransport,
             credentialInURL,
-            crossOriginRedirect,
             explicitSecretRelease
         ]
     }

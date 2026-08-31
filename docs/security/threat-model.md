@@ -67,19 +67,24 @@ The first release also excludes:
 ## Authorization model
 
 Every protected request is represented by a `SecretOperationDescriptor` and
-evaluated by the local `SecretOperationPolicyEngine`. The effective result is
-`max(agentRisk, localRisk)` over the explicit states `silent`,
-`approvalRequired`, and `denied`; the Agent risk field can never downgrade a
-local decision. Exact destination/protocol bindings are checked before any
-record is resolved.
+evaluated by the local `SecretOperationPolicyEngine`. The engine computes the
+local requirement (`none`, `reusableApproval`, or
+`freshApprovalRequired`) from the descriptor and current metadata. The
+Agent's `AgentRiskAssessment` is display/audit metadata only; it cannot
+promote, downgrade, or deny that result. Exact opaque reference sets are
+checked before any record is resolved.
 
-Bound read-only SSH/HTTP/database/SFTP operations may be silent. New private
-destinations and all writes, external sends, plaintext reveal/copy/export,
-deletes, and security-setting changes need a fresh, short-lived,
-operation-bound `ApprovalTicket`. Public unbound destinations, generic shell,
-ambiguous SQL, and other requests that cannot be safely constrained are denied.
-The ticket is one-shot and binds operation hash, Secret references, destination,
-command/method/path/database/file details, expiry, and nonce.
+Secret-bearing execution uses one fixed, non-sliding 300-second owner lease per
+exact scope. The ordinary path covers SSH/HTTP/database/SFTP and other
+technically supported operations, including shell syntax and new destinations;
+only the small fixed destructive registries, plaintext/security controls, and
+arbitrary local secret release require fresh approval. Cross-origin HTTP
+redirects stop transport and require a newly submitted request rather than a
+special inherited authorization. Malformed, contradictory, stale, or
+unverifiable requests fail technically; the device owner decides all other
+technically executable requests. The lease binds operation hash, Secret
+references, destination, command/method/path/database/file details, expiry,
+and security generation.
 
 `locked` in `WorkbenchStatus` is compatibility-only; it is not an Agent gate.
 `available`, `ready`, and `approvalPending` describe the current operation

@@ -115,7 +115,9 @@ public enum SecretOperationAction: String, Codable, CaseIterable, Sendable {
     case resetVault
     case localExecution
     /// An allowlisted signed process is a distinct future adapter boundary.
-    /// `localExecution` remains the permanently denied generic-shell action.
+    /// `localExecution` is the explicit fresh-approval boundary for handing a
+    /// Secret to an arbitrary local process; it is not an implicit shell
+    /// fallback.
     case trustedProcess
 }
 
@@ -744,8 +746,9 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
     public let authorizationRequirement: AuthorizationRequirement
     public let policyRuleID: String
     /// Kept for wire compatibility. The current authorization model never
-    /// sets this flag: semantic risk promotes an operation to fresh approval
-    /// instead of denying it, and only technical failures fail hard.
+    /// sets this flag: Agent risk is display/audit metadata only, fixed local
+    /// rules choose the authorization requirement, and only technical
+    /// failures fail hard.
     public let requiresFreshApprovalOnFirstUse: Bool
     /// True when the request could not be processed for technical reasons
     /// (malformed shape, contradictory fields, unverifiable identity) and the

@@ -226,15 +226,16 @@ must never be returned to the agent.
   provable metadata reads, `reusableApproval` for ordinary operations, and
   `freshApprovalRequired` for explicitly destructive or high-impact operations.
 - SVLT policy classifies authorization requirements; it does not replace the
-  device owner's decision. Semantic risk promotes an operation to a fresh
-  approval with the full facts shown (raw command, target, credential, risk
-  reasons, agent warning) — it never hard-denies a technically executable
-  request. Hard failures are reserved for malformed, contradictory, stale, or
-  identity-invalid requests.
-- `effectiveAuthorizationRequirement` merges the agent hint with the local
-  requirement: the hint may promote `none` to fresh and `reusable` to fresh
-  when the agent itself claims high risk, but it can never lower a local
-  decision, mint reusable approval from `none`, or deny on the owner's behalf.
+  device owner's decision. The local policy engine chooses `none`, the
+  ordinary `reusableApproval` window, or one of the fixed
+  `freshApprovalRequired` categories and shows the full facts (raw command,
+  target, credential label, local reasons, and Agent warning). Hard failures
+  are reserved for malformed, contradictory, stale, or identity-invalid
+  requests.
+- `effectiveAuthorizationRequirement` is computed locally from the descriptor
+  and current metadata. `AgentRiskAssessment` is display/audit metadata only:
+  it cannot promote, downgrade, or deny an otherwise valid operation on the
+  device owner's behalf.
 - Every secret-bearing execution (SSH, HTTP/API, database, SFTP, export,
   browser, local app, trusted process) is an ordinary `reusableApproval`
   operation: one device-owner approval opens a fixed, non-sliding 300-second

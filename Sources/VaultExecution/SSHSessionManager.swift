@@ -221,21 +221,24 @@ public actor SSHSessionManager {
 
         if let requestedSessionID {
             guard let record = records[requestedSessionID] else {
-                throw SSHSessionManagerError.sessionNotFound
+                // A sessionID is only a transport-reuse hint. An expired or
+                // otherwise stale handle must not turn a valid command into
+                // a transport error; normal lookup/opening can reconnect.
+                return try await execute(scope: scope, operation: operation)
             }
             guard record.scope == scope else {
                 throw SSHSessionManagerError.scopeMismatch
             }
             guard !isExpired(record) else {
                 await closeRecord(record)
-                throw SSHSessionManagerError.sessionExpired
+                return try await execute(scope: scope, operation: operation)
             }
             guard record.state == .active else {
-                throw SSHSessionManagerError.controlUnavailable
+                return try await execute(scope: scope, operation: operation)
             }
             guard await checkControl(record) else {
                 await closeRecord(record)
-                throw SSHSessionManagerError.controlUnavailable
+                return try await execute(scope: scope, operation: operation)
             }
             return try await executeOnActiveRecord(record, operation: operation)
         }

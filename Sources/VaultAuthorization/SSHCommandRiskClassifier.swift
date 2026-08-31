@@ -181,6 +181,16 @@ public struct SSHCommandRiskClassifier: Sendable {
         // classifier into a shell interpreter.
         guard depth <= 8 else { return nil }
 
+        // Command substitutions execute even when they occur inside a
+        // double-quoted argument. The normal word lexer intentionally keeps
+        // that argument intact, so inspect the executable text inside `$()`
+        // and backticks separately. Single-quoted substitutions are ignored.
+        for script in Self.commandSubstitutionScripts(in: rawCommand) {
+            if let freshRule = matchFixedFreshRule(in: script, depth: depth + 1) {
+                return freshRule
+            }
+        }
+
         var commandWords: [String] = []
         for token in Self.shellTokens(in: rawCommand) {
             switch token {
@@ -213,7 +223,14 @@ public struct SSHCommandRiskClassifier: Sendable {
         arguments: [String],
         depth: Int
     ) -> String? {
-        let executable = Self.basename(rawExecutable)
+        guard let invocation = Self.normalizedInvocation(
+            executable: rawExecutable,
+            arguments: arguments
+        ) else {
+            return nil
+        }
+        let executable = invocation.executable
+        let arguments = invocation.arguments
         if Self.powerControlExecutables.contains(executable) {
             return SSHFreshRules.powerControl
         }
@@ -259,6 +276,29 @@ public struct SSHCommandRiskClassifier: Sendable {
             return matchFixedFreshRule(in: script, depth: depth + 1)
         }
 
+        if executable == "eval" {
+            let scriptArguments = arguments.first == "--" ? Array(arguments.dropFirst()) : arguments
+            guard !scriptArguments.isEmpty else { return nil }
+            return matchFixedFreshRule(
+                in: scriptArguments.joined(separator: " "),
+                depth: depth + 1
+            )
+        }
+
+        if executable == "find",
+           let freshRule = matchFindExecution(in: arguments, depth: depth + 1) {
+            return freshRule
+        }
+
+        if executable == "xargs",
+           let invocation = Self.xargsInvocation(in: arguments) {
+            return matchFixedFreshRule(
+                executable: invocation.executable,
+                arguments: invocation.arguments,
+                depth: depth + 1
+            )
+        }
+
         return nil
     }
 
@@ -275,6 +315,154 @@ public struct SSHCommandRiskClassifier: Sendable {
     private struct HereDocumentDelimiter {
         let value: String
         let stripsLeadingTabs: Bool
+    }
+
+    /// Extract command substitutions without interpreting the surrounding
+    /// command. This is deliberately just enough shell quoting to distinguish
+    /// executable substitutions from literal text; the actual remote command
+    /// is never rewritten or executed by the classifier.
+    private static func commandSubstitutionScripts(in command: String) -> [String] {
+        let characters = Array(command)
+        var scripts: [String] = []
+        var index = 0
+        var quote: Character?
+
+        while index < characters.count {
+            let character = characters[index]
+            if quote == "'" {
+                if character == "'" { quote = nil }
+                index += 1
+                continue
+            }
+            if character == "\\" {
+                index += min(2, characters.count - index)
+                continue
+            }
+            if quote == "\"" {
+                if character == "\"" {
+                    quote = nil
+                    index += 1
+                    continue
+                }
+                if character == "$", index + 1 < characters.count, characters[index + 1] == "(" {
+                    if let parsed = parseDollarSubstitution(in: characters, at: index) {
+                        scripts.append(parsed.script)
+                        index = parsed.nextIndex
+                        continue
+                    }
+                } else if character == "`",
+                          let parsed = parseBacktickSubstitution(in: characters, at: index) {
+                    scripts.append(parsed.script)
+                    index = parsed.nextIndex
+                    continue
+                }
+                index += 1
+                continue
+            }
+
+            if character == "'" || character == "\"" {
+                quote = character
+                index += 1
+                continue
+            }
+            if character == "$", index + 1 < characters.count, characters[index + 1] == "(" {
+                if let parsed = parseDollarSubstitution(in: characters, at: index) {
+                    scripts.append(parsed.script)
+                    index = parsed.nextIndex
+                    continue
+                }
+            } else if character == "`",
+                      let parsed = parseBacktickSubstitution(in: characters, at: index) {
+                scripts.append(parsed.script)
+                index = parsed.nextIndex
+                continue
+            }
+            index += 1
+        }
+        return scripts
+    }
+
+    private static func parseDollarSubstitution(
+        in characters: [Character],
+        at start: Int
+    ) -> (script: String, nextIndex: Int)? {
+        guard start + 1 < characters.count,
+              characters[start] == "$",
+              characters[start + 1] == "(" else { return nil }
+
+        var content: [Character] = []
+        var index = start + 2
+        var nesting = 1
+        var quote: Character?
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\\" {
+                content.append(character)
+                if index + 1 < characters.count {
+                    content.append(characters[index + 1])
+                    index += 2
+                } else {
+                    index += 1
+                }
+                continue
+            }
+            if quote != nil {
+                content.append(character)
+                if character == quote! { quote = nil }
+                index += 1
+                continue
+            }
+            if character == "'" || character == "\"" {
+                quote = character
+                content.append(character)
+                index += 1
+                continue
+            }
+            if character == "$", index + 1 < characters.count, characters[index + 1] == "(" {
+                nesting += 1
+                content.append(character)
+                content.append(characters[index + 1])
+                index += 2
+                continue
+            }
+            if character == ")" {
+                nesting -= 1
+                if nesting == 0 {
+                    return (String(content), index + 1)
+                }
+            }
+            content.append(character)
+            index += 1
+        }
+        return nil
+    }
+
+    private static func parseBacktickSubstitution(
+        in characters: [Character],
+        at start: Int
+    ) -> (script: String, nextIndex: Int)? {
+        guard start < characters.count, characters[start] == "`" else { return nil }
+        var content: [Character] = []
+        var index = start + 1
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\\" {
+                content.append(character)
+                if index + 1 < characters.count {
+                    content.append(characters[index + 1])
+                    index += 2
+                } else {
+                    index += 1
+                }
+                continue
+            }
+            if character == "`" {
+                return (String(content), index + 1)
+            }
+            content.append(character)
+            index += 1
+        }
+        return nil
     }
 
     /// A minimal lexer for the scanner only. It preserves quoted strings as
@@ -373,6 +561,16 @@ public struct SSHCommandRiskClassifier: Sendable {
                 if index + 1 < characters.count {
                     word.append(characters[index + 1])
                     index += 2
+                    // `\$(` is not an executable substitution. Keep the
+                    // escaped opening parenthesis in the same literal word
+                    // so the text inside it cannot become a new command
+                    // position for this shallow scanner.
+                    if characters[index - 1] == "$",
+                       index < characters.count,
+                       characters[index] == "(" {
+                        word.append(characters[index])
+                        index += 1
+                    }
                 } else {
                     word.append(character)
                     index += 1
@@ -436,20 +634,41 @@ public struct SSHCommandRiskClassifier: Sendable {
                 index += 1
                 continue
             }
-            if word == "sudo" || word == "doas" {
-                index = skipSudoOptions(in: words, from: index + 1)
-                continue
-            }
-            if word == "env" {
-                index = skipEnvironmentPrefix(in: words, from: index + 1)
-                continue
-            }
-            return ShellInvocation(
-                executable: word,
+            return normalizedInvocation(
+                executable: rawWord,
                 arguments: Array(words.dropFirst(index + 1))
             )
         }
         return nil
+    }
+
+    /// Unwraps only execution-bearing wrappers. It is shared by raw command
+    /// positions and structured argv so `sudo`, `doas`, and `env` cannot make
+    /// a dangerous inner executable invisible to the fixed-rule registry.
+    private static func normalizedInvocation(
+        executable rawExecutable: String,
+        arguments: [String]
+    ) -> ShellInvocation? {
+        var executable = basename(rawExecutable)
+        var remaining = arguments
+        while true {
+            guard !executable.isEmpty else { return nil }
+            if executable == "sudo" || executable == "doas" {
+                let index = skipSudoOptions(in: remaining, from: 0)
+                guard index < remaining.count else { return nil }
+                executable = basename(remaining[index])
+                remaining = Array(remaining.dropFirst(index + 1))
+                continue
+            }
+            if executable == "env" {
+                let index = skipEnvironmentPrefix(in: remaining, from: 0)
+                guard index < remaining.count else { return nil }
+                executable = basename(remaining[index])
+                remaining = Array(remaining.dropFirst(index + 1))
+                continue
+            }
+            return ShellInvocation(executable: executable, arguments: remaining)
+        }
     }
 
     private static func skipSudoOptions(in words: [String], from start: Int) -> Int {
@@ -487,6 +706,58 @@ public struct SSHCommandRiskClassifier: Sendable {
             return index
         }
         return index
+    }
+
+    private func matchFindExecution(in arguments: [String], depth: Int) -> String? {
+        var index = 0
+        while index < arguments.count {
+            guard Self.findExecutionOperators.contains(arguments[index]) else {
+                index += 1
+                continue
+            }
+            let executableIndex = index + 1
+            guard executableIndex < arguments.count else { return nil }
+            let commandArgumentsStart = executableIndex + 1
+            let end: Int
+            if commandArgumentsStart < arguments.count {
+                end = arguments[commandArgumentsStart...].firstIndex {
+                    $0 == ";" || $0 == "+"
+                } ?? arguments.count
+            } else {
+                end = arguments.count
+            }
+            if let freshRule = matchFixedFreshRule(
+                executable: arguments[executableIndex],
+                arguments: Array(arguments[commandArgumentsStart..<end]),
+                depth: depth
+            ) {
+                return freshRule
+            }
+            index = end < arguments.count ? end + 1 : arguments.count
+        }
+        return nil
+    }
+
+    private static func xargsInvocation(in arguments: [String]) -> ShellInvocation? {
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument == "--" {
+                index += 1
+                break
+            }
+            guard argument.hasPrefix("-") else { break }
+            if xargsOptionsWithValue.contains(argument) {
+                index += min(2, arguments.count - index)
+            } else {
+                index += 1
+            }
+        }
+        guard index < arguments.count else { return nil }
+        return normalizedInvocation(
+            executable: arguments[index],
+            arguments: Array(arguments.dropFirst(index + 1))
+        )
     }
 
     private static func significantArguments(
@@ -586,6 +857,16 @@ public struct SSHCommandRiskClassifier: Sendable {
 
     private static let environmentOptionsWithValue: Set<String> = [
         "-u", "-C", "--unset", "--chdir", "-S"
+    ]
+
+    private static let findExecutionOperators: Set<String> = [
+        "-exec", "-execdir", "-ok", "-okdir"
+    ]
+
+    private static let xargsOptionsWithValue: Set<String> = [
+        "-a", "--arg-file", "-d", "--delimiter", "-E", "--eof",
+        "-e", "--eof-str", "-I", "--replace", "-i", "-L", "--max-lines",
+        "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars"
     ]
 
     private static let systemctlOptionsWithValue: Set<String> = [

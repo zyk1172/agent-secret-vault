@@ -917,13 +917,22 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
             securityGeneration: operationGeneration
         )
-        let executionTask = Task { [operationExecutor, descriptor, currentMetadata, recordResolver, key, executionContext] in
+        let authorizedReferences = Set(descriptor.secretReferences)
+        let executionTask = Task { [operationExecutor, descriptor, currentMetadata, recordResolver, key, executionContext, authorizedReferences] in
             try await operationExecutor.execute(
                 descriptor,
                 metadata: currentMetadata,
                 context: executionContext,
                 resolve: { reference in
-                    try await recordResolver.resolve(
+                    // Keep the resolver independently constrained to the
+                    // exact opaque set that was checked before approval and
+                    // copied into the execution lease. A future adapter must
+                    // not widen a live authorization scope by asking for an
+                    // undeclared reference.
+                    guard authorizedReferences.contains(reference) else {
+                        throw SecretOperationExecutionError.invalidParameter
+                    }
+                    return try await recordResolver.resolve(
                         reference: reference.description,
                         masterKey: key
                     )

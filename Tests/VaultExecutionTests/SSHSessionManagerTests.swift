@@ -200,6 +200,42 @@ import VaultCore
     #expect(await accesses.value(for: "second") == true)
 }
 
+@Test func SSHSessionManagerReconnectsWhenAnExplicitSessionHandleIsDead() async throws {
+    let root = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // The first master is healthy, the explicit handle then fails its health
+    // check, and the replacement master is healthy again.
+    let runner = SessionProcessRunner(checkExitCodes: [0, 1, 0])
+    let manager = SSHSessionManager(processRunner: runner, sessionDirectory: root)
+    let scope = sessionScope()
+
+    let firstAccess = CallFlags()
+    let first = try await manager.execute(scope: scope) { access in
+        await firstAccess.append(requiresAuthentication: access.requiresAuthentication, controlPath: access.controlPath)
+        return SSHSessionCommandExecution(
+            processResult: ProcessResult(exitCode: 0, stdout: Data("first".utf8), stderr: Data()),
+            transportReady: true
+        )
+    }
+    let sessionID = try #require(first.sessionID)
+
+    let secondAccess = CallFlags()
+    let second = try await manager.execute(scope: scope, requestedSessionID: sessionID) { access in
+        await secondAccess.append(requiresAuthentication: access.requiresAuthentication, controlPath: access.controlPath)
+        return SSHSessionCommandExecution(
+            processResult: ProcessResult(exitCode: 0, stdout: Data("reconnected".utf8), stderr: Data()),
+            transportReady: true
+        )
+    }
+
+    #expect(first.processResult.stdout == Data("first".utf8))
+    #expect(second.processResult.stdout == Data("reconnected".utf8))
+    #expect(second.sessionID != sessionID)
+    #expect(await firstAccess.requiresAuthentication == true)
+    #expect(await secondAccess.requiresAuthentication == true)
+    #expect(await runner.invocations.filter { $0.arguments.contains("check") }.count == 3)
+}
+
 @Test func SSHSessionManagerRejectsRequestedScopeMismatchAndEnforcesLimits() async throws {
     let root = try makeTemporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -340,10 +376,16 @@ private func makeTemporaryDirectory() throws -> URL {
 private actor SessionProcessRunner: ProcessRunning {
     private(set) var invocations: [ProcessInvocation] = []
     let checkExitCode: Int32
+    private var checkExitCodes: [Int32]
     let checkGate: SessionCheckGate?
 
-    init(checkExitCode: Int32 = 0, checkGate: SessionCheckGate? = nil) {
+    init(
+        checkExitCode: Int32 = 0,
+        checkExitCodes: [Int32] = [],
+        checkGate: SessionCheckGate? = nil
+    ) {
         self.checkExitCode = checkExitCode
+        self.checkExitCodes = checkExitCodes
         self.checkGate = checkGate
     }
 
@@ -356,7 +398,8 @@ private actor SessionProcessRunner: ProcessRunning {
         invocations.append(invocation)
         if invocation.arguments.contains("check") {
             await checkGate?.waitAtFirstCheck()
-            return ProcessResult(exitCode: checkExitCode, stdout: Data(), stderr: Data())
+            let exitCode = checkExitCodes.isEmpty ? checkExitCode : checkExitCodes.removeFirst()
+            return ProcessResult(exitCode: exitCode, stdout: Data(), stderr: Data())
         }
         return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
     }

@@ -5,8 +5,8 @@ import VaultExecution
 @testable import VaultAuthorization
 
 // SVLT policy classifies authorization requirements; it does not replace the
-// device owner's decision. Semantic risk promotes an operation to a higher
-// approval level, but a technically executable request is never hard-denied.
+// device owner's decision. Agent risk is display/audit metadata only, while
+// malformed or unverifiable descriptors remain technical failures.
 
 @Test func hostnameIsAnOrdinarySecretBearingOperationAndEntersTheWindow() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
@@ -334,7 +334,11 @@ import VaultExecution
     )
     // NUL inside a raw command string is technically unsendable to the
     // remote shell argv, so it stays a technical failure.
-    #expect(engine().evaluate(nul, metadata: metadata).technicalFailure == false || true)
+    let nulDecision = engine().evaluate(nul, metadata: metadata)
+    #expect(nulDecision.risk == .denied)
+    #expect(nulDecision.authorizationRequirement == .denied)
+    #expect(nulDecision.technicalFailure)
+    #expect(nulDecision.policyRuleID == "ssh.command.nul")
 
     let oversized = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -363,7 +367,8 @@ import VaultExecution
             port: 8080,
             protocolType: SecretOperationProtocol(rawValue: scheme) ?? .http,
             httpMethod: method,
-            url: url
+            url: url,
+            parameters: ["tokenRef": reference.description]
         )
     }
 
@@ -401,7 +406,8 @@ import VaultExecution
         port: 8080,
         protocolType: .https,
         httpMethod: "POST",
-        url: "https://unbound-nas.local:8080/api"
+        url: "https://unbound-nas.local:8080/api",
+        parameters: ["tokenRef": reference.description]
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])])
     #expect(unboundPrivate.authorizationRequirement == .reusableApproval)
     #expect(unboundPrivate.reasons.contains { $0.contains("不在该凭据已保存的绑定中") })
@@ -413,7 +419,8 @@ import VaultExecution
         port: 443,
         protocolType: .https,
         httpMethod: "GET",
-        url: "https://8.8.8.8/status"
+        url: "https://8.8.8.8/status",
+        parameters: ["tokenRef": reference.description]
     ), metadata: [policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])])
     #expect(unboundPublic.authorizationRequirement == .reusableApproval)
     #expect(unboundPublic.reasons.contains { $0.contains("公网地址") })
@@ -597,6 +604,53 @@ import VaultExecution
     #expect(decision.policyRuleID == "secret-reference.duplicate")
 }
 
+@Test func legacyExecutionReferencesMustExactlyMatchTheDescriptorSet() throws {
+    let password = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let extra = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRT")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [password, extra],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname",
+        parameters: [
+            "passwordRef": password.description,
+            "username": "admin"
+        ]
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(password, destinations: ["qnap.local"], protocols: ["ssh"]),
+        policyMetadata(extra, destinations: ["qnap.local"], protocols: ["ssh"])
+    ])
+
+    // Only the password reference is executable in this legacy shape. An
+    // extra declared reference would otherwise widen the lease's scope.
+    #expect(decision.risk == .denied)
+    #expect(decision.technicalFailure)
+    #expect(decision.policyRuleID == "operation.reference-mismatch")
+}
+
+@Test func missingSecretMetadataIsATechnicalFailureBeforeApproval() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname"
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [])
+
+    #expect(decision.risk == .denied)
+    #expect(decision.authorizationRequirement == .denied)
+    #expect(decision.technicalFailure)
+    #expect(decision.policyRuleID == "secret-metadata.missing")
+}
+
 @Test func contradictoryDescriptorFieldsRemainTechnicalFailures() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = policyMetadata(reference, destinations: ["qnap.local"], protocols: ["https"])
@@ -606,7 +660,8 @@ import VaultExecution
         destination: "qnap.local",
         protocolType: .https,
         httpMethod: "GET",
-        url: "https://evil.example/status"
+        url: "https://evil.example/status",
+        parameters: ["tokenRef": reference.description]
     )
 
     let decision = engine().evaluate(descriptor, metadata: [metadata])
@@ -626,7 +681,8 @@ import VaultExecution
         port: 443,
         protocolType: .http,
         httpMethod: "GET",
-        url: "http://qnap.local:8080/api/status"
+        url: "http://qnap.local:8080/api/status",
+        parameters: ["passwordRef": reference.description]
     )
 
     let decision = engine().evaluate(descriptor, metadata: [metadata])
@@ -735,7 +791,7 @@ private func policyMetadata(
 
 @Test func freshRuleRegistriesNeverExceedFiveCategoriesPerLayer() {
     #expect(SSHFreshRules.all.count <= 5)
-    #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count <= 5)
+    #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count == 4)
     #expect(SecretOperationPolicyEngine.DatabaseFreshRules.all.count <= 5)
     #expect(SecretOperationPolicyEngine.SFTPFreshRules.all.count <= 5)
 }
@@ -743,10 +799,11 @@ private func policyMetadata(
 @Test func localExecutionHasExactlyOneFreshRule() {
     // §42: the only localExecution fresh category is arbitrary secret
     // release; there is deliberately nothing else.
+    let reference = try! SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     #expect(engine().evaluate(SecretOperationDescriptor(
         actionType: .localExecution,
-        secretReferences: [try! SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")]
-    ), metadata: []).policyRuleID == "local-execution.fresh.arbitrary-secret-release")
+        secretReferences: [reference]
+    ), metadata: [policyMetadata(reference, destinations: [], protocols: [])]).policyRuleID == "local-execution.fresh.arbitrary-secret-release")
 }
 
 // MARK: §28/§71 — the shallow dangerous scanner sees through wrappers
@@ -762,6 +819,11 @@ private func policyMetadata(
         ("env MODE=maintenance rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
         ("sh -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
         ("sudo bash -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
+        ("echo \"$(rm -rf /tmp/a)\"", SSHFreshRules.filesystemDelete),
+        ("printf '%s' `rm -rf /tmp/a`", SSHFreshRules.filesystemDelete),
+        ("find /tmp -exec rm -rf {} \\;", SSHFreshRules.filesystemDelete),
+        ("xargs rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("eval 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
         ("bash -c 'reboot'", SSHFreshRules.powerControl),
         ("hostname && rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
         ("uptime\nrm -rf /tmp/a", SSHFreshRules.filesystemDelete),
@@ -794,6 +856,8 @@ private func policyMetadata(
         "uptime\ndf -h",
         // Arguments and data must not be scanned as executable positions.
         "echo rm",
+        "echo '$(rm -rf /tmp/not-executed)'",
+        "echo \\$(rm -rf /tmp/not-executed)",
         "printf 'reboot\\n'",
         "cat /tmp/rm",
         "grep reboot logfile",
@@ -835,6 +899,21 @@ private func policyMetadata(
     #expect(
         classifier.classify(spec: shellScript).authorizationRequirement == .freshApprovalRequired
     )
+
+    let wrappedSpecs = [
+        SSHCommandSpec(executable: "sudo", arguments: ["rm", "-rf", "/tmp/a"]),
+        SSHCommandSpec(executable: "doas", arguments: ["/bin/rm", "-rf", "/tmp/a"]),
+        SSHCommandSpec(executable: "env", arguments: ["MODE=maintenance", "rm", "-rf", "/tmp/a"]),
+        SSHCommandSpec(executable: "find", arguments: ["/tmp", "-exec", "rm", "-rf", "{}", ";"]),
+        SSHCommandSpec(executable: "xargs", arguments: ["rm", "-rf", "/tmp/a"]),
+        SSHCommandSpec(executable: "eval", arguments: ["rm -rf /tmp/a"])
+    ]
+    for spec in wrappedSpecs {
+        #expect(
+            classifier.classify(spec: spec).authorizationRequirement == .freshApprovalRequired,
+            "spec: \(spec)"
+        )
+    }
 }
 
 

@@ -21,6 +21,47 @@ import VaultIPC
     #expect(await fixture.executor.count == 1)
 }
 
+@Test func undeclaredLegacySecretReferenceIsRejectedBeforeOwnerApproval() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname",
+        parameters: [
+            "passwordRef": fixture.reference.description,
+            "username": "admin"
+        ]
+    )
+
+    do {
+        _ = try await fixture.service.performSecretOperation(descriptor)
+        Issue.record("An undeclared executable secret reference was accepted.")
+    } catch let error as SecretOperationError {
+        #expect(error == .invalidOperationParameters)
+    }
+    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.executor.count == 0)
+}
+
+@Test func resolverRejectsAReferenceOutsideTheApprovedDescriptorSet() async throws {
+    let undeclared = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRT")
+    let fixture = try await OperationServiceFixture(executorResolveReference: undeclared)
+    defer { fixture.remove() }
+
+    do {
+        _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "hostname"))
+        Issue.record("The executor resolved a reference outside the approved set.")
+    } catch let error as SecretOperationError {
+        #expect(error == .invalidOperationParameters)
+    }
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 1)
+}
+
 @Test func firstOperationForwardsItsOwnerApprovalContextToTheMasterKeyLookup() async throws {
     let context = LocalAuthenticationContext(rawContext: LAContext())
     let contextualKeyProvider = ContextualKeyProvider(
@@ -717,16 +758,19 @@ private actor ExecutorRecorder: SecretOperationExecuting {
     let capability: SecretOperationExecutionCapability
     let outputStatus: String
     let blockExecution: Bool
+    let resolveReference: SecretReference?
     private(set) var count = 0
 
     init(
         capability: SecretOperationExecutionCapability = .supported,
         outputStatus: String = "COMPLETED",
-        blockExecution: Bool = false
+        blockExecution: Bool = false,
+        resolveReference: SecretReference? = nil
     ) {
         self.capability = capability
         self.outputStatus = outputStatus
         self.blockExecution = blockExecution
+        self.resolveReference = resolveReference
     }
 
     nonisolated func preflight(_: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
@@ -736,9 +780,12 @@ private actor ExecutorRecorder: SecretOperationExecuting {
     func execute(
         _: SecretOperationDescriptor,
         metadata _: [SecretPolicyMetadata],
-        resolve _: @escaping @Sendable (SecretReference) async throws -> Data
+        resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput {
         count += 1
+        if let resolveReference {
+            _ = try await resolve(resolveReference)
+        }
         if blockExecution {
             try await Task.sleep(for: .seconds(10))
         }
@@ -825,6 +872,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
         executorCapability: SecretOperationExecutionCapability = .supported,
         executorStatus: String = "COMPLETED",
         blockExecution: Bool = false,
+        executorResolveReference: SecretReference? = nil,
         usesMasterKeyProvider: Bool = false,
         contextApprover: (any OperationApproving)? = nil,
         contextualKeyProvider: ContextualKeyProvider? = nil,
@@ -888,7 +936,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
         executor = ExecutorRecorder(
             capability: executorCapability,
             outputStatus: executorStatus,
-            blockExecution: blockExecution
+            blockExecution: blockExecution,
+            resolveReference: executorResolveReference
         )
         self.authorizationSession = authorizationSession
         let auditRecorder = auditRecorder ?? AuditRecorder()
@@ -946,7 +995,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
             protocolType: .http,
             httpMethod: method,
             url: "http://qnap.local:8080\(path)",
-            requestedEffects: [method == "GET" ? "read-only" : "remote-write"]
+            requestedEffects: [method == "GET" ? "read-only" : "remote-write"],
+            parameters: ["tokenRef": reference.description]
         )
     }
 

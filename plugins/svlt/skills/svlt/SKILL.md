@@ -46,7 +46,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 每一次命令（包括带 `sessionID` 的后续命令）仍由 SVLT 重新做 principal、目标、secretRef 和本地 Policy 校验；不要把 session 的存在当成执行许可。
 - `ssh_command_with_secret` 的 `command` 是真正的 remote shell 命令，会 byte-for-byte 交给远端登录 shell 执行：单行、多行、`;`、`&&`、`|`、`>`、`$()`、glob、引号、heredoc、`bash -c`、`python -c`、`find -exec`、`sudo` 都按你真实的意图提交，SVLT 不解析也不改写 shell 语法。需要真实 shell 语义时优先用它。
 - 结构化 `ssh_batch_with_secret`（每项 `executable` + `arguments`）适合天然参数化的任务；不要为了绕过任何限制把脚本强行拆成 batch。两种形式都是一等公民。
-- 准确填写 `intendedEffect` 和风险提示。不得拆小、改写、伪装或谎报 destructive/不可逆操作；SVLT 会把完整原始命令展示给设备所有者，由用户通过 Touch ID/密码做最终决定。
+- 准确填写 `intendedEffect` 和风险提示。不得拆小、改写、伪装或谎报 destructive/不可逆操作；SVLT 会把完整原始命令展示给设备所有者，由用户通过 Touch ID/密码做最终决定。AgentRisk 仅用于显示和审计，不会改变 SVLT 本地计算出的授权级别。
 - 授权分层（§22 新模型）：所有使用 Secret 的 SSH 命令——包括 hostname、df、cat、未知 NAS CLI——默认都是普通操作：第一次 Touch ID/密码，之后同 scope 300 秒免审批。只有固定 5 类高危操作每次 fresh approval：电源控制（reboot/shutdown/poweroff/halt/systemctl kexec·isolate）、文件删除（rm/shred）、块设备与文件系统（mkfs*/wipefs/fdisk/parted/dd）、存储/RAID 破坏（zpool destroy、破坏性 mdadm）、容器删除（docker rm/volume rm/system prune）。fresh approval 不会刷新或延长普通 lease。
 - MCP 连接建立后应声明客户端名称与版本；Audit/UI 只显示 `Codex（自报）`、`Pi（自报）` 等 display metadata。该 identity 不是可信 security principal，也不能改变 lease 隔离。
 - 以上是行为指导。SVLT 的职责是判断授权级别、展示事实、执行用户决定；它不替设备所有者拒绝任何技术上可执行的请求，最终允许/拒绝由用户通过 Touch ID/密码决定。
@@ -62,7 +62,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
 - 导出工具只返回本地路径/状态；plaintext resolution 和安全文件写入留在 App/daemon 边界内。不要读取导出文件再把内容放入聊天或普通工具。
 - HTTP transport `sessionID` 只是 SVLT 内部连接复用句柄，不代表请求已授权。每次请求仍须通过 principal、secretRef、目标、策略和授权要求检查；transport session 不会让 DELETE 或其他 destructive action 免于 fresh approval。
-- 非 SSH 请求仍需准确填写 `intendedEffect` 和风险。授权级别是 `none`（明确只读）、`reusableApproval`（普通操作，5 分钟窗口）、`freshApprovalRequired`（危险/高影响，每次重新认证）；Agent 自报的高风险提示只会把操作升级为 fresh approval 并在审批中展示原因，SVLT 不会替设备所有者拒绝任何技术上可执行的请求。fresh approval 不会延长原 lease。
+- 非 SSH 请求仍需准确填写 `intendedEffect` 和风险。授权级别是 `none`（明确只读）、`reusableApproval`（普通操作，5 分钟窗口）、`freshApprovalRequired`（危险/高影响，每次重新认证）；Agent 自报的风险只会在审批提示和审计中展示，不能升级、降级或拒绝 SVLT 本地判断出的授权结果。fresh approval 不会延长原 lease。
 - MCP 连接建立时声明 client name/version。Audit 中的 `Codex（自报）`、`Pi（自报）`、`Hermes（自报）` 只是显示 metadata；不得把它当成 security principal，也不能用它绕过 scope 隔离。
 
 ## Catalog Markdown 布局
