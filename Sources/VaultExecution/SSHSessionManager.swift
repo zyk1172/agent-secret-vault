@@ -249,7 +249,7 @@ public actor SSHSessionManager {
         self.processRunner = processRunner
         self.sessionDirectory = (sessionDirectory
             ?? FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".svlt/ssh", isDirectory: true))
+                .appendingPathComponent("Library/Application Support/AgentSecretVault/SSH", isDirectory: true))
             .standardizedFileURL
         self.idleTTL = idleTTL
         self.absoluteTTL = absoluteTTL
