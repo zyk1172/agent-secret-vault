@@ -200,6 +200,8 @@ not force conversion or substitution in that case.
   a purpose-built runner.
 - `sftp_transfer_with_secret` for restricted SFTP/SCP list/download/upload
   through a purpose-built runner.
+- `ftp_transfer_with_secret` for private/loopback FTP list/download/upload;
+  plaintext FTP always requires fresh device-owner approval.
 - `browser_web_login_with_secret` for specific local/private browser login form
   fills.
 - `local_app_form_fill_with_secret` for specific macOS app form fills.
@@ -237,7 +239,7 @@ must never be returned to the agent.
   and current metadata. `AgentRiskAssessment` is display/audit metadata only:
   it cannot promote, downgrade, or deny an otherwise valid operation on the
   device owner's behalf.
-- Every secret-bearing execution (SSH, HTTP/API, database, SFTP, export,
+- Every secret-bearing execution (SSH, HTTP/API, database, SFTP, FTP, export,
   browser, local app, trusted process) is an ordinary `reusableApproval`
   operation: one device-owner approval opens a fixed, non-sliding 300-second
   in-memory execution window. The window is scoped to

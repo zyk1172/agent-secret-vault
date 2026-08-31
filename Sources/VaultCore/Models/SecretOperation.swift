@@ -95,6 +95,7 @@ public enum SecretOperationAction: String, Codable, CaseIterable, Sendable {
     case apiRequest
     case databaseQuery
     case sftpTransfer
+    case ftpTransfer
     case browserLogin
     case localAppFill
     case revealPlaintext
@@ -178,7 +179,7 @@ public enum SecretOperationError: Error, Equatable, Sendable {
         case .outputQuarantined:
             return "ACTION_OUTPUT_QUARANTINED"
         case .insecureTransportDenied:
-            return "INSECURE_HTTP_DENIED"
+            return "INSECURE_TRANSPORT_DENIED"
         }
     }
 }
@@ -189,6 +190,7 @@ public enum SecretOperationProtocol: String, Codable, CaseIterable, Sendable {
     case https
     case sftp
     case scp
+    case ftp
     case postgres
     case mysql
     case browser

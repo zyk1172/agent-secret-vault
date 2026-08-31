@@ -41,6 +41,7 @@ const SVLT_TOOL_NAMES = new Set([
   "api_request_with_token",
   "database_query_with_secret",
   "sftp_transfer_with_secret",
+  "ftp_transfer_with_secret",
   "browser_web_login_with_secret",
   "local_app_form_fill_with_secret"
 ]);

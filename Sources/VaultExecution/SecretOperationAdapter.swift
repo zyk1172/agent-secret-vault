@@ -9,6 +9,7 @@ public enum SecretAdapterKind: String, Codable, CaseIterable, Sendable {
     case http
     case database
     case sftp
+    case ftp
     case browser
     case localApp
     case export
@@ -183,6 +184,7 @@ public struct SecretOperationAdapterRegistry: @unchecked Sendable {
     private let adapters: [any SecretOperationAdapter]
 
     public init(
+        processRunner: any ProcessRunning = FoundationProcessRunner(),
         httpSessionManager: HTTPSessionManager = HTTPSessionManager(),
         responseProjectionProfiles: [HTTPResponseProjectionProfile] = []
     ) {
@@ -196,11 +198,8 @@ public struct SecretOperationAdapterRegistry: @unchecked Sendable {
                 operations: [.databaseQuery],
                 reason: "没有安装并启用受 SVLT 约束的 PostgreSQL/MySQL 只读 driver"
             ),
-            UnavailableSecretOperationAdapter(
-                kind: .sftp,
-                operations: [.sftpTransfer],
-                reason: "SFTP adapter 尚未启用安全的本地文件 grant 与 transport bridge"
-            ),
+            SFTPSecretOperationAdapter(processRunner: processRunner),
+            FTPSecretOperationAdapter(),
             UnavailableSecretOperationAdapter(
                 kind: .browser,
                 operations: [.browserLogin],

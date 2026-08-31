@@ -36,11 +36,13 @@ function capabilityResponse(
 ): IpcResponse {
   const kind = action === "apiRequest" || action === "httpRequest"
     ? "http"
-    : action === "databaseQuery"
-      ? "database"
-      : action === "sftpTransfer"
-        ? "sftp"
-        : action === "browserLogin"
+      : action === "databaseQuery"
+        ? "database"
+        : action === "sftpTransfer"
+          ? "sftp"
+          : action === "ftpTransfer"
+            ? "ftp"
+          : action === "browserLogin"
           ? "browser"
           : action === "localAppFill"
             ? "localApp"
@@ -96,6 +98,7 @@ describe("MCP tool contracts", () => {
       "api_request_with_token",
       "database_query_with_secret",
       "sftp_transfer_with_secret",
+      "ftp_transfer_with_secret",
       "local_execution_with_secret",
       "trusted_process_with_secret",
       "secret_reveal_request"
@@ -1182,6 +1185,7 @@ describe("MCP tool contracts", () => {
     await tool(client, "sftp_transfer_with_secret").handler({
       operation: "list",
       host: "qnap.local",
+      username: "zyk",
       remotePath: "/share",
       passwordRef: reference
     });
@@ -1196,6 +1200,34 @@ describe("MCP tool contracts", () => {
     const sftp = client.requests[3];
     if (sftp.type === "executeSecretOperation") {
       expect(sftp.descriptor.fileOperation).toBe("list");
+    }
+  });
+
+  it("routes FTP through its own capability and protocol action", async () => {
+    const client = new FakeClient([
+      capabilityResponse("ftpTransfer"),
+      operationResponse({ listingPreview: "ftp-file.txt" })
+    ]);
+
+    const result = await tool(client, "ftp_transfer_with_secret").handler({
+      operation: "list",
+      host: "nas.local",
+      username: "zyk",
+      remotePath: "/share/USBSSD",
+      passwordRef: reference
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "COMPLETED",
+      listingPreview: "ftp-file.txt",
+      redacted: true
+    });
+    expect(client.requests).toHaveLength(2);
+    const request = client.requests[1];
+    if (request.type === "executeSecretOperation") {
+      expect(request.descriptor.actionType).toBe("ftpTransfer");
+      expect(request.descriptor.protocolType).toBe("ftp");
+      expect(request.descriptor.port).toBe(21);
     }
   });
 

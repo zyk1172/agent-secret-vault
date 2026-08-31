@@ -163,7 +163,7 @@ public struct AppControlRequestHandler: Sendable {
         case .batchValidationFailed: return "BATCH_VALIDATION_FAILED"
         case .redirectRequiresReview: return "REDIRECT_REQUIRES_REVIEW"
         case .outputQuarantined: return "ACTION_OUTPUT_QUARANTINED"
-        case .insecureTransportDenied: return "INSECURE_HTTP_DENIED"
+        case .insecureTransportDenied: return "INSECURE_TRANSPORT_DENIED"
         }
     }
 }

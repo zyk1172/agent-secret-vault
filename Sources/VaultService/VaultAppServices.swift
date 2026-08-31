@@ -3962,6 +3962,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
              .apiRequest,
              .databaseQuery,
              .sftpTransfer,
+             .ftpTransfer,
              .browserLogin,
              .localAppFill,
              .trustedProcess:
@@ -3973,7 +3974,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private func isExecutorBackedAction(_ action: SecretOperationAction) -> Bool {
         switch action {
-        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer,
+        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer, .ftpTransfer,
              .browserLogin, .localAppFill, .localExecution, .trustedProcess:
             return true
         default:
@@ -4637,6 +4638,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return displayCommandText(statement.trimmingCharacters(in: .whitespacesAndNewlines), maxBytes: 65_536)
         case .sftpTransfer:
             return "\(descriptor.effectiveFileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
+        case .ftpTransfer:
+            return "\(descriptor.effectiveFileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
         case .localAppFill:
             return descriptor.localAppBundleID ?? "本地 App 表单"
         default:
@@ -4681,6 +4684,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return "执行数据库操作"
         case .sftpTransfer:
             return "执行 SFTP 操作"
+        case .ftpTransfer:
+            return "执行 FTP 操作"
         default:
             return "执行受保护操作"
         }
@@ -4752,6 +4757,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return "智能体数据库操作"
         case .sftpTransfer:
             return "智能体 SFTP 操作"
+        case .ftpTransfer:
+            return "智能体 FTP 操作"
         default:
             return "智能体受保护操作"
         }

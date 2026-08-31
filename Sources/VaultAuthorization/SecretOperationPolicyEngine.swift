@@ -150,6 +150,12 @@ public struct SecretOperationPolicyEngine: Sendable {
             reasons = transferOutcome.reasons
             ruleID = transferOutcome.ruleID
             localRequirement = transferOutcome.requirement
+        case .ftpTransfer:
+            let transferOutcome = ftpDecision()
+            localRisk = transferOutcome.risk
+            reasons = transferOutcome.reasons
+            ruleID = transferOutcome.ruleID
+            localRequirement = transferOutcome.requirement
         case .browserLogin, .localAppFill:
             // Secret-bearing execution defaults to the ordinary lease; the
             // adapter reports ACTION_EXECUTOR_UNAVAILABLE until a real
@@ -324,6 +330,19 @@ public struct SecretOperationPolicyEngine: Sendable {
                destinationPort != declaredPort {
                 return ("操作端口与目标主机端口不一致", "sftp.port-mismatch")
             }
+        case .ftpTransfer:
+            guard descriptor.protocolType == .ftp else {
+                return ("文件传输必须声明 ftp 协议", "ftp.protocol.invalid")
+            }
+            guard let destination = descriptor.destination,
+                  !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return ("文件传输缺少目标主机", "ftp.destination.missing")
+            }
+            if let destinationPort = explicitPort(in: destination),
+               let declaredPort = descriptor.port,
+               destinationPort != declaredPort {
+                return ("操作端口与目标主机端口不一致", "ftp.port-mismatch")
+            }
         case .localAppFill:
             guard descriptor.protocolType == .localApp else {
                 return ("本地 App 填充必须声明 localApp 协议", "local-app.protocol.invalid")
@@ -379,7 +398,10 @@ public struct SecretOperationPolicyEngine: Sendable {
                 return ("数据库参数定义无效", "database.parameters.invalid")
             }
         case let .fileTransfer(operation):
-            guard descriptor.actionType == .sftpTransfer,
+            let actionMatches = (descriptor.actionType == .sftpTransfer
+                && (operation.protocolType == .sftp || operation.protocolType == .scp))
+                || (descriptor.actionType == .ftpTransfer && operation.protocolType == .ftp)
+            guard actionMatches,
                   descriptor.protocolType == operation.protocolType,
                   !operation.remotePath.isEmpty,
                   operation.remotePath.utf8.count <= 4_096,
@@ -388,7 +410,7 @@ public struct SecretOperationPolicyEngine: Sendable {
                   descriptor.fileOperation == nil || descriptor.fileOperation == operation.operation,
                   descriptor.fileTarget == nil || descriptor.fileTarget == operation.localPath
             else {
-                return ("文件传输 typed payload 与操作声明不一致", "sftp.payload.invalid")
+                return ("文件传输 typed payload 与操作声明不一致", "file-transfer.payload.invalid")
             }
         case let .browser(operation):
             guard descriptor.actionType == .browserLogin,
@@ -763,6 +785,19 @@ public struct SecretOperationPolicyEngine: Sendable {
         }
     }
 
+    private enum FTPFreshRules {
+        static let plaintextTransport = "ftp.fresh.plaintext-transport"
+    }
+
+    private func ftpDecision() -> (risk: OperationRisk, requirement: AuthorizationRequirement, reasons: [String], ruleID: String) {
+        (
+            .approvalRequired,
+            .freshApprovalRequired,
+            ["FTP 会以明文传输凭据，仅允许回环或私有地址，并且每次都需要设备所有者重新认证"],
+            FTPFreshRules.plaintextTransport
+        )
+    }
+
     private func actionNeedsSecret(_ action: SecretOperationAction) -> Bool {
         switch action {
         case .vaultStatus, .usagePolicy, .inspectReference, .checkReferenceExists,
@@ -778,7 +813,7 @@ public struct SecretOperationPolicyEngine: Sendable {
 
     private func isAllowedSecretPolicy(_ policy: SecretPolicy, action: SecretOperationAction) -> Bool {
         switch action {
-        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer,
+        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer, .ftpTransfer,
              .browserLogin, .localAppFill, .localExecution, .trustedProcess:
             return policy == .credential || policy == .externalSend
         default:

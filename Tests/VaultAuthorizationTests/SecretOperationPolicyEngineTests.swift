@@ -613,6 +613,25 @@ import VaultExecution
     #expect(decision(.write, "/share/report.txt").authorizationRequirement == .freshApprovalRequired)
 }
 
+@Test func ftpTransfersRequireFreshApprovalForPlaintextTransport() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ftp"])]
+    let descriptor = SecretOperationDescriptor(
+        actionType: .ftpTransfer,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 21,
+        protocolType: .ftp,
+        fileOperation: .list,
+        fileTarget: nil
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: metadata)
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.policyRuleID == "ftp.fresh.plaintext-transport")
+    #expect(decision.reasons.contains { $0.contains("明文传输凭据") })
+}
+
 @Test func localExecutionIsASingleFixedFreshSecretReleaseRule() throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let metadata = policyMetadata(reference, destinations: [], protocols: [])
