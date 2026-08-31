@@ -966,6 +966,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             -o ControlMaster=yes \
             -o ControlPersist=300 \
             -o PubkeyAuthentication=no \
+            -o NumberOfPasswordPrompts=1 \
             -o PreferredAuthentications=password,keyboard-interactive \
             -S $controlPath \
             -o ConnectTimeout=$timeoutSeconds \
@@ -989,12 +990,11 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         # password-backed channel. Do not issue a second expect against the
         # closed spawn id; only wait once to collect the child's real status.
         if {$passwordSent} {
-            # After the one authentication response, recognize authentication
-            # failure but never send the credential a second time. A remote
-            # command that prints "password:" must not receive it again.
+            # After the one authentication response, only wait for SSH to
+            # finish. The spawn stream also contains remote stdout/stderr, so
+            # post-auth text must never be interpreted as another protocol
+            # prompt or authentication failure.
             expect {
-                -re "(?i)permission denied" { exit \(SSHWrapperExitCode.authenticationFailed) }
-                -re "(?i)(password|passphrase).*:" { exit \(SSHWrapperExitCode.authenticationFailed) }
                 eof {}
                 timeout { exit \(SSHWrapperExitCode.timedOut) }
             }

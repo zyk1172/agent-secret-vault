@@ -117,6 +117,21 @@ import VaultCore
     #expect(output.sessionID == nil)
 }
 
+@Test func sshWrapperTreatsRemotePasswordTextAsCommandOutput() {
+    let script = LocalSecretOperationExecutor.expectSSHScript()
+    guard let secondStageStart = script.range(of: "if {$passwordSent}") else {
+        Issue.record("The SSH wrapper is missing its post-authentication stage.")
+        return
+    }
+
+    let secondStage = String(script[secondStageStart.upperBound...])
+    #expect(script.contains("-o NumberOfPasswordPrompts=1"))
+    #expect(!secondStage.contains("(?i)(password|passphrase).*:"))
+    #expect(!secondStage.contains("permission denied"))
+    #expect(secondStage.contains("remote stdout/stderr"))
+    #expect(secondStage.contains("eof {}"))
+}
+
 @Test func sshOutcomeUsesChannelStateBeforeExitCodeNamespace() {
     let remoteExit = ProcessResult(exitCode: 125, stdout: Data(), stderr: Data())
     let remoteOutcome = LocalSecretOperationExecutor.sshOutcome(
