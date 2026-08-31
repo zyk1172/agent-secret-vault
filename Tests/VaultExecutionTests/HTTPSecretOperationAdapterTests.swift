@@ -57,7 +57,7 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
     #expect(await manager.activeSessionCount(for: "test-principal") == 1)
 }
 
-@Test func typedHTTPAdapterFollowsSameOriginRedirectsAutomatically() async throws {
+@Test func typedHTTPAdapterStopsSameOriginRedirectsForExplicitResubmission() async throws {
     let reference = try SecretReference(httpTestReference)
     let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
     let adapter = HTTPSecretOperationAdapter(sessionManager: manager)
