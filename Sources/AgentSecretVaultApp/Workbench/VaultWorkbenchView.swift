@@ -2080,6 +2080,8 @@ private struct CatalogDeletionRequest: Identifiable {
 }
 
 struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
+    static let serviceAddressKey = "serviceURL"
+
     let id: UUID
     let originalKey: String?
     var field: SecretCatalogFieldValue
@@ -2097,10 +2099,119 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
         self.secretInput = secretInput
     }
 
-    static func make(from fields: [SecretCatalogFieldValue]) -> [Self] {
-        fields.map { field in
+    static func make(
+        from fields: [SecretCatalogFieldValue],
+        endpoints: [CatalogEndpoint] = []
+    ) -> [Self] {
+        var drafts = fields.map { field in
             Self(originalKey: field.key, field: field)
         }
+
+        guard !endpoints.isEmpty else { return drafts }
+
+        let endpointValues = endpoints.map(Self.endpointURL)
+        var usedKeys = Set(drafts.map { $0.field.key })
+        var emptyServiceFieldIndices = drafts.indices.filter { index in
+            guard drafts[index].field.type == .url,
+                  Self.isServiceAddressKey(drafts[index].field.key)
+            else { return false }
+            guard case let .string(value)? = drafts[index].field.value else { return true }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        var projectedFields: [Self] = []
+
+        for (index, endpointValue) in endpointValues.enumerated() {
+            let endpointIdentity = Self.urlIdentity(endpointValue)
+            let isMatchingField: (Self) -> Bool = { draft in
+                guard draft.field.type == .url,
+                      case let .string(value)? = draft.field.value,
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return false }
+                return Self.urlIdentity(value) == endpointIdentity
+            }
+            let alreadyProjected = drafts.contains(where: isMatchingField)
+                || projectedFields.contains(where: isMatchingField)
+            if alreadyProjected { continue }
+
+            if let emptyIndex = emptyServiceFieldIndices.first {
+                drafts[emptyIndex].field = Self.field(
+                    replacing: drafts[emptyIndex].field,
+                    value: endpointValue
+                )
+                emptyServiceFieldIndices.removeFirst()
+                continue
+            }
+
+            var key = index == 0 ? serviceAddressKey : "\(serviceAddressKey)\(index + 1)"
+            var attempt = index + 1
+            while usedKeys.contains(key) {
+                attempt += 1
+                key = "\(serviceAddressKey)\(attempt)"
+            }
+            usedKeys.insert(key)
+            projectedFields.append(
+                Self(
+                    field: SecretCatalogFieldValue(
+                        key: key,
+                        label: index == 0 ? "服务地址" : "服务地址 \(index + 1)",
+                        type: .url,
+                        value: .string(endpointValue)
+                    )
+                )
+            )
+        }
+
+        if !projectedFields.isEmpty {
+            drafts.insert(contentsOf: projectedFields, at: 0)
+        }
+        return drafts
+    }
+
+    private static func isServiceAddressKey(_ key: String) -> Bool {
+        guard key.hasPrefix(serviceAddressKey) else { return false }
+        let suffix = key.dropFirst(serviceAddressKey.count)
+        return suffix.isEmpty || suffix.allSatisfy { $0.isNumber }
+    }
+
+    private static func urlIdentity(_ value: String) -> String {
+        guard let url = URL(string: value),
+              let scheme = url.scheme,
+              let host = url.host,
+              !host.isEmpty,
+              url.user == nil,
+              url.password == nil,
+              url.query == nil,
+              url.fragment == nil,
+              url.path.isEmpty || url.path == "/"
+        else {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let normalizedHost = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let port = url.port.map(String.init) ?? ""
+        return "\(scheme.lowercased())|\(normalizedHost)|\(port)"
+    }
+
+    private static func field(
+        replacing field: SecretCatalogFieldValue,
+        value: String
+    ) -> SecretCatalogFieldValue {
+        SecretCatalogFieldValue(
+            key: field.key,
+            label: field.label,
+            type: field.type,
+            agentVisible: field.agentVisible,
+            searchable: field.searchable,
+            value: .string(value),
+            secretRef: field.secretRef
+        )
+    }
+
+    private static func endpointURL(_ endpoint: CatalogEndpoint) -> String {
+        let host = endpoint.host.contains(":") && !endpoint.host.hasPrefix("[")
+            ? "[\(endpoint.host)]"
+            : endpoint.host
+        let port = endpoint.port.map { ":\($0)" } ?? ""
+        return "\(endpoint.type.lowercased())://\(host)\(port)"
     }
 
     static func newField(key: String) -> Self {
@@ -2820,7 +2931,6 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var draftTitle: String
     @State private var draftAliases: String
     @State private var draftTags: String
-    @State private var draftEndpoints: String
     @State private var draftNotes: String
     @State private var draftFields: [CatalogFieldDraft]
     @State private var fieldSelection = CatalogBatchSelectionState()
@@ -2870,9 +2980,8 @@ private struct SensitiveCatalogEntryRow: View {
         _draftTitle = State(initialValue: entry.title)
         _draftAliases = State(initialValue: entry.aliases.joined(separator: ", "))
         _draftTags = State(initialValue: entry.tags.joined(separator: ", "))
-        _draftEndpoints = State(initialValue: entry.endpoints.map(Self.endpointLine).joined(separator: "\n"))
         _draftNotes = State(initialValue: entry.notes ?? "")
-        _draftFields = State(initialValue: CatalogFieldDraft.make(from: entry.fields))
+        _draftFields = State(initialValue: CatalogFieldDraft.make(from: entry.fields, endpoints: entry.endpoints))
         _editing = State(initialValue: autoEdit)
         _showingDetails = State(initialValue: autoEdit)
     }
@@ -3304,9 +3413,6 @@ private struct SensitiveCatalogEntryRow: View {
                 TextField("标签（逗号分隔）", text: $draftTags)
                     .textFieldStyle(.roundedBorder)
             }
-            TextField("服务地址：type|host|port，每行一个", text: $draftEndpoints, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
             TextEditor(text: $draftNotes)
                 .font(.body)
                 .frame(minHeight: 56, maxHeight: 100)
@@ -3426,10 +3532,6 @@ private struct SensitiveCatalogEntryRow: View {
             editorError = "条目标题不能为空"
             return
         }
-        guard let endpoints = Self.parseEndpoints(draftEndpoints) else {
-            editorError = "服务地址格式应为 type|host|port"
-            return
-        }
         let fieldDraftSnapshot = draftFields
         let fields = fieldDraftSnapshot.map(\.field)
         if let fieldError = fields.compactMap(CatalogFieldDraftValidation.message(for:)).first {
@@ -3442,7 +3544,7 @@ private struct SensitiveCatalogEntryRow: View {
             title: title,
             type: entry.type,
             aliases: Self.csv(draftAliases),
-            endpoints: endpoints,
+            endpoints: Self.endpoints(from: fields),
             fields: fields,
             notes: draftNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftNotes,
             tags: Self.csv(draftTags),
@@ -3480,7 +3582,7 @@ private struct SensitiveCatalogEntryRow: View {
             case .success:
                 editing = false
                 editorError = nil
-                draftFields = CatalogFieldDraft.make(from: updated.fields)
+                draftFields = CatalogFieldDraft.make(from: updated.fields, endpoints: updated.endpoints)
             case .failure(let error):
                 editorError = error.displayText
             case nil:
@@ -3496,9 +3598,8 @@ private struct SensitiveCatalogEntryRow: View {
         draftTitle = value.title
         draftAliases = value.aliases.joined(separator: ", ")
         draftTags = value.tags.joined(separator: ", ")
-        draftEndpoints = value.endpoints.map(Self.endpointLine).joined(separator: "\n")
         draftNotes = value.notes ?? ""
-        draftFields = CatalogFieldDraft.make(from: value.fields)
+        draftFields = CatalogFieldDraft.make(from: value.fields, endpoints: value.endpoints)
         fieldSelection.finish()
     }
 
@@ -3521,26 +3622,27 @@ private struct SensitiveCatalogEntryRow: View {
         value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     }
 
-    private static func endpointLine(_ endpoint: CatalogEndpoint) -> String {
-        let port = endpoint.port.map(String.init) ?? ""
-        return "\(endpoint.type)|\(endpoint.host)|\(port)"
-    }
-
-    private static func parseEndpoints(_ value: String) -> [CatalogEndpoint]? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        var endpoints: [CatalogEndpoint] = []
-        for line in trimmed.split(whereSeparator: \.isNewline).map(String.init) {
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count >= 2 else { return nil }
-            let type = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
-            let host = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !type.isEmpty, !host.isEmpty else { return nil }
-            let portText = parts.dropFirst(2).joined(separator: "|").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard portText.isEmpty || (Int(portText).map { (0...65_535).contains($0) } ?? false) else { return nil }
-            endpoints.append(CatalogEndpoint(type: type, host: host, port: portText.isEmpty ? nil : Int(portText)))
+    private static func endpoints(from fields: [SecretCatalogFieldValue]) -> [CatalogEndpoint] {
+        var seen = Set<String>()
+        return fields.compactMap { field in
+            guard field.type == .url,
+                  case let .string(value)? = field.value,
+                  let url = URL(string: value),
+                  let scheme = url.scheme,
+                  !scheme.isEmpty,
+                  let host = url.host,
+                  !host.isEmpty,
+                  url.user == nil,
+                  url.password == nil,
+                  url.query == nil,
+                  url.fragment == nil,
+                  url.path.isEmpty || url.path == "/"
+            else { return nil }
+            let endpoint = CatalogEndpoint(type: scheme.lowercased(), host: host, port: url.port)
+            let identity = "\(endpoint.type.lowercased())|\(endpoint.host.lowercased())|\(endpoint.port.map(String.init) ?? "")"
+            guard seen.insert(identity).inserted else { return nil }
+            return endpoint
         }
-        return endpoints
     }
 }
 

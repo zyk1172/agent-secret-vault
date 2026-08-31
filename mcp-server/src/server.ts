@@ -172,6 +172,22 @@ const InspectOutput = z
   ])
   .describe("Non-sensitive metadata for a secret reference. Plaintext is never returned.");
 
+const DestinationBindingOutput = z
+  .union([
+    z.object({
+      status: z.literal("BOUND"),
+      destination: z.string().min(1),
+      protocol: SecretOperationProtocol,
+      redacted: z.literal(true)
+    }).strict(),
+    z.object({
+      status: z.string().min(1),
+      redacted: z.literal(true)
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Owner-approved exact destination binding result. Secret plaintext is never returned.");
+
 const SecretSearchInput = z
   .object({
     query: z.string().trim().min(1).max(256),
@@ -645,6 +661,34 @@ const InspectInput = z
     reference: SecretReference.describe("The secret:// reference to inspect. Do not pass metadata or label.")
   })
   .strict();
+
+const BindDestinationInput = z
+  .object({
+    reference: SecretReference,
+    destination: z.string().trim().min(1).max(512),
+    protocol: SecretOperationProtocol,
+    agentAssessment: optionalAgentRiskAssessment
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.destination.includes("secret://")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["destination"],
+        message: "destination must not contain secret:// references."
+      });
+    }
+    if ([...value.destination].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint < 0x21 || codePoint === 0x7f;
+    })) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["destination"],
+        message: "destination must not contain whitespace or control characters."
+      });
+    }
+  });
 
 const LocalHttpInput = z
   .object({
@@ -1200,6 +1244,17 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           return structuredResult(metadataResult(response.metadata));
         }
         return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_bind_destination",
+      title: "Bind Secret Destination",
+      description:
+        "Adds one exact host/origin and protocol to an existing secret:// record. SVLT shows the exact binding in the macOS app and requires fresh device-owner authentication for every change; the record is re-sealed without returning plaintext. Use this before a policy-reviewed insecure HTTP/API request.",
+      inputSchema: BindDestinationInput,
+      outputSchema: DestinationBindingOutput,
+      async handler(input) {
+        return handleBindDestination(client, BindDestinationInput.parse(input));
       }
     },
     {
@@ -1814,7 +1869,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "SVLT",
-    version: "0.1.19"
+    version: "0.1.20"
   });
 
   registerVaultTools(server, client);
@@ -1949,6 +2004,44 @@ function metadataResult(metadata: SecretReferenceMetadata): Record<string, unkno
   };
 }
 
+async function handleBindDestination(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof BindDestinationInput>
+): Promise<CallToolResult> {
+  const output = await executeOpaqueOperation(client, {
+    actionType: "changeDestinationBinding",
+    secretReferences: [parsed.reference],
+    destination: parsed.destination,
+    port: null,
+    protocolType: parsed.protocol,
+    command: null,
+    httpMethod: null,
+    url: null,
+    databaseStatement: null,
+    fileOperation: null,
+    fileTarget: null,
+    localAppBundleID: null,
+    sessionID: null,
+    sshCommandBatch: null,
+    payload: null,
+    requestedEffects: ["bind-secret-destination"],
+    parameters: {},
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output)) {
+    return structuredResult({ status: output.status });
+  }
+  if (output.status !== "BOUND") {
+    return structuredResult({ status: output.status, redacted: true });
+  }
+  return structuredResult({
+    status: "BOUND",
+    destination: parsed.destination,
+    protocol: parsed.protocol,
+    redacted: true
+  });
+}
+
 async function handleExportResolvedText(
   client: VaultIpcClient,
   parsed: z.infer<typeof ExportResolvedTextInput>
@@ -2016,7 +2109,7 @@ async function executeOpaqueOperation(
   // perform a fresh capability preflight for this call; an unavailable
   // adapter stops here and never reaches the daemon's approval/decryption
   // path.
-  if (descriptor.actionType !== "sshCommand") {
+  if (descriptor.actionType !== "sshCommand" && descriptor.actionType !== "changeDestinationBinding") {
     const capabilityStatus = await ensureSecretOperationCapability(client, descriptor.actionType);
     if (capabilityStatus !== undefined) {
       return { status: capabilityStatus };
@@ -2667,6 +2760,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Treat a controlled write as health-confirmed only when validation.status is FOUND and validation.diagnostics is empty. CREATED with CATALOG_UNAVAILABLE or another validation status may mean the commit succeeded but confirmation did not complete; do not blindly repeat the write, and use secret_catalog_validate after service recovery.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
+      "Use secret_bind_destination to add one exact destination/protocol to an existing secret:// record; every binding change requires fresh device-owner authentication and never returns plaintext.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
       "Use ssh_command_with_secret for one restricted local/private-network SSH command; reuse its opaque sessionID for subsequent commands.",
@@ -2705,6 +2799,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "vault_capabilities",
       "secret_search",
       "secret_inspect_reference",
+      "secret_bind_destination",
       "secret_reveal_request",
       "paragraph_reveal_request",
       "export_resolved_text_to_local_file",

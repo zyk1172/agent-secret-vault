@@ -664,6 +664,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         let operationGeneration = securityGeneration
         let metadata = try await policyMetadata(for: descriptor.secretReferences)
+        if descriptor.actionType == .changeDestinationBinding {
+            let normalizedDescriptor = try normalizedDestinationBindingDescriptor(descriptor)
+            return try await performDestinationBindingChange(
+                normalizedDescriptor,
+                metadata: metadata,
+                generation: operationGeneration
+            )
+        }
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         guard decision.risk != .denied else {
             await emitAudit(
@@ -1069,6 +1077,224 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw SecretOperationError.actionExecutionFailed
         }
+    }
+
+    private func performDestinationBindingChange(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        generation: UInt64
+    ) async throws -> SecretOperationOutput {
+        let binding = try destinationBinding(from: descriptor)
+        guard descriptor.secretReferences.count == 1,
+              metadata.count == 1,
+              metadata[0].reference == descriptor.secretReferences[0]
+        else {
+            throw SecretOperationError.invalidOperationParameters
+        }
+
+        let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
+        guard decision.risk != .denied,
+              decision.authorizationRequirement == .freshApprovalRequired
+        else {
+            throw policyDecisionError(for: decision)
+        }
+
+        let authorizationPath = try await authorizeIfNeeded(
+            descriptor,
+            metadata: metadata,
+            decision: decision,
+            expectedGeneration: generation
+        )
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        let currentMetadata: [SecretPolicyMetadata]
+        do {
+            currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+        let currentDecision = operationPolicyEngine.evaluate(
+            descriptor,
+            metadata: currentMetadata
+        )
+        guard currentDecision.risk != .denied,
+              currentDecision.authorizationRequirement == .freshApprovalRequired else {
+            throw policyDecisionError(for: currentDecision)
+        }
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        guard let recordResolver else {
+            throw SecretOperationError.actionExecutionFailed
+        }
+
+        // The approved key is used only inside the re-sealing call; it never
+        // enters a descriptor, IPC response, or audit record.
+        let key: SymmetricKey
+        do {
+            key = try await masterKeyForScopedAuthorization(
+                scope: nil,
+                for: authorizationPolicy(for: currentMetadata.map(\.policy)),
+                reason: operationReason(for: descriptor),
+                destination: currentDecision.normalizedDestination,
+                authenticationContext: authorizationPath.authenticationContext,
+                forceFreshWhenUnscoped: true
+            )
+        } catch {
+            await emitAudit(
+                action: "绑定凭据地址",
+                target: binding.destination,
+                referenceCount: descriptor.secretReferences.count,
+                result: "失败",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutionFailed
+        }
+
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        do {
+            _ = try await recordResolver.bindDestination(
+                reference: descriptor.secretReferences[0].description,
+                destination: binding.destination,
+                protocolType: binding.protocolType,
+                masterKey: key,
+                now: now()
+            )
+        } catch let error as VaultRecordBindingError {
+            await emitAudit(
+                action: "绑定凭据地址",
+                target: binding.destination,
+                referenceCount: descriptor.secretReferences.count,
+                result: "参数无效",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            switch error {
+            case .invalidReference, .invalidDestination, .tooManyDestinations, .tooManyProtocols:
+                throw SecretOperationError.invalidOperationParameters
+            }
+        } catch {
+            await emitAudit(
+                action: "绑定凭据地址",
+                target: binding.destination,
+                referenceCount: descriptor.secretReferences.count,
+                result: "失败",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutionFailed
+        }
+
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+        await notifySavedReferencesChanged()
+        await emitAudit(
+            action: "绑定凭据地址",
+            target: binding.destination,
+            referenceCount: descriptor.secretReferences.count,
+            result: "成功",
+            operation: .secureExecute,
+            authorizationOutcome: authorizationPath.auditOutcome,
+            authorizationMode: authorizationPath.auditMode,
+            status: .completed
+        )
+        return SecretOperationOutput(status: "BOUND", redacted: true)
+    }
+
+    private func normalizedDestinationBindingDescriptor(
+        _ descriptor: SecretOperationDescriptor
+    ) throws -> SecretOperationDescriptor {
+        let binding = try destinationBinding(from: descriptor)
+        return descriptor.replacingDestination(binding.destination)
+    }
+
+    private func destinationBinding(
+        from descriptor: SecretOperationDescriptor
+    ) throws -> (destination: String, protocolType: SecretOperationProtocol) {
+        guard descriptor.secretReferences.count == 1,
+              descriptor.requestedEffects == ["bind-secret-destination"],
+              descriptor.parameters.isEmpty,
+              descriptor.destination != nil,
+              descriptor.port == nil,
+              descriptor.protocolType != nil,
+              descriptor.command == nil,
+              descriptor.httpMethod == nil,
+              descriptor.url == nil,
+              descriptor.databaseStatement == nil,
+              descriptor.fileOperation == nil,
+              descriptor.fileTarget == nil,
+              descriptor.localAppBundleID == nil,
+              descriptor.sessionID == nil,
+              descriptor.sshCommandBatch == nil,
+              descriptor.payload == nil
+        else {
+            throw SecretOperationError.invalidOperationParameters
+        }
+
+        guard let rawDestination = descriptor.destination,
+              let protocolType = descriptor.protocolType else {
+            throw SecretOperationError.invalidOperationParameters
+        }
+        let trimmed = rawDestination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.utf8.count <= 512,
+              !trimmed.contains("secret://"),
+              trimmed.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value != 0x7F })
+        else {
+            throw SecretOperationError.invalidOperationParameters
+        }
+
+        if protocolType == .http || protocolType == .https {
+            guard let normalized = SecretOperationDescriptor.normalizeHTTPOrigin(
+                trimmed,
+                expectedScheme: protocolType.rawValue,
+                allowURLPath: false
+            ) else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+            return (normalized, protocolType)
+        }
+
+        if trimmed.contains("://") {
+            guard let url = URL(string: trimmed),
+                  url.scheme?.lowercased() == protocolType.rawValue,
+                  url.user == nil,
+                  url.password == nil,
+                  url.fragment == nil,
+                  url.query == nil,
+                  url.path.isEmpty || url.path == "/",
+                  let host = url.host,
+                  !host.isEmpty else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+        } else {
+            guard !trimmed.contains("/"),
+                  !trimmed.contains("?"),
+                  !trimmed.contains("#"),
+                  !trimmed.contains("@") else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+        }
+
+        guard let normalized = SecretOperationDescriptor.normalizeDestination(trimmed),
+              !normalized.isEmpty else {
+            throw SecretOperationError.invalidOperationParameters
+        }
+        return (normalized, protocolType)
     }
 
     /// Agent-facing transport management is intentionally narrower than the
@@ -4631,6 +4857,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         case .httpRequest, .apiRequest, .browserLogin:
             let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
             return "\(method) \(descriptor.normalizedPath ?? "/")"
+        case .changeDestinationBinding:
+            let protocolName = descriptor.protocolType?.rawValue.uppercased() ?? "未知协议"
+            return "\(protocolName) \(descriptor.destination ?? "未指定目标")"
         case .databaseQuery:
             guard let statement = descriptor.effectiveDatabaseStatement else {
                 return "数据库查询"
@@ -4673,7 +4902,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return "导出明文"
         case .deleteSecret:
             return "删除加密记录"
-        case .changeSecretPolicy, .changeDestinationBinding, .changeAllowlist,
+        case .changeDestinationBinding:
+            return "绑定凭据地址"
+        case .changeSecretPolicy, .changeAllowlist,
              .changeAuthorizationRules, .changeKeychain:
             return "修改安全设置"
         case .sshCommand:
@@ -4759,6 +4990,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return "智能体 SFTP 操作"
         case .ftpTransfer:
             return "智能体 FTP 操作"
+        case .changeDestinationBinding:
+            return "智能体绑定凭据地址"
         default:
             return "智能体受保护操作"
         }

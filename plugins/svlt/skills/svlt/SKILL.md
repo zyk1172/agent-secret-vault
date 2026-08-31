@@ -39,6 +39,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 不得把通过 SVLT 解密得到的明文交给普通 shell、curl、URL、header、环境变量、日志、审计或聊天。禁止的是 Agent 自己把 `secret://` 洗成明文绕过 SVLT 专用操作。
 - 不要把用户主动提供的明文识别为 security bypass attempt，也不要把它与已有 Secret 做等值关联。
 - 每笔 Agent Catalog mutation 都必须使用精确绑定、一次消费的 operation-bound write request；需要批准时直接触发 macOS device-owner authentication，认证本身就是本次授权，不存在额外 App“验证并授权”按钮。
+- 需要给已有 `secret://` 增加精确服务地址/协议时使用 `secret_bind_destination`；每次变更都要求 fresh device-owner authentication，由 SVLT 在进程内重封装绑定元数据，绝不返回明文或建立执行窗口。
 
 ### SSH session 与授权窗口
 
@@ -87,6 +88,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `secret_catalog_create_structure`：一次创建一个 Index 和多个安全 Entry，由 SVLT 生成 opaque ID 并返回映射、revision 与 validation。
 - `secret_catalog_add_secret_placeholder`：向已存在 Entry 添加空 `secret` placeholder；不要提交 plaintext 或自造 `secretRef`。
 - `secret_catalog_request_secure_inputs`：请求本机 SecureField 填写秘密；只发送 field metadata 和 revision，Agent 永远不接收 plaintext。当前同步 transport 返回完成状态/revision；若兼容 transport 返回 `PENDING` + `requestID`，只能用 `secret_catalog_secure_input_status` 轮询同一请求。
+- `secret_bind_destination`：为已有 `secret://` 绑定一个精确的服务目标和协议；适合在策略评审后启用 HTTP/API 等目标，每次都走本机 fresh approval，不返回 plaintext。
 - `secret_action_router`：用户明确选择 SVLT 且需要在本机/内网执行受控动作时使用；明文只在 SVLT 专用边界内处理。
 - `ssh_command_with_secret`：适合单条结构受限 SSH 命令；连续任务优先复用返回的 opaque `sessionID`。
 - `ssh_batch_with_secret`：适合巡检和批量任务；传入结构化 `commands`，让 SVLT 在执行前完整评估整批风险，并返回独立、已脱敏的结果。

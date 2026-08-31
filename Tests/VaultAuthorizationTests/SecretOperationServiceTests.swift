@@ -21,6 +21,41 @@ import VaultIPC
     #expect(await fixture.executor.count == 1)
 }
 
+@Test func destinationBindingTakesFreshApprovalAndNeverLaunchesAnExecutor() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let descriptor = fixture.bind(destination: "http://192.168.2.240:3000")
+    let output = try await fixture.service.performSecretOperation(descriptor)
+    let record = try await fixture.store.latest(id: fixture.reference.id)
+
+    #expect(output.status == "BOUND")
+    #expect(output.redacted)
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 0)
+    #expect(record.allowedDestinations == ["qnap.local", "http://192.168.2.240:3000"])
+    #expect(record.allowedProtocols == ["ssh", "http"])
+    #expect(record.recordVersion == 2)
+    #expect(try VaultCipher().decrypt(record, masterKey: fixture.key) == Data("ASV_CANARY_OPERATION_SECRET".utf8))
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope(for: descriptor)) == false)
+}
+
+@Test func malformedDestinationBindingIsRejectedBeforeOwnerApproval() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    do {
+        _ = try await fixture.service.performSecretOperation(
+            fixture.bind(destination: "http://192.168.2.240:3000/api")
+        )
+        Issue.record("A destination path was accepted for a binding operation.")
+    } catch let error as SecretOperationError {
+        #expect(error == .invalidOperationParameters)
+    }
+    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.executor.count == 0)
+}
+
 @Test func insecureHTTPProfileMismatchDoesNotSelfDenyBeforeOwnerApproval() async throws {
     let fixture = try await OperationServiceFixture(allowedProtocols: ["https"])
     defer { fixture.remove() }
@@ -1038,6 +1073,19 @@ private final class OperationServiceFixture: @unchecked Sendable {
             url: "http://qnap.local:8080\(path)",
             requestedEffects: [method == "GET" ? "read-only" : "remote-write"],
             parameters: ["tokenRef": reference.description]
+        )
+    }
+
+    func bind(
+        destination: String,
+        protocolType: SecretOperationProtocol = .http
+    ) -> SecretOperationDescriptor {
+        SecretOperationDescriptor(
+            actionType: .changeDestinationBinding,
+            secretReferences: [reference],
+            destination: destination,
+            protocolType: protocolType,
+            requestedEffects: ["bind-secret-destination"]
         )
     }
 

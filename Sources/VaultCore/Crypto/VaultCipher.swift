@@ -21,13 +21,72 @@ public struct VaultCipher: Sendable {
         masterKey: SymmetricKey,
         formatVersion: Int = VaultFormat.current
     ) throws -> EncryptedRecord {
+        let now = Date()
+        return try encrypt(
+            plaintext,
+            id: id,
+            version: version,
+            label: label,
+            policy: policy,
+            allowedDestinations: allowedDestinations,
+            allowedProtocols: allowedProtocols,
+            masterKey: masterKey,
+            formatVersion: formatVersion,
+            createdAt: now,
+            updatedAt: now
+        )
+    }
+
+    /// Re-seals a record after an owner-approved destination/protocol binding
+    /// change. Binding metadata is part of the AES-GCM authenticated data, so
+    /// changing only the JSON fields would make the record undecryptable.
+    /// The plaintext remains inside this process and is never returned to the
+    /// caller or exposed through IPC.
+    public func rebind(
+        _ record: EncryptedRecord,
+        allowedDestinations: [String],
+        allowedProtocols: [String],
+        masterKey: SymmetricKey,
+        updatedAt: Date = Date()
+    ) throws -> EncryptedRecord {
+        guard record.recordVersion < Int.max else {
+            throw VaultCryptoError.integrityFailed
+        }
+        let plaintext = try decrypt(record, masterKey: masterKey)
+        return try encrypt(
+            plaintext,
+            id: record.id,
+            version: record.recordVersion + 1,
+            label: record.label,
+            policy: record.policy,
+            allowedDestinations: allowedDestinations,
+            allowedProtocols: allowedProtocols,
+            masterKey: masterKey,
+            formatVersion: VaultFormat.current,
+            createdAt: record.createdAt,
+            updatedAt: updatedAt
+        )
+    }
+
+    private func encrypt(
+        _ plaintext: Data,
+        id: String,
+        version: Int,
+        label: String?,
+        policy: SecretPolicy,
+        allowedDestinations: [String],
+        allowedProtocols: [String],
+        masterKey: SymmetricKey,
+        formatVersion: Int,
+        createdAt: Date,
+        updatedAt: Date
+    ) throws -> EncryptedRecord {
         guard formatVersion == VaultFormat.legacyV1 || formatVersion == VaultFormat.current else {
             throw VaultCryptoError.unsupportedFormatVersion(formatVersion)
         }
 
         let dataKeyBytes = try RandomBytes.generate(count: 32)
         let dataKey = SymmetricKey(data: dataKeyBytes)
-        let now = Date()
         let keyDerivationSalt = formatVersion >= 2 ? try RandomBytes.generate(count: 32) : nil
         let authenticatedData = Self.authenticatedData(
             formatVersion: formatVersion,
@@ -38,8 +97,8 @@ public struct VaultCipher: Sendable {
             allowedDestinations: allowedDestinations,
             allowedProtocols: allowedProtocols,
             policyBindingVersion: formatVersion >= 2 ? 1 : 0,
-            createdAt: now,
-            updatedAt: now
+            createdAt: createdAt,
+            updatedAt: updatedAt
         )
 
         let sealedPlaintext = try AES.GCM.seal(
@@ -75,8 +134,8 @@ public struct VaultCipher: Sendable {
             allowedDestinations: allowedDestinations,
             allowedProtocols: allowedProtocols,
             policyBindingVersion: formatVersion >= 2 ? 1 : 0,
-            createdAt: now,
-            updatedAt: now
+            createdAt: createdAt,
+            updatedAt: updatedAt
         )
     }
 

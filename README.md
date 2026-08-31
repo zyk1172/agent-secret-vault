@@ -150,6 +150,10 @@ and WikiLinks; the coordinator applies source-range patches and never
 canonicalizes the whole document for a single edit. Use `secret_catalog_batch`
 for one-lock, one-revision multi-operation changes.
 
+In the App editor, service endpoints are editable URL fields rather than a
+separate endpoint text area. Existing endpoint metadata is projected into those
+fields on load and written back when the entry is saved.
+
 SVLT-generated and controlled insertions use three logical zones in the managed Markdown:
 preamble, a contiguous Catalog body, and trailing unmanaged Markdown. Notes, callouts,
 ordinary paragraphs, comments, and WikiLinks remain unmanaged and stay in place even when a
@@ -202,6 +206,9 @@ not force conversion or substitution in that case.
   through a purpose-built runner.
 - `ftp_transfer_with_secret` for private/loopback FTP list/download/upload;
   plaintext FTP always requires fresh device-owner approval.
+- `secret_bind_destination` to add one exact scheme/host/port and protocol to
+  an existing `secret://` record. Each change requires fresh device-owner
+  approval and re-seals the encrypted record without returning plaintext.
 - `browser_web_login_with_secret` for specific local/private browser login form
   fills.
 - `local_app_form_fill_with_secret` for specific macOS app form fills.

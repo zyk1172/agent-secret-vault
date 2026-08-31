@@ -20,6 +20,60 @@ import Testing
     #expect(try cipher.decrypt(record, masterKey: master) == Data("sensitive".utf8))
 }
 
+@Test func rebindResealsAuthenticatedMetadataWithoutChangingPlaintext() throws {
+    let master = SymmetricKey(size: .bits256)
+    let cipher = VaultCipher()
+    let updatedAt = Date(timeIntervalSinceReferenceDate: 2_000)
+    let record = try cipher.encrypt(
+        Data("sensitive".utf8),
+        id: "01JABCDEF0123456789ABCDEFG",
+        version: 3,
+        label: "test",
+        policy: .credential,
+        allowedDestinations: ["qnap.local"],
+        allowedProtocols: ["ssh"],
+        masterKey: master
+    )
+
+    let rebound = try cipher.rebind(
+        record,
+        allowedDestinations: ["qnap.local", "http://192.168.2.240:3000"],
+        allowedProtocols: ["ssh", "http"],
+        masterKey: master,
+        updatedAt: updatedAt
+    )
+
+    #expect(rebound.recordVersion == 4)
+    #expect(rebound.createdAt == record.createdAt)
+    #expect(rebound.updatedAt == updatedAt)
+    #expect(rebound.allowedDestinations == ["qnap.local", "http://192.168.2.240:3000"])
+    #expect(rebound.allowedProtocols == ["ssh", "http"])
+    #expect(try cipher.decrypt(rebound, masterKey: master) == Data("sensitive".utf8))
+
+    let tampered = EncryptedRecord(
+        formatVersion: rebound.formatVersion,
+        id: rebound.id,
+        recordVersion: rebound.recordVersion,
+        ciphertext: rebound.ciphertext,
+        nonce: rebound.nonce,
+        tag: rebound.tag,
+        wrappedDataKey: rebound.wrappedDataKey,
+        wrappedDataKeyNonce: rebound.wrappedDataKeyNonce,
+        wrappedDataKeyTag: rebound.wrappedDataKeyTag,
+        keyDerivationSalt: rebound.keyDerivationSalt,
+        label: rebound.label,
+        policy: rebound.policy,
+        allowedDestinations: ["qnap.local"],
+        allowedProtocols: rebound.allowedProtocols,
+        policyBindingVersion: rebound.policyBindingVersion,
+        createdAt: rebound.createdAt,
+        updatedAt: rebound.updatedAt
+    )
+    #expect(throws: VaultCryptoError.integrityFailed) {
+        _ = try cipher.decrypt(tampered, masterKey: master)
+    }
+}
+
 @Test func decryptsLegacyV1RecordAfterFormatBump() throws {
     let master = SymmetricKey(size: .bits256)
     let cipher = VaultCipher()

@@ -33,6 +33,7 @@ opaque descriptor
 | 数据库 DROP/TRUNCATE/DELETE/破坏性 ALTER/权限账户管理 | `freshApprovalRequired` | 固定数据库 fresh registry |
 | SFTP 删除、覆盖、替换目标 | `freshApprovalRequired` | 固定 SFTP fresh registry |
 | Secret-bearing 明文 FTP | `freshApprovalRequired` | 仅回环/私有目标；每次重新认证，不建立可复用 lease |
+| 为已有 Secret 增加精确目标/协议绑定 | `freshApprovalRequired` | App 显示 exact scheme/host/port；在进程内重新封装认证元数据，不解密出 IPC、不建立执行 lease |
 | 明文显示、复制、删除或安全设置变更 | `freshApprovalRequired` | 使用 `deviceOwnerAuthentication` |
 | `localExecution`（交给任意本地进程） | `freshApprovalRequired` | 明确标记 `userApprovedSecretRelease`，由设备所有者决定 |
 
@@ -71,4 +72,4 @@ one-shot 认证。
 
 ## 当前边界
 
-SSH、HTTP/API、SFTP/SCP 和私有地址 FTP 的 purpose-built executor 已接入 Agent；数据库、浏览器和本地 App 的策略与不透明 IPC 描述符已接入，但对应 executor 仍返回 `ACTION_EXECUTOR_UNAVAILABLE`，不会降级到明文或通用命令。FTP 不支持公网目标，且每笔请求都需要设备所有者重新认证。QNAP 的真实 SSH/SFTP/FTP 验收需要在有明确绑定的测试 Secret 和设备可达时执行；自动化测试覆盖 QNAP 目标形态与风险决策，不伪造真实设备成功结果。
+SSH、HTTP/API、SFTP/SCP 和私有地址 FTP 的 purpose-built executor 已接入 Agent；数据库、浏览器和本地 App 的策略与不透明 IPC 描述符已接入，但对应 executor 仍返回 `ACTION_EXECUTOR_UNAVAILABLE`，不会降级到明文或通用命令。FTP 不支持公网目标，且每笔请求都需要设备所有者重新认证。已有 Secret 的精确目标/协议绑定通过 `secret_bind_destination` 完成：它只在 Agent 进程内重封装认证元数据，不建立执行 lease。真实 SSH/SFTP/FTP 验收需要在有明确绑定的测试 Secret 和设备可达时执行；自动化测试覆盖目标形态与风险决策，不伪造真实设备成功结果。

@@ -90,6 +90,7 @@ describe("MCP tool contracts", () => {
       "secret_catalog_validate",
       "secret_catalog_file_preflight",
       "secret_inspect_reference",
+      "secret_bind_destination",
       "ssh_command_with_secret",
       "ssh_batch_with_secret",
       "ssh_session_status",
@@ -269,6 +270,47 @@ describe("MCP tool contracts", () => {
       createdAt: 1,
       updatedAt: 2
     });
+  });
+
+  it("routes owner-approved destination binding without exposing plaintext", async () => {
+    const client = new FakeClient([operationResponse({ status: "BOUND" })]);
+
+    const result = await tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "http://192.168.2.240:3000",
+      protocol: "http"
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "BOUND",
+      destination: "http://192.168.2.240:3000",
+      protocol: "http",
+      redacted: true
+    });
+    expect(client.requests).toHaveLength(1);
+    expect(client.requests[0]).toMatchObject({
+      type: "executeSecretOperation",
+      descriptor: {
+        actionType: "changeDestinationBinding",
+        secretReferences: [reference],
+        destination: "http://192.168.2.240:3000",
+        protocolType: "http",
+        requestedEffects: ["bind-secret-destination"],
+        parameters: {}
+      }
+    });
+    expect(JSON.stringify(client.requests)).not.toContain("plaintext");
+  });
+
+  it("rejects a destination containing a secret reference before IPC", async () => {
+    const client = new FakeClient([]);
+
+    await expect(tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "http://example.com/secret://token",
+      protocol: "http"
+    })).rejects.toThrow(/secret:\/\//i);
+    expect(client.requests).toHaveLength(0);
   });
 
   it("searches the local catalog by service and returns opaque metadata only", async () => {
