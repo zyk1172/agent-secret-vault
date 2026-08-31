@@ -177,8 +177,8 @@ list/get/create 响应。
 | `paragraph_reveal_request` | Asks the app to display a paragraph locally with all referenced secrets filled in. |
 | `export_resolved_text_to_local_file` | Resolves references inside the app and writes the filled text to an allowed local file; returns only status/path. |
 | `ssh_command_with_secret` | Resolves a password reference internally for restricted local/private-network SSH; returns sanitized stdout/stderr. |
-| `local_http_request_with_secret` | Resolves `secret://` credentials internally for restricted local HTTP GET/HEAD requests and returns redacted output. |
-| `api_request_with_token` | Resolves a token reference internally for a restricted allowlisted API request; returns status and redacted metadata/preview. |
+| `local_http_request_with_secret` | Resolves `secret://` credentials internally for a policy-reviewed HTTP(S) request; public sends require fresh owner approval and plaintext HTTP additionally needs an exact saved origin profile. |
+| `api_request_with_token` | Resolves a token reference internally for a policy-reviewed API request; returns status and redacted metadata/preview after owner approval. |
 | `database_query_with_secret` | Resolves database credentials internally for a restricted read-only query through a purpose-built runner. |
 | `sftp_transfer_with_secret` | Resolves transfer credentials internally for restricted SFTP/SCP list/download/upload through a purpose-built runner. |
 | `browser_web_login_with_secret` | Resolves login credentials internally for a specific local/private browser form fill. |
@@ -189,7 +189,7 @@ list/get/create 响应。
 - `vault_status` 显示本机通道不可达：让用户打开 SVLT 一次以完成 SMAppService 注册/批准；普通后台 Agent 不要求 App 一直运行。
 - `vault_status` 的 `locked` 字段为兼容信息：不要要求用户预先打开 GUI 解锁；直接提交具体操作，由本地策略判断静默、审批或拒绝。
 - 返回 `URL_NOT_ALLOWED`、`HOST_NOT_ALLOWED`、`COMMAND_NOT_ALLOWED`：说明目标或动作超出 allowlist；请用户确认目标，或新增更窄的安全工具。
-- 返回 `QUERY_NOT_ALLOWED`、`PATH_NOT_ALLOWED`、`URL_TOKEN_NOT_ALLOWED`：说明 SQL、路径或 URL 形态不安全；修正非敏感参数后重试，不要索要明文。
+- 返回 `QUERY_NOT_ALLOWED`、`PATH_NOT_ALLOWED`、`URL_TOKEN_NOT_ALLOWED`：说明 SQL、路径或旧工具的 URL 形态不安全；修正非敏感参数后重试，不要索要明文。HTTP Secret 工具对 credential-shaped query 会走 fresh owner approval。
 - 返回 `SAFE_AUTOFILL_UNAVAILABLE`、`DATABASE_RUNNER_UNAVAILABLE`、`FILE_TRANSFER_RUNNER_UNAVAILABLE`：说明 SVLT managed 路径的本地 runner 尚不可用；不要把 SVLT 派生明文交给普通工具。用户已选择其他工具时由该工具规则处理。
 - 返回 `BASIC_AUTH_REQUIRES_USERNAME_AND_PASSWORD`：要求补充缺失的用户名引用或非敏感用户名；不要要求密码明文。
 - 返回 `REQUEST_FAILED`、`SSH_REQUEST_FAILED`：报告失败状态和非敏感上下文，可建议检查网络/服务状态。

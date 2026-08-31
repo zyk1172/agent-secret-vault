@@ -375,6 +375,13 @@ const LocalHttpOutput = z
         bodyPreview: z.string().optional()
       })
       .strict(),
+    z.object({
+      status: z.literal("REDIRECT_REQUIRES_REVIEW"),
+      httpStatus: z.number().int().optional(),
+      redirectLocation: z.string().url().optional(),
+      sessionID: z.string().min(1).max(128).optional(),
+      redacted: z.literal(true)
+    }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Local HTTP result. Secret material is used only inside SVLTAgent and is never returned.");
@@ -465,6 +472,13 @@ const ApiRequestOutput = z
         bodyPreview: z.string().optional()
       })
       .strict(),
+    z.object({
+      status: z.literal("REDIRECT_REQUIRES_REVIEW"),
+      httpStatus: z.number().int().optional(),
+      redirectLocation: z.string().url().optional(),
+      sessionID: z.string().min(1).max(128).optional(),
+      redacted: z.literal(true)
+    }).strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("API request result. Token material is used only inside SVLTAgent and plaintext is never returned.");
@@ -1590,7 +1604,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_http_request_with_secret",
       title: "Local HTTP Request With Secret",
       description:
-        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. HTTPS is the default; insecure HTTP requires a user-saved exact local/private profile and fresh first-use approval. Call vault_capabilities first; plaintext is never returned.",
+        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. Secret-bearing HTTPS/public sends require fresh device-owner approval; plaintext HTTP additionally requires an exact saved origin profile and fresh approval. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: LocalHttpInput,
       outputSchema: LocalHttpOutput,
       async handler(input) {
@@ -1601,7 +1615,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "api_request_with_token",
       title: "API Request With Token",
       description:
-        "Capability-gated typed API request using a secret:// token inside SVLTAgent. HTTPS is the default; insecure HTTP requires a user-saved exact local/private profile and fresh first-use approval. Authorization defaults to Bearer, while custom API-key headers use the raw token unless a safe scheme is explicit. Call vault_capabilities first; plaintext is never returned.",
+        "Capability-gated typed API request using a secret:// token inside SVLTAgent. Secret-bearing HTTPS/public sends require fresh device-owner approval; plaintext HTTP additionally requires an exact saved origin profile and fresh approval. Authorization defaults to Bearer, while custom API-key headers use the raw token unless a safe scheme is explicit. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: ApiRequestInput,
       outputSchema: ApiRequestOutput,
       async handler(input) {
@@ -1882,6 +1896,16 @@ function sshDiagnosticResult(output: z.infer<typeof SecretOperationOutput>): Rec
   };
 }
 
+function httpRedirectResult(output: z.infer<typeof SecretOperationOutput>): Record<string, unknown> {
+  return {
+    status: output.status,
+    ...(output.httpStatus === undefined ? {} : { httpStatus: output.httpStatus }),
+    ...(output.redirectLocation === undefined ? {} : { redirectLocation: output.redirectLocation }),
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
+    redacted: true
+  };
+}
+
 async function handleSshSessionStatus(
   client: VaultIpcClient,
   parsed: z.infer<typeof SshSessionStatusInput>
@@ -2062,7 +2086,13 @@ async function handleLocalHttpRequest(
     parameters,
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
+    return structuredResult({ status: output.status });
+  }
+  if (output.status === "REDIRECT_REQUIRES_REVIEW") {
+    return structuredResult(httpRedirectResult(output));
+  }
+  if (output.status !== "COMPLETED") {
     return structuredResult({ status: output.status });
   }
   return structuredResult({
@@ -2080,7 +2110,7 @@ async function handleApiRequestWithToken(
   parsed: z.infer<typeof ApiRequestInput>
 ): Promise<CallToolResult> {
   const url = new URL(parsed.url);
-  if (url.username !== "" || url.password !== "" || hasCredentialQueryParameter(url)) {
+  if (url.username !== "" || url.password !== "") {
     return structuredResult({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
   }
   if (parsed.body?.includes("secret://") === true) {
@@ -2138,7 +2168,13 @@ async function handleApiRequestWithToken(
     parameters,
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
+    return structuredResult({ status: output.status });
+  }
+  if (output.status === "REDIRECT_REQUIRES_REVIEW") {
+    return structuredResult(httpRedirectResult(output));
+  }
+  if (output.status !== "COMPLETED") {
     return structuredResult({ status: output.status });
   }
   return structuredResult({
@@ -2395,9 +2431,9 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use ssh_command_with_secret for the actual remote shell command, including single-line or multi-line scripts, ;, &&, ||, |, redirects, heredocs, command substitution, shell/interpreter -c forms, find -exec, xargs, eval, sudo, and unknown NAS CLIs. Do not split or rewrite a command merely to satisfy policy.",
       "A reusable approval lease is separate from the SSH transport session. Only the small fixed high-impact categories recognized by local policy require fresh approval; unknown or ambiguous shell syntax remains on the ordinary owner-approved path. Fresh approval does not extend the ordinary lease.",
       "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display metadata only; it never becomes the security principal.",
-      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. HTTPS is the default transport for Secret-bearing requests; insecure HTTP is accepted only when the saved Secret profile explicitly allows http or http-loopback for the exact local/private destination. Never add an insecure-HTTP flag to a tool call. The first use of an approved insecure profile requires fresh device-owner authentication.",
-      "HTTP tools reject arbitrary secret headers, URL credentials, credential query parameters, and secret:// body fragments. Authorization defaults to Bearer; a custom API-key header receives the raw token unless a profile/request explicitly supplies a safe scheme.",
-      "Authenticated HTTP responses are metadata-only by default. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
+      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. Every Secret-bearing network send, including public HTTPS, shows the exact target and requires fresh device-owner authentication; insecure HTTP additionally needs an exact saved scheme/host/port profile checked by the executor after approval. Never add an insecure-HTTP flag to a tool call.",
+      "HTTP tools reject unsafe/arbitrary secret headers, URL authority credentials, and secret:// body fragments. Credential-shaped URL query parameters receive a fresh owner warning rather than an autonomous Agent-side denial. Authorization defaults to Bearer; a custom API-key header receives the raw token unless a profile/request explicitly supplies a safe scheme.",
+      "Authenticated HTTP responses are metadata-only by default. Response body previews, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
       "The generic localExecution action is a very-high-risk, fresh owner-approval boundary and is audited as userApprovedSecretRelease. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
       "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
       "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with local file grants and path checks; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",
@@ -2413,7 +2449,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Do not echo, log, summarize, or store plaintext obtained by decrypting an SVLT-managed secret.",
       "Do not put SVLT-derived plaintext into ordinary shell, curl, URL, header, environment variable, log, audit, or chat inputs; use the approved SVLT operation instead.",
       "Do not treat encrypted reference text as if it revealed the secret value.",
-      "Do not send a secret to public networks unless the user explicitly approved that policy and an allowlisted tool enforces it.",
+      "Do not send a Secret to a network target outside the approved typed HTTP/API operation; public sends are allowed only through the fresh device-owner approval path, and the Agent must never receive the Secret.",
       "Do not treat an SSH sessionID as an authorization token or use it to bypass policy, principal, scope, or approval checks.",
       "Do not split, rewrite, or misreport a destructive operation to avoid device-owner authentication."
     ],
@@ -2517,15 +2553,6 @@ function buildRevealRequestFromTemplate(references: string[], template: string):
       }))
     }
   };
-}
-
-function hasCredentialQueryParameter(url: URL): boolean {
-  for (const key of url.searchParams.keys()) {
-    if (/password|passwd|pwd|token|secret|api[_-]?key|authorization|cookie/i.test(key)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

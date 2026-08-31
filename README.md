@@ -189,12 +189,13 @@ SVLT-managed value must be used locally. A user may explicitly select a
 different provider or provide plaintext for the current operation; SVLT does
 not force conversion or substitution in that case.
 
-- `ssh_command_with_secret` for restricted local/private-network SSH.
-- `local_http_request_with_secret` for restricted, policy-reviewed HTTP(S)
-  requests with Basic Auth. HTTPS is the default; plaintext HTTP requires an
-  explicit saved profile binding to the exact local/private destination and a
-  fresh first-use approval.
-- `api_request_with_token` for restricted allowlisted API requests with a token.
+- `ssh_command_with_secret` for policy-reviewed local/private-network SSH.
+- `local_http_request_with_secret` for policy-reviewed HTTP(S) requests with
+  Basic Auth. Secret-bearing sends, including public HTTPS, require fresh
+  device-owner approval; plaintext HTTP also requires an exact saved origin
+  profile binding.
+- `api_request_with_token` for policy-reviewed API requests with a token;
+  public HTTPS is owner-approved rather than hostname-blocked.
 - `database_query_with_secret` for restricted read-only database queries through
   a purpose-built runner.
 - `sftp_transfer_with_secret` for restricted SFTP/SCP list/download/upload
@@ -258,13 +259,22 @@ must never be returned to the agent.
   destruction, container destruction) take a fresh approval with the full
   command shown. The SSH ControlMaster is a reuse optimization only — its
   failure never fails a command that already ran and never clears the lease.
-- Secret-bearing HTTP over plaintext `http://` triggers a fresh approval with a
-  plaintext-transport warning instead of a policy refusal. Authenticated
-  responses are metadata-only unless an App-owned response projection profile
-  allowlists the requested JSON pointers. The production daemon receives those
-  non-secret profiles through `VaultDaemonConfiguration`; its default empty
-  configuration advertises metadata-only responses. Derived credential/cookie
-  capture is not implemented in this release.
+- Secret-bearing HTTP/API network sends, including public HTTPS, show the exact
+  target and require fresh device-owner approval; SVLT does not infer public or
+  private egress from a hostname string. Plaintext `http://` additionally
+  requires every referenced Secret to have an exact saved origin profile
+  matching scheme, host, and port. That profile is an executor transport
+  boundary checked after the owner-facing approval path; it is not a new
+  autonomous policy denial. Credential-shaped URL query parameters receive a
+  fresh warning and owner decision, while URL authority credentials remain
+  invalid. Authenticated response body, `Location`, and `Content-Type` values
+  are fingerprint-checked before reaching the Agent; a match quarantines the
+  complete output. Other authenticated responses are metadata-only unless an
+  App-owned response projection profile allowlists the requested JSON
+  pointers. The production daemon receives those non-secret profiles through
+  `VaultDaemonConfiguration`; its default empty configuration advertises
+  metadata-only responses. Derived credential/cookie capture is not implemented
+  in this release.
 - `localExecution` (handing a Secret to an arbitrary local process) is a
   very-high-risk fresh approval explicitly labeled `userApprovedSecretRelease`
   in audit and capability output; the device owner sees the process, arguments,
