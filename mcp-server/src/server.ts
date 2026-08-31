@@ -511,9 +511,16 @@ const FileTransferOutput = z
         redacted: z.literal(true)
       })
       .strict(),
+    z
+      .object({
+        status: z.string().min(1),
+        stage: SecretOperationStage.optional(),
+        redacted: z.literal(true)
+      })
+      .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
-  .describe("SFTP/SCP result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
+  .describe("SFTP/SCP/FTP result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
 
 const BrowserLoginOutput = z
   .union([
@@ -807,6 +814,40 @@ const FileTransferInput = z
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
   })
+  .refine((value) => value.username !== undefined || value.usernameRef !== undefined, {
+    message: "Provide username or usernameRef."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
+  });
+
+const FTPTransferInput = z
+  .object({
+    protocol: z.literal("ftp").optional(),
+    operation: z.enum(["list", "download", "upload", "overwrite", "delete"]),
+    host: z.string().min(1).max(253),
+    port: z.number().int().min(1).max(65_535).optional(),
+    username: z.string().min(1).max(256).optional(),
+    usernameRef: SecretReference.optional(),
+    passwordRef: SecretReference,
+    remotePath: z.string().min(1).max(4_096),
+    localPath: z.string().min(1).max(4_096).optional(),
+    timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
+  })
+  .strict()
+  .refine((value) => value.username === undefined || value.usernameRef === undefined, {
+    message: "Use either username or usernameRef, not both."
+  })
+  .refine((value) => value.username !== undefined || value.usernameRef !== undefined, {
+    message: "Provide username or usernameRef."
+  })
   .superRefine((value, context) => {
     if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
       context.addIssue({
@@ -946,6 +987,9 @@ const SecretActionRouterInput = z
     FileTransferInput.extend({
       intent: z.literal("sftp_transfer")
     }).strict(),
+    FTPTransferInput.extend({
+      intent: z.literal("ftp_transfer")
+    }).strict(),
     BrowserLoginInput.extend({
       intent: z.literal("browser_web_login")
     }).strict(),
@@ -974,7 +1018,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_action_router",
       title: "Secret Local Action Router",
       description:
-        "Routes secret:// references to policy-reviewed local actions. Check vault_capabilities before adapter-backed execution: the daemon's manifest, not this tool list, is authoritative for HTTP/API, database, SFTP/SCP, browser, app form fill, and trusted-process support. Export is an App-owned local file operation. Plaintext is never returned.",
+        "Routes secret:// references to policy-reviewed local actions. Check vault_capabilities before adapter-backed execution: the daemon's manifest, not this tool list, is authoritative for HTTP/API, database, SFTP/SCP/FTP, browser, app form fill, and trusted-process support. Export is an App-owned local file operation. Plaintext is never returned.",
       inputSchema: SecretActionRouterInput,
       outputSchema: z.union([
         LocalSshOutput,
@@ -1008,7 +1052,10 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           return handleDatabaseQueryWithSecret(client, parsed);
         }
         if (parsed.intent === "sftp_transfer") {
-          return handleFileTransferWithSecret(client, parsed);
+          return handleFileTransferWithSecret(client, parsed, "sftpTransfer");
+        }
+        if (parsed.intent === "ftp_transfer") {
+          return handleFileTransferWithSecret(client, parsed, "ftpTransfer");
         }
         if (parsed.intent === "browser_web_login") {
           return handleBrowserLoginWithSecret(client, parsed);
@@ -1124,7 +1171,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "vault_capabilities",
       title: "Vault Operation Capabilities",
       description:
-        "Returns the daemon's actual non-sensitive adapter capability manifest. Check this before using HTTP, database, SFTP, browser, local-app, export, or trusted-process operations; unavailable entries are not supported and must not be retried as if they were.",
+        "Returns the daemon's actual non-sensitive adapter capability manifest. Check this before using HTTP, database, SFTP/SCP, FTP, browser, local-app, export, or trusted-process operations; unavailable entries are not supported and must not be retried as if they were.",
       inputSchema: EmptyInput,
       outputSchema: CapabilityManifestOutput,
       async handler(input) {
@@ -1699,11 +1746,22 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "sftp_transfer_with_secret",
       title: "SFTP/SCP Transfer With Secret",
       description:
-        "Capability-gated SFTP/SCP descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Plaintext is never returned.",
+        "Capability-gated SFTP/SCP descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Local files are restricted to SVLT Downloads. Plaintext is never returned.",
       inputSchema: FileTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
-        return handleFileTransferWithSecret(client, FileTransferInput.parse(input));
+        return handleFileTransferWithSecret(client, FileTransferInput.parse(input), "sftpTransfer");
+      }
+    },
+    {
+      name: "ftp_transfer_with_secret",
+      title: "FTP Transfer With Secret",
+      description:
+        "Capability-gated plaintext FTP descriptor. Only loopback/private destinations are supported and every request requires fresh device-owner authentication. Local files are restricted to SVLT Downloads. Plaintext is never returned.",
+      inputSchema: FTPTransferInput,
+      outputSchema: FileTransferOutput,
+      async handler(input) {
+        return handleFileTransferWithSecret(client, FTPTransferInput.parse(input), "ftpTransfer");
       }
     },
     {
@@ -1756,7 +1814,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "SVLT",
-    version: "0.1.17"
+    version: "0.1.19"
   });
 
   registerVaultTools(server, client);
@@ -2419,24 +2477,25 @@ async function handleDatabaseQueryWithSecret(
 
 async function handleFileTransferWithSecret(
   client: VaultIpcClient,
-  parsed: z.infer<typeof FileTransferInput>
+  parsed: z.infer<typeof FileTransferInput> | z.infer<typeof FTPTransferInput>,
+  actionType: "sftpTransfer" | "ftpTransfer"
 ): Promise<CallToolResult> {
   const refs = [
     ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
     parsed.passwordRef
   ];
   const output = await executeOpaqueOperation(client, {
-    actionType: "sftpTransfer",
+    actionType,
     secretReferences: refs,
     destination: parsed.host,
-    port: parsed.port ?? 22,
-    protocolType: parsed.protocol ?? "sftp",
+    port: parsed.port ?? (actionType === "ftpTransfer" ? 21 : 22),
+    protocolType: actionType === "ftpTransfer" ? "ftp" : (parsed.protocol ?? "sftp"),
     fileOperation: parsed.operation,
     fileTarget: parsed.localPath ?? null,
     payload: {
       type: "fileTransfer",
       operation: {
-        protocolType: parsed.protocol ?? "sftp",
+        protocolType: actionType === "ftpTransfer" ? "ftp" : (parsed.protocol ?? "sftp"),
         operation: parsed.operation,
         remotePath: parsed.remotePath,
         ...(parsed.localPath === undefined ? {} : { localPath: parsed.localPath }),
@@ -2456,8 +2515,15 @@ async function handleFileTransferWithSecret(
     },
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
     return structuredResult({ status: output.status });
+  }
+  if (output.status !== "COMPLETED") {
+    return structuredResult({
+      status: output.status,
+      ...(output.stage === undefined ? {} : { stage: output.stage }),
+      redacted: true
+    });
   }
   return structuredResult({
     status: "COMPLETED",
@@ -2614,7 +2680,8 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Authenticated HTTP responses are metadata-only by default. Response body previews, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
       "The generic localExecution action is a very-high-risk, fresh owner-approval boundary and is audited as userApprovedSecretRelease. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
       "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
-      "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with local file grants and path checks; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",
+      "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with controlled SVLT Downloads paths; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",
+      "Use ftp_transfer_with_secret only when vault_capabilities advertises the real FTP adapter. FTP is plaintext: restrict it to loopback/private destinations and let local policy require fresh device-owner authentication on every request. Do not substitute shell, curl, or another unreviewed FTP client.",
       "Use browser_web_login_with_secret only when a signed native-messaging browser adapter is advertised; never use AppleScript, clipboard, or injected page JavaScript for SVLT plaintext.",
       "Use local_app_form_fill_with_secret only when a signed Accessibility adapter is advertised and the target bundle is verified; never use clipboard or generic scripting as a fallback.",
       "Use export_resolved_text_to_local_file when the user explicitly wants the app to write resolved sensitive text into a local file without returning it to the agent.",
@@ -2650,6 +2717,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "api_request_with_token",
       "database_query_with_secret",
       "sftp_transfer_with_secret",
+      "ftp_transfer_with_secret",
       "browser_web_login_with_secret",
       "local_app_form_fill_with_secret"
     ]

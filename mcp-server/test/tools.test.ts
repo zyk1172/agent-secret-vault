@@ -36,11 +36,13 @@ function capabilityResponse(
 ): IpcResponse {
   const kind = action === "apiRequest" || action === "httpRequest"
     ? "http"
-    : action === "databaseQuery"
-      ? "database"
-      : action === "sftpTransfer"
-        ? "sftp"
-        : action === "browserLogin"
+      : action === "databaseQuery"
+        ? "database"
+        : action === "sftpTransfer"
+          ? "sftp"
+          : action === "ftpTransfer"
+            ? "ftp"
+          : action === "browserLogin"
           ? "browser"
           : action === "localAppFill"
             ? "localApp"
@@ -96,6 +98,7 @@ describe("MCP tool contracts", () => {
       "api_request_with_token",
       "database_query_with_secret",
       "sftp_transfer_with_secret",
+      "ftp_transfer_with_secret",
       "local_execution_with_secret",
       "trusted_process_with_secret",
       "secret_reveal_request"
@@ -1182,6 +1185,7 @@ describe("MCP tool contracts", () => {
     await tool(client, "sftp_transfer_with_secret").handler({
       operation: "list",
       host: "qnap.local",
+      username: "zyk",
       remotePath: "/share",
       passwordRef: reference
     });
@@ -1197,6 +1201,61 @@ describe("MCP tool contracts", () => {
     if (sftp.type === "executeSecretOperation") {
       expect(sftp.descriptor.fileOperation).toBe("list");
     }
+  });
+
+  it("routes FTP through its own capability and protocol action", async () => {
+    const client = new FakeClient([
+      capabilityResponse("ftpTransfer"),
+      operationResponse({ listingPreview: "ftp-file.txt" })
+    ]);
+
+    const result = await tool(client, "ftp_transfer_with_secret").handler({
+      operation: "list",
+      host: "nas.local",
+      username: "zyk",
+      remotePath: "/share/USBSSD",
+      passwordRef: reference
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "COMPLETED",
+      listingPreview: "ftp-file.txt",
+      redacted: true
+    });
+    expect(client.requests).toHaveLength(2);
+    const request = client.requests[1];
+    if (request.type === "executeSecretOperation") {
+      expect(request.descriptor.actionType).toBe("ftpTransfer");
+      expect(request.descriptor.protocolType).toBe("ftp");
+      expect(request.descriptor.port).toBe(21);
+    }
+  });
+
+  it("preserves only the sanitized failure stage for file transfers", async () => {
+    const client = new FakeClient([
+      capabilityResponse("ftpTransfer"),
+      {
+        type: "secretOperation",
+        output: { status: "FAILED", stage: "REMOTE_COMMAND", redacted: true }
+      } as IpcResponse
+    ]);
+
+    const definition = tool(client, "ftp_transfer_with_secret");
+    const result = await definition.handler({
+      operation: "download",
+      host: "nas.local",
+      username: "zyk",
+      remotePath: "/share/file.mp4",
+      localPath: "/Users/example/Library/Application Support/AgentSecretVault/Downloads/file.mp4",
+      passwordRef: reference
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "FAILED",
+      stage: "REMOTE_COMMAND",
+      redacted: true
+    });
+    expect(() => definition.outputSchema.parse(result.structuredContent)).not.toThrow();
   });
 
   it("rejects duplicate secret references in adapter-specific inputs before IPC", async () => {

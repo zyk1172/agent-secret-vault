@@ -11,7 +11,7 @@
 
 触发与来源：
 1. 出现 secret://，或用户明确说使用 SVLT、使用 SVLT Entry、保存到 SVLT 时，进入 SVLT_MANAGED_OPERATION。
-2. 仅出现 password、token、API key、凭据等词，或任务需要登录、SSH、HTTP、数据库、SFTP、浏览器/本地 App 填充，不会自动激活 SVLT。
+2. 仅出现 password、token、API key、凭据等词，或任务需要登录、SSH、HTTP、数据库、SFTP、FTP、浏览器/本地 App 填充，不会自动激活 SVLT。
 3. 用户在当前请求中亲自提供明文并明确要求本次使用，或明确选择“这次不用 SVLT”时，进入 USER_EXPLICIT_PLAINTEXT。
 4. 用户明确指定 QNAP MCP、GitHub connector、已登录 CLI、环境变量、第三方密码管理器或其他 provider 时，进入 EXTERNAL_PROVIDER_OPERATION。
 5. 没有明确来源时才进入 UNMANAGED_CREDENTIAL，并允许按任务需要自动发现；SVLT 不是唯一选择。

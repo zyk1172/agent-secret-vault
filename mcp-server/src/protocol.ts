@@ -587,6 +587,7 @@ export const SecretOperationAction = z.enum([
   "apiRequest",
   "databaseQuery",
   "sftpTransfer",
+  "ftpTransfer",
   "browserLogin",
   "localAppFill",
   "revealPlaintext",
@@ -616,6 +617,7 @@ export const SecretOperationProtocol = z.enum([
   "https",
   "sftp",
   "scp",
+  "ftp",
   "postgres",
   "mysql",
   "browser",
@@ -685,6 +687,7 @@ export const SecretAdapterKind = z.enum([
   "http",
   "database",
   "sftp",
+  "ftp",
   "browser",
   "localApp",
   "export",
@@ -821,7 +824,7 @@ export const DatabaseOperation = z.object({
 export type DatabaseOperation = z.infer<typeof DatabaseOperation>;
 
 export const FileTransferOperation = z.object({
-  protocolType: z.enum(["sftp", "scp"]),
+  protocolType: z.enum(["sftp", "scp", "ftp"]),
   operation: SecretFileOperation,
   remotePath: z.string().min(1).max(4_096),
   localPath: z.string().max(4_096).nullable().optional(),

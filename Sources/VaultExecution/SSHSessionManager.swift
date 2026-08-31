@@ -248,8 +248,7 @@ public actor SSHSessionManager {
     ) {
         self.processRunner = processRunner
         self.sessionDirectory = (sessionDirectory
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/AgentSecretVault/SSH", isDirectory: true))
+            ?? Self.defaultSessionDirectory(for: FileManager.default.homeDirectoryForCurrentUser))
             .standardizedFileURL
         self.idleTTL = idleTTL
         self.absoluteTTL = absoluteTTL
@@ -652,6 +651,13 @@ public actor SSHSessionManager {
         let idleExpired = tick >= record.lastUsedTick && tick - record.lastUsedTick >= idleNanoseconds
         let absoluteExpired = tick >= record.createdTick && tick - record.createdTick >= absoluteNanoseconds
         return idleExpired || absoluteExpired
+    }
+
+    /// Keep the default Unix-domain socket parent short enough for OpenSSH's
+    /// temporary listener suffix on Darwin. This directory is private to the
+    /// current user and is not a credential or configuration store.
+    static func defaultSessionDirectory(for homeDirectory: URL) -> URL {
+        homeDirectory.appendingPathComponent(".svlt/ssh", isDirectory: true)
     }
 
     private func makeControlPath() throws -> String {

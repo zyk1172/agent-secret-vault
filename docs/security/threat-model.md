@@ -75,7 +75,7 @@ promote, downgrade, or deny that result. Exact opaque reference sets are
 checked before any record is resolved.
 
 Secret-bearing execution uses one fixed, non-sliding 300-second owner lease per
-exact scope. The ordinary path covers SSH/HTTP/database/SFTP and other
+exact scope. The ordinary path covers SSH/HTTP/database/SFTP/FTP and other
 technically supported operations, including shell syntax and new destinations;
 only the small fixed destructive registries, plaintext/security controls, and
 arbitrary local secret release require fresh approval. Cross-origin HTTP

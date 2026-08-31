@@ -141,7 +141,8 @@ list/get/create 响应。
 | 本地/内网 HTTP(S) | `secret_action_router` 的 `local_http_request`，或 `local_http_request_with_secret` | 只允许 localhost、`.local`、私有 IP；默认 GET/HEAD；输出脱敏。 |
 | API token 请求 | `secret_action_router` 的 `api_request`，或 `api_request_with_token` | token 只走 `tokenRef`；拒绝 URL token 参数；redirect manual；输出脱敏。 |
 | 数据库只读查询 | `secret_action_router` 的 `database_query`，或 `database_query_with_secret` | 只允许本地/内网 host 和单条 read-only SQL；先校验再解密。 |
-| SFTP/SCP | `secret_action_router` 的 `sftp_transfer`，或 `sftp_transfer_with_secret` | 只允许本地/内网 host；先校验 operation 和路径；输出脱敏。 |
+| SFTP/SCP | `secret_action_router` 的 `sftp_transfer`，或 `sftp_transfer_with_secret` | 只允许本地/内网 host；`username`/`usernameRef` 二选一；先校验 operation 和路径；输出脱敏。 |
+| 私有/回环 FTP | `secret_action_router` 的 `ftp_transfer`，或 `ftp_transfer_with_secret` | 明文协议；只允许私有/回环 host；`username`/`usernameRef` 二选一；每次需要重新认证；输出脱敏。 |
 | 本地文件导出 | `secret_action_router` 的 `export_resolved_text`，或 `export_resolved_text_to_local_file` | 用户明确要求导出时使用；只返回状态和路径。 |
 | 用户本地查看明文 | `secret_reveal_request` / `paragraph_reveal_request` | 明文显示在本地 app，不进入聊天。 |
 | 元数据检查 | `secret_inspect_reference` | 只返回 reference、policy、label、时间等非敏感字段。 |
@@ -158,6 +159,7 @@ list/get/create 响应。
 - `api_request`
 - `database_query`
 - `sftp_transfer`
+- `ftp_transfer`
 - `browser_web_login`
 - `local_app_form_fill`
 - `export_resolved_text`
@@ -167,7 +169,7 @@ list/get/create 响应。
 | Tool | Use |
 | --- | --- |
 | `agent_secret_usage_policy` | Returns the non-sensitive operating rules for Codex, Claude, Hermes, or another MCP-capable agent. |
-| `secret_action_router` | Routes `secret://` references to allowlisted SSH, HTTP/API, database, SFTP/SCP, browser/app fill, or local file export. Plaintext is never returned. |
+| `secret_action_router` | Routes `secret://` references to allowlisted SSH, HTTP/API, database, SFTP/SCP/FTP, browser/app fill, or local file export. Plaintext is never returned. |
 | `secret_auto_handle_text` | First-choice automatic handler for paragraphs or note excerpts containing `secret://`; detects references, redacts text, or opens a local app reveal. |
 | `vault_status` | Checks whether the local channel and operation policy engine are ready; `locked` is compatibility-only. |
 | `secret_inspect_reference` | Returns metadata only: reference, policy, label, timestamps. |
@@ -181,6 +183,7 @@ list/get/create 响应。
 | `api_request_with_token` | Resolves a token reference internally for a policy-reviewed API request; returns status and redacted metadata/preview after owner approval. |
 | `database_query_with_secret` | Resolves database credentials internally for a restricted read-only query through a purpose-built runner. |
 | `sftp_transfer_with_secret` | Resolves transfer credentials internally for restricted SFTP/SCP list/download/upload through a purpose-built runner. |
+| `ftp_transfer_with_secret` | Resolves transfer credentials internally for private/loopback plaintext FTP; every request requires fresh owner authentication. |
 | `browser_web_login_with_secret` | Resolves login credentials internally for a specific local/private browser form fill. |
 | `local_app_form_fill_with_secret` | Resolves field values internally for a specific macOS app form fill. |
 

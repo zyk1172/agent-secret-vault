@@ -3,6 +3,18 @@ import Testing
 import VaultCore
 @testable import VaultExecution
 
+@Test func SSHSessionManagerDefaultControlPathAllowsOpenSSHTemporarySuffix() {
+    let sessionDirectory = SSHSessionManager.defaultSessionDirectory(
+        for: URL(fileURLWithPath: "/Users/tester")
+    )
+    let controlPath = sessionDirectory.appendingPathComponent(
+        "s-\(String(repeating: "a", count: 24)).\(String(repeating: "a", count: 16))"
+    ).path
+
+    #expect(sessionDirectory.path.hasSuffix("/.svlt/ssh"))
+    #expect(controlPath.utf8.count < 103)
+}
+
 @Test func SSHSessionManagerReusesOnlyTheExactTransportScope() async throws {
     let root = try makeTemporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }

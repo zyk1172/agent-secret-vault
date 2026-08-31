@@ -59,7 +59,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 带认证的 HTTP 响应默认只返回状态/Content-Type。只有 capability manifest 声明 `projectedJSON` 且 App-owned profile ID 与 allowlisted JSON fields 同时匹配时，才能返回投影字段；不要请求 token、access_token、refresh_token、password、secret、cookie、session、authorization 等字段。`captureCredential`/派生 Cookie session 在本版本仍不可用。
 - `Authorization` header 默认使用 `Bearer`；`X-API-Key`、`X-Auth-Token` 等 custom API-key header 默认只发送原始 token，只有明确安全的 scheme 才会加前缀。不要用自定义 header 绕过 profile/Policy。
 - 通用 `localExecution`（把 Secret 交给任意本地进程）是极高危操作：会触发 fresh approval，审批中明确提示"批准后 SVLT 无法保证 Agent 不获得该凭据"，审计标记 `userApprovedSecretRelease`；是否释放由设备所有者决定。`trustedProcess` 是独立的未来 adapter 边界，只有能力清单声明已配置的 signed profile 时才可用，禁止退回 shell、AppleScript、剪贴板或通用脚本。
-- `database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
+- `database_query_with_secret`、`sftp_transfer_with_secret`、`ftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，FTP 不得退回普通 FTP/curl 客户端且只允许私有/回环目标、每次重新认证，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
 - 导出工具只返回本地路径/状态；plaintext resolution 和安全文件写入留在 App/daemon 边界内。不要读取导出文件再把内容放入聊天或普通工具。
 - HTTP transport `sessionID` 只是 SVLT 内部连接复用句柄，不代表请求已授权。每次请求仍须通过 principal、secretRef、目标、策略和授权要求检查；transport session 不会让 DELETE 或其他 destructive action 免于 fresh approval。
 - 非 SSH 请求仍需准确填写 `intendedEffect` 和风险。授权级别是 `none`（明确只读）、`reusableApproval`（普通操作，5 分钟窗口）、`freshApprovalRequired`（危险/高影响，每次重新认证）；Agent 自报的风险只会在审批提示和审计中展示，不能升级、降级或拒绝 SVLT 本地判断出的授权结果。fresh approval 不会延长原 lease。
@@ -90,7 +90,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `secret_action_router`：用户明确选择 SVLT 且需要在本机/内网执行受控动作时使用；明文只在 SVLT 专用边界内处理。
 - `ssh_command_with_secret`：适合单条结构受限 SSH 命令；连续任务优先复用返回的 opaque `sessionID`。
 - `ssh_batch_with_secret`：适合巡检和批量任务；传入结构化 `commands`，让 SVLT 在执行前完整评估整批风险，并返回独立、已脱敏的结果。
-- `local_http_request_with_secret`、`api_request_with_token`、`database_query_with_secret`、`sftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret`：仅用于 `secret://` 管理路径。
+- `local_http_request_with_secret`、`api_request_with_token`、`database_query_with_secret`、`sftp_transfer_with_secret`、`ftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret`：仅用于 `secret://` 管理路径。
 - `secret_reveal_request` / `paragraph_reveal_request`：用户明确要在本机 App 查看 SVLT 明文时使用；结果是本地显示状态，不是返回给 Agent 的明文。
 
 ## Secure Input 异步事务

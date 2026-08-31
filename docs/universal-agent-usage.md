@@ -161,7 +161,8 @@ Agent 接入后先做：
 | 本地/内网 HTTP Basic Auth | `local_http_request_with_secret` | `passwordRef`，可选 `usernameRef` |
 | API token 请求 | `api_request_with_token` | `tokenRef` |
 | 数据库只读查询 | `database_query_with_secret` | `passwordRef`，可选 `usernameRef` |
-| SFTP/SCP | `sftp_transfer_with_secret` | `passwordRef`，可选 `usernameRef` |
+| SFTP/SCP | `sftp_transfer_with_secret` | `passwordRef` + `username` 或 `usernameRef`（二选一） |
+| 私有/回环 FTP | `ftp_transfer_with_secret` | `passwordRef` + `username` 或 `usernameRef`（二选一）；每次重新认证 |
 | 本地/内网页登录填充 | `browser_web_login_with_secret` | `passwordRef`，可选 `usernameRef` |
 | 本地 App 表单填充 | `local_app_form_fill_with_secret` | 字段 `valueRef` |
 | 自动路由本机动作 | `secret_action_router` | 按 intent 传引用 |
@@ -175,6 +176,7 @@ Agent 接入后先做：
 - `api_request`
 - `database_query`
 - `sftp_transfer`
+- `ftp_transfer`
 - `browser_web_login`
 - `local_app_form_fill`
 - `export_resolved_text`
@@ -243,7 +245,21 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 
 路径必须明确，不能使用 `..`、glob 或 shell 字符。
 
-### 10.5 本地网页登录填充
+### 10.5 FTP list
+
+```json
+{
+  "operation": "list",
+  "host": "192.168.2.240",
+  "username": "zyk",
+  "passwordRef": "<existing secret:// reference returned by SVLT>",
+  "remotePath": "/share"
+}
+```
+
+FTP 仅允许回环或私有目标，并且每次请求都需要设备所有者重新认证；本地文件路径仅允许 SVLT Downloads 目录。
+
+### 10.6 本地网页登录填充
 
 ```json
 {
@@ -269,7 +285,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 | `URL_TOKEN_NOT_ALLOWED` | 其他旧工具拒绝 URL query 中的 token/key/password 参数；HTTP Secret 工具会把这类 query 交给本地 fresh owner approval。优先使用 `tokenRef`，不要把 Secret 明文拼进 URL。 |
 | `COMMAND_NOT_ALLOWED` | SSH 命令超出只读安全边界。换成更窄命令或新增专用工具。 |
 | `QUERY_NOT_ALLOWED` | SQL 不是单条只读语句。改成只读查询。 |
-| `PATH_NOT_ALLOWED` | SFTP/SCP 路径不安全。改成确定路径。 |
+| `PATH_NOT_ALLOWED` | SFTP/SCP/FTP 路径不安全。改成确定路径。 |
 | `SAFE_AUTOFILL_UNAVAILABLE` | SVLT 管理路径的浏览器或本地 App 安全填充 runner 尚不可用；不要把 SVLT 派生明文降级到普通工具。用户已明确选择其他工具或当前明文时，由该工具自己的规则处理。 |
 | `*_REQUEST_FAILED` | 报告非敏感失败状态，建议检查服务、网络、权限或 App 状态。 |
 

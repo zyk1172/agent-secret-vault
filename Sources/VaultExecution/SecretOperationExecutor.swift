@@ -258,7 +258,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         self.batchOutputLimitBytes = max(outputLimitBytes, batchOutputLimitBytes)
         self.batchTotalTimeout = batchTotalTimeout
         self.sshSessionManager = sshSessionManager ?? SSHSessionManager(processRunner: processRunner)
-        self.adapterRegistry = adapterRegistry ?? SecretOperationAdapterRegistry()
+        self.adapterRegistry = adapterRegistry ?? SecretOperationAdapterRegistry(processRunner: processRunner)
     }
 
     public func execute(
@@ -286,7 +286,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         switch descriptor.actionType {
         case .sshCommand:
             return try await executeSSH(descriptor, context: context, resolve: resolve)
-        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
+        case .httpRequest, .apiRequest, .sftpTransfer, .ftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
              .localExecution, .trustedProcess:
             return try await adapterRegistry.execute(
                 descriptor,
@@ -392,7 +392,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 return .invalidParameters
             }
             return .supported
-        case .httpRequest, .apiRequest, .sftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
+        case .httpRequest, .apiRequest, .sftpTransfer, .ftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
              .localExecution, .trustedProcess:
             return adapterRegistry.preflight(descriptor)
         default:
