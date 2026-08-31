@@ -173,6 +173,15 @@ describe("IPC response schema", () => {
         }
       },
       {
+        type: "secretOperation",
+        output: {
+          status: "REDIRECT_REQUIRES_REVIEW",
+          httpStatus: 302,
+          redirectLocation: "https://qnap.local/next",
+          redacted: true
+        }
+      },
+      {
         type: "sshSessionStatus",
         sessions: [{
           sessionID: "ssh_session_test",

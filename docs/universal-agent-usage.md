@@ -211,7 +211,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 }
 ```
 
-不要把 token 放进 URL query、header 字符串或聊天。
+不要把 SVLT 派生 token 放进 URL query、header 字符串或聊天；如果目标协议确实要求 credential-shaped query，使用 HTTP Secret 工具让本地 policy 触发 fresh owner approval，不要把 Secret 明文拼入 URL。
 
 ### 10.3 数据库只读查询
 
@@ -266,7 +266,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 | `APP_UNAVAILABLE` | 让用户打开一次 SVLT 完成后台服务注册/批准后重试；不要要求 GUI 一直保持打开。 |
 | `URL_NOT_ALLOWED` / `HOST_NOT_ALLOWED` | 目标不是 localhost、`.local`、私有 IP 或显式 allowlist。请用户确认目标。 |
 | `URL_CREDENTIALS_NOT_ALLOWED` | URL 里包含用户名或密码。改用 `usernameRef` / `passwordRef`。 |
-| `URL_TOKEN_NOT_ALLOWED` | URL query 里出现 token/key/password 等敏感参数。改用 `tokenRef`。 |
+| `URL_TOKEN_NOT_ALLOWED` | 其他旧工具拒绝 URL query 中的 token/key/password 参数；HTTP Secret 工具会把这类 query 交给本地 fresh owner approval。优先使用 `tokenRef`，不要把 Secret 明文拼进 URL。 |
 | `COMMAND_NOT_ALLOWED` | SSH 命令超出只读安全边界。换成更窄命令或新增专用工具。 |
 | `QUERY_NOT_ALLOWED` | SQL 不是单条只读语句。改成只读查询。 |
 | `PATH_NOT_ALLOWED` | SFTP/SCP 路径不安全。改成确定路径。 |
@@ -294,4 +294,4 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 - 不要把 bearer token、basic auth、cookie、session id 打印到工具结果。
 - 不要把数据库敏感列返回聊天。
 - 不要使用通用 shell、curl、剪贴板或浏览器自动填表绕过 MCP 安全工具。
-- 对公网发送、删除、改密码、数据库写入等高风险动作，必须新增更窄的专用 allowlisted 工具。
+- 对公网发送使用 `local_http_request_with_secret` 或 `api_request_with_token` 的 typed owner-approval 路径；不要改用通用 shell/curl，也不要把 Secret 明文交给 Agent。

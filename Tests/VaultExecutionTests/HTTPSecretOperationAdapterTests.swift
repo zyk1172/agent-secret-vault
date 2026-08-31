@@ -5,6 +5,7 @@ import VaultCore
 
 private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
 private let httpTestHost = "svlt.local"
+private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
 
 @Test func typedHTTPAdapterReusesTransportAndNeverPreviewsAuthenticatedBody() async throws {
     let reference = try SecretReference(httpTestReference)
@@ -128,6 +129,91 @@ private let httpTestHost = "svlt.local"
         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
     #expect(output.status == "COMPLETED")
+}
+
+@Test func typedHTTPAdapterRequiresTheExactSavedOriginForInsecureSecretTransport() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/ok",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+            )
+        )
+    )
+
+    for allowedDestination in ["other.local:80", "\(httpTestHost):81", httpTestHost] {
+        await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
+            _ = try await adapter.execute(
+                descriptor,
+                metadata: [SecretPolicyMetadata(
+                    reference: reference,
+                    policy: .credential,
+                    label: "HTTP test credential",
+                    allowedDestinations: [allowedDestination],
+                    allowedProtocols: ["http"]
+                )],
+                context: SecretOperationExecutionContext(
+                    principal: "insecure-profile-\(allowedDestination)",
+                    securityGeneration: 1
+                ),
+                resolve: { _ in Data(httpTestSecret.utf8) }
+            )
+        }
+    }
+}
+
+@Test func typedHTTPAdapterQuarantinesSecretsInBodyLocationAndContentType() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let paths = [
+        "/leak-body",
+        "/leak-location",
+        "/leak-encoded-location",
+        "/leak-content-type"
+    ]
+
+    for path in paths {
+        let descriptor = SecretOperationDescriptor(
+            actionType: .apiRequest,
+            secretReferences: [reference],
+            destination: httpTestHost,
+            port: 80,
+            protocolType: .http,
+            httpMethod: "GET",
+            url: "http://\(httpTestHost)\(path)",
+            payload: .http(
+                HTTPOperation(
+                    method: .get,
+                    auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+                )
+            )
+        )
+
+        await #expect(throws: SecretOperationExecutionError.outputQuarantined) {
+            _ = try await adapter.execute(
+                descriptor,
+                metadata: [httpMetadata(reference)],
+                context: SecretOperationExecutionContext(
+                    principal: "response-leak-\(path)",
+                    securityGeneration: 1
+                ),
+                resolve: { _ in Data(httpTestSecret.utf8) }
+            )
+        }
+    }
 }
 
 @Test func typedHTTPAdapterEnforcesStreamingResponseLimit() async throws {
@@ -573,13 +659,23 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
 
         let isRedirect = url.path == "/redirect"
         let isCrossRedirect = url.path == "/cross-redirect"
+        let isLeakingLocation = url.path == "/leak-location"
+        let isLeakingEncodedLocation = url.path == "/leak-encoded-location"
+        let isLeakingContentType = url.path == "/leak-content-type"
+        let isLeakingBody = url.path == "/leak-body"
         let isLarge = url.path == "/large"
         let isUnicode = url.path == "/unicode"
-        let statusCode = isRedirect || isCrossRedirect ? 302 : 200
+        let statusCode = isRedirect || isCrossRedirect || isLeakingLocation || isLeakingEncodedLocation ? 302 : 200
         let headers = isRedirect
             ? ["Location": "http://\(httpTestHost)/ok"]
             : isCrossRedirect
                 ? ["Location": "http://other.example/ok"]
+                : isLeakingLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=\(httpTestSecret)"]
+                : isLeakingEncodedLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=ASV%5FHTTP%5FTEST%5FTOKEN"]
+                : isLeakingContentType
+                    ? ["Content-Type": "text/plain; token=\(httpTestSecret)"]
                 : ["Content-Type": "application/json"]
         guard let response = HTTPURLResponse(
             url: url,
@@ -597,6 +693,8 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
                 ? Data("0123456789abcdef".utf8)
                 : isUnicode
                     ? Data("中a".utf8)
+                : isLeakingBody
+                    ? Data(httpTestSecret.utf8)
                 : url.path == "/projected"
                     ? Data("{\"status\":\"ok\",\"access_token\":\"derived-secret\"}".utf8)
                 : url.path == "/sensitive"

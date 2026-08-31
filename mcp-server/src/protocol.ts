@@ -1120,6 +1120,7 @@ export const SecretOperationOutput = z
     httpStatus: z.number().int().optional(),
     contentType: z.string().nullable().optional(),
     bodyPreview: z.string().optional(),
+    redirectLocation: z.string().url().optional(),
     rowCount: z.number().int().min(0).optional(),
     rowsPreview: z.string().optional(),
     listingPreview: z.string().optional(),

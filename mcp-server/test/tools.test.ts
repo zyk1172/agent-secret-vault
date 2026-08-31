@@ -1003,14 +1003,31 @@ describe("MCP tool contracts", () => {
     expect((request.descriptor.payload as { operation: { auth: { scheme?: string } } }).operation.auth.scheme).toBeUndefined();
   });
 
-  it("rejects credential-shaped URLs and secret references in API bodies", async () => {
-    const urlClient = new FakeClient([]);
+  it("routes credential query URLs through owner approval and rejects URL authority credentials", async () => {
+    const urlClient = new FakeClient([operationResponse({ httpStatus: 200 })]);
     const urlResult = await tool(urlClient, "api_request_with_token").handler({
       url: "https://qnap.local/api?token=secret",
       tokenRef: reference
     });
-    expect(urlResult.structuredContent).toEqual({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
-    expect(urlClient.requests).toHaveLength(0);
+    expect(urlResult.structuredContent).toEqual({
+      status: "COMPLETED",
+      httpStatus: 200,
+      contentType: null,
+      redacted: true
+    });
+    expect(urlClient.requests).toHaveLength(1);
+    expect(urlClient.requests[0]).toMatchObject({
+      type: "executeSecretOperation",
+      descriptor: { url: "https://qnap.local/api?token=secret" }
+    });
+
+    const authorityClient = new FakeClient([]);
+    const authorityResult = await tool(authorityClient, "api_request_with_token").handler({
+      url: "https://user:pass@qnap.local/api",
+      tokenRef: reference
+    });
+    expect(authorityResult.structuredContent).toEqual({ status: "URL_CREDENTIALS_NOT_ALLOWED" });
+    expect(authorityClient.requests).toHaveLength(0);
 
     const bodyClient = new FakeClient([]);
     const bodyResult = await tool(bodyClient, "api_request_with_token").handler({
@@ -1020,6 +1037,27 @@ describe("MCP tool contracts", () => {
     });
     expect(bodyResult.structuredContent).toEqual({ status: "PLAINTEXT_REFERENCE_NOT_ALLOWED" });
     expect(bodyClient.requests).toHaveLength(0);
+  });
+
+  it("returns only the redacted fields for an HTTP redirect requiring review", async () => {
+    const client = new FakeClient([operationResponse({
+      status: "REDIRECT_REQUIRES_REVIEW",
+      httpStatus: 302,
+      redirectLocation: "https://qnap.local/next",
+      contentType: "text/plain",
+      bodyPreview: "ignored"
+    })]);
+    const result = await tool(client, "api_request_with_token").handler({
+      url: "https://qnap.local/start",
+      tokenRef: reference
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "REDIRECT_REQUIRES_REVIEW",
+      httpStatus: 302,
+      redirectLocation: "https://qnap.local/next",
+      redacted: true
+    });
   });
 
   it("uses operation descriptors for database and SFTP actions", async () => {

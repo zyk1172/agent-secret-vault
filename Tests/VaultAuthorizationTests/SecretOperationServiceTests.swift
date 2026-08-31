@@ -294,6 +294,31 @@ import VaultIPC
     #expect(!deleteSummary.contains("复用最多"))
 }
 
+@Test func publicHTTPSSecretSendUsesFreshOwnerApprovalInsteadOfPolicyDenial() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [fixture.reference],
+        destination: "api.example.com",
+        port: 443,
+        protocolType: .https,
+        httpMethod: "GET",
+        url: "https://api.example.com/v1/status",
+        parameters: ["tokenRef": fixture.reference.description],
+        requestedEffects: ["read-only"]
+    )
+
+    let output = try await fixture.service.performSecretOperation(descriptor)
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 1)
+    let summary = await fixture.approver.summaries.first ?? ""
+    #expect(summary.contains("Secret 将离开本机发送到 HTTP(S) 目标"))
+}
+
 @Test func agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 6_000)
     let clock = ServiceTestClock(start)
