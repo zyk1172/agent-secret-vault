@@ -125,6 +125,11 @@ describe("agent policy contract", () => {
     expect((policy.safeWorkflow as string[]).join(" ")).toContain(
       "never inherited as sticky authorization"
     );
+    const workflow = (policy.safeWorkflow as string[]).join(" ");
+    expect(workflow).toContain("display/audit metadata only");
+    expect(workflow).toContain("single-line or multi-line scripts");
+    expect(workflow).not.toContain("Never use shell chaining");
+    expect(workflow).not.toContain("permanently denied");
     expect(policy.outOfScopeRule).toEqual(expect.arrayContaining([
       expect.stringContaining("device MCP"),
       expect.stringContaining("Do not compare")

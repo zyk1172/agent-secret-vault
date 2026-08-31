@@ -9,6 +9,7 @@ import { z } from "zod";
 import { LocalIpcClient } from "./client.js";
 import { credentialSourcePriority } from "./credential-scope.js";
 import {
+  AgentCallerIdentity,
   AgentRiskAssessment,
   CatalogCreateEntryRequest,
   CatalogCreateStructureRequest,
@@ -29,10 +30,18 @@ import {
   SecretCatalogSearchResult,
   SecretPolicy,
   SecretOperationDescriptor,
+  SecretOperationCapability,
   SecretOperationOutput,
+  SecretOperationStage,
   SecretOperationProtocol,
+  SecretAllowedProtocol,
   SecretReference,
-  SecretReferenceMetadata
+  SecretReferenceMetadata,
+  UniqueSecretReferences,
+  NonEmptyUniqueSecretReferences,
+  SSHCommandBatch,
+  SSHCommandSpec,
+  SSHSessionStatus
 } from "./protocol.js";
 
 const optionalAgentRiskAssessment = AgentRiskAssessment.optional();
@@ -89,7 +98,7 @@ const SVLT_AGENT_CATALOG_POLICY = `SVLT 敏感信息目录写入规范
 45. 需要用户输入秘密时使用 secret_catalog_request_secure_inputs；若 transport 返回 PENDING 与 requestID，只能用 secret_catalog_secure_input_status 轮询同一请求，Agent 永远只能收到状态/非敏感结果，不能收到 plaintext。`;
 
 export interface VaultIpcClient {
-  request(request: IpcRequest): Promise<IpcResponse>;
+  request(request: IpcRequest, caller?: AgentCallerIdentity): Promise<IpcResponse>;
 }
 
 export interface VaultToolDefinition {
@@ -115,6 +124,16 @@ const StatusOutput = z
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Vault lock status or non-sensitive status code");
+
+const CapabilityManifestOutput = z
+  .union([
+    z.object({
+      status: z.literal("OK"),
+      capabilities: z.array(SecretOperationCapability).max(32)
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Daemon capability manifest. Unavailable adapters must not be treated as supported.");
 
 const RevealOutput = z
   .object({ status: z.string().min(1) })
@@ -351,6 +370,7 @@ const LocalHttpOutput = z
         status: z.literal("COMPLETED"),
         httpStatus: z.number().int(),
         contentType: z.string().nullable(),
+        sessionID: z.string().min(1).max(128).optional(),
         redacted: z.literal(true),
         bodyPreview: z.string().optional()
       })
@@ -364,15 +384,74 @@ const LocalSshOutput = z
     z
       .object({
         status: z.literal("COMPLETED"),
-        exitCode: z.number().int(),
-        stdout: z.string(),
-        stderr: z.string(),
+        exitCode: z.number().int().optional(),
+        stdout: z.string().optional(),
+        stderr: z.string().optional(),
+        sessionID: z.string().min(1).max(128).optional(),
+        failedIndex: z.number().int().min(0).optional(),
+        results: z.array(z.object({
+          index: z.number().int().min(0),
+          status: z.string().min(1),
+          exitCode: z.number().int().optional(),
+          stage: SecretOperationStage.optional(),
+          stdoutPreview: z.string().optional(),
+          stderrPreview: z.string().optional()
+        }).strict()).max(32).optional(),
+        redacted: z.literal(true)
+      })
+      .strict(),
+    z
+      .object({
+        status: z.string().min(1),
+        exitCode: z.number().int().optional(),
+        stage: SecretOperationStage.optional(),
+        stdoutPreview: z.string().optional(),
+        stderrPreview: z.string().optional(),
+        sessionID: z.string().min(1).max(128).optional(),
+        failedIndex: z.number().int().min(0).optional(),
+        results: z.array(z.object({
+          index: z.number().int().min(0),
+          status: z.string().min(1),
+          exitCode: z.number().int().optional(),
+          stage: SecretOperationStage.optional(),
+          stdoutPreview: z.string().optional(),
+          stderrPreview: z.string().optional()
+        }).strict()).max(32).optional(),
         redacted: z.literal(true)
       })
       .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Local SSH result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
+
+const SshSessionStatusInput = z
+  .object({
+    sessionID: z.string().min(1).max(128).optional()
+  })
+  .strict();
+
+const SshSessionStatusOutput = z
+  .union([
+    z
+      .object({
+        status: z.enum(["ACTIVE", "NO_ACTIVE_SESSIONS"]),
+        sessions: z.array(SSHSessionStatus).max(32)
+      })
+      .strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Opaque SSH transport session status. It never grants execution authorization.");
+
+const SshSessionCloseInput = z
+  .object({
+    sessionID: z.string().min(1).max(128)
+  })
+  .strict();
+
+const SshSessionCloseOutput = z
+  .object({ status: z.string().min(1) })
+  .strict()
+  .describe("SSH transport session close status. It never changes execution authorization.");
 
 const ApiRequestOutput = z
   .union([
@@ -381,6 +460,7 @@ const ApiRequestOutput = z
         status: z.literal("COMPLETED"),
         httpStatus: z.number().int(),
         contentType: z.string().nullable(),
+        sessionID: z.string().min(1).max(128).optional(),
         redacted: z.literal(true),
         bodyPreview: z.string().optional()
       })
@@ -476,7 +556,7 @@ const AutoHandleOutput = z
     status: z.string().min(1),
     action: z.string().min(1),
     referenceCount: z.number().int().min(0),
-    references: z.array(SecretReference),
+    references: UniqueSecretReferences,
     redactedText: z.string().optional()
   })
   .strict()
@@ -495,7 +575,7 @@ const RevealInput = z
 const ParagraphRevealInput = z
   .object({
     text: z.string().min(1).optional(),
-    references: z.array(SecretReference).min(1).optional(),
+    references: NonEmptyUniqueSecretReferences.optional(),
     template: z.string().min(1).optional(),
     reason: z.string().min(1),
     agentAssessment: optionalAgentRiskAssessment
@@ -508,7 +588,7 @@ const ParagraphRevealInput = z
 const ExportResolvedTextInput = z
   .object({
     text: z.string().min(1).optional(),
-    references: z.array(SecretReference).min(1).optional(),
+    references: NonEmptyUniqueSecretReferences.optional(),
     template: z.string().min(1).optional(),
     reason: z.string().min(1),
     destinationPath: z.string().min(1),
@@ -524,7 +604,7 @@ const CreateInput = z
     label: z.string().nullable().optional(),
     policy: SecretPolicy,
     allowedDestinations: z.array(z.string().min(1)).max(32).optional(),
-    allowedProtocols: z.array(SecretOperationProtocol).max(16).optional()
+    allowedProtocols: z.array(SecretAllowedProtocol).max(16).optional()
   })
   .strict();
 
@@ -541,30 +621,89 @@ const LocalHttpInput = z
     username: z.string().min(1).max(256).optional(),
     usernameRef: SecretReference.optional(),
     passwordRef: SecretReference.optional(),
+    sessionID: z.string().min(1).max(128).optional(),
     includeBodyPreview: z.boolean().optional(),
-    timeoutMs: z.number().int().min(100).max(10_000).optional(),
+    responseProfileID: z.string().min(1).max(128).optional(),
+    responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
+    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
+    const hasProfile = value.responseProfileID !== undefined;
+    const hasFields = value.responseFields !== undefined;
+    if (hasProfile !== hasFields || (hasProfile && value.responseFields?.length === 0)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["responseProfileID"],
+        message: "responseProfileID and non-empty responseFields must be provided together."
+      });
+    }
   });
 
 const SshCommandInput = z
   .object({
     host: z.string().min(1).max(253),
     port: z.number().int().min(1).max(65_535).optional(),
-    username: z.string().min(1).max(256).optional(),
-    usernameRef: SecretReference.optional(),
+    username: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/).optional(),
     passwordRef: SecretReference,
-    command: z.string().min(1).max(2_000),
-    risk: z.enum(["read"]).optional(),
+    // Raw remote command: single-line or multi-line (newlines, quotes,
+    // pipelines, redirects, heredocs, interpreters are all allowed). SVLT
+    // never parses shell syntax; the remote login shell does. The ceiling is
+    // UTF-8 bytes to match the Swift side exactly (§61): Zod's .max() counts
+    // UTF-16 code units, which diverges for CJK/emoji input.
+    command: z
+        .string()
+        .min(1)
+        .refine((value) => Buffer.byteLength(value, "utf8") <= 65_536, {
+            message: "command must be at most 65536 UTF-8 bytes"
+        }),
+    sessionID: z.string().min(1).max(128).optional(),
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
+    agentAssessment: optionalAgentRiskAssessment
+  })
+  .strict();
+
+const SshCommandBatchInput = z
+  .object({
+    host: z.string().min(1).max(253),
+    port: z.number().int().min(1).max(65_535).optional(),
+    username: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/).optional(),
+    passwordRef: SecretReference,
+    sessionID: z.string().min(1).max(128).optional(),
+    commands: z.array(SSHCommandSpec).min(1).max(32),
+    stopOnFailure: z.boolean().default(true),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
-  .refine((value) => value.username === undefined || value.usernameRef === undefined, {
-    message: "Use either username or usernameRef, not both."
+  .superRefine((value, context) => {
+    try {
+      SSHCommandBatch.parse({
+        commands: value.commands,
+        stopOnFailure: value.stopOnFailure
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        for (const issue of error.issues) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["commands", ...issue.path],
+            message: issue.message
+          });
+        }
+      }
+    }
   });
 
 const ApiRequestInput = z
@@ -572,14 +711,28 @@ const ApiRequestInput = z
     url: z.string().url(),
     method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]).optional(),
     tokenRef: SecretReference,
+    sessionID: z.string().min(1).max(128).optional(),
     headerName: z.string().min(1).max(128).optional(),
     headerScheme: z.string().min(1).max(64).optional(),
     body: z.string().max(65_536).optional(),
     includeBodyPreview: z.boolean().optional(),
-    timeoutMs: z.number().int().min(100).max(10_000).optional(),
+    responseProfileID: z.string().min(1).max(128).optional(),
+    responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
+    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const hasProfile = value.responseProfileID !== undefined;
+    const hasFields = value.responseFields !== undefined;
+    if (hasProfile !== hasFields || (hasProfile && value.responseFields?.length === 0)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["responseProfileID"],
+        message: "responseProfileID and non-empty responseFields must be provided together."
+      });
+    }
+  });
 
 const DatabaseQueryInput = z
   .object({
@@ -598,6 +751,15 @@ const DatabaseQueryInput = z
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
   });
 
 const FileTransferInput = z
@@ -617,6 +779,15 @@ const FileTransferInput = z
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
   });
 
 const BrowserLoginInput = z
@@ -636,6 +807,15 @@ const BrowserLoginInput = z
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
     message: "Use either username or usernameRef, not both."
+  })
+  .superRefine((value, context) => {
+    if (value.usernameRef !== undefined && value.usernameRef === value.passwordRef) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["passwordRef"],
+        message: "usernameRef and passwordRef must be different references."
+      });
+    }
   })
   .refine((value) => value.submit !== true || value.submitSelector !== undefined, {
     message: "submitSelector is required when submit is true."
@@ -663,6 +843,19 @@ const LocalAppFillInput = z
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
+  .superRefine((value, context) => {
+    const seen = new Set<string>();
+    value.fields.forEach((field, index) => {
+      if (field.valueRef !== undefined && seen.has(field.valueRef)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", index, "valueRef"],
+          message: "Each secret:// reference may be used only once in a local App request."
+        });
+      }
+      if (field.valueRef !== undefined) seen.add(field.valueRef);
+    });
+  })
   .refine((value) => value.appName !== undefined || value.bundleId !== undefined, {
     message: "appName or bundleId is required."
   });
@@ -671,6 +864,9 @@ const SecretActionRouterInput = z
   .discriminatedUnion("intent", [
     SshCommandInput.extend({
       intent: z.literal("ssh_command")
+    }).strict(),
+    SshCommandBatchInput.extend({
+      intent: z.literal("ssh_batch")
     }).strict(),
     LocalHttpInput.extend({
       intent: z.literal("local_http_request")
@@ -709,7 +905,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_action_router",
       title: "Secret Local Action Router",
       description:
-        "Routes secret:// references to allowlisted local actions such as SSH, HTTP/API, SFTP/SCP, database, browser login, app form fill, or local file export. Plaintext is never returned.",
+        "Routes secret:// references to policy-reviewed local actions. Check vault_capabilities first: the daemon's manifest, not this tool list, is authoritative for HTTP/API, database, SFTP/SCP, browser, app form fill, export, and trusted-process support. Plaintext is never returned.",
       inputSchema: SecretActionRouterInput,
       outputSchema: z.union([
         LocalSshOutput,
@@ -725,6 +921,9 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
         const parsed = SecretActionRouterInput.parse(input);
         if (parsed.intent === "ssh_command") {
           return handleSshCommandWithSecret(client, parsed);
+        }
+        if (parsed.intent === "ssh_batch") {
+          return handleSshBatchWithSecret(client, parsed);
         }
         if (parsed.intent === "local_http_request") {
           return handleLocalHttpRequest(client, parsed);
@@ -843,6 +1042,22 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           });
         }
         return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "vault_capabilities",
+      title: "Vault Operation Capabilities",
+      description:
+        "Returns the daemon's actual non-sensitive adapter capability manifest. Check this before using HTTP, database, SFTP, browser, local-app, export, or trusted-process operations; unavailable entries are not supported and must not be retried as if they were.",
+      inputSchema: EmptyInput,
+      outputSchema: CapabilityManifestOutput,
+      async handler(input) {
+        EmptyInput.parse(input);
+        const response = await client.request({ type: "secretOperationCapabilities" });
+        if (response.type === "secretOperationCapabilities") {
+          return structuredResult({ status: "OK", capabilities: response.capabilities });
+        }
+        return structuredResult({ status: statusOnly(response).status, capabilities: [] });
       }
     },
     {
@@ -1309,11 +1524,44 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Uses a secret:// password inside SVLTAgent for a restricted local/private-network SSH command. Plaintext is never returned.",
+        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. The command is passed byte-for-byte to the remote login shell; dangerous commands require a fresh device-owner approval, ordinary commands share a 5-minute window. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
         return handleSshCommandWithSecret(client, SshCommandInput.parse(input));
+      }
+    },
+    {
+      name: "ssh_batch_with_secret",
+      title: "SSH Command Batch With Secret",
+      description:
+        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics; interpreters are allowed and trigger the normal approval levels. Plaintext is never returned.",
+      inputSchema: SshCommandBatchInput,
+      outputSchema: LocalSshOutput,
+      async handler(input) {
+        return handleSshBatchWithSecret(client, SshCommandBatchInput.parse(input));
+      }
+    },
+    {
+      name: "ssh_session_status",
+      title: "SSH Session Status",
+      description:
+        "Returns the calling MCP client's own opaque SVLT-managed SSH transport sessions. It exposes no ControlPath, secret reference, password state, or authorization state; a sessionID is not an authorization token.",
+      inputSchema: SshSessionStatusInput,
+      outputSchema: SshSessionStatusOutput,
+      async handler(input) {
+        return handleSshSessionStatus(client, SshSessionStatusInput.parse(input));
+      }
+    },
+    {
+      name: "ssh_session_close",
+      title: "Close SSH Session",
+      description:
+        "Closes one of the calling MCP client's own opaque SVLT-managed SSH transport sessions. Closing transport never grants, revokes, or extends execution authorization.",
+      inputSchema: SshSessionCloseInput,
+      outputSchema: SshSessionCloseOutput,
+      async handler(input) {
+        return handleSshSessionClose(client, SshSessionCloseInput.parse(input));
       }
     },
     {
@@ -1342,7 +1590,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_http_request_with_secret",
       title: "Local HTTP Request With Secret",
       description:
-        "Uses secret:// credentials inside SVLTAgent for a restricted HTTP request. Plaintext is never returned.",
+        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. HTTPS is the default; insecure HTTP requires a user-saved exact local/private profile and fresh first-use approval. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: LocalHttpInput,
       outputSchema: LocalHttpOutput,
       async handler(input) {
@@ -1353,7 +1601,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "api_request_with_token",
       title: "API Request With Token",
       description:
-        "Uses a secret:// API token inside SVLTAgent for a restricted allowlisted API request. Plaintext is never returned.",
+        "Capability-gated typed API request using a secret:// token inside SVLTAgent. HTTPS is the default; insecure HTTP requires a user-saved exact local/private profile and fresh first-use approval. Authorization defaults to Bearer, while custom API-key headers use the raw token unless a safe scheme is explicit. Call vault_capabilities first; plaintext is never returned.",
       inputSchema: ApiRequestInput,
       outputSchema: ApiRequestOutput,
       async handler(input) {
@@ -1364,7 +1612,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "database_query_with_secret",
       title: "Database Query With Secret",
       description:
-        "Submits an opaque descriptor for a restricted database query; the purpose-built local runner never returns credentials. Plaintext is never returned.",
+        "Capability-gated database descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Plaintext is never returned.",
       inputSchema: DatabaseQueryInput,
       outputSchema: DatabaseQueryOutput,
       async handler(input) {
@@ -1375,7 +1623,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "sftp_transfer_with_secret",
       title: "SFTP/SCP Transfer With Secret",
       description:
-        "Submits an opaque descriptor for restricted SFTP/SCP actions; the purpose-built local runner never returns credentials. Plaintext is never returned.",
+        "Capability-gated SFTP/SCP descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Plaintext is never returned.",
       inputSchema: FileTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
@@ -1386,7 +1634,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "browser_web_login_with_secret",
       title: "Browser Web Login With Secret",
       description:
-        "Uses secret:// credentials inside a browser automation runner to fill a specific local/private web login form. Plaintext is never returned.",
+        "Capability-gated browser login descriptor. Use only when a signed native messaging adapter is advertised; never fall back to AppleScript, clipboard, or injected page JavaScript. Plaintext is never returned.",
       inputSchema: BrowserLoginInput,
       outputSchema: BrowserLoginOutput,
       async handler(input) {
@@ -1397,7 +1645,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_app_form_fill_with_secret",
       title: "Local App Form Fill With Secret",
       description:
-        "Uses secret:// values inside a local app automation runner to fill a specific macOS app form. Plaintext is never returned.",
+        "Capability-gated macOS Accessibility form-fill descriptor. Use only when the daemon advertises a signed target-aware adapter; never fall back to clipboard or generic scripting. Plaintext is never returned.",
       inputSchema: LocalAppFillInput,
       outputSchema: LocalAppFillOutput,
       async handler(input) {
@@ -1418,7 +1666,10 @@ export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): 
 }
 
 export function registerVaultTools(server: McpServer, client: VaultIpcClient): void {
-  for (const tool of createVaultToolDefinitions(client)) {
+  const callerAwareClient: VaultIpcClient = {
+    request: (request) => client.request(request, declaredCallerIdentity(server))
+  };
+  for (const tool of createVaultToolDefinitions(callerAwareClient)) {
     server.registerTool(
       tool.name,
       {
@@ -1451,6 +1702,20 @@ export function registerVaultTools(server: McpServer, client: VaultIpcClient): v
 export async function runStdioServer(client: VaultIpcClient = new LocalIpcClient()): Promise<void> {
   const server = createMcpServer(client);
   await server.connect(new StdioServerTransport());
+}
+
+function declaredCallerIdentity(server: McpServer): AgentCallerIdentity {
+  const clientInfo = server.server.getClientVersion();
+  const candidate = AgentCallerIdentity.safeParse({
+    name: clientInfo?.name ?? process.env.SVLT_AGENT_NAME ?? "Unknown MCP Client",
+    ...(clientInfo?.version ?? process.env.SVLT_AGENT_VERSION
+      ? { version: clientInfo?.version ?? process.env.SVLT_AGENT_VERSION }
+      : {}),
+    transport: "mcp"
+  });
+  return candidate.success
+    ? candidate.data
+    : { name: "Unknown MCP Client", transport: "mcp" };
 }
 
 function structuredResult(structuredContent: Record<string, unknown>): CallToolResult {
@@ -1584,17 +1849,77 @@ function isSecretOperationOutput(
   return "redacted" in value;
 }
 
+const MAX_SSH_DIAGNOSTIC_PREVIEW_CHARS = 16_384;
+
+function sshDiagnosticPreview(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value.length <= MAX_SSH_DIAGNOSTIC_PREVIEW_CHARS
+    ? value
+    : `${value.slice(0, MAX_SSH_DIAGNOSTIC_PREVIEW_CHARS)}…`;
+}
+
+function sshDiagnosticResult(output: z.infer<typeof SecretOperationOutput>): Record<string, unknown> {
+  const stdoutPreview = sshDiagnosticPreview(output.stdout);
+  const stderrPreview = sshDiagnosticPreview(output.stderr);
+  const results = output.results?.map((result) => ({
+    index: result.index,
+    status: result.status,
+    ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+    ...(result.stage === undefined ? {} : { stage: result.stage }),
+    ...(result.stdout === undefined ? {} : { stdoutPreview: sshDiagnosticPreview(result.stdout) }),
+    ...(result.stderr === undefined ? {} : { stderrPreview: sshDiagnosticPreview(result.stderr) })
+  }));
+  return {
+    status: output.status,
+    ...(output.exitCode === undefined ? {} : { exitCode: output.exitCode }),
+    ...(output.stage === undefined ? {} : { stage: output.stage }),
+    ...(stdoutPreview === undefined ? {} : { stdoutPreview }),
+    ...(stderrPreview === undefined ? {} : { stderrPreview }),
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
+    ...(output.failedIndex === undefined ? {} : { failedIndex: output.failedIndex }),
+    ...(results === undefined ? {} : { results }),
+    redacted: true
+  };
+}
+
+async function handleSshSessionStatus(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof SshSessionStatusInput>
+): Promise<CallToolResult> {
+  const response = parsed.sessionID === undefined
+    ? await client.request({ type: "sshSessionStatus" })
+    : await client.request({ type: "sshSessionStatus", sessionID: parsed.sessionID });
+  if (response.type !== "sshSessionStatus") {
+    return structuredResult(statusOnly(response));
+  }
+  return structuredResult({
+    status: response.sessions.length === 0 ? "NO_ACTIVE_SESSIONS" : "ACTIVE",
+    sessions: response.sessions
+  });
+}
+
+async function handleSshSessionClose(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof SshSessionCloseInput>
+): Promise<CallToolResult> {
+  const response = await client.request({
+    type: "sshSessionClose",
+    sessionID: parsed.sessionID
+  });
+  return structuredResult(
+    response.type === "operationCompleted"
+      ? { status: "CLOSED" }
+      : statusOnly(response)
+  );
+}
+
 async function handleSshCommandWithSecret(
   client: VaultIpcClient,
   parsed: z.infer<typeof SshCommandInput>
 ): Promise<CallToolResult> {
-  const refs = [
-    ...(parsed.usernameRef === undefined ? [] : [parsed.usernameRef]),
-    parsed.passwordRef
-  ];
+  const refs = [parsed.passwordRef];
   const parameters: Record<string, string> = {
     passwordRef: parsed.passwordRef,
-    ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
     ...(parsed.username === undefined ? {} : { username: parsed.username }),
     ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
@@ -1605,20 +1930,75 @@ async function handleSshCommandWithSecret(
     port: parsed.port ?? 22,
     protocolType: "ssh",
     command: parsed.command,
+    sessionID: parsed.sessionID,
     requestedEffects: ["read-only"],
     parameters,
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
     return structuredResult({ status: output.status });
+  }
+  if (output.status !== "COMPLETED") {
+    return structuredResult(sshDiagnosticResult(output));
   }
   return structuredResult({
     status: "COMPLETED",
     exitCode: output.exitCode ?? -1,
     stdout: output.stdout ?? "",
     stderr: output.stderr ?? "",
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
     redacted: true
   });
+}
+
+async function handleSshBatchWithSecret(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof SshCommandBatchInput>
+): Promise<CallToolResult> {
+  const refs = [parsed.passwordRef];
+  const parameters: Record<string, string> = {
+    passwordRef: parsed.passwordRef,
+    ...(parsed.username === undefined ? {} : { username: parsed.username }),
+    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
+  };
+  const batch = SSHCommandBatch.parse({
+    commands: parsed.commands,
+    stopOnFailure: parsed.stopOnFailure
+  });
+  const output = await executeOpaqueOperation(client, {
+    actionType: "sshCommand",
+    secretReferences: refs,
+    destination: parsed.host,
+    port: parsed.port ?? 22,
+    protocolType: "ssh",
+    sessionID: parsed.sessionID,
+    sshCommandBatch: batch,
+    requestedEffects: ["ssh-batch"],
+    parameters,
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output)) {
+    return structuredResult({ status: output.status });
+  }
+  return structuredResult(
+    output.status === "COMPLETED"
+      ? {
+          status: "COMPLETED",
+          ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
+          ...(output.results === undefined ? {} : {
+            results: output.results.map((result) => ({
+              index: result.index,
+              status: result.status,
+              ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+              ...(result.stage === undefined ? {} : { stage: result.stage }),
+              ...(result.stdout === undefined ? {} : { stdoutPreview: sshDiagnosticPreview(result.stdout) }),
+              ...(result.stderr === undefined ? {} : { stderrPreview: sshDiagnosticPreview(result.stderr) })
+            }))
+          }),
+          redacted: true
+        }
+      : sshDiagnosticResult(output)
+  );
 }
 
 async function handleLocalHttpRequest(
@@ -1641,6 +2021,8 @@ async function handleLocalHttpRequest(
     ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
     ...(parsed.passwordRef === undefined ? {} : { passwordRef: parsed.passwordRef }),
     ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
+    ...(parsed.responseProfileID === undefined ? {} : { responseProfileID: parsed.responseProfileID }),
+    ...(parsed.responseFields === undefined ? {} : { responseFields: JSON.stringify(parsed.responseFields) }),
     ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const output = await executeOpaqueOperation(client, {
@@ -1651,6 +2033,31 @@ async function handleLocalHttpRequest(
     protocolType: url.protocol === "https:" ? "https" : "http",
     httpMethod: parsed.method ?? "GET",
     url: parsed.url,
+    sessionID: parsed.sessionID,
+    payload: {
+      type: "http",
+      operation: {
+        method: parsed.method ?? "GET",
+        auth: parsed.passwordRef === undefined
+          ? { kind: "none" }
+          : {
+              kind: "basic",
+              ...(parsed.username === undefined ? {} : { username: parsed.username }),
+              ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+              passwordReference: parsed.passwordRef
+            },
+        body: { kind: "none", fields: {} },
+        responsePolicy: {
+          kind: parsed.responseProfileID !== undefined
+            ? "projectedJSON"
+            : parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
+          maxBytes: 16_384,
+          fields: parsed.responseFields ?? [],
+          ...(parsed.responseProfileID === undefined ? {} : { profileID: parsed.responseProfileID })
+        },
+        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
+      }
+    },
     requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
     parameters,
     agentAssessment: agentAssessment(parsed)
@@ -1662,6 +2069,7 @@ async function handleLocalHttpRequest(
     status: "COMPLETED",
     httpStatus: output.httpStatus ?? 0,
     contentType: output.contentType ?? null,
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
     ...(output.bodyPreview === undefined ? {} : { bodyPreview: output.bodyPreview }),
     redacted: true
   });
@@ -1678,12 +2086,17 @@ async function handleApiRequestWithToken(
   if (parsed.body?.includes("secret://") === true) {
     return structuredResult({ status: "PLAINTEXT_REFERENCE_NOT_ALLOWED" });
   }
+  const headerName = parsed.headerName ?? "Authorization";
+  const headerScheme = parsed.headerScheme
+    ?? (headerName.toLowerCase() === "authorization" ? "Bearer" : undefined);
   const parameters: Record<string, string> = {
     tokenRef: parsed.tokenRef,
-    headerName: parsed.headerName ?? "Authorization",
-    headerScheme: parsed.headerScheme ?? "Bearer",
+    headerName,
+    ...(headerScheme === undefined ? {} : { headerScheme }),
     ...(parsed.body === undefined ? {} : { body: parsed.body }),
     ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
+    ...(parsed.responseProfileID === undefined ? {} : { responseProfileID: parsed.responseProfileID }),
+    ...(parsed.responseFields === undefined ? {} : { responseFields: JSON.stringify(parsed.responseFields) }),
     ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const output = await executeOpaqueOperation(client, {
@@ -1694,6 +2107,33 @@ async function handleApiRequestWithToken(
     protocolType: url.protocol === "https:" ? "https" : "http",
     httpMethod: parsed.method ?? "GET",
     url: parsed.url,
+    sessionID: parsed.sessionID,
+    payload: {
+      type: "http",
+      operation: {
+        method: parsed.method ?? "GET",
+        auth: {
+          kind: headerName.toLowerCase() === "authorization"
+            ? "bearer"
+            : "apiKeyHeader",
+          valueReference: parsed.tokenRef,
+          headerName,
+          ...(headerScheme === undefined ? {} : { scheme: headerScheme })
+        },
+        body: parsed.body === undefined
+          ? { kind: "none", fields: {} }
+          : { kind: "raw", content: parsed.body, fields: {} },
+        responsePolicy: {
+          kind: parsed.responseProfileID !== undefined
+            ? "projectedJSON"
+            : parsed.includeBodyPreview === true ? "sanitizedPreview" : "metadataOnly",
+          maxBytes: 16_384,
+          fields: parsed.responseFields ?? [],
+          ...(parsed.responseProfileID === undefined ? {} : { profileID: parsed.responseProfileID })
+        },
+        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
+      }
+    },
     requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
     parameters,
     agentAssessment: agentAssessment(parsed)
@@ -1705,6 +2145,7 @@ async function handleApiRequestWithToken(
     status: "COMPLETED",
     httpStatus: output.httpStatus ?? 0,
     contentType: output.contentType ?? null,
+    ...(output.sessionID === undefined ? {} : { sessionID: output.sessionID }),
     ...(output.bodyPreview === undefined ? {} : { bodyPreview: output.bodyPreview }),
     redacted: true
   });
@@ -1725,6 +2166,20 @@ async function handleDatabaseQueryWithSecret(
     port: parsed.port ?? (parsed.engine === "postgres" ? 5432 : 3306),
     protocolType: parsed.engine,
     databaseStatement: parsed.query,
+    payload: {
+      type: "database",
+      operation: {
+        engine: parsed.engine,
+        database: parsed.database,
+        ...(parsed.username === undefined ? {} : { username: parsed.username }),
+        ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+        passwordReference: parsed.passwordRef,
+        statement: parsed.query,
+        parameters: [],
+        maxRows: parsed.maxRows ?? 100,
+        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
+      }
+    },
     requestedEffects: ["database-read"],
     parameters: {
       database: parsed.database,
@@ -1764,6 +2219,18 @@ async function handleFileTransferWithSecret(
     protocolType: parsed.protocol ?? "sftp",
     fileOperation: parsed.operation,
     fileTarget: parsed.localPath ?? null,
+    payload: {
+      type: "fileTransfer",
+      operation: {
+        protocolType: parsed.protocol ?? "sftp",
+        operation: parsed.operation,
+        remotePath: parsed.remotePath,
+        ...(parsed.localPath === undefined ? {} : { localPath: parsed.localPath }),
+        ...(parsed.username === undefined ? {} : { username: parsed.username }),
+        ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+        passwordReference: parsed.passwordRef
+      }
+    },
     requestedEffects: [parsed.operation === "list" || parsed.operation === "download" ? "read-only" : "remote-write"],
     parameters: {
       remotePath: parsed.remotePath,
@@ -1802,8 +2269,22 @@ async function handleBrowserLoginWithSecret(
     secretReferences: refs,
     destination: url.host,
     port: url.port === "" ? null : Number(url.port),
-    protocolType: url.protocol === "https:" ? "https" : "http",
+    protocolType: "browser",
     url: parsed.url,
+    payload: {
+      type: "browser",
+      operation: {
+        ...(parsed.browser === undefined ? {} : { browser: parsed.browser }),
+        url: parsed.url,
+        ...(parsed.username === undefined ? {} : { username: parsed.username }),
+        ...(parsed.usernameRef === undefined ? {} : { usernameReference: parsed.usernameRef }),
+        passwordReference: parsed.passwordRef,
+        ...(parsed.usernameSelector === undefined ? {} : { usernameSelector: parsed.usernameSelector }),
+        passwordSelector: parsed.passwordSelector,
+        ...(parsed.submitSelector === undefined ? {} : { submitSelector: parsed.submitSelector }),
+        submit: parsed.submit ?? false
+      }
+    },
     requestedEffects: [parsed.submit === true ? "submit-form" : "fill-form"],
     parameters: {
       passwordRef: parsed.passwordRef,
@@ -1835,6 +2316,18 @@ async function handleLocalAppFillWithSecret(
     destination: parsed.bundleId ?? parsed.appName ?? null,
     protocolType: "localApp",
     localAppBundleID: parsed.bundleId ?? null,
+    payload: {
+      type: "localApp",
+      operation: {
+        bundleID: parsed.bundleId ?? parsed.appName ?? "",
+        fields: parsed.fields.map((field) => ({
+          name: field.name,
+          ...(field.value === undefined ? {} : { value: field.value }),
+          ...(field.valueRef === undefined ? {} : { valueReference: field.valueRef })
+        })),
+        ...(parsed.submitButton === undefined ? {} : { submitButton: parsed.submitButton })
+      }
+    },
     requestedEffects: ["fill-local-app"],
     parameters: {
       fields: JSON.stringify(parsed.fields),
@@ -1883,7 +2376,8 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Credential source selection is per operation; a later user choice replaces previous SVLT or provider context and is never inherited as sticky authorization.",
       "When text contains secret:// references, call secret_auto_handle_text first unless a narrower safe tool is clearly required and the user did not select another source.",
       "Call vault_status before work that depends on the app.",
-      "Treat AgentRiskAssessment as a hint only; SVLT recomputes the effective risk locally for every operation.",
+      "Call vault_capabilities before any non-SSH execution. Treat the daemon capability manifest as authoritative: an unavailable adapter is not supported, must not receive plaintext, and must not be retried as if it succeeded.",
+      "Treat AgentRiskAssessment as display/audit metadata only; SVLT computes the authorization requirement and scope locally for every operation. The Agent field never promotes, downgrades, or denies.",
       "A locked compatibility field never replaces per-operation policy evaluation.",
       "When a task names a service, device, host, account, or purpose but no credential source is specified, call secret_search before asking the user for anything; this is automatic discovery, not forced SVLT ownership.",
       "Use secret_catalog_list_indices to browse all Indexes, including empty Indexes; use secret_catalog_list_entries with an indexID returned by MCP, then secret_catalog_get for one Entry. Never read selection JSON, Catalog Markdown, or Application Support sidecars to find IDs.",
@@ -1895,13 +2389,20 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use secret_inspect_reference for non-sensitive metadata only.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
-      "Use ssh_command_with_secret for restricted local/private-network SSH commands that need a password reference.",
-      "Use local_http_request_with_secret for restricted local/private HTTP checks that need basic auth.",
-      "Use api_request_with_token for restricted allowlisted API requests that need a token reference.",
-      "Use database_query_with_secret for restricted read-only database queries through a purpose-built runner.",
-      "Use sftp_transfer_with_secret for restricted SFTP/SCP list/download/upload actions through a purpose-built runner.",
-      "Use browser_web_login_with_secret for specific local/private web login form fills.",
-      "Use local_app_form_fill_with_secret for specific macOS app form fills through a purpose-built runner.",
+      "Use ssh_command_with_secret for one restricted local/private-network SSH command; reuse its opaque sessionID for subsequent commands.",
+      "Use ssh_batch_with_secret for multiple SSH commands. Pass structured executable/arguments records; SVLT evaluates the complete batch before executing any command and stops after the first failure by default.",
+      "Use ssh_session_status only to inspect your own opaque transport sessions, and ssh_session_close only to close your own session when it is no longer needed. Neither tool changes policy or authorization.",
+      "Use ssh_command_with_secret for the actual remote shell command, including single-line or multi-line scripts, ;, &&, ||, |, redirects, heredocs, command substitution, shell/interpreter -c forms, find -exec, xargs, eval, sudo, and unknown NAS CLIs. Do not split or rewrite a command merely to satisfy policy.",
+      "A reusable approval lease is separate from the SSH transport session. Only the small fixed high-impact categories recognized by local policy require fresh approval; unknown or ambiguous shell syntax remains on the ordinary owner-approved path. Fresh approval does not extend the ordinary lease.",
+      "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display metadata only; it never becomes the security principal.",
+      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. HTTPS is the default transport for Secret-bearing requests; insecure HTTP is accepted only when the saved Secret profile explicitly allows http or http-loopback for the exact local/private destination. Never add an insecure-HTTP flag to a tool call. The first use of an approved insecure profile requires fresh device-owner authentication.",
+      "HTTP tools reject arbitrary secret headers, URL credentials, credential query parameters, and secret:// body fragments. Authorization defaults to Bearer; a custom API-key header receives the raw token unless a profile/request explicitly supplies a safe scheme.",
+      "Authenticated HTTP responses are metadata-only by default. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
+      "The generic localExecution action is a very-high-risk, fresh owner-approval boundary and is audited as userApprovedSecretRelease. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
+      "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
+      "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with local file grants and path checks; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",
+      "Use browser_web_login_with_secret only when a signed native-messaging browser adapter is advertised; never use AppleScript, clipboard, or injected page JavaScript for SVLT plaintext.",
+      "Use local_app_form_fill_with_secret only when a signed Accessibility adapter is advertised and the target bundle is verified; never use clipboard or generic scripting as a fallback.",
       "Use export_resolved_text_to_local_file when the user explicitly wants the app to write resolved sensitive text into a local file without returning it to the agent.",
       "Use a purpose-built MCP tool that resolves references internally when a local operation needs the real value.",
       "If no SVLT-safe tool exists for an explicitly SVLT-managed operation, stop and ask for a new allowlisted tool instead of requesting decrypted plaintext.",
@@ -1912,12 +2413,15 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Do not echo, log, summarize, or store plaintext obtained by decrypting an SVLT-managed secret.",
       "Do not put SVLT-derived plaintext into ordinary shell, curl, URL, header, environment variable, log, audit, or chat inputs; use the approved SVLT operation instead.",
       "Do not treat encrypted reference text as if it revealed the secret value.",
-      "Do not send a secret to public networks unless the user explicitly approved that policy and an allowlisted tool enforces it."
+      "Do not send a secret to public networks unless the user explicitly approved that policy and an allowlisted tool enforces it.",
+      "Do not treat an SSH sessionID as an authorization token or use it to bypass policy, principal, scope, or approval checks.",
+      "Do not split, rewrite, or misreport a destructive operation to avoid device-owner authentication."
     ],
     safeTools: [
       "secret_action_router",
       "secret_auto_handle_text",
       "vault_status",
+      "vault_capabilities",
       "secret_search",
       "secret_inspect_reference",
       "secret_reveal_request",
@@ -1925,6 +2429,9 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "export_resolved_text_to_local_file",
       "secret_create_request",
       "ssh_command_with_secret",
+      "ssh_batch_with_secret",
+      "ssh_session_status",
+      "ssh_session_close",
       "local_http_request_with_secret",
       "api_request_with_token",
       "database_query_with_secret",

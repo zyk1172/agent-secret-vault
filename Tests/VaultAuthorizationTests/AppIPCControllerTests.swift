@@ -269,10 +269,6 @@ private actor ControllerSpyWorkbenchService: WorkbenchServicing {
         "session-1"
     }
 
-    func restoreReferences(references: [String], context: RevealContext) async throws -> String {
-        "restored plaintext"
-    }
-
     func exportResolvedText(
         references: [String],
         context: RevealContext,

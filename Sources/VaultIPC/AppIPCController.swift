@@ -1,5 +1,6 @@
 import Darwin
 import Dispatch
+import CryptoKit
 import Foundation
 import os
 import VaultCore
@@ -175,7 +176,11 @@ public final class AppIPCController: @unchecked Sendable {
         do {
             try setIOTimeouts(on: fileDescriptor)
             let frame = try readFrame(from: fileDescriptor)
-            let responseFrame = try await handleAuthenticatedFrame(frame, authenticator: authenticator)
+            let responseFrame = try await handleAuthenticatedFrame(
+                frame,
+                authenticator: authenticator,
+                principal: Self.peerPrincipal(fileDescriptor)
+            )
             try writeAll(responseFrame, to: fileDescriptor)
         } catch let error as IPCFrameError {
             Self.log(code: error.diagnosticCode)
@@ -196,12 +201,17 @@ public final class AppIPCController: @unchecked Sendable {
 
     private func handleAuthenticatedFrame(
         _ frame: Data,
-        authenticator: IPCAuthenticator
+        authenticator: IPCAuthenticator,
+        principal: String = AuditSource.agent.rawValue
     ) async throws -> Data {
         do {
             let authenticated = try IPCFrameCodec.decode(AuthenticatedIPCRequest.self, from: frame)
             let request = try authenticator.authenticate(authenticated)
-            let response = try await handler.handle(request)
+            let response = try await handler.handle(
+                request,
+                principal: principal,
+                caller: authenticated.caller
+            )
             return try IPCFrameCodec.encode(response)
         } catch IPCAuthenticationError.invalidCapabilityToken {
             Self.log(code: "IPC_AUTH_FAILED")
@@ -243,6 +253,9 @@ public final class AppIPCController: @unchecked Sendable {
             }
             Self.log(code: code)
             return try IPCFrameCodec.encode(IPCResponse.failure(code: code))
+        } catch let error as SecretOperationError {
+            Self.log(code: error.responseCode)
+            return try IPCFrameCodec.encode(IPCResponse.failure(code: error.responseCode))
         } catch {
             Self.log(code: "IPC_REQUEST_FAILED")
             return try IPCFrameCodec.encode(IPCResponse.failure(code: "REQUEST_FAILED"))
@@ -317,6 +330,45 @@ public final class AppIPCController: @unchecked Sendable {
             return false
         }
         return uid == geteuid()
+    }
+
+    /// Returns a process-bound, non-secret principal for scoped execution
+    /// authorization. The kernel audit token prevents two processes that only
+    /// happen to reuse a PID from inheriting one another's short-lived lease.
+    /// If the platform cannot provide the token, use a connection-unique
+    /// principal instead of falling back to a global value or a reusable PID;
+    /// that fails closed for lease reuse while the request remains
+    /// owner-checked.
+    private static func peerPrincipal(_ fileDescriptor: Int32) -> String {
+        var pid = pid_t()
+        var pidLength = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(
+            fileDescriptor,
+            SOL_LOCAL,
+            LOCAL_PEERPID,
+            &pid,
+            &pidLength
+        ) == 0, pid > 0 else {
+            return "agent-connection-\(UUID().uuidString)"
+        }
+
+        var auditToken = audit_token_t()
+        var auditTokenLength = socklen_t(MemoryLayout<audit_token_t>.size)
+        if getsockopt(
+            fileDescriptor,
+            SOL_LOCAL,
+            LOCAL_PEERTOKEN,
+            &auditToken,
+            &auditTokenLength
+        ) == 0 {
+            let tokenData = withUnsafeBytes(of: &auditToken) { Data($0) }
+            let fingerprint = SHA256.hash(data: tokenData)
+                .prefix(16)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            return "agent-peer-\(pid)-\(fingerprint)"
+        }
+        return "agent-connection-\(UUID().uuidString)"
     }
 
     private static func log(code: String) {

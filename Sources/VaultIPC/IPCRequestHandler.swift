@@ -66,20 +66,13 @@ public protocol WorkbenchServicing: Sendable {
         duration: CatalogAgentWriteAccessDuration
     ) async throws
     func pendingRevealSessionIDs() async throws -> [String]
-    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String
-    func encryptText(
-        _ plaintext: String,
-        label: String?,
-        policy: SecretPolicy,
-        allowedDestinations: [String],
-        allowedProtocols: [String]
-    ) async throws -> String
     func performSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationOutput
+    func secretOperationCapabilities() async -> [SecretOperationCapability]
+    func sshSessionStatuses(sessionID: String?) async throws -> [SSHSessionStatus]
+    func closeSSHSession(sessionID: String) async throws
     func deleteRecord(_ reference: String) async throws
     func authorizeHighRisk(reason: String) async throws
     func openRevealSession(references: [String], context: RevealContext) async throws -> String
-    func revealSessionData(sessionID: String) async throws -> RestoredParagraph
-    func restoreReferences(references: [String], context: RevealContext) async throws -> String
     func exportResolvedText(references: [String], context: RevealContext, destinationPath: String) async throws -> String
     func scanOrphans(markdownReferences: [String]) async throws -> OrphanScanResult
     func clearRevealSessions() async
@@ -103,6 +96,14 @@ public extension WorkbenchServicing {
 
     func pendingRevealSessionIDs() async throws -> [String] {
         []
+    }
+
+    func sshSessionStatuses(sessionID _: String?) async throws -> [SSHSessionStatus] {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func closeSSHSession(sessionID _: String) async throws {
+        throw IPCRequestHandlerError.unsupportedRequest
     }
 
     func getCatalogEntry(entryID _: String) async throws -> SecretCatalogSearchResult {
@@ -215,23 +216,11 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
-    func encryptText(
-        _ plaintext: String,
-        label: String?,
-        policy: SecretPolicy,
-        allowedDestinations _: [String],
-        allowedProtocols _: [String]
-    ) async throws -> String {
-        try await encryptText(plaintext, label: label, policy: policy)
-    }
-
     func performSecretOperation(_: SecretOperationDescriptor) async throws -> SecretOperationOutput {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
-    func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
-        throw IPCRequestHandlerError.unsupportedRequest
-    }
+    func secretOperationCapabilities() async -> [SecretOperationCapability] { [] }
 
     func deleteRecord(_ reference: String) async throws {
         throw IPCRequestHandlerError.unsupportedRequest
@@ -256,8 +245,17 @@ public struct IPCRequestHandler: Sendable {
         self.service = service
     }
 
-    public func handle(_ request: IPCRequest) async throws -> IPCResponse {
-        let context = AuditContext(source: .agent)
+    public func handle(
+        _ request: IPCRequest,
+        principal: String = AuditSource.agent.rawValue,
+        caller: AgentCallerIdentity? = nil
+    ) async throws -> IPCResponse {
+        let context = AuditContext(
+            source: .agent,
+            principal: principal,
+            caller: caller.map { AuditCaller(name: $0.name, version: $0.version) }
+                ?? AuditCaller.unknownMCPClient
+        )
         return try await AuditContext.$current.withValue(context) {
             await service.recordPluginActivity()
             return try await handleInContext(request)
@@ -370,10 +368,6 @@ public struct IPCRequestHandler: Sendable {
         case let .authorizeHighRisk(reason):
             try await service.authorizeHighRisk(reason: reason)
             return .authorizationApproved
-        case let .revealSessionData(sessionID):
-            // Native App UI control-plane request. MCP/Obsidian schemas do not
-            // expose this case; their reveal path receives only a session ID.
-            return .revealSessionData(try await service.revealSessionData(sessionID: sessionID))
         case .lock:
             await service.invalidateSecurityState()
             return .operationCompleted
@@ -394,14 +388,9 @@ public struct IPCRequestHandler: Sendable {
             return .failure(code: "SELECTION_ENCRYPT_UNAVAILABLE")
         case .encryptBound:
             return .failure(code: "SELECTION_ENCRYPT_UNAVAILABLE")
-        case let .encryptText(plaintext, label, policy):
-            let reference = try await service.encryptText(plaintext, label: label, policy: policy)
-            return .created(reference: reference)
         case let .revealReferences(references, context):
             let sessionID = try await service.openRevealSession(references: references, context: context)
             return .revealSessionOpened(sessionID: sessionID)
-        case let .restoreReferences(references, context):
-            return .restoredText(try await service.restoreReferences(references: references, context: context))
         case let .exportResolvedText(references, context, destinationPath):
             let path = try await service.exportResolvedText(
                 references: references,
@@ -421,6 +410,13 @@ public struct IPCRequestHandler: Sendable {
             } catch {
                 return .failure(code: "ACTION_EXECUTION_FAILED")
             }
+        case .secretOperationCapabilities:
+            return .secretOperationCapabilities(await service.secretOperationCapabilities())
+        case let .sshSessionStatus(sessionID):
+            return .sshSessionStatus(try await service.sshSessionStatuses(sessionID: sessionID))
+        case let .sshSessionClose(sessionID):
+            try await service.closeSSHSession(sessionID: sessionID)
+            return .operationCompleted
         }
     }
 

@@ -36,9 +36,7 @@ private func handlerCatalogMatch() -> SecretCatalogMatch {
 }
 
 private actor SpyWorkbenchService: WorkbenchServicing {
-    var encryptCalls: [String] = []
     var revealCalls: [[String]] = []
-    var restoreCalls: [[String]] = []
     var exportCalls: [(references: [String], destinationPath: String)] = []
     var searchCalls: [(query: String, field: SecretCatalogField?, limit: Int)] = []
 
@@ -56,19 +54,9 @@ private actor SpyWorkbenchService: WorkbenchServicing {
         )
     }
 
-    func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> String {
-        encryptCalls.append(plaintext)
-        return "secret://0123456789ABCDEFGHJKMNPQRS"
-    }
-
     func openRevealSession(references: [String], context: RevealContext) async throws -> String {
         revealCalls.append(references)
         return "session-1"
-    }
-
-    func restoreReferences(references: [String], context: RevealContext) async throws -> String {
-        restoreCalls.append(references)
-        return "restored plaintext"
     }
 
     func exportResolvedText(
@@ -95,22 +83,6 @@ private actor SpyWorkbenchService: WorkbenchServicing {
             matches: [handlerCatalogMatch()]
         )
     }
-}
-
-@Test func handlerReturnsRestoredTextOnlyForExplicitRestoreRequests() async throws {
-    let service = SpyWorkbenchService()
-    let handler = IPCRequestHandler(service: service)
-
-    let response = try await handler.handle(.restoreReferences(
-        references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
-        context: RevealContext(
-            reason: "Restore current paragraph",
-            template: "Token: {{0}}",
-            ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
-        )
-    ))
-
-    #expect(response == .restoredText("restored plaintext"))
 }
 
 @Test func handlerReturnsOnlyExportPathForLocalFileExports() async throws {
@@ -161,7 +133,7 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     ))) == .failure(code: "EXECUTE_UNAVAILABLE"))
 }
 
-@Test func handlerReturnsStatusAndNeverPlaintextInEncryptResponse() async throws {
+@Test func handlerDoesNotExposePlaintextEncryptionThroughAgentIPC() async throws {
     let service = SpyWorkbenchService()
     let handler = IPCRequestHandler(service: service)
 
@@ -173,14 +145,10 @@ private actor SpyWorkbenchService: WorkbenchServicing {
         pluginConnected: true
     )))
 
-    let encrypted = try await handler.handle(.encryptText(
-        plaintext: "ASV_CANARY_HANDLER",
-        label: nil,
-        policy: .credential
-    ))
-    #expect(encrypted == .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"))
-    let encoded = try JSONEncoder().encode(encrypted)
-    #expect(!String(decoding: encoded, as: UTF8.self).contains("ASV_CANARY_HANDLER"))
+    let legacyPlaintextRequest = Data(#"{"type":"encryptText","plaintext":"ASV_CANARY_HANDLER","policy":"credential"}"#.utf8)
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(IPCRequest.self, from: legacyPlaintextRequest)
+    }
 }
 
 @Test func handlerRoutesCatalogSearchAsOpaqueMetadataOnly() async throws {
@@ -221,4 +189,16 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     )))
 
     #expect(response == .failure(code: "ACTION_EXECUTION_FAILED"))
+}
+
+@Test func handlerExposesOnlyTheNonSensitiveAdapterCapabilityManifest() async throws {
+    let service = SpyWorkbenchService()
+    let handler = IPCRequestHandler(service: service)
+
+    let response = try await handler.handle(.secretOperationCapabilities)
+
+    #expect(response == .secretOperationCapabilities([]))
+    let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
+    #expect(!encoded.contains("ControlPath"))
+    #expect(!encoded.contains("plaintext"))
 }

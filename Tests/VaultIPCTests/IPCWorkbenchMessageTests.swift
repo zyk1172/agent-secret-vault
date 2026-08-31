@@ -5,19 +5,10 @@ import VaultIPC
 @Test func workbenchRequestsRoundTripWithoutPlaintextResponseFields() throws {
     let requests: [IPCRequest] = [
         .workbenchStatus,
-        .encryptText(plaintext: "local-only plaintext", label: nil, policy: .credential),
         .revealReferences(
             references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
             context: RevealContext(
                 reason: "Paragraph reveal",
-                template: "Token: {{0}}",
-                ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
-            )
-        ),
-        .restoreReferences(
-            references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
-            context: RevealContext(
-                reason: "Paragraph restore",
                 template: "Token: {{0}}",
                 ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
             )
@@ -49,7 +40,6 @@ import VaultIPC
         )),
         .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
         .revealSessionOpened(sessionID: "session-1"),
-        .restoredText("Token: ASV_CANARY_RESTORE"),
         .exported(path: "/Users/example/Desktop/token.md"),
         .orphanScan(OrphanScanResult(missingRecords: [], unreferencedRecords: [])),
         .failure(code: "APP_LOCKED")
@@ -58,15 +48,19 @@ import VaultIPC
     for response in responses {
         let encoded = try JSONEncoder().encode(response)
         let json = String(decoding: encoded, as: UTF8.self)
-        if case .restoredText = response {
-            #expect(json.contains("ASV_CANARY_RESTORE"))
-        } else {
-            #expect(!json.contains("plaintext"))
-            #expect(!json.contains("resolvedValue"))
-            #expect(!json.contains("secretValue"))
-        }
+        #expect(!json.contains("plaintext"))
+        #expect(!json.contains("resolvedValue"))
+        #expect(!json.contains("secretValue"))
         let decoded = try JSONDecoder().decode(IPCResponse.self, from: encoded)
         #expect(decoded == response)
+    }
+}
+
+@Test func agentIPCRejectsPlaintextEncryptRequestsAtTheWireBoundary() throws {
+    let data = Data(#"{"type":"encryptText","plaintext":"AGENT_IPC_CANARY","policy":"credential"}"#.utf8)
+
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(IPCRequest.self, from: data)
     }
 }
 

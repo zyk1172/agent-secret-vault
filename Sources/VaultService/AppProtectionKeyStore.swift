@@ -50,12 +50,14 @@ public actor AppProtectionKeyStore {
     public func deviceKey(
         for policy: SecretPolicy,
         reason: String,
-        destination: String? = nil
+        destination: String? = nil,
+        authenticationContext: LocalAuthenticationContext? = nil
     ) async throws -> Data {
         let candidates = try await deviceKeyCandidates(
             for: policy,
             reason: reason,
-            destination: destination
+            destination: destination,
+            authenticationContext: authenticationContext
         )
         guard let key = candidates.first else {
             throw DeviceKeyStoreError.keychain(errSecItemNotFound)
@@ -70,7 +72,8 @@ public actor AppProtectionKeyStore {
     public func deviceKeyCandidates(
         for policy: SecretPolicy,
         reason: String,
-        destination: String? = nil
+        destination: String? = nil,
+        authenticationContext: LocalAuthenticationContext? = nil
     ) async throws -> [Data] {
         switch policy {
         case .read:
@@ -78,30 +81,48 @@ public actor AppProtectionKeyStore {
                 return [lowProtectionKey]
             }
             return try await deviceKeyStore.deviceKeyCandidates(
-                reason: "打开知识库密文保险箱"
+                reason: "打开知识库密文保险箱",
+                authenticationContext: authenticationContext
             )
         case .credential:
             if let credentialKey, now() < credentialKey.expiresAt {
                 return [credentialKey.data]
             }
             self.credentialKey = nil
-            return try await deviceKeyStore.deviceKeyCandidates(reason: reason)
+            return try await deviceKeyStore.deviceKeyCandidates(
+                reason: reason,
+                authenticationContext: authenticationContext
+            )
         case .externalSend:
             guard let destination, !destination.isEmpty else {
-                return try await deviceKeyStore.deviceKeyCandidates(reason: reason)
+                return try await deviceKeyStore.deviceKeyCandidates(
+                    reason: reason,
+                    authenticationContext: authenticationContext
+                )
             }
             if let cached = externalSendKeys[destination], now() < cached.expiresAt {
                 return [cached.data]
             }
             externalSendKeys[destination] = nil
-            return try await deviceKeyStore.deviceKeyCandidates(reason: reason)
+            return try await deviceKeyStore.deviceKeyCandidates(
+                reason: reason,
+                authenticationContext: authenticationContext
+            )
         }
     }
 
     /// High-risk operations bypass every cached window and do not repopulate
     /// it. This is used for deletion, export, and security-setting changes.
-    public func freshDeviceKey(for policy: SecretPolicy, reason: String) async throws -> Data {
-        let candidates = try await freshDeviceKeyCandidates(for: policy, reason: reason)
+    public func freshDeviceKey(
+        for policy: SecretPolicy,
+        reason: String,
+        authenticationContext: LocalAuthenticationContext? = nil
+    ) async throws -> Data {
+        let candidates = try await freshDeviceKeyCandidates(
+            for: policy,
+            reason: reason,
+            authenticationContext: authenticationContext
+        )
         guard let key = candidates.first else {
             throw DeviceKeyStoreError.keychain(errSecItemNotFound)
         }
@@ -110,10 +131,15 @@ public actor AppProtectionKeyStore {
 
     public func freshDeviceKeyCandidates(
         for policy: SecretPolicy,
-        reason: String
+        reason: String,
+        authenticationContext: LocalAuthenticationContext? = nil
     ) async throws -> [Data] {
         clearCachedKey(for: policy)
-        return try await deviceKeyCandidates(for: policy, reason: reason)
+        return try await deviceKeyCandidates(
+            for: policy,
+            reason: reason,
+            authenticationContext: authenticationContext
+        )
     }
 
     /// Caches only the candidate that opened the vault. Failed migration

@@ -393,7 +393,7 @@ public struct MenuBarVaultPanel: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-                        Text("\(entry.source.displayName) · \(entry.authorizationOutcome.displayName) · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
+                        Text("\(entry.caller?.displayLabel ?? entry.source.displayName) · \(entry.authorizationMode?.displayName ?? entry.authorizationOutcome.displayName) · \(entry.timestamp.formatted(date: .omitted, time: .standard))")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }

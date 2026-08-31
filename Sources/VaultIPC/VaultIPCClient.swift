@@ -47,6 +47,14 @@ public actor VaultIPCClient {
         return status
     }
 
+    public func secretOperationCapabilities() async throws -> [SecretOperationCapability] {
+        let response = try await send(.secretOperationCapabilities)
+        guard case let .secretOperationCapabilities(capabilities) = response else {
+            throw unexpected(response)
+        }
+        return capabilities
+    }
+
     public func savedSecretReferences() async throws -> [SecretReferenceMetadata] {
         let response = try await send(.savedReferences)
         guard case let .savedReferences(references) = response else {
@@ -281,18 +289,6 @@ public actor VaultIPCClient {
         return sessionIDs
     }
 
-    public func encryptText(
-        _ plaintext: String,
-        label: String?,
-        policy: SecretPolicy
-    ) async throws -> String {
-        let response = try await send(.encryptText(plaintext: plaintext, label: label, policy: policy))
-        guard case let .created(reference) = response else {
-            throw unexpected(response)
-        }
-        return reference
-    }
-
     public func performSecretOperation(
         _ descriptor: SecretOperationDescriptor
     ) async throws -> SecretOperationOutput {
@@ -301,6 +297,21 @@ public actor VaultIPCClient {
             throw unexpected(response)
         }
         return output
+    }
+
+    public func sshSessionStatuses(sessionID: String? = nil) async throws -> [SSHSessionStatus] {
+        let response = try await send(.sshSessionStatus(sessionID: sessionID))
+        guard case let .sshSessionStatus(sessions) = response else {
+            throw unexpected(response)
+        }
+        return sessions
+    }
+
+    public func closeSSHSession(sessionID: String) async throws {
+        let response = try await send(.sshSessionClose(sessionID: sessionID))
+        guard case .operationCompleted = response else {
+            throw unexpected(response)
+        }
     }
 
     public func encryptSelection(
@@ -347,27 +358,6 @@ public actor VaultIPCClient {
         guard case .operationCompleted = response else {
             throw unexpected(response)
         }
-    }
-
-    public func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
-        let response = try await send(.revealSessionData(sessionID: sessionID))
-        guard case let .revealSessionData(paragraph) = response else {
-            throw unexpected(response)
-        }
-        return paragraph
-    }
-
-    public func restoreReferences(
-        references: [String],
-        context: RevealContext
-    ) async throws -> RestoredParagraph {
-        let response = try await send(.restoreReferences(references: references, context: context))
-        guard case let .restoredText(text) = response else {
-            throw unexpected(response)
-        }
-        // The Agent deliberately returns text only to this explicit trusted
-        // GUI operation. MCP reveal requests use revealSessionOpened instead.
-        return RestoredParagraph(text: text, values: [])
     }
 
     public func send(_ request: IPCRequest) async throws -> IPCResponse {

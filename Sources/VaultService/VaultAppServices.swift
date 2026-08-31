@@ -32,6 +32,8 @@ public enum VaultAppServicesExportError: Error, Equatable, Sendable {
     case invalidDestination
     case destinationNotAllowed
     case fileAlreadyExists
+    case directorySecurityInvalid
+    case writeFailed
 }
 
 public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
@@ -41,6 +43,8 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
     public let target: String
     public let referenceCount: Int
     public let result: String
+    public let authorizationMode: AuditAuthorizationMode?
+    public let caller: AuditCaller?
 
     public init(
         id: UUID = UUID(),
@@ -48,7 +52,9 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
         action: String,
         target: String,
         referenceCount: Int,
-        result: String
+        result: String,
+        authorizationMode: AuditAuthorizationMode? = nil,
+        caller: AuditCaller? = nil
     ) {
         self.id = id
         self.occurredAt = occurredAt
@@ -56,6 +62,8 @@ public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
         self.target = target
         self.referenceCount = referenceCount
         self.result = result
+        self.authorizationMode = authorizationMode
+        self.caller = caller
     }
 }
 
@@ -107,6 +115,80 @@ private enum CatalogSecureInputAbortReason: Equatable, Sendable {
 private enum CatalogSecureInputAbortError: Error, Sendable {
     case cancelled
     case expired
+}
+
+private enum SecretOperationAuthorizationPath: Sendable {
+    case notRequired
+    case freshLocalApproval(LocalAuthenticationContext?)
+    case executionWindowReuse
+
+    /// This context is short-lived request state, never an IPC value or a
+    /// reusable authorization capability. It is passed only to the immediate
+    /// Keychain-backed master-key lookup that follows the same owner approval.
+    var authenticationContext: LocalAuthenticationContext? {
+        guard case let .freshLocalApproval(context) = self else {
+            return nil
+        }
+        return context
+    }
+
+    var auditMode: AuditAuthorizationMode? {
+        switch self {
+        case .notRequired:
+            return nil
+        case .freshLocalApproval:
+            return .freshLocalApproval
+        case .executionWindowReuse:
+            return .executionWindowReuse
+        }
+    }
+
+    var auditOutcome: AuditAuthorizationOutcome {
+        switch self {
+        case .notRequired:
+            return .notRequired
+        case .freshLocalApproval, .executionWindowReuse:
+            return .approved
+        }
+    }
+
+    var operationAuditAction: String {
+        switch self {
+        case .executionWindowReuse:
+            return "智能体专用操作（执行授权复用）"
+        case .notRequired, .freshLocalApproval:
+            return "智能体专用操作"
+        }
+    }
+}
+
+private struct ExecutionApprovalFlight {
+    let id: UUID
+    let generation: UInt64
+    let task: Task<LocalAuthenticationContext?, Error>
+}
+
+private struct ScopedMasterKeyFlight {
+    let task: Task<SymmetricKey, Error>
+}
+
+private struct ScopedMasterKeyExpiry {
+    let id: UUID
+    let task: Task<Void, Never>
+}
+
+private enum ExecutionAuthorizationCommit: Equatable, Sendable {
+    case leaseEstablished
+    case leaseReused
+    case approvedWithoutLease
+    case needsFreshApproval
+}
+
+/// A decrypted master-key capability may exist only while its matching
+/// in-memory scoped authorization lease is active. It is never persisted and
+/// is cleared alongside the lease on any security-state invalidation.
+private struct ScopedMasterKeyAuthorization: Sendable {
+    let key: SymmetricKey
 }
 
 /// Non-sensitive, sticky audit-channel health. This is deliberately kept
@@ -174,6 +256,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let masterKey: SymmetricKey?
     private let masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
     private let freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)?
+    private let masterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)?
+    private let freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)?
     private let clearProtectedKeyState: (@Sendable () async -> Void)?
     private let isUnlockedProvider: (@Sendable () async -> Bool)
     private let revealSessionStore: RevealSessionStore
@@ -202,6 +286,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
     private var approvalPending = false
+    private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
+    private var scopedMasterKeyAuthorizations: [ExecutionAuthorizationScope: ScopedMasterKeyAuthorization] = [:]
+    private var scopedMasterKeyFlights: [ExecutionAuthorizationScope: ScopedMasterKeyFlight] = [:]
+    private var scopedMasterKeyExpiryTasks: [ExecutionAuthorizationScope: ScopedMasterKeyExpiry] = [:]
+    private var pendingExecutionApprovalIDs: Set<UUID> = []
+    private var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
+    private var securityGeneration: UInt64 = 0
     private var pendingWriteAccessRequests: [UUID: CatalogAgentWriteAccessRequest] = [:]
     private var writeAccessContinuations: [UUID: CatalogWriteAccessContinuationBox] = [:]
     private var writeAccessStates: [UUID: CatalogWriteAccessState] = [:]
@@ -235,6 +326,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
+        masterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
+        freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
         clearProtectedKeyState: (@Sendable () async -> Void)? = nil,
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
@@ -273,6 +366,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.masterKey = masterKey
         self.masterKeyProvider = masterKeyProvider
         self.freshMasterKeyProvider = freshMasterKeyProvider
+        self.masterKeyProviderWithAuthenticationContext = masterKeyProviderWithAuthenticationContext
+        self.freshMasterKeyProviderWithAuthenticationContext = freshMasterKeyProviderWithAuthenticationContext
         self.clearProtectedKeyState = clearProtectedKeyState
         self.isUnlockedProvider = isUnlockedProvider
         self.revealSessionStore = revealSessionStore
@@ -339,6 +434,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         masterKey: SymmetricKey? = nil,
         masterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
         freshMasterKeyProvider: (@Sendable (SecretPolicy, String) async throws -> SymmetricKey)? = nil,
+        masterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
+        freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)? = nil,
         clearProtectedKeyState: (@Sendable () async -> Void)? = nil,
         isUnlockedProvider: @escaping @Sendable () async -> Bool = { true },
         revealSessionStore: RevealSessionStore = RevealSessionStore(),
@@ -375,6 +472,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             masterKey: masterKey,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
+            masterKeyProviderWithAuthenticationContext: masterKeyProviderWithAuthenticationContext,
+            freshMasterKeyProviderWithAuthenticationContext: freshMasterKeyProviderWithAuthenticationContext,
             clearProtectedKeyState: clearProtectedKeyState,
             isUnlockedProvider: isUnlockedProvider,
             revealSessionStore: revealSessionStore,
@@ -433,8 +532,29 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // I/O then observes the abort reason on its next actor resumption;
         // requests that have not crossed the commit linearization point cannot
         // outlive the security-state invalidation.
+        securityGeneration &+= 1
+        for flight in executionApprovalFlights.values {
+            flight.task.cancel()
+        }
+        executionApprovalFlights.removeAll()
+        for flight in scopedMasterKeyFlights.values {
+            flight.task.cancel()
+        }
+        scopedMasterKeyFlights.removeAll()
+        for expiry in scopedMasterKeyExpiryTasks.values {
+            expiry.task.cancel()
+        }
+        scopedMasterKeyExpiryTasks.removeAll()
+        pendingExecutionApprovalIDs.removeAll()
+        for operation in inFlightSecretOperations.values {
+            operation.cancel()
+        }
+        inFlightSecretOperations.removeAll()
+        approvalPending = false
         await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
+        await operationExecutor.invalidateSecurityState()
+        clearScopedMasterKeyAuthorizations()
         for authorization in agentDecryptAuthorizations.values {
             var keyData = authorization.key.withUnsafeBytes { Data($0) }
             keyData.resetBytes(in: 0..<keyData.count)
@@ -442,6 +562,18 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         agentDecryptAuthorizations.removeAll()
         await clearProtectedKeyState?()
         await statusObserver?(status())
+    }
+
+    private func clearScopedMasterKeyAuthorizations() {
+        for expiry in scopedMasterKeyExpiryTasks.values {
+            expiry.task.cancel()
+        }
+        scopedMasterKeyExpiryTasks.removeAll()
+        for authorization in scopedMasterKeyAuthorizations.values {
+            var keyData = authorization.key.withUnsafeBytes { Data($0) }
+            keyData.resetBytes(in: 0..<keyData.count)
+        }
+        scopedMasterKeyAuthorizations.removeAll()
     }
 
     private func cancelAllSecureInputRequests() async {
@@ -523,65 +655,476 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         }
 
+        let operationGeneration = securityGeneration
         let metadata = try await policyMetadata(for: descriptor.secretReferences)
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         guard decision.risk != .denied else {
             await emitAudit(
-                action: "智能体操作被本地策略拒绝",
+                action: "智能体操作请求无效",
                 target: decision.policyRuleID,
                 referenceCount: descriptor.secretReferences.count,
                 result: "失败"
             )
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         }
 
-        try await authorizeIfNeeded(
+        let executorAction = isExecutionLeaseEligible(descriptor.actionType)
+        let executorCapability = isExecutorBackedAction(descriptor.actionType)
+            ? operationExecutor.preflight(descriptor)
+            : .supported
+        if executorCapability == .unavailable {
+            await emitAudit(
+                action: "智能体操作执行器不可用",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "不可用",
+                operation: .secureExecute,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutorUnavailable
+        }
+        if executorCapability == .invalidParameters {
+            await emitAudit(
+                action: "智能体操作参数无效",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "参数无效",
+                operation: .secureExecute,
+                status: .failure
+            )
+            throw descriptor.sshCommandBatch == nil
+                ? SecretOperationError.invalidOperationParameters
+                : SecretOperationError.batchValidationFailed
+        }
+
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        let executionWindowEnabled: Bool
+        if executorAction {
+            executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
+        } else {
+            executionWindowEnabled = false
+        }
+        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+        var authorizationPath = try await authorizeIfNeeded(
             descriptor,
             metadata: metadata,
-            decision: decision
+            decision: decision,
+            expectedGeneration: operationGeneration,
+            executionScope: executionScope
         )
+
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        // Policy metadata is intentionally read and evaluated again after
+        // approval (or an execution-window hit). The actor can be reentrant
+        // while LocalAuthentication is suspended, so a previously approved
+        // decision must never be reused after a binding or policy mutation.
+        var currentMetadata: [SecretPolicyMetadata]
+        do {
+            currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+        var currentDecision = operationPolicyEngine.evaluate(
+            descriptor,
+            metadata: currentMetadata
+        )
+        guard currentDecision.risk != .denied else {
+            await emitAudit(
+                action: "智能体操作请求在执行前无效",
+                target: currentDecision.policyRuleID,
+                referenceCount: descriptor.secretReferences.count,
+                result: "失败",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.invalidOperationParameters
+        }
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        // A re-evaluation may promote a previously reusable operation to a
+        // fresh-approval requirement while the first approval was suspended.
+        // Do not let the original scope commit a reusable lease in that case:
+        // discard the in-flight/active scoped authorization, obtain the
+        // exact one-shot decision, and re-read policy once more before key
+        // resolution or execution.
+        if executionScope != nil,
+           currentDecision.authorizationRequirement != .reusableApproval {
+            // A re-evaluated fresh requirement takes the one-shot path, but
+            // the owner's already-granted ordinary lease stays untouched
+            // (§55): fresh never deletes, refreshes, or extends it.
+            executionScope = nil
+            authorizationPath = try await authorizeIfNeeded(
+                descriptor,
+                metadata: currentMetadata,
+                decision: currentDecision,
+                expectedGeneration: operationGeneration,
+                executionScope: nil
+            )
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            do {
+                currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+            } catch {
+                throw SecretOperationError.actionExecutionFailed
+            }
+            currentDecision = operationPolicyEngine.evaluate(
+                descriptor,
+                metadata: currentMetadata
+            )
+            guard currentDecision.risk != .denied else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+        }
 
         guard let recordResolver else {
             throw SecretOperationError.actionExecutionFailed
         }
 
-        let key: SymmetricKey
+        var key: SymmetricKey
         do {
-            key = try await resolvedMasterKey(
-                for: authorizationPolicy(for: metadata.map(\.policy)),
+            key = try await masterKeyForScopedAuthorization(
+                scope: executionScope,
+                for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                 reason: operationReason(for: descriptor),
-                allowsAgentDecryptReuse: false,
-                destination: decision.normalizedDestination
+                destination: currentDecision.normalizedDestination,
+                authenticationContext: authorizationPath.authenticationContext,
+                forceFreshWhenUnscoped: false
             )
         } catch {
             throw SecretOperationError.actionExecutionFailed
         }
 
-        do {
-            let output = try await operationExecutor.execute(
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        var shouldEmitExecutionWindowReuseAudit = false
+        if let executionScope {
+            var commit = try await commitExecutionAuthorization(
+                scope: executionScope,
+                generation: operationGeneration,
+                masterKey: key
+            )
+
+            if commit == .needsFreshApproval {
+                authorizationPath = try await authorizeAgentExecution(
+                    descriptor,
+                    metadata: currentMetadata,
+                    decision: currentDecision,
+                    generation: operationGeneration,
+                    scope: executionScope
+                )
+                guard operationGeneration == securityGeneration else {
+                    throw SecretOperationError.authorizationCancelled
+                }
+
+                let refreshedMetadata: [SecretPolicyMetadata]
+                do {
+                    refreshedMetadata = try await policyMetadata(for: descriptor.secretReferences)
+                } catch {
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                let refreshedDecision = operationPolicyEngine.evaluate(
+                    descriptor,
+                    metadata: refreshedMetadata
+                )
+                guard refreshedDecision.risk != .denied else {
+                    throw SecretOperationError.invalidOperationParameters
+                }
+                guard operationGeneration == securityGeneration else {
+                    throw SecretOperationError.authorizationCancelled
+                }
+
+                currentMetadata = refreshedMetadata
+                currentDecision = refreshedDecision
+
+                do {
+                    key = try await masterKeyForScopedAuthorization(
+                        scope: executionScope,
+                        for: authorizationPolicy(for: refreshedMetadata.map(\.policy)),
+                        reason: operationReason(for: descriptor),
+                        destination: refreshedDecision.normalizedDestination,
+                        authenticationContext: authorizationPath.authenticationContext,
+                        forceFreshWhenUnscoped: false
+                    )
+                } catch {
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                guard operationGeneration == securityGeneration else {
+                    throw SecretOperationError.authorizationCancelled
+                }
+
+                commit = try await commitExecutionAuthorization(
+                    scope: executionScope,
+                    generation: operationGeneration,
+                    masterKey: key
+                )
+                guard commit != .needsFreshApproval else {
+                    throw SecretOperationError.authorizationCancelled
+                }
+            }
+
+            switch commit {
+            case .leaseEstablished, .approvedWithoutLease:
+                authorizationPath = .freshLocalApproval(authorizationPath.authenticationContext)
+            case .leaseReused:
+                authorizationPath = .executionWindowReuse
+                shouldEmitExecutionWindowReuseAudit = true
+            case .needsFreshApproval:
+                throw SecretOperationError.authorizationCancelled
+            }
+        }
+
+        // This is the execution linearization point. All awaits that can
+        // suspend across a security-state invalidation are above it; once this
+        // guard passes, task creation and registration below are synchronous
+        // on this actor so a lock cannot slip between the check and tracking.
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+        if shouldEmitExecutionWindowReuseAudit {
+            await emitExecutionWindowReuseAudit(
+                descriptor: descriptor,
+                decision: currentDecision
+            )
+        }
+
+        // The audit append above is an await point. Re-check the generation
+        // before creating the task so a lock/sleep during that append cannot
+        // start a secret-bearing executor after security invalidation.
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        let executionID = UUID()
+        let executionContext = SecretOperationExecutionContext(
+            principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
+            securityGeneration: operationGeneration
+        )
+        let authorizedReferences = Set(descriptor.secretReferences)
+        let executionTask = Task { [operationExecutor, descriptor, currentMetadata, recordResolver, key, executionContext, authorizedReferences] in
+            try await operationExecutor.execute(
                 descriptor,
-                metadata: metadata,
+                metadata: currentMetadata,
+                context: executionContext,
                 resolve: { reference in
-                    try await recordResolver.resolve(
+                    // Keep the resolver independently constrained to the
+                    // exact opaque set that was checked before approval and
+                    // copied into the execution lease. A future adapter must
+                    // not widen a live authorization scope by asking for an
+                    // undeclared reference.
+                    guard authorizedReferences.contains(reference) else {
+                        throw SecretOperationExecutionError.invalidParameter
+                    }
+                    return try await recordResolver.resolve(
                         reference: reference.description,
                         masterKey: key
                     )
                 }
             )
+        }
+        inFlightSecretOperations[executionID] = executionTask
+        defer {
+            inFlightSecretOperations.removeValue(forKey: executionID)
+        }
+        do {
+            let output = try await executionTask.value
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            guard output.status != "ACTION_EXECUTOR_UNAVAILABLE" else {
+                throw SecretOperationError.actionExecutorUnavailable
+            }
+            guard output.status == "COMPLETED" else {
+                await emitAudit(
+                    action: authorizationPath.operationAuditAction,
+                    target: currentDecision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: output.status,
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .failure
+                )
+                return output
+            }
             await emitAudit(
-                action: "智能体专用操作",
-                target: decision.normalizedDestination ?? "local",
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
                 referenceCount: descriptor.secretReferences.count,
-                result: output.status
+                result: output.status,
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .completed
             )
             return output
+        } catch SecretOperationExecutionError.unavailable {
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "不可用",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutorUnavailable
+        } catch SecretOperationError.actionExecutorUnavailable {
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "不可用",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutorUnavailable
         } catch SecretOperationExecutionError.redirectRequiresReview {
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "需要复核",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
             throw SecretOperationError.redirectRequiresReview
         } catch SecretOperationExecutionError.outputQuarantined {
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "已隔离",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .quarantined
+            )
             throw SecretOperationError.outputQuarantined
+        } catch let error as SecretOperationExecutionError {
+            let mappedError = mapExecutionError(error)
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: mappedError.responseCode,
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw mappedError
+        } catch {
+            if operationGeneration != securityGeneration {
+                await emitAudit(
+                    action: authorizationPath.operationAuditAction,
+                    target: currentDecision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已取消",
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .cancelled
+                )
+                throw SecretOperationError.authorizationCancelled
+            }
+            await emitAudit(
+                action: authorizationPath.operationAuditAction,
+                target: currentDecision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "失败",
+                operation: .secureExecute,
+                authorizationOutcome: authorizationPath.auditOutcome,
+                authorizationMode: authorizationPath.auditMode,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutionFailed
+        }
+    }
+
+    /// Agent-facing transport management is intentionally narrower than the
+    /// execution API. The caller can inspect only its own opaque session
+    /// projections, and closing a session never exposes its ControlPath or
+    /// secret reference.
+    public func sshSessionStatuses(sessionID: String?) async throws -> [SSHSessionStatus] {
+        do {
+            return try await operationExecutor.sshSessionStatuses(
+                sessionID: sessionID,
+                context: currentExecutionContext()
+            )
+        } catch SecretOperationExecutionError.unavailable {
+            throw SecretOperationError.actionExecutorUnavailable
+        } catch let error as SecretOperationExecutionError {
+            throw mapExecutionError(error)
+        } catch let error as SecretOperationError {
+            throw error
         } catch {
             throw SecretOperationError.actionExecutionFailed
         }
+    }
+
+    public func closeSSHSession(sessionID: String) async throws {
+        do {
+            try await operationExecutor.closeSSHSession(
+                sessionID: sessionID,
+                context: currentExecutionContext()
+            )
+        } catch SecretOperationExecutionError.unavailable {
+            throw SecretOperationError.actionExecutorUnavailable
+        } catch let error as SecretOperationExecutionError {
+            throw mapExecutionError(error)
+        } catch let error as SecretOperationError {
+            throw error
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+        await emitAudit(
+            action: "关闭 SSH transport session",
+            target: "SSH session",
+            referenceCount: 0,
+            result: "已关闭",
+            operation: .secureExecute,
+            status: .completed
+        )
+    }
+
+    public func secretOperationCapabilities() async -> [SecretOperationCapability] {
+        let exportRootIsReady = SecureExportWriter().canWrite(to: exportDirectory)
+        return operationExecutor.capabilities()
+            + [SecretOperationCapability(
+                kind: .export,
+                status: exportRootIsReady ? .supported : .unavailable,
+                operations: [.exportPlaintext],
+                reason: exportRootIsReady
+                    ? "App-owned export writer creates a new owner-only file below the configured export root"
+                    : "配置的导出根目录不存在、包含 symlink 或不是 owner-only 目录",
+                features: SecretOperationCapabilityFeatures(
+                    response: ["exportStatus", "path"],
+                    transportSessionReuse: false
+                )
+            )]
     }
 
     public func deleteRecord(_ reference: String) async throws {
@@ -610,7 +1153,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )]
         )
         guard decision.risk != .denied else {
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         }
         try await authorizeIfNeeded(
             descriptor,
@@ -1604,7 +2147,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationOutcome: .requested,
                 status: .requested
             )
-            try await approveWithTimeout(summary: secureInputApprovalSummary(for: request))
+            _ = try await approveWithTimeout(summary: secureInputApprovalSummary(for: request))
             await emitAudit(
                 action: "智能体安全输入本机认证完成",
                 target: "catalog-field",
@@ -2006,7 +2549,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 requestedEffects: ["secure-input-final-diff"]
             )
             let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-            guard decision.risk != .denied else { throw SecretOperationError.operationDenied }
+            guard decision.risk != .denied else { throw SecretOperationError.invalidOperationParameters }
         }
     }
 
@@ -2269,7 +2812,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         writeAccessStates[id] = .authenticating
         do {
-            try await approveWithTimeout(summary: catalogWriteApprovalSummary(request))
+            _ = try await approveWithTimeout(summary: catalogWriteApprovalSummary(request))
             guard writeAccessStates[id] == .authenticating,
                   let intent = request.intent
             else {
@@ -3015,11 +3558,21 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         destinationPath: String
     ) async throws -> String {
         let destination = try validatedExportDestination(destinationPath)
+        // Export is not an executor adapter, so perform its capability check
+        // explicitly before issuing any device-owner approval. A missing,
+        // shared, or symlinked root must never consume an approval ticket or
+        // establish a reusable export lease for an operation that cannot be
+        // committed safely.
+        guard SecureExportWriter().canWrite(to: exportDirectory) else {
+            throw VaultAppServicesExportError.directorySecurityInvalid
+        }
+        let operationGeneration = securityGeneration
         let operationContext = RevealContext(
             reason: context.reason,
             template: context.template,
             ranges: context.ranges,
-            destination: destination.path
+            destination: destination.path,
+            agentAssessment: context.agentAssessment
         )
         let (descriptor, metadata) = try await plaintextOperation(
             action: .exportPlaintext,
@@ -3028,18 +3581,189 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             effects: ["write-local-file"]
         )
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-        try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
-        let resolvedText = try await resolveReferences(
-            references: references,
-            context: operationContext,
-            forceFreshAuthorization: true
+        let executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
+        var scope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+        var authorizationPath = try await authorizeIfNeeded(
+            descriptor,
+            metadata: metadata,
+            decision: decision,
+            expectedGeneration: operationGeneration,
+            executionScope: scope
         )
-        try resolvedText.write(to: destination, atomically: true, encoding: .utf8)
+
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        var currentMetadata: [SecretPolicyMetadata]
+        do {
+            currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+        var currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
+        guard currentDecision.risk != .denied else {
+            throw SecretOperationError.invalidOperationParameters
+        }
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        // Export has its own reusable scope, but it must obey the same
+        // post-approval promotion rule as execution. If fresh approval is
+        // now required, discard the export lease candidate and perform an
+        // exact one-shot approval without creating/extending a reusable lease.
+        if scope != nil,
+           currentDecision.authorizationRequirement != .reusableApproval {
+            // The owner's already-granted export lease stays untouched when a
+            // re-evaluation promotes this request to a fresh one-shot (§55).
+            scope = nil
+            authorizationPath = try await authorizeIfNeeded(
+                descriptor,
+                metadata: currentMetadata,
+                decision: currentDecision,
+                expectedGeneration: operationGeneration,
+                executionScope: nil
+            )
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            do {
+                currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+            } catch {
+                throw SecretOperationError.actionExecutionFailed
+            }
+            currentDecision = operationPolicyEngine.evaluate(
+                descriptor,
+                metadata: currentMetadata
+            )
+            guard currentDecision.risk != .denied else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+        }
+
+        var key: SymmetricKey
+        do {
+            key = try await masterKeyForScopedAuthorization(
+                scope: scope,
+                for: authorizationPolicy(for: currentMetadata.map(\.policy)),
+                reason: operationContext.reason,
+                destination: exportDirectory.standardizedFileURL.path,
+                authenticationContext: authorizationPath.authenticationContext,
+                forceFreshWhenUnscoped: true
+            )
+        } catch {
+            throw SecretOperationError.actionExecutionFailed
+        }
+        guard operationGeneration == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        var reusedScopedAuthorization = false
+        if let scope {
+            var commit = try await commitExecutionAuthorization(
+                scope: scope,
+                generation: operationGeneration,
+                masterKey: key
+            )
+            if commit == .needsFreshApproval {
+                authorizationPath = try await authorizeAgentExecution(
+                    descriptor,
+                    metadata: currentMetadata,
+                    decision: currentDecision,
+                    generation: operationGeneration,
+                    scope: scope
+                )
+                guard operationGeneration == securityGeneration else {
+                    throw SecretOperationError.authorizationCancelled
+                }
+                do {
+                    currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
+                } catch {
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                currentDecision = operationPolicyEngine.evaluate(descriptor, metadata: currentMetadata)
+                guard currentDecision.risk != .denied else {
+                    throw SecretOperationError.invalidOperationParameters
+                }
+                guard operationGeneration == securityGeneration else {
+                    throw SecretOperationError.authorizationCancelled
+                }
+                do {
+                    key = try await masterKeyForScopedAuthorization(
+                        scope: scope,
+                        for: authorizationPolicy(for: currentMetadata.map(\.policy)),
+                        reason: operationContext.reason,
+                        destination: exportDirectory.standardizedFileURL.path,
+                        authenticationContext: authorizationPath.authenticationContext,
+                        forceFreshWhenUnscoped: true
+                    )
+                } catch {
+                    throw SecretOperationError.actionExecutionFailed
+                }
+                commit = try await commitExecutionAuthorization(
+                    scope: scope,
+                    generation: operationGeneration,
+                    masterKey: key
+                )
+                guard commit != .needsFreshApproval else {
+                    throw SecretOperationError.authorizationCancelled
+                }
+            }
+
+            switch commit {
+            case .leaseEstablished, .approvedWithoutLease:
+                authorizationPath = .freshLocalApproval(authorizationPath.authenticationContext)
+            case .leaseReused:
+                authorizationPath = .executionWindowReuse
+                reusedScopedAuthorization = true
+            case .needsFreshApproval:
+                throw SecretOperationError.authorizationCancelled
+            }
+        }
+
+        do {
+            let resolvedText = try await resolveReferencesWithValues(
+                references: references,
+                context: operationContext,
+                masterKeyOverride: key
+            ).text
+            guard operationGeneration == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            do {
+                try SecureExportWriter().write(
+                    Data(resolvedText.utf8),
+                    to: destination,
+                    under: exportDirectory
+                )
+            } catch SecureExportWriterError.fileAlreadyExists {
+                throw VaultAppServicesExportError.fileAlreadyExists
+            } catch SecureExportWriterError.invalidRoot {
+                throw VaultAppServicesExportError.directorySecurityInvalid
+            } catch {
+                throw VaultAppServicesExportError.writeFailed
+            }
+        } catch {
+            throw error
+        }
+
+        if reusedScopedAuthorization {
+            await emitExecutionWindowReuseAudit(descriptor: descriptor, decision: currentDecision)
+        }
         await emitAudit(
             action: "写入本地文件",
             target: "local-export",
             referenceCount: references.count,
-            result: "成功"
+            result: "成功",
+            operation: .credentialUse,
+            authorizationOutcome: authorizationPath.auditOutcome,
+            authorizationMode: authorizationPath.auditMode
         )
         return destination.path
     }
@@ -3047,6 +3771,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func policyMetadata(
         for references: [SecretReference]
     ) async throws -> [SecretPolicyMetadata] {
+        guard Set(references).count == references.count else {
+            throw VaultAppServicesRevealError.invalidReference
+        }
         guard let recordResolver else {
             throw VaultAppServicesRevealError.revealUnavailable
         }
@@ -3084,6 +3811,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } catch {
             throw VaultAppServicesRevealError.invalidReference
         }
+        guard Set(parsedReferences).count == parsedReferences.count else {
+            throw VaultAppServicesRevealError.invalidReference
+        }
         try validateRevealContext(context, referenceCount: parsedReferences.count)
         let metadata = try await policyMetadata(for: parsedReferences)
         let descriptor = SecretOperationDescriptor(
@@ -3096,18 +3826,37 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return (descriptor, metadata)
     }
 
+    @discardableResult
     private func authorizeIfNeeded(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
-        decision: PolicyDecision
-    ) async throws {
-        switch decision.risk {
-        case .silent:
-            return
+        decision: PolicyDecision,
+        expectedGeneration: UInt64? = nil,
+        executionScope: ExecutionAuthorizationScope? = nil
+    ) async throws -> SecretOperationAuthorizationPath {
+        let generation = expectedGeneration ?? securityGeneration
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        switch decision.authorizationRequirement {
+        case .none:
+            return .notRequired
         case .denied:
-            throw SecretOperationError.operationDenied
-        case .approvalRequired:
+            throw SecretOperationError.invalidOperationParameters
+        case .reusableApproval, .freshApprovalRequired:
             break
+        }
+
+        if decision.authorizationRequirement == .reusableApproval,
+           let executionScope {
+            return try await authorizeAgentExecution(
+                descriptor,
+                metadata: metadata,
+                decision: decision,
+                generation: generation,
+                scope: executionScope
+            )
         }
 
         await emitAudit(
@@ -3124,10 +3873,21 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approvalPending = true
         await statusObserver?(status())
 
+        var authenticationContext: LocalAuthenticationContext?
         do {
-            try await approveWithTimeout(summary: summary)
+            authenticationContext = try await Self.approveWithTimeout(
+                approver: operationApprover,
+                timeout: operationApprovalTimeout,
+                summary: summary
+            )
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
             guard await approvalTicketStore.consume(ticket, for: descriptor, now: now()) else {
-                throw SecretOperationError.operationDenied
+                throw SecretOperationError.invalidOperationParameters
+            }
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
             }
             await emitAudit(
                 action: "本机授权完成",
@@ -3135,7 +3895,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 referenceCount: descriptor.secretReferences.count,
                 result: "成功",
                 operation: .authorization,
-                authorizationOutcome: .approved
+                authorizationOutcome: .approved,
+                authorizationMode: .freshLocalApproval
             )
         } catch let error as SecretOperationError {
             approvalPending = false
@@ -3184,21 +3945,563 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         approvalPending = false
         await statusObserver?(status())
+        return .freshLocalApproval(authenticationContext)
     }
 
-    private func approveWithTimeout(summary: String) async throws {
-        let approver = operationApprover
-        let timeout = operationApprovalTimeout
-        try await withThrowingTaskGroup(of: Void.self) { group in
+    private func isExecutionLeaseEligible(_ action: SecretOperationAction) -> Bool {
+        switch action {
+        case .sshCommand,
+             .httpRequest,
+             .apiRequest,
+             .databaseQuery,
+             .sftpTransfer,
+             .browserLogin,
+             .localAppFill:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isExecutorBackedAction(_ action: SecretOperationAction) -> Bool {
+        switch action {
+        case .sshCommand, .httpRequest, .apiRequest, .databaseQuery, .sftpTransfer,
+             .browserLogin, .localAppFill, .localExecution, .trustedProcess:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func authorizeAgentExecution(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        decision: PolicyDecision,
+        generation: UInt64,
+        scope: ExecutionAuthorizationScope
+    ) async throws -> SecretOperationAuthorizationPath {
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard generation == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            return .executionWindowReuse
+        }
+
+        if let flight = executionApprovalFlights[scope] {
+            return try await waitForExecutionApprovalFlight(
+                flight,
+                scope: scope,
+                generation: generation
+            )
+        }
+
+        // The actor may have been re-entered while the first active-lease
+        // check was awaiting AuthorizationSession. Recheck immediately before
+        // creating a new flight so a concurrent commit cannot be followed by
+        // a redundant Touch ID prompt.
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard generation == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            return .executionWindowReuse
+        }
+
+        // The second await above can resume multiple callers in turn. A
+        // caller that observed no lease must still join a flight created by a
+        // peer before it attempts to create its own flight.
+        if let flight = executionApprovalFlights[scope] {
+            return try await waitForExecutionApprovalFlight(
+                flight,
+                scope: scope,
+                generation: generation
+            )
+        }
+
+        let approvalID = UUID()
+        let task = Task { [weak self] () throws -> LocalAuthenticationContext? in
+            guard let self else {
+                throw OperationAuthorizationError.cancelled
+            }
+            return try await self.performFreshExecutionApproval(
+                descriptor: descriptor,
+                metadata: metadata,
+                decision: decision,
+                generation: generation
+            )
+        }
+        executionApprovalFlights[scope] = ExecutionApprovalFlight(
+            id: approvalID,
+            generation: generation,
+            task: task
+        )
+        pendingExecutionApprovalIDs.insert(approvalID)
+        approvalPending = true
+        await statusObserver?(status())
+
+        do {
+            let authenticationContext = try await task.value
+            await markExecutionApprovalCompleted(approvalID)
+            return .freshLocalApproval(authenticationContext)
+        } catch {
+            await finishExecutionApprovalFlight(
+                scope: scope,
+                approvalID: approvalID,
+                generation: generation
+            )
+            throw mappedSecretOperationError(error)
+        }
+    }
+
+    private func waitForExecutionApprovalFlight(
+        _ flight: ExecutionApprovalFlight,
+        scope: ExecutionAuthorizationScope,
+        generation: UInt64
+    ) async throws -> SecretOperationAuthorizationPath {
+        do {
+            let authenticationContext = try await flight.task.value
+            guard generation == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+            await markExecutionApprovalCompleted(flight.id)
+            // The approval is kept as a completed flight until one request
+            // reaches the final execution commit. This closes the gap where
+            // the first request is still rechecking policy while a later
+            // request would otherwise start a second Touch ID prompt.
+            return .freshLocalApproval(authenticationContext)
+        } catch {
+            await finishExecutionApprovalFlight(
+                scope: scope,
+                approvalID: flight.id,
+                generation: flight.generation
+            )
+            throw mappedSecretOperationError(error)
+        }
+    }
+
+    private func performFreshExecutionApproval(
+        descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        decision: PolicyDecision,
+        generation: UInt64
+    ) async throws -> LocalAuthenticationContext? {
+        do {
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+            let ticket = await approvalTicketStore.issue(for: descriptor, now: now())
+            let executionWindowDuration = await authorizationSession.executionAuthorizationWindowDuration()
+            let summary = approvalSummary(
+                descriptor: descriptor,
+                metadata: metadata,
+                decision: decision,
+                executionWindowDuration: executionWindowDuration
+            )
+            await emitAudit(
+                action: "本机授权请求",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "请求中",
+                operation: .authorization,
+                authorizationOutcome: .requested,
+                status: .requested
+            )
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+            let authenticationContext = try await Self.approveWithTimeout(
+                approver: operationApprover,
+                timeout: operationApprovalTimeout,
+                summary: summary
+            )
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+            guard await approvalTicketStore.consume(ticket, for: descriptor, now: now()) else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+            guard generation == securityGeneration else {
+                throw OperationAuthorizationError.cancelled
+            }
+
+            await emitAudit(
+                action: "本机授权完成",
+                target: decision.normalizedDestination ?? "local",
+                referenceCount: descriptor.secretReferences.count,
+                result: "成功",
+                operation: .authorization,
+                authorizationOutcome: .approved,
+                authorizationMode: .freshLocalApproval
+            )
+            return authenticationContext
+        } catch {
+            let mappedError = mappedSecretOperationError(error)
+            switch mappedError {
+            case .authorizationCancelled:
+                await emitAudit(
+                    action: "本机授权取消",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已取消",
+                    operation: .authorization,
+                    authorizationOutcome: .cancelled,
+                    status: .cancelled
+                )
+            case .authorizationTimeout:
+                await emitAudit(
+                    action: "本机授权超时",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已超时",
+                    operation: .authorization,
+                    authorizationOutcome: .expired,
+                    status: .expired
+                )
+            case .authorizationDenied:
+                await emitAudit(
+                    action: "本机授权拒绝",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已拒绝",
+                    operation: .authorization,
+                    authorizationOutcome: .denied,
+                    status: .failure
+                )
+            case .authorizationUnavailable:
+                await emitAudit(
+                    action: "本机授权不可用",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "失败",
+                    operation: .authorization,
+                    authorizationOutcome: .denied,
+                    status: .failure
+                )
+            case .operationDenied, .actionExecutorUnavailable, .actionExecutionFailed,
+                 .invalidOperationParameters, .sessionNotFound, .sessionExpired,
+                 .sessionScopeMismatch, .sessionControlUnavailable, .sessionLimitReached,
+                 .batchValidationFailed, .redirectRequiresReview, .outputQuarantined,
+                 .insecureTransportDenied:
+                await emitAudit(
+                    action: "本机授权失败",
+                    target: decision.normalizedDestination ?? "local",
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "失败",
+                    operation: .authorization,
+                    authorizationOutcome: .denied,
+                    status: .failure
+                )
+            }
+            throw mappedError
+        }
+    }
+
+    private func scopedAuthorizationScope(
+        for descriptor: SecretOperationDescriptor,
+        generation: UInt64
+    ) -> ExecutionAuthorizationScope {
+        let destination: String?
+        let port: Int?
+        let username: String?
+        let protocolType: String?
+        if descriptor.actionType == .exportPlaintext {
+            // The export root is the validated security boundary. The leaf
+            // file name intentionally stays out of the scope so distinct new
+            // files within the same root can reuse the same authorization.
+            destination = exportDirectory.standardizedFileURL.path
+            port = nil
+            username = nil
+            protocolType = SecretOperationProtocol.file.rawValue
+        } else {
+            destination = descriptor.normalizedDestination
+            port = descriptor.port
+            username = descriptor.actionType == .sshCommand ? descriptor.parameters["username"] : nil
+            protocolType = descriptor.protocolType?.rawValue
+        }
+        // §80: the ordinary lease is a scope grant, not an exact-operation
+        // grant. The fingerprint stays out so two requests in the same scope
+        // (different paths, statements, or remote files) share one approval;
+        // fixed dangerous rules are re-checked by policy on every request.
+        return ExecutionAuthorizationScope(
+            principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
+            secretReferenceIDs: descriptor.secretReferences.map(\.description),
+            normalizedDestination: destination,
+            port: port,
+            username: username,
+            protocolType: protocolType,
+            actionFamily: descriptor.actionType.rawValue,
+            operationFingerprint: nil,
+            generation: generation
+        )
+    }
+
+    private func finishExecutionApprovalFlight(
+        scope: ExecutionAuthorizationScope,
+        approvalID: UUID,
+        generation: UInt64
+    ) async {
+        guard let flight = executionApprovalFlights[scope],
+              flight.id == approvalID,
+              flight.generation == generation
+        else {
+            pendingExecutionApprovalIDs.remove(approvalID)
+            return
+        }
+        flight.task.cancel()
+        executionApprovalFlights.removeValue(forKey: scope)
+        pendingExecutionApprovalIDs.remove(approvalID)
+        approvalPending = !pendingExecutionApprovalIDs.isEmpty
+        await statusObserver?(status())
+    }
+
+    private func markExecutionApprovalCompleted(_ approvalID: UUID) async {
+        guard pendingExecutionApprovalIDs.remove(approvalID) != nil else {
+            return
+        }
+        approvalPending = !pendingExecutionApprovalIDs.isEmpty
+        await statusObserver?(status())
+    }
+
+    private func commitExecutionAuthorization(
+        scope: ExecutionAuthorizationScope,
+        generation: UInt64,
+        masterKey: SymmetricKey
+    ) async throws -> ExecutionAuthorizationCommit {
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard scopedMasterKeyAuthorizations[scope] != nil else {
+                await authorizationSession.invalidateExecutionAuthorization(for: scope)
+                return .needsFreshApproval
+            }
+            if let flight = executionApprovalFlights.removeValue(forKey: scope) {
+                if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+                    approvalPending = !pendingExecutionApprovalIDs.isEmpty
+                    await statusObserver?(status())
+                }
+            }
+            return .leaseReused
+        }
+
+        guard let flight = executionApprovalFlights[scope],
+              flight.generation == generation
+        else {
+            return .needsFreshApproval
+        }
+
+        do {
+            _ = try await flight.task.value
+        } catch {
+            await finishExecutionApprovalFlight(
+                scope: scope,
+                approvalID: flight.id,
+                generation: flight.generation
+            )
+            throw mappedSecretOperationError(error)
+        }
+
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        // A concurrent request may have won the commit while this flight was
+        // suspended. Reuse that exact scoped lease instead of authorizing it
+        // again.
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard scopedMasterKeyAuthorizations[scope] != nil else {
+                await authorizationSession.invalidateExecutionAuthorization(for: scope)
+                return .needsFreshApproval
+            }
+            if executionApprovalFlights[scope]?.id == flight.id {
+                executionApprovalFlights.removeValue(forKey: scope)
+                if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+                    approvalPending = !pendingExecutionApprovalIDs.isEmpty
+                    await statusObserver?(status())
+                }
+            }
+            return .leaseReused
+        }
+
+        guard executionApprovalFlights[scope]?.id == flight.id else {
+            return .needsFreshApproval
+        }
+
+        let expiresAt = await authorizationSession.authorizeExecution(for: scope)
+        guard generation == securityGeneration else {
+            await authorizationSession.invalidateExecutionAuthorization(for: scope)
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        if expiresAt != nil {
+            scopedMasterKeyAuthorizations[scope] = ScopedMasterKeyAuthorization(key: masterKey)
+            await scheduleScopedMasterKeyExpiry(for: scope)
+        } else {
+            scopedMasterKeyAuthorizations.removeValue(forKey: scope)
+            scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
+        }
+        scopedMasterKeyFlights.removeValue(forKey: scope)
+
+        executionApprovalFlights.removeValue(forKey: scope)
+        if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+            approvalPending = !pendingExecutionApprovalIDs.isEmpty
+            await statusObserver?(status())
+        }
+        return expiresAt == nil ? .approvedWithoutLease : .leaseEstablished
+    }
+
+    private func abandonExecutionAuthorization(
+        scope: ExecutionAuthorizationScope?
+    ) async {
+        guard let scope else {
+            return
+        }
+        if let flight = executionApprovalFlights.removeValue(forKey: scope) {
+            flight.task.cancel()
+            if pendingExecutionApprovalIDs.remove(flight.id) != nil {
+                approvalPending = !pendingExecutionApprovalIDs.isEmpty
+                await statusObserver?(status())
+            }
+        }
+        scopedMasterKeyFlights.removeValue(forKey: scope)?.task.cancel()
+        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
+        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
+        await authorizationSession.invalidateExecutionAuthorization(for: scope)
+    }
+
+    private func scheduleScopedMasterKeyExpiry(for scope: ExecutionAuthorizationScope) async {
+        guard let duration = await authorizationSession.executionAuthorizationWindowDuration() else {
+            return
+        }
+        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
+        let id = UUID()
+        let task = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard !Task.isCancelled else { return }
+            await self?.expireScopedMasterKeyAuthorization(scope: scope, expiryID: id)
+        }
+        scopedMasterKeyExpiryTasks[scope] = ScopedMasterKeyExpiry(id: id, task: task)
+    }
+
+    private func expireScopedMasterKeyAuthorization(
+        scope: ExecutionAuthorizationScope,
+        expiryID: UUID
+    ) async {
+        guard scopedMasterKeyExpiryTasks[scope]?.id == expiryID else {
+            return
+        }
+        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)
+        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
+        await authorizationSession.invalidateExecutionAuthorization(for: scope)
+    }
+
+    private func emitExecutionWindowReuseAudit(
+        descriptor: SecretOperationDescriptor,
+        decision: PolicyDecision
+    ) async {
+        await emitAudit(
+            action: "执行授权窗口复用",
+            target: decision.normalizedDestination ?? "local",
+            referenceCount: descriptor.secretReferences.count,
+            result: "继续",
+            operation: .authorization,
+            authorizationOutcome: .approved,
+            authorizationMode: .executionWindowReuse,
+            status: .completed
+        )
+    }
+
+    private func mappedSecretOperationError(_ error: Error) -> SecretOperationError {
+        if let error = error as? SecretOperationError {
+            return error
+        }
+        if let error = error as? OperationAuthorizationError {
+            switch error {
+            case .cancelled:
+                return .authorizationCancelled
+            case .denied:
+                return .authorizationDenied
+            case .timeout:
+                return .authorizationTimeout
+            case .unavailable:
+                return .authorizationUnavailable
+            }
+        }
+        if error is CancellationError {
+            return .authorizationCancelled
+        }
+        return .authorizationDenied
+    }
+
+    private func mapExecutionError(_ error: SecretOperationExecutionError) -> SecretOperationError {
+        switch error {
+        case .invalidParameter:
+            return .invalidOperationParameters
+        case .batchValidationFailed:
+            return .batchValidationFailed
+        case .sessionNotFound:
+            return .sessionNotFound
+        case .sessionExpired:
+            return .sessionExpired
+        case .sessionScopeMismatch:
+            return .sessionScopeMismatch
+        case .sessionControlUnavailable:
+            return .sessionControlUnavailable
+        case .sessionLimitReached:
+            return .sessionLimitReached
+        case .outputQuarantined, .outputLimitExceeded:
+            return .outputQuarantined
+        case .redirectRequiresReview:
+            return .redirectRequiresReview
+        case .insecureTransportDenied:
+            return .insecureTransportDenied
+        case .unavailable, .unsupportedAction, .missingSecretReference,
+             .invalidSecretUTF8, .timedOut, .processFailed:
+            return .actionExecutionFailed
+        }
+    }
+
+    private func currentExecutionContext() -> SecretOperationExecutionContext {
+        SecretOperationExecutionContext(
+            principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
+            securityGeneration: securityGeneration
+        )
+    }
+
+    private func approveWithTimeout(summary: String) async throws -> LocalAuthenticationContext? {
+        try await Self.approveWithTimeout(
+            approver: operationApprover,
+            timeout: operationApprovalTimeout,
+            summary: summary
+        )
+    }
+
+    private static func approveWithTimeout(
+        approver: any OperationApproving,
+        timeout: Duration,
+        summary: String
+    ) async throws -> LocalAuthenticationContext? {
+        try await withThrowingTaskGroup(of: LocalAuthenticationContext?.self) { group in
             group.addTask {
+                if let contextApprover = approver as? any OperationApprovalContextProviding {
+                    return try await contextApprover.approveWithAuthenticationContext(summary: summary)
+                }
                 try await approver.approve(summary: summary)
+                return nil
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
                 throw OperationAuthorizationError.timeout
             }
             defer { group.cancelAll() }
-            try await group.next()
+            guard let result = try await group.next() else {
+                throw OperationAuthorizationError.cancelled
+            }
+            return result
         }
     }
 
@@ -3211,7 +4514,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let catalogDecision = catalogMutationPolicyEngine.evaluate(diff, transport: transport)
         switch catalogDecision {
         case .denied:
-            throw SecretOperationError.operationDenied
+            throw SecretOperationError.invalidOperationParameters
         case .silent:
             if requireAgentSafeWrite {
                 // A caller that still asks for the removed global gate is a
@@ -3253,18 +4556,44 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
-    private func approvalSummary(
+    func approvalSummary(
         descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
-        decision: PolicyDecision
+        decision: PolicyDecision,
+        executionWindowDuration: TimeInterval? = nil
     ) -> String {
         let labels = metadata.compactMap(\.label)
             .map(safeDisplayLabel)
             .filter { !$0.isEmpty }
         let labelText = labels.isEmpty ? "未命名凭据" : labels.prefix(3).joined(separator: "、")
         let target = safeDisplayLabel(decision.normalizedDestination ?? "本机")
-        let detail = safeDisplayLabel(operationDetail(for: descriptor))
-        return "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)"
+        // The device owner must see the actual command: raw single-line and
+        // multi-line commands are shown in full with newlines preserved, and
+        // the policy's risk reasons (including the agent's own warning) are
+        // part of the prompt. The final decision belongs to the owner.
+        let rawDetail = operationDetail(for: descriptor)
+        let detail: String
+        switch descriptor.actionType {
+        case .sshCommand:
+            detail = displayCommandText(rawDetail, maxBytes: 65_536)
+        default:
+            detail = safeDisplayLabel(rawDetail)
+        }
+        let riskText = decision.reasons
+            .map { safeDisplayLabel($0) }
+            .filter { !$0.isEmpty }
+            .prefix(3)
+            .joined(separator: "；")
+        let riskSection = riskText.isEmpty ? "" : "；风险：\(riskText)"
+        let batchRequirement = descriptor.sshCommandBatch != nil
+            ? "；批处理最高授权级别：\(authorizationRequirementDisplay(decision.authorizationRequirement))"
+            : ""
+        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(riskSection)\(batchRequirement)"
+        guard let executionWindowDuration else {
+            return base
+        }
+        let seconds = executionWindowDuration.formatted(.number.precision(.fractionLength(0...3)))
+        return "\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒；不会授权其他凭据、目标或协议"
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {
@@ -3274,26 +4603,44 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return displayName(for: descriptor.actionType)
     }
 
-    private func operationDetail(for descriptor: SecretOperationDescriptor) -> String {
+    func operationDetail(for descriptor: SecretOperationDescriptor) -> String {
         switch descriptor.actionType {
         case .sshCommand:
+            if let batch = descriptor.sshCommandBatch {
+                return sshBatchOperationDetail(batch)
+            }
             return descriptor.command ?? "未提供命令"
         case .httpRequest, .apiRequest, .browserLogin:
-            let method = (descriptor.httpMethod ?? "GET").uppercased()
+            let method = (descriptor.effectiveHTTPMethod ?? "GET").uppercased()
             return "\(method) \(descriptor.normalizedPath ?? "/")"
         case .databaseQuery:
-            return descriptor.databaseStatement?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
-                .first
-                .map(String.init) ?? "数据库查询"
+            guard let statement = descriptor.effectiveDatabaseStatement else {
+                return "数据库查询"
+            }
+            return displayCommandText(statement.trimmingCharacters(in: .whitespacesAndNewlines), maxBytes: 65_536)
         case .sftpTransfer:
-            return "\(descriptor.fileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
+            return "\(descriptor.effectiveFileOperation?.rawValue ?? "transfer") \(descriptor.fileTarget ?? "远程目标")"
         case .localAppFill:
             return descriptor.localAppBundleID ?? "本地 App 表单"
         default:
             return "受保护操作"
         }
+    }
+
+    private func sshBatchOperationDetail(_ batch: SSHCommandBatch) -> String {
+        // Every batch command is shown: the owner approves the exact batch,
+        // so nothing is summarized away.
+        let commandDetails = batch.commands.enumerated().map { offset, command in
+            let executable = displayCommandText(command.executable, maxBytes: 4_096)
+            let arguments = command.arguments.map {
+                "「\(displayCommandText($0, maxBytes: 4_096))」"
+            }.joined(separator: " ")
+            return "\(offset + 1). \(executable)\(arguments.isEmpty ? "" : " \(arguments)")"
+        }
+        return displayCommandText(
+            "SSH 批处理（\(batch.commands.count) 条）：\(commandDetails.joined(separator: "；"))",
+            maxBytes: 65_536
+        )
     }
 
     private func displayName(for action: SecretOperationAction) -> String {
@@ -3322,11 +4669,60 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
     }
 
+    private func sanitizedDisplayText(_ value: String) -> String {
+        value.unicodeScalars.map { scalar -> String in
+            if scalar.value < 0x20 || scalar.value == 0x7F {
+                return " "
+            }
+            return String(scalar)
+        }.joined()
+    }
+
     private func safeDisplayLabel(_ value: String) -> String {
-        String(value
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-            .prefix(80))
+        String(sanitizedDisplayText(value).prefix(80))
+    }
+
+    private func isInsecureSecretHTTPTarget(_ descriptor: SecretOperationDescriptor) -> Bool {
+        guard !descriptor.secretReferences.isEmpty,
+              let rawURL = descriptor.url,
+              let url = URL(string: rawURL) else {
+            return false
+        }
+        return url.scheme?.lowercased() == "http"
+    }
+
+    /// Display text for commands: preserves newlines and tabs so multi-line
+    /// commands stay readable in the approval prompt, strips other control
+    /// characters, and bounds the total by UTF-8 bytes.
+    private func displayCommandText(_ value: String, maxBytes: Int) -> String {
+        let sanitized = String(String.UnicodeScalarView(value.unicodeScalars.compactMap { scalar -> UnicodeScalar? in
+            if scalar == "\n" || scalar == "\t" {
+                return scalar
+            }
+            if scalar.value < 0x20 || scalar.value == 0x7F {
+                return nil
+            }
+            return scalar
+        }))
+        let data = Data(sanitized.utf8)
+        guard data.count > maxBytes else { return sanitized }
+        guard maxBytes > 3 else {
+            return String(decoding: data.prefix(maxBytes), as: UTF8.self)
+        }
+        return String(decoding: data.prefix(maxBytes - 3), as: UTF8.self) + "…"
+    }
+
+    private func authorizationRequirementDisplay(_ requirement: AuthorizationRequirement) -> String {
+        switch requirement {
+        case .none:
+            return "无需额外认证"
+        case .reusableApproval:
+            return "可复用审批"
+        case .freshApprovalRequired:
+            return "必须重新本机认证"
+        case .denied:
+            return "拒绝"
+        }
     }
 
     private func operationReason(for descriptor: SecretOperationDescriptor) -> String {
@@ -3359,7 +4755,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func resolveReferencesWithValues(
         references: [String],
         context: RevealContext,
-        forceFreshAuthorization: Bool = false
+        forceFreshAuthorization: Bool = false,
+        masterKeyOverride: SymmetricKey? = nil
     ) async throws -> RestoredParagraph {
         guard !references.isEmpty else {
             throw VaultAppServicesRevealError.invalidRevealContext
@@ -3369,6 +4766,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         do {
             validatedReferences = try references.map { try SecretReference($0).description }
         } catch {
+            throw VaultAppServicesRevealError.invalidReference
+        }
+        guard Set(validatedReferences).count == validatedReferences.count else {
             throw VaultAppServicesRevealError.invalidReference
         }
 
@@ -3383,14 +4783,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         for reference in validatedReferences {
             metadata.append(try await recordResolver.metadata(reference: reference))
         }
-        let operationPolicy = authorizationPolicy(for: metadata.map(\.policy))
-        let operationMasterKey = try await resolvedMasterKey(
-            for: operationPolicy,
-            reason: context.reason,
-            allowsAgentDecryptReuse: !forceFreshAuthorization,
-            destination: context.destination,
-            forceFresh: forceFreshAuthorization
-        )
+        let operationMasterKey: SymmetricKey
+        if let masterKeyOverride {
+            operationMasterKey = masterKeyOverride
+        } else {
+            let operationPolicy = authorizationPolicy(for: metadata.map(\.policy))
+            operationMasterKey = try await resolvedMasterKey(
+                for: operationPolicy,
+                reason: context.reason,
+                allowsAgentDecryptReuse: !forceFreshAuthorization,
+                destination: context.destination,
+                forceFresh: forceFreshAuthorization
+            )
+        }
 
         var plaintexts: [String] = []
         plaintexts.reserveCapacity(validatedReferences.count)
@@ -3423,6 +4828,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         reason: String,
         allowsAgentDecryptReuse: Bool = false,
         destination: String? = nil,
+        authenticationContext: LocalAuthenticationContext? = nil,
         forceFresh: Bool = false
     ) async throws -> SymmetricKey {
         if let masterKey {
@@ -3438,8 +4844,32 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         let key: SymmetricKey
-        if forceFresh, let freshMasterKeyProvider {
-            key = try await freshMasterKeyProvider(policy, reason)
+        if forceFresh {
+            if let freshMasterKeyProviderWithAuthenticationContext {
+                key = try await freshMasterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
+            } else if let freshMasterKeyProvider {
+                key = try await freshMasterKeyProvider(policy, reason)
+            } else if let masterKeyProviderWithAuthenticationContext {
+                key = try await masterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
+            } else if let masterKeyProvider {
+                key = try await masterKeyProvider(policy, reason)
+            } else {
+                throw VaultAppServicesRevealError.revealUnavailable
+            }
+        } else if let masterKeyProviderWithAuthenticationContext {
+            key = try await masterKeyProviderWithAuthenticationContext(
+                policy,
+                reason,
+                authenticationContext
+            )
         } else if let masterKeyProvider {
             key = try await masterKeyProvider(policy, reason)
         } else {
@@ -3458,6 +4888,80 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         }
         return key
+    }
+
+    /// Scoped Agent operations may reuse only the key material captured when
+    /// that exact scope acquired device-owner authorization. Falling back to
+    /// the broader credential cache here would let its independent TTL extend
+    /// an Agent authorization lease.
+    private func masterKeyForScopedAuthorization(
+        scope: ExecutionAuthorizationScope?,
+        for policy: SecretPolicy,
+        reason: String,
+        destination: String?,
+        authenticationContext: LocalAuthenticationContext?,
+        forceFreshWhenUnscoped: Bool
+    ) async throws -> SymmetricKey {
+        guard let scope else {
+            return try await resolvedMasterKey(
+                for: policy,
+                reason: reason,
+                allowsAgentDecryptReuse: false,
+                destination: destination,
+                authenticationContext: authenticationContext,
+                forceFresh: forceFreshWhenUnscoped
+            )
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope),
+           let authorization = scopedMasterKeyAuthorizations[scope] {
+            return authorization.key
+        }
+
+        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
+        await authorizationSession.invalidateExecutionAuthorization(for: scope)
+        if let flight = scopedMasterKeyFlights[scope] {
+            return try await flight.task.value
+        }
+
+        let masterKey = self.masterKey
+        let masterKeyProvider = self.masterKeyProvider
+        let freshMasterKeyProvider = self.freshMasterKeyProvider
+        let masterKeyProviderWithAuthenticationContext = self.masterKeyProviderWithAuthenticationContext
+        let freshMasterKeyProviderWithAuthenticationContext = self.freshMasterKeyProviderWithAuthenticationContext
+        let task = Task<SymmetricKey, Error> {
+            if let masterKey {
+                return masterKey
+            }
+            if let freshMasterKeyProviderWithAuthenticationContext {
+                return try await freshMasterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
+            }
+            if let freshMasterKeyProvider {
+                return try await freshMasterKeyProvider(policy, reason)
+            }
+            if let masterKeyProviderWithAuthenticationContext {
+                return try await masterKeyProviderWithAuthenticationContext(
+                    policy,
+                    reason,
+                    authenticationContext
+                )
+            }
+            guard let masterKeyProvider else {
+                throw VaultAppServicesRevealError.revealUnavailable
+            }
+            return try await masterKeyProvider(policy, reason)
+        }
+        scopedMasterKeyFlights[scope] = ScopedMasterKeyFlight(task: task)
+        do {
+            return try await task.value
+        } catch {
+            scopedMasterKeyFlights.removeValue(forKey: scope)
+            throw error
+        }
     }
 
     private func freshMasterKey(
@@ -3711,19 +5215,23 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         context: AuditContext? = nil,
         operation: AuditOperation? = nil,
         authorizationOutcome: AuditAuthorizationOutcome = .notRequired,
+        authorizationMode: AuditAuthorizationMode? = nil,
         status: AuditStatus? = nil
     ) async {
+        let auditContext = context ?? AuditContext.current
         let entry = AgentAutomationAuditEntry(
             action: action,
             target: target,
             referenceCount: referenceCount,
-            result: result
+            result: result,
+            authorizationMode: authorizationMode,
+            caller: auditContext?.caller
         )
         await auditObserver?(entry)
         // A production request always arrives through one of the two IPC
         // handlers, which installs AuditContext.current. Do not infer `.agent`
         // here: an unscoped event cannot be safely attributed to a caller.
-        guard let auditContext = context ?? AuditContext.current else {
+        guard let auditContext else {
             return
         }
         guard let auditLog else {
@@ -3742,7 +5250,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             authorizationOutcome: authorizationOutcome,
             declaredTarget: sanitizedAuditTarget(entry.target),
             status: status ?? auditStatus(for: result),
-            exitCode: nil
+            exitCode: nil,
+            authorizationMode: authorizationMode,
+            caller: auditContext.caller
         )
         do {
             // The production daemon supplies an independent Keychain audit key.
@@ -3985,7 +5495,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             authorizationOutcome: event.authorizationOutcome,
             result: event.status,
             target: safeAuditTarget(event.declaredTarget),
-            referenceCount: event.referenceCount
+            referenceCount: event.referenceCount,
+            authorizationMode: event.authorizationMode,
+            caller: event.caller
         )
     }
 

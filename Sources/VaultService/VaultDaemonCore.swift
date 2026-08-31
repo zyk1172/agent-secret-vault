@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import VaultAuthorization
 import VaultCore
+import VaultExecution
 import VaultIPC
 
 public enum VaultDaemonCoreError: Error, Equatable, Sendable {
@@ -16,7 +17,11 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
     public let catalogSelectionURL: URL
     public let credentialAuthorizationTTL: TimeInterval
     public let externalSendAuthorizationTTL: TimeInterval
+    public let executionAuthorizationTTL: TimeInterval
     public let readAuthorizationTTL: TimeInterval?
+    /// App-owned, non-secret response projection profiles. An empty list is
+    /// deliberately metadata-only; the daemon never invents an allowlist.
+    public let httpResponseProjectionProfiles: [HTTPResponseProjectionProfile]
 
     public init(
         vaultRootURL: URL,
@@ -25,7 +30,9 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
         catalogSelectionURL: URL? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
-        readAuthorizationTTL: TimeInterval? = nil
+        executionAuthorizationTTL: TimeInterval = 300,
+        readAuthorizationTTL: TimeInterval? = nil,
+        httpResponseProjectionProfiles: [HTTPResponseProjectionProfile] = []
     ) {
         let normalizedVaultRootURL = vaultRootURL.standardizedFileURL
         self.vaultRootURL = normalizedVaultRootURL
@@ -37,7 +44,9 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
             .standardizedFileURL
         self.credentialAuthorizationTTL = credentialAuthorizationTTL
         self.externalSendAuthorizationTTL = externalSendAuthorizationTTL
+        self.executionAuthorizationTTL = executionAuthorizationTTL
         self.readAuthorizationTTL = readAuthorizationTTL
+        self.httpResponseProjectionProfiles = httpResponseProjectionProfiles
     }
 
     public static func `default`() throws -> VaultDaemonConfiguration {
@@ -149,12 +158,14 @@ public actor VaultDaemonCore {
             return masterKey
         }
 
-        let masterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+        let masterKeyProviderWithAuthenticationContext: @Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey = {
             policy,
-            reason in
+            reason,
+            authenticationContext in
             let candidates = try await protectionKeyStore.deviceKeyCandidates(
                 for: policy,
-                reason: reason
+                reason: reason,
+                authenticationContext: authenticationContext
             )
             var remainingCandidates = candidates
             while !remainingCandidates.isEmpty {
@@ -173,12 +184,14 @@ public actor VaultDaemonCore {
             }
             throw MasterKeyCoordinatorError.integrityFailed
         }
-        let freshMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+        let freshMasterKeyProviderWithAuthenticationContext: @Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey = {
             policy,
-            reason in
+            reason,
+            authenticationContext in
             let candidates = try await protectionKeyStore.freshDeviceKeyCandidates(
                 for: policy,
-                reason: reason
+                reason: reason,
+                authenticationContext: authenticationContext
             )
             var remainingCandidates = candidates
             while !remainingCandidates.isEmpty {
@@ -195,6 +208,16 @@ public actor VaultDaemonCore {
                 }
             }
             throw MasterKeyCoordinatorError.integrityFailed
+        }
+        let masterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+            policy,
+            reason in
+            try await masterKeyProviderWithAuthenticationContext(policy, reason, nil)
+        }
+        let freshMasterKeyProvider: @Sendable (SecretPolicy, String) async throws -> SymmetricKey = {
+            policy,
+            reason in
+            try await freshMasterKeyProviderWithAuthenticationContext(policy, reason, nil)
         }
 
         let encryptor = EncryptSelectionCoordinator(
@@ -227,6 +250,8 @@ public actor VaultDaemonCore {
             catalogSelectionManifestURL: configuration.catalogSelectionURL,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
+            masterKeyProviderWithAuthenticationContext: masterKeyProviderWithAuthenticationContext,
+            freshMasterKeyProviderWithAuthenticationContext: freshMasterKeyProviderWithAuthenticationContext,
             clearProtectedKeyState: {
                 await protectionKeyStore.clearAll()
             },
@@ -238,7 +263,13 @@ public actor VaultDaemonCore {
             authorizationSession: AuthorizationSession(
                 readTTL: configuration.readAuthorizationTTL,
                 credentialTTL: configuration.credentialAuthorizationTTL,
-                externalSendTTL: configuration.externalSendAuthorizationTTL
+                externalSendTTL: configuration.externalSendAuthorizationTTL,
+                executionTTL: configuration.executionAuthorizationTTL
+            ),
+            operationExecutor: LocalSecretOperationExecutor(
+                adapterRegistry: SecretOperationAdapterRegistry(
+                    responseProjectionProfiles: configuration.httpResponseProjectionProfiles
+                )
             ),
             credentialAuthorizationTTL: configuration.credentialAuthorizationTTL,
             externalSendAuthorizationTTL: configuration.externalSendAuthorizationTTL,

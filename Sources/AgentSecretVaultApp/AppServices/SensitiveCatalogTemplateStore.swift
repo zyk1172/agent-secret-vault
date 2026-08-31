@@ -58,8 +58,9 @@ public final class SensitiveCatalogTemplateStore: @unchecked Sendable {
     public func ensureInstalled() throws -> URL {
         let packagedURL = try packagedTemplateURL()
         let packagedData = try Data(contentsOf: packagedURL, options: [.mappedIfSafe])
-        let canonicalData = try SensitiveCatalogDocumentCodec.canonicalData(SecretCatalogDocument())
-        guard packagedData == canonicalData else {
+        guard let packagedText = String(data: packagedData, encoding: .utf8),
+              let document = try? SensitiveCatalogDocumentCodec.decode(packagedText),
+              document.entries.flatMap(\.fields).allSatisfy({ $0.secretRef == nil }) else {
             throw SensitiveCatalogTemplateStoreError.packagedTemplateMismatch
         }
 

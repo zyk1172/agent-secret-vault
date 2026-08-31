@@ -474,10 +474,15 @@ import VaultIPC
 }
 
 @Test func vaultAppServicesExportsResolvedTextToAllowedLocalFileWithoutRevealSession() async throws {
-    let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-    let exportDirectory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let temporaryRoot = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+    let directory = temporaryRoot.appendingPathComponent(UUID().uuidString)
+    let exportDirectory = temporaryRoot.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+        at: exportDirectory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
     defer {
         try? FileManager.default.removeItem(at: directory)
         try? FileManager.default.removeItem(at: exportDirectory)

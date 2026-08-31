@@ -7,7 +7,6 @@ import {
 } from "../src/server.js";
 
 const reference = "secret://0123456789ABCDEFGHJKMNPQRS";
-const usernameReference = "secret://0123456789ABCDEFGHJKMNPQT";
 
 class FakeClient implements VaultIpcClient {
   readonly requests: IpcRequest[] = [];
@@ -40,6 +39,7 @@ describe("MCP tool contracts", () => {
     const names = createVaultToolDefinitions(new FakeClient([])).map((item) => item.name);
     expect(names).toEqual(expect.arrayContaining([
       "vault_status",
+      "vault_capabilities",
       "secret_search",
       "secret_catalog_search",
       "secret_catalog_get",
@@ -60,6 +60,9 @@ describe("MCP tool contracts", () => {
       "secret_catalog_file_preflight",
       "secret_inspect_reference",
       "ssh_command_with_secret",
+      "ssh_batch_with_secret",
+      "ssh_session_status",
+      "ssh_session_close",
       "local_http_request_with_secret",
       "api_request_with_token",
       "database_query_with_secret",
@@ -152,6 +155,60 @@ describe("MCP tool contracts", () => {
       ready: true,
       approvalPending: false
     });
+  });
+
+  it("requests the daemon capability manifest before claiming adapter support", async () => {
+    const client = new FakeClient([{
+      type: "secretOperationCapabilities",
+      capabilities: [{
+        kind: "http",
+        version: 1,
+        status: "supported",
+        operations: ["httpRequest"],
+        reason: "typed HTTP",
+        features: {
+          auth: ["basic", "bearer", "apiKeyHeader"],
+          body: ["none", "raw", "json", "form"],
+          response: ["metadataOnly", "projectedJSON"],
+          transportSessionReuse: true,
+          derivedCredentialCapture: false,
+          publicNetworkEgress: false,
+          insecurePrivateNetworkHTTPProfileOptIn: true
+        }
+      }, {
+        kind: "database",
+        status: "unavailable",
+        operations: ["databaseQuery"],
+        reason: "driver unavailable"
+      }]
+    }]);
+
+    const result = await tool(client, "vault_capabilities").handler({});
+    expect(result.structuredContent).toEqual({
+      status: "OK",
+      capabilities: [{
+        kind: "http",
+        version: 1,
+        status: "supported",
+        operations: ["httpRequest"],
+        reason: "typed HTTP",
+        features: {
+          auth: ["basic", "bearer", "apiKeyHeader"],
+          body: ["none", "raw", "json", "form"],
+          response: ["metadataOnly", "projectedJSON"],
+          transportSessionReuse: true,
+          derivedCredentialCapture: false,
+          publicNetworkEgress: false,
+          insecurePrivateNetworkHTTPProfileOptIn: true
+        }
+      }, {
+        kind: "database",
+        status: "unavailable",
+        operations: ["databaseQuery"],
+        reason: "driver unavailable"
+      }]
+    });
+    expect(client.requests).toEqual([{ type: "secretOperationCapabilities" }]);
   });
 
   it("returns destination binding as non-sensitive metadata", async () => {
@@ -686,6 +743,177 @@ describe("MCP tool contracts", () => {
     expect(JSON.stringify(request)).not.toContain("restoreReferences");
   });
 
+  it("carries an explicit approvalRequired assessment into the SSH descriptor", async () => {
+    const client = new FakeClient([operationResponse({ exitCode: 0, stdout: "", stderr: "" })]);
+    const result = await tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      command: "mkdir /share/svlt-test",
+      agentAssessment: {
+        declaredRisk: "approvalRequired",
+        reason: "creates a directory",
+        intendedEffect: "remote write"
+      }
+    });
+
+    expect(result.structuredContent).toMatchObject({ status: "COMPLETED", redacted: true });
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    // The Swift policy engine merges this hint with the local requirement;
+    // the wire contract must preserve it verbatim instead of downgrading it.
+    expect(request.descriptor.agentAssessment).toEqual({
+      declaredRisk: "approvalRequired",
+      reason: "creates a directory",
+      intendedEffect: "remote write"
+    });
+  });
+
+  it("fills the conservative default assessment when the agent omits one", async () => {
+    const client = new FakeClient([operationResponse({ exitCode: 0, stdout: "", stderr: "" })]);
+    await tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      command: "hostname"
+    });
+
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor.agentAssessment).toEqual({
+      declaredRisk: "silent",
+      reason: "No additional agent risk hint",
+      intendedEffect: "purpose-built local secret operation"
+    });
+  });
+
+  it("preserves only bounded redacted diagnostics for failed SSH actions", async () => {
+    const client = new FakeClient([operationResponse({
+      status: "WRAPPER_FAILED",
+      exitCode: 122,
+      stage: "FRAME_DECODE",
+      stdout: "safe stdout",
+      stderr: "safe stderr"
+    })]);
+    const definition = tool(client, "ssh_command_with_secret");
+    const result = await definition.handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      command: "hostname"
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "WRAPPER_FAILED",
+      exitCode: 122,
+      stage: "FRAME_DECODE",
+      stdoutPreview: "safe stdout",
+      stderrPreview: "safe stderr",
+      redacted: true
+    });
+    expect(() => definition.outputSchema.parse(result.structuredContent)).not.toThrow();
+    expect(JSON.stringify(result.structuredContent)).not.toContain("plaintext-secret-value");
+  });
+
+  it("sends structured SSH batches with an opaque session handle", async () => {
+    const client = new FakeClient([operationResponse({
+      sessionID: "ssh_session_test",
+      results: [
+        { index: 0, status: "COMPLETED", exitCode: 0, stdout: "zyk", stderr: "" },
+        { index: 1, status: "COMPLETED", exitCode: 0, stdout: "safe", stderr: "" }
+      ]
+    })]);
+
+    const result = await tool(client, "ssh_batch_with_secret").handler({
+      host: "qnap.local",
+      username: "admin",
+      passwordRef: reference,
+      sessionID: "ssh_session_previous",
+      commands: [
+        { executable: "whoami", arguments: [] },
+        { executable: "printf", arguments: ["a b", "$(id)"] }
+      ]
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "COMPLETED",
+      sessionID: "ssh_session_test",
+      results: [
+        { index: 0, status: "COMPLETED", exitCode: 0, stdoutPreview: "zyk", stderrPreview: "" },
+        { index: 1, status: "COMPLETED", exitCode: 0, stdoutPreview: "safe", stderrPreview: "" }
+      ],
+      redacted: true
+    });
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor).toMatchObject({
+      actionType: "sshCommand",
+      destination: "qnap.local",
+      sessionID: "ssh_session_previous",
+      sshCommandBatch: {
+        stopOnFailure: true,
+        commands: [
+          { executable: "whoami", arguments: [] },
+          { executable: "printf", arguments: ["a b", "$(id)"] }
+        ]
+      }
+    });
+    expect(request.descriptor.command).toBeUndefined();
+    expect(JSON.stringify(request)).not.toContain("ASV_CANARY_BATCH_PASSWORD");
+  });
+
+  it("rejects oversized structured SSH batches before IPC", async () => {
+    const client = new FakeClient([]);
+    const commands = Array.from({ length: 33 }, () => ({ executable: "hostname", arguments: [] }));
+
+    await expect(tool(client, "ssh_batch_with_secret").handler({
+      host: "qnap.local",
+      passwordRef: reference,
+      commands
+    })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("inspects and closes only opaque SSH transport handles", async () => {
+    const client = new FakeClient([
+      {
+        type: "sshSessionStatus",
+        sessions: [{
+          sessionID: "ssh_session_test",
+          host: "qnap.local",
+          port: 22,
+          status: "active",
+          idleExpiresIn: 299
+        }]
+      },
+      { type: "operationCompleted" }
+    ]);
+
+    const statusResult = await tool(client, "ssh_session_status").handler({});
+    expect(statusResult.structuredContent).toEqual({
+      status: "ACTIVE",
+      sessions: [{
+        sessionID: "ssh_session_test",
+        host: "qnap.local",
+        port: 22,
+        status: "active",
+        idleExpiresIn: 299
+      }]
+    });
+
+    const closeResult = await tool(client, "ssh_session_close").handler({
+      sessionID: "ssh_session_test"
+    });
+    expect(closeResult.structuredContent).toEqual({ status: "CLOSED" });
+    expect(client.requests).toEqual([
+      { type: "sshSessionStatus" },
+      { type: "sshSessionClose", sessionID: "ssh_session_test" }
+    ]);
+  });
+
   it("does not let a low agent hint hide a dangerous SSH command", async () => {
     const client = new FakeClient([{ type: "failure", code: "OPERATION_DENIED" }]);
     const result = await tool(client, "ssh_command_with_secret").handler({
@@ -701,6 +929,28 @@ describe("MCP tool contracts", () => {
 
     expect(result.structuredContent).toEqual({ status: "OPERATION_DENIED" });
     expect(client.requests[0].type).toBe("executeSecretOperation");
+  });
+
+  it("rejects secret-backed SSH usernames before IPC", async () => {
+    const client = new FakeClient([]);
+    await expect(tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      usernameRef: reference,
+      passwordRef: reference,
+      command: "hostname"
+    })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("rejects option-like SSH usernames before IPC", async () => {
+    const client = new FakeClient([]);
+    await expect(tool(client, "ssh_command_with_secret").handler({
+      host: "qnap.local",
+      username: "-oProxyCommand=echo",
+      passwordRef: reference,
+      command: "hostname"
+    })).rejects.toThrow();
+    expect(client.requests).toHaveLength(0);
   });
 
   it("carries HTTP method and destination into the operation descriptor", async () => {
@@ -722,6 +972,35 @@ describe("MCP tool contracts", () => {
       url: "https://qnap.local/api/status",
       requestedEffects: ["remote-write"]
     });
+  });
+
+  it("does not add an implicit Bearer scheme to custom API-key headers", async () => {
+    const client = new FakeClient([operationResponse({ httpStatus: 200 })]);
+    await tool(client, "api_request_with_token").handler({
+      url: "https://qnap.local/api/status",
+      tokenRef: reference,
+      headerName: "X-API-Key"
+    });
+
+    const request = client.requests[0];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor.parameters).toMatchObject({
+      tokenRef: reference,
+      headerName: "X-API-Key"
+    });
+    expect(request.descriptor.parameters).not.toHaveProperty("headerScheme");
+    expect(request.descriptor.payload).toMatchObject({
+      type: "http",
+      operation: {
+        auth: {
+          kind: "apiKeyHeader",
+          headerName: "X-API-Key",
+          valueReference: reference
+        }
+      }
+    });
+    expect((request.descriptor.payload as { operation: { auth: { scheme?: string } } }).operation.auth.scheme).toBeUndefined();
   });
 
   it("rejects credential-shaped URLs and secret references in API bodies", async () => {
@@ -774,6 +1053,28 @@ describe("MCP tool contracts", () => {
     if (sftp.type === "executeSecretOperation") {
       expect(sftp.descriptor.fileOperation).toBe("list");
     }
+  });
+
+  it("rejects duplicate secret references in adapter-specific inputs before IPC", async () => {
+    const sftpClient = new FakeClient([]);
+    await expect(tool(sftpClient, "sftp_transfer_with_secret").handler({
+      operation: "list",
+      host: "qnap.local",
+      remotePath: "/share",
+      usernameRef: reference,
+      passwordRef: reference
+    })).rejects.toThrow(/different references/i);
+    expect(sftpClient.requests).toHaveLength(0);
+
+    const localAppClient = new FakeClient([]);
+    await expect(tool(localAppClient, "local_app_form_fill_with_secret").handler({
+      bundleId: "com.example.App",
+      fields: [
+        { name: "username", valueRef: reference },
+        { name: "password", valueRef: reference }
+      ]
+    })).rejects.toThrow(/used only once|duplicate/i);
+    expect(localAppClient.requests).toHaveLength(0);
   });
 
   it("keeps local reveal as an app-owned request and never asks MCP for plaintext", async () => {

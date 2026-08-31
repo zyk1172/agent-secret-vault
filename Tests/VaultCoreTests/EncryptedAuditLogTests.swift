@@ -76,6 +76,38 @@ import Testing
     #expect(try await log.export(masterKey: masterKey) == [event])
 }
 
+@Test func auditAuthorizationModeDistinguishesFreshAndReusedApproval() throws {
+    let timestamp = Date(timeIntervalSince1970: 1_800_000_004)
+    let fresh = AuditEvent(
+        timestamp: timestamp,
+        integration: "mcp",
+        referenceID: nil,
+        operation: .secureExecute,
+        risk: 1,
+        authorizationOutcome: .approved,
+        declaredTarget: "qnap.local",
+        status: .completed,
+        exitCode: 0,
+        authorizationMode: .freshLocalApproval
+    )
+    let reused = AuditEvent(
+        timestamp: timestamp.addingTimeInterval(1),
+        integration: "mcp",
+        referenceID: nil,
+        operation: .secureExecute,
+        risk: 1,
+        authorizationOutcome: .approved,
+        declaredTarget: "qnap.local",
+        status: .completed,
+        exitCode: 0,
+        authorizationMode: .executionWindowReuse
+    )
+
+    let decoder = JSONDecoder()
+    #expect(try decoder.decode(AuditEvent.self, from: JSONEncoder().encode(fresh)).authorizationMode == .freshLocalApproval)
+    #expect(try decoder.decode(AuditEvent.self, from: JSONEncoder().encode(reused)).authorizationMode == .executionWindowReuse)
+}
+
 @Test func encryptedAuditLogRetentionRemovesRecordsOlderThanThirtyDays() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: "audit-retention-\(UUID().uuidString)")

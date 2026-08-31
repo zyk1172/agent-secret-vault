@@ -109,6 +109,13 @@ public struct AppControlRequestHandler: Sendable {
                 return .secretBound(reference: result.reference, revision: result.revision)
             case let .catalogRevealField(entryID, key):
                 return .catalogFieldPlaintext(try await service.catalogRevealField(entryID: entryID, key: key))
+            case let .revealSessionData(sessionID):
+                return .revealSessionData(try await service.revealSessionData(sessionID: sessionID))
+            case let .restoreReferences(references, context):
+                return .restoredText(try await service.restoreReferences(
+                    references: references,
+                    context: context
+                ))
             }
         } catch let error as SecretCatalogAgentError {
             return .failure(code: Self.catalogCode(error))
@@ -145,7 +152,18 @@ public struct AppControlRequestHandler: Sendable {
         case .authorizationDenied: return "CATALOG_AUTHORIZATION_DENIED"
         case .authorizationTimeout: return "CATALOG_AUTHORIZATION_TIMEOUT"
         case .authorizationUnavailable: return "CATALOG_AUTHORIZATION_UNAVAILABLE"
-        default: return "CATALOG_OPERATION_FAILED"
+        case .actionExecutorUnavailable: return "ACTION_EXECUTOR_UNAVAILABLE"
+        case .actionExecutionFailed: return "ACTION_EXECUTION_FAILED"
+        case .invalidOperationParameters: return "ARGUMENT_VALIDATION"
+        case .sessionNotFound: return "SESSION_NOT_FOUND"
+        case .sessionExpired: return "SESSION_EXPIRED"
+        case .sessionScopeMismatch: return "SESSION_SCOPE_MISMATCH"
+        case .sessionControlUnavailable: return "SESSION_CONTROL_UNAVAILABLE"
+        case .sessionLimitReached: return "SESSION_LIMIT_REACHED"
+        case .batchValidationFailed: return "BATCH_VALIDATION_FAILED"
+        case .redirectRequiresReview: return "REDIRECT_REQUIRES_REVIEW"
+        case .outputQuarantined: return "ACTION_OUTPUT_QUARANTINED"
+        case .insecureTransportDenied: return "INSECURE_HTTP_DENIED"
         }
     }
 }

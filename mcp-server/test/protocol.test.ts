@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  AgentCallerIdentity,
   AuthenticatedIpcRequest,
   CapabilityToken,
   CatalogCreateEntryRequest,
@@ -171,6 +172,16 @@ describe("IPC response schema", () => {
           redacted: true
         }
       },
+      {
+        type: "sshSessionStatus",
+        sessions: [{
+          sessionID: "ssh_session_test",
+          host: "qnap.local",
+          port: 22,
+          status: "active",
+          idleExpiresIn: 299
+        }]
+      },
       { type: "failure", code: "APP_UNAVAILABLE" }
     ];
 
@@ -199,6 +210,21 @@ describe("IPC response schema", () => {
         plaintext: "leak"
       })
     ).toThrow();
+  });
+
+  it("accepts a staged, redacted secret operation diagnostic", () => {
+    const fixture = {
+      type: "secretOperation",
+      output: {
+        status: "WRAPPER_FAILED",
+        exitCode: 122,
+        stage: "FRAME_DECODE",
+        stderr: "invalid framed input",
+        redacted: true
+      }
+    };
+
+    expect(IpcResponse.parse(fixture)).toEqual(fixture);
   });
 
   it("keeps catalog search responses metadata-only", () => {
@@ -301,6 +327,9 @@ describe("IPC request schema", () => {
     const fixtures = [
       { type: "status" },
       { type: "workbenchStatus" },
+      { type: "sshSessionStatus" },
+      { type: "sshSessionStatus", sessionID: "ssh_session_test" },
+      { type: "sshSessionClose", sessionID: "ssh_session_test" },
       { type: "searchCatalog", query: "QNAP", field: "password", limit: 10 },
       { type: "catalogSearch", query: "QNAP", limit: 10 },
       { type: "catalogGet", entryID: validEntryID },
@@ -449,7 +478,7 @@ describe("IPC request schema", () => {
         label: "QNAP credential",
         policy: "credential",
         allowedDestinations: ["qnap.local", "192.168.2.240"],
-        allowedProtocols: ["ssh", "https"]
+        allowedProtocols: ["ssh", "https", "http-loopback"]
       },
       {
         type: "revealReferences",
@@ -486,6 +515,31 @@ describe("IPC request schema", () => {
             declaredRisk: "silent",
             reason: "read-only diagnostic",
             intendedEffect: "read status"
+          }
+        }
+      },
+      {
+        type: "executeSecretOperation",
+        descriptor: {
+          actionType: "sshCommand",
+          secretReferences: [validReference],
+          destination: "qnap.local",
+          port: 22,
+          protocolType: "ssh",
+          sessionID: "ssh_session_test",
+          sshCommandBatch: {
+            commands: [
+              { executable: "whoami", arguments: [] },
+              { executable: "df", arguments: ["-h", "/share/a b"] }
+            ],
+            stopOnFailure: true
+          },
+          requestedEffects: ["ssh-batch"],
+          parameters: { passwordRef: validReference, username: "zyk" },
+          agentAssessment: {
+            declaredRisk: "silent",
+            reason: "read-only diagnostic",
+            intendedEffect: "inspect status"
           }
         }
       }
@@ -641,6 +695,22 @@ describe("authenticated IPC request schema", () => {
       expect(AuthenticatedIpcRequest.parse(authenticated)).toEqual(authenticated);
     }
   });
+
+  it("keeps caller identity optional and separate from the security token", () => {
+    const caller = AgentCallerIdentity.parse({
+      name: "Pi",
+      version: "1.2.3",
+      transport: "mcp"
+    });
+    const request = AuthenticatedIpcRequest.parse({
+      capabilityToken: validToken,
+      caller,
+      request: { type: "status" }
+    });
+
+    expect(request.caller).toEqual(caller);
+    expect(() => AgentCallerIdentity.parse({ name: "Codex\nsecret://leak" })).not.toThrow();
+  });
 });
 
 describe("IPC frame codec", () => {
@@ -766,6 +836,53 @@ describe("local IPC client", () => {
     expect(response).toEqual({ type: "status", locked: false });
     await expect(received).resolves.toEqual({
       capabilityToken: validToken,
+      request: { type: "status" }
+    });
+  });
+
+  it("propagates a declared caller in the authenticated envelope", async () => {
+    const directory = await makeTempDirectory();
+    const socketPath = path.join(directory, "agent-secret-vault.sock");
+    const tokenPath = path.join(directory, "capability.token");
+    await writeFile(tokenPath, validToken, { mode: 0o600 });
+    await chmod(tokenPath, 0o600);
+
+    const server = net.createServer();
+    const received = new Promise<unknown>((resolve, reject) => {
+      server.on("connection", (socket) => {
+        const chunks: Buffer[] = [];
+        socket.on("data", (chunk) => chunks.push(chunk));
+        socket.on("end", () => {
+          try {
+            resolve(IpcFrameCodec.decode(Buffer.concat(chunks), AuthenticatedIpcRequest));
+            socket.end(IpcFrameCodec.encode({ type: "status", locked: false }));
+          } catch (error) {
+            reject(error);
+          } finally {
+            server.close();
+          }
+        });
+      });
+      server.on("error", reject);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+      server.listen(socketPath);
+    });
+
+    const client = new LocalIpcClient({
+      socketPath,
+      tokenPath,
+      declaredCaller: { name: "Pi", version: "1.2.3", transport: "mcp" }
+    });
+    await expect(client.request({ type: "status" })).resolves.toEqual({
+      type: "status",
+      locked: false
+    });
+    await expect(received).resolves.toEqual({
+      capabilityToken: validToken,
+      caller: { name: "Pi", version: "1.2.3", transport: "mcp" },
       request: { type: "status" }
     });
   });

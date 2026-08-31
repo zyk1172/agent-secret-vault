@@ -9,11 +9,26 @@ public protocol DeviceKeyStoring: Sendable {
     /// The first candidate is canonical; additional candidates are only for
     /// migration from an older Keychain namespace.
     func deviceKeyCandidates(reason: String) async throws -> [Data]
+
+    /// Uses an already evaluated owner-authentication context when the caller
+    /// has one for this exact logical operation. Implementations that do not
+    /// interact with Keychain may safely use the compatibility default.
+    func deviceKeyCandidates(
+        reason: String,
+        authenticationContext: LocalAuthenticationContext?
+    ) async throws -> [Data]
 }
 
 public extension DeviceKeyStoring {
     func deviceKeyCandidates(reason: String) async throws -> [Data] {
         [try await deviceKey(reason: reason)]
+    }
+
+    func deviceKeyCandidates(
+        reason: String,
+        authenticationContext _: LocalAuthenticationContext?
+    ) async throws -> [Data] {
+        try await deviceKeyCandidates(reason: reason)
     }
 }
 
@@ -81,12 +96,27 @@ public struct DeviceKeyStore: DeviceKeyStoring {
     }
 
     public func deviceKeyCandidates(reason: String) async throws -> [Data] {
+        try await deviceKeyCandidates(reason: reason, authenticationContext: nil)
+    }
+
+    public func deviceKeyCandidates(
+        reason: String,
+        authenticationContext: LocalAuthenticationContext?
+    ) async throws -> [Data] {
         let keys: [Data]
         do {
             keys = try await materialStore.loadDeviceKeyDataCandidates(
-                authenticationContext: nil
+                authenticationContext: authenticationContext
             )
         } catch DeviceKeyStoreError.authenticationRequired {
+            // An owner-authenticated context supplied by the operation
+            // approver is the one and only system authentication for this
+            // request. Do not silently create a second LAContext if a legacy
+            // Keychain item rejects that context; surface the technical error
+            // instead.
+            if authenticationContext != nil {
+                throw DeviceKeyStoreError.authenticationRequired
+            }
             // The normal wrapping key is WhenUnlockedThisDeviceOnly and does
             // not need a prompt.  A one-time prompt is retained only for a
             // legacy userPresence item that still protects an existing vault;

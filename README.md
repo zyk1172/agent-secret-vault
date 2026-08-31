@@ -109,8 +109,8 @@ Short version:
    group headings, `###` entry headings, stable SVLT markers, and opaque
    `secret://` references; encrypted records remain in the local vault.
    Only credentials the user chooses to manage with SVLT belong in this path.
-   A blank packaged template is available from the Security Boundary page;
-   copying it into a vault remains an explicit user action.
+   A validated, secret-free packaged starter template is available from the
+   Security Boundary page; copying it into a vault remains an explicit user action.
 2. Use the generated MCP config:
 
 ```text
@@ -190,8 +190,10 @@ different provider or provide plaintext for the current operation; SVLT does
 not force conversion or substitution in that case.
 
 - `ssh_command_with_secret` for restricted local/private-network SSH.
-- `local_http_request_with_secret` for restricted local/private HTTP(S)
-  GET/HEAD checks with Basic Auth.
+- `local_http_request_with_secret` for restricted, policy-reviewed HTTP(S)
+  requests with Basic Auth. HTTPS is the default; plaintext HTTP requires an
+  explicit saved profile binding to the exact local/private destination and a
+  fresh first-use approval.
 - `api_request_with_token` for restricted allowlisted API requests with a token.
 - `database_query_with_secret` for restricted read-only database queries through
   a purpose-built runner.
@@ -219,14 +221,67 @@ must never be returned to the agent.
 - MCP tools never return decrypted values. Reveal requests display plaintext
   only in the macOS app, and Obsidian plugin reveal responses contain status
   only.
-- Each secret operation is independently evaluated as `silent`,
-  `approvalRequired`, or `denied` by `SecretOperationPolicyEngine`.
-- `effectiveRisk = max(agentRisk, localRisk)`: the Agent hint may raise risk but
-  never lowers a local approval or denial.
-- Bound read-only SSH/HTTP/database/SFTP operations can run silently. New or
-  public destinations, writes, plaintext reveal/copy/export, deletes, and
-  security-setting changes require a short-lived one-shot `ApprovalTicket` or
-  are denied.
+- Each secret operation is independently classified by
+  `SecretOperationPolicyEngine` into an authorization level: `none` for locally
+  provable metadata reads, `reusableApproval` for ordinary operations, and
+  `freshApprovalRequired` for explicitly destructive or high-impact operations.
+- SVLT policy classifies authorization requirements; it does not replace the
+  device owner's decision. The local policy engine chooses `none`, the
+  ordinary `reusableApproval` window, or one of the fixed
+  `freshApprovalRequired` categories and shows the full facts (raw command,
+  target, credential label, local reasons, and Agent warning). Hard failures
+  are reserved for malformed, contradictory, stale, or identity-invalid
+  requests.
+- `effectiveAuthorizationRequirement` is computed locally from the descriptor
+  and current metadata. `AgentRiskAssessment` is display/audit metadata only:
+  it cannot promote, downgrade, or deny an otherwise valid operation on the
+  device owner's behalf.
+- Every secret-bearing execution (SSH, HTTP/API, database, SFTP, export,
+  browser, local app, trusted process) is an ordinary `reusableApproval`
+  operation: one device-owner approval opens a fixed, non-sliding 300-second
+  in-memory execution window. The window is scoped to
+  the calling Agent process, exact secret references, normalized destination
+  and port, protocol, action family, and security generation; it is not a
+  global execution gate. Every request still re-evaluates the current local
+  policy; a fresh approval for a dangerous operation never creates, refreshes,
+  or extends the ordinary window.
+- The ordinary Agent IPC type and transport contain no plaintext-bearing
+  response. Session reveal and Catalog plaintext responses are available only
+  through the separately authenticated, code-signed App-control socket.
+- SSH commands are passed byte-for-byte as a single remote-command argument to
+  `ssh`, so the remote login shell interprets exactly what the caller wrote:
+  single-line and multi-line scripts, pipelines, redirects, heredocs, shell
+  interpreters, `sudo`, and unknown NAS CLIs are all first-class inputs. The
+  policy engine only decides the authorization level; at most five explicitly
+  registered fresh-rule categories per execution layer (SSH: power control,
+  filesystem delete, block-device/filesystem destruction, storage/RAID
+  destruction, container destruction) take a fresh approval with the full
+  command shown. The SSH ControlMaster is a reuse optimization only — its
+  failure never fails a command that already ran and never clears the lease.
+- Secret-bearing HTTP over plaintext `http://` triggers a fresh approval with a
+  plaintext-transport warning instead of a policy refusal. Authenticated
+  responses are metadata-only unless an App-owned response projection profile
+  allowlists the requested JSON pointers. The production daemon receives those
+  non-secret profiles through `VaultDaemonConfiguration`; its default empty
+  configuration advertises metadata-only responses. Derived credential/cookie
+  capture is not implemented in this release.
+- `localExecution` (handing a Secret to an arbitrary local process) is a
+  very-high-risk fresh approval explicitly labeled `userApprovedSecretRelease`
+  in audit and capability output; the device owner sees the process, arguments,
+  and secret label before approving. `trustedProcess` is a separate future
+  adapter boundary and is unavailable until a signed process profile is
+  configured.
+- Plaintext reveal/copy, deletes, security-setting changes, and Catalog Agent
+  writes retain their exact, one-shot `ApprovalTicket` authorization boundary.
+  Local plaintext export has a separate, fixed 300-second in-memory lease:
+  it is scoped to the calling Agent, exact references, the validated export
+  root (not the leaf filename), the export action, and security generation.
+  While that lease is active, only its matching in-memory decrypt capability
+  can be reused; the broader credential-key cache cannot extend Agent export
+  authorization.
+- Execution authorization is cleared on screen lock, sleep, session changes,
+  explicit lock, and Agent restart. Audit records distinguish fresh local
+  approval from execution-window reuse without storing plaintext or headers.
 - `locked` remains a compatibility field only. Agent gating uses
   `available`/`ready`/`approvalPending`; quitting the GUI does not stop the
   launchd Agent, while screen lock or session changes still clear protected

@@ -805,13 +805,13 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     private func presentAgentRevealSession(sessionID: String) async {
-        guard let agentClient,
+        guard let appControlClient,
               presentedAgentSessionIDs.insert(sessionID).inserted
         else {
             return
         }
         do {
-            let paragraph = try await agentClient.revealSessionData(sessionID: sessionID)
+            let paragraph = try await appControlClient.revealSessionData(sessionID: sessionID)
             let localSessionID = await uiRevealSessionStore.create(resolvedParagraph: paragraph)
             await RevealSessionPresenter().present(
                 sessionID: localSessionID,

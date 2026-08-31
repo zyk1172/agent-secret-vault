@@ -5,6 +5,7 @@ import path from "node:path";
 
 import {
   AuthenticatedIpcRequest,
+  AgentCallerIdentity,
   CapabilityToken,
   IpcFrameCodec,
   IpcRequest,
@@ -23,6 +24,7 @@ export interface LocalIpcClientOptions {
   unavailableRetryCount?: number;
   unavailableRetryDelayMs?: number;
   requestTimeoutMs?: number;
+  declaredCaller?: AgentCallerIdentity;
 }
 
 const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
@@ -51,6 +53,7 @@ export class LocalIpcClient {
   private readonly unavailableRetryCount: number;
   private readonly unavailableRetryDelayMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly declaredCaller?: AgentCallerIdentity;
 
   constructor(options: LocalIpcClientOptions = {}) {
     const defaults = appSupportIpcPaths();
@@ -59,6 +62,7 @@ export class LocalIpcClient {
     this.unavailableRetryCount = options.unavailableRetryCount ?? DEFAULT_UNAVAILABLE_RETRY_COUNT;
     this.unavailableRetryDelayMs = options.unavailableRetryDelayMs ?? DEFAULT_UNAVAILABLE_RETRY_DELAY_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.declaredCaller = options.declaredCaller;
   }
 
   static async readCapabilityToken(tokenPath: string): Promise<CapabilityToken> {
@@ -76,10 +80,10 @@ export class LocalIpcClient {
     return CapabilityToken.parse(token);
   }
 
-  async request(request: IpcRequest): Promise<IpcResponse> {
+  async request(request: IpcRequest, caller?: AgentCallerIdentity): Promise<IpcResponse> {
     const parsedRequest = IpcRequest.parse(request);
     for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
-      const response = await this.requestOnce(parsedRequest);
+      const response = await this.requestOnce(parsedRequest, caller ?? this.declaredCaller);
       if (
         response.type !== "failure" ||
         response.code !== "APP_UNAVAILABLE" ||
@@ -93,7 +97,10 @@ export class LocalIpcClient {
     return { type: "failure", code: "APP_UNAVAILABLE" };
   }
 
-  private async requestOnce(parsedRequest: IpcRequest): Promise<IpcResponse> {
+  private async requestOnce(
+    parsedRequest: IpcRequest,
+    caller?: AgentCallerIdentity
+  ): Promise<IpcResponse> {
     let token: CapabilityToken;
     try {
       token = await LocalIpcClient.readCapabilityToken(this.tokenPath);
@@ -106,6 +113,7 @@ export class LocalIpcClient {
 
     const authenticatedRequest = AuthenticatedIpcRequest.parse({
       capabilityToken: token,
+      ...(caller === undefined ? {} : { caller }),
       request: parsedRequest
     });
 

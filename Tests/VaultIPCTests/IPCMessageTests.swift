@@ -49,6 +49,9 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
     let requests: [IPCRequest] = [
         .status,
         .workbenchStatus,
+        .sshSessionStatus(sessionID: nil),
+        .sshSessionStatus(sessionID: "ssh_session_test"),
+        .sshSessionClose(sessionID: "ssh_session_test"),
         .savedReferences,
         .searchCatalog(query: "QNAP", field: .password, limit: 10),
         .catalogSearch(query: "Komga", field: nil, limit: 20),
@@ -112,7 +115,6 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .authorizeHighRisk(reason: "delete record"),
         .lock,
         .clearRevealSessions,
-        .revealSessionData(sessionID: "session-1"),
         .reveal(reference: "secret://0123456789ABCDEFGHJKMNPQRS", reason: "show to user"),
         .encrypt(label: "api token", policy: .externalSend),
         .encryptBound(
@@ -120,14 +122,6 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             policy: .credential,
             allowedDestinations: ["qnap.local", "192.168.2.240"],
             allowedProtocols: ["ssh", "https"]
-        ),
-        .restoreReferences(
-            references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
-            context: RevealContext(
-                reason: "restore",
-                template: "{{0}}",
-                ranges: [ReferenceRange(index: 0, placeholder: "{{0}}")]
-            )
         ),
         .exportResolvedText(
             references: ["secret://0123456789ABCDEFGHJKMNPQRS"],
@@ -186,6 +180,28 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
     #expect(encoded?["id"] == nil)
 }
 
+@Test func normalIPCRejectsLegacyPlaintextWireCases() throws {
+    let legacyRequests = [
+        Data(#"{"type":"revealSessionData","sessionID":"session-1"}"#.utf8),
+        Data(#"{"type":"restoreReferences","references":["secret://0123456789ABCDEFGHJKMNPQRS"],"context":{"reason":"restore","template":"{{0}}","ranges":[]}}"#.utf8)
+    ]
+    for payload in legacyRequests {
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(IPCRequest.self, from: payload)
+        }
+    }
+
+    let legacyResponses = [
+        Data(#"{"type":"revealSessionData","paragraph":{"text":"legacy","values":["legacy"]}}"#.utf8),
+        Data(#"{"type":"restoredText","text":"legacy"}"#.utf8)
+    ]
+    for payload in legacyResponses {
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(IPCResponse.self, from: payload)
+        }
+    }
+}
+
 @Test func responseJSONRoundTripsEveryCase() throws {
     let responses: [IPCResponse] = [
         .status(locked: false),
@@ -234,11 +250,17 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         )),
         .displayedToUser,
         .created(reference: "secret://0123456789ABCDEFGHJKMNPQRS"),
-        .restoredText("restored value"),
         .exported(path: "/Users/example/Desktop/token.md"),
         .execution(.completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "")),
         .execution(.quarantined(reason: .binaryOutput)),
         .secretOperation(SecretOperationOutput(status: "COMPLETED", httpStatus: 200, contentType: "application/json", bodyPreview: "{\"ok\":true}")),
+        .sshSessionStatus([SSHSessionStatus(
+            sessionID: "ssh_session_test",
+            host: "qnap.local",
+            port: 22,
+            status: .active,
+            idleExpiresIn: 299
+        )]),
         .failure(code: "APP_UNAVAILABLE")
     ]
 
@@ -345,6 +367,23 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
     #expect(decoded == request)
 }
 
+@Test func authenticatedRequestCarriesOptionalSelfDeclaredCallerWithoutChangingAuthentication() throws {
+    let token = try CapabilityToken(base64Encoded: Data(repeating: 0x6A, count: 32).base64EncodedString())
+    let caller = AgentCallerIdentity(name: "Pi", version: "1.2.3", transport: "mcp")
+    let request = AuthenticatedIPCRequest(
+        capabilityToken: token,
+        request: .status,
+        caller: caller
+    )
+
+    let decoded = try JSONDecoder().decode(
+        AuthenticatedIPCRequest.self,
+        from: JSONEncoder().encode(request)
+    )
+    #expect(decoded.caller == caller)
+    #expect(try IPCAuthenticator(expectedToken: token).authenticate(decoded) == .status)
+}
+
 @Test func authenticatorReturnsRequestOnlyForMatchingCapabilityToken() throws {
     let expected = try CapabilityToken(base64Encoded: Data(repeating: 0x11, count: 32).base64EncodedString())
     let different = try CapabilityToken(base64Encoded: Data(repeating: 0x22, count: 32).base64EncodedString())
@@ -407,8 +446,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .operationCompleted,
         .authorizationApproved,
         .savedReferences([]),
-        .revealSessionIDs(["session-1"]),
-        .revealSessionData(RestoredParagraph(text: "redacted", values: []))
+        .revealSessionIDs(["session-1"])
     ]
     for response in responses {
         let encoded = try JSONEncoder().encode(response)

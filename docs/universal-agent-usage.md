@@ -157,7 +157,7 @@ Agent 接入后先做：
 | 查看单个秘密给用户本人 | `secret_reveal_request` | `reference` |
 | 本地显示整段解密文本 | `paragraph_reveal_request` | `references` + `template` |
 | 导出填充后的敏感文本到本地文件 | `export_resolved_text_to_local_file` | `references` + `template` + `destinationPath` |
-| SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选 `usernameRef` |
+| SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选非敏感 `username` |
 | 本地/内网 HTTP Basic Auth | `local_http_request_with_secret` | `passwordRef`，可选 `usernameRef` |
 | API token 请求 | `api_request_with_token` | `tokenRef` |
 | 数据库只读查询 | `database_query_with_secret` | `passwordRef`，可选 `usernameRef` |
@@ -183,14 +183,20 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 
 ## 10. 常用输入示例
 
+下面的 JSON 只展示工具输入的字段形状，不能整段直接执行。发送前必须先
+通过 SVLT MCP 的搜索/list 响应取得同一 Catalog 中已经存在的 opaque
+`secret://` 引用，并把示例中的占位符替换掉；不要手造引用，也不要把
+示例主机、路径当成你的 allowlist。替换完成后才会通过输入 schema，也不会把一个
+不存在的测试引用误当成真实凭据。
+
 ### 10.1 SSH
 
 ```json
 {
   "host": "192.168.2.240",
   "username": "zyk",
-  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
-  "command": "hostname && whoami && uptime",
+  "passwordRef": "<existing secret:// reference returned by SVLT>",
+  "command": "hostname",
   "risk": "read"
 }
 ```
@@ -200,7 +206,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 ```json
 {
   "url": "http://192.168.2.240:8080/api/status",
-  "tokenRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "tokenRef": "<existing secret:// reference returned by SVLT>",
   "includeBodyPreview": true
 }
 ```
@@ -215,7 +221,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
   "host": "192.168.2.240",
   "database": "app",
   "username": "readonly_user",
-  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "passwordRef": "<existing secret:// reference returned by SVLT>",
   "query": "select current_user",
   "maxRows": 20
 }
@@ -230,7 +236,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
   "operation": "list",
   "host": "192.168.2.240",
   "username": "zyk",
-  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "passwordRef": "<existing secret:// reference returned by SVLT>",
   "remotePath": "/share"
 }
 ```
@@ -243,11 +249,11 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 {
   "url": "http://192.168.2.240/login",
   "username": "zyk",
-  "passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS",
+  "passwordRef": "<existing secret:// reference returned by SVLT>",
   "usernameSelector": "#user",
   "passwordSelector": "#password",
   "submitSelector": "button[type=submit]",
-  "submit": true
+  "submit": false
 }
 ```
 
