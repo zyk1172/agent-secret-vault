@@ -257,7 +257,7 @@ must never be returned to the agent.
   filesystem delete, block-device/filesystem destruction, storage/RAID
   destruction, container destruction) take a fresh approval with the full
   command shown. The SSH ControlMaster is a reuse optimization only — its
-  failure never fails a command that already ran and never clears the lease.
+  failure never fails a command whose remote completion was confirmed and never clears the lease.
 - Secret-bearing HTTP over plaintext `http://` is denied unless every
   referenced Secret has an explicit saved private/loopback transport profile
   for that target; an allowed profile still requires fresh approval with a
