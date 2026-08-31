@@ -126,11 +126,10 @@ import VaultCore
 
     let secondStage = String(script[secondStageStart.upperBound...])
     #expect(script.contains("-o NumberOfPasswordPrompts=1"))
-    #expect(secondStage.contains("permission denied, please try again"))
-    #expect(secondStage.contains("permission denied \\([^"))
     #expect(!secondStage.contains("(?i)(password|passphrase).*:"))
-    #expect(!secondStage.contains("-re \"(?i)permission denied\""))
-    #expect(secondStage.contains("remote command"))
+    #expect(!secondStage.contains("permission denied"))
+    #expect(secondStage.contains("remote stdout/stderr"))
+    #expect(secondStage.contains("eof {}"))
 }
 
 @Test func sshOutcomeUsesChannelStateBeforeExitCodeNamespace() {

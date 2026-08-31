@@ -990,13 +990,11 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         # password-backed channel. Do not issue a second expect against the
         # closed spawn id; only wait once to collect the child's real status.
         if {$passwordSent} {
-            # After the one authentication response, recognize an explicit
-            # authentication failure but never send the credential a second
-            # time. Do not match generic password/passphrase text here: that
-            # text may be ordinary output from the remote command.
+            # After the one authentication response, only wait for SSH to
+            # finish. The spawn stream also contains remote stdout/stderr, so
+            # post-auth text must never be interpreted as another protocol
+            # prompt or authentication failure.
             expect {
-                -re {(?i)permission denied, please try again\\.} { exit \(SSHWrapperExitCode.authenticationFailed) }
-                -re {(?i)permission denied \\([^\\r\\n]+\\)\\.?} { exit \(SSHWrapperExitCode.authenticationFailed) }
                 eof {}
                 timeout { exit \(SSHWrapperExitCode.timedOut) }
             }
