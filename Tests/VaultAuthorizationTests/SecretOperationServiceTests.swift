@@ -306,8 +306,8 @@ import VaultIPC
         protocolType: .https,
         httpMethod: "GET",
         url: "https://api.example.com/v1/status",
-        parameters: ["tokenRef": fixture.reference.description],
-        requestedEffects: ["read-only"]
+        requestedEffects: ["read-only"],
+        parameters: ["tokenRef": fixture.reference.description]
     )
 
     let output = try await fixture.service.performSecretOperation(descriptor)

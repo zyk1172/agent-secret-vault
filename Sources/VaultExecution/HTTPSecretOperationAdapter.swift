@@ -180,14 +180,17 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         let responseFingerprints = secretBuffers.flatMap(OutputSanitizer.fingerprints(for:))
         let sanitizedBody = try sanitizedResponseBody(
             response.data,
+            secrets: secretBuffers,
             fingerprints: responseFingerprints
         )
         let contentType = try sanitizedResponseText(
             response.contentType,
+            secrets: secretBuffers,
             fingerprints: responseFingerprints
         )
         let redirectLocation = try sanitizedResponseText(
             response.redirectLocation,
+            secrets: secretBuffers,
             fingerprints: responseFingerprints
         )
 
@@ -196,11 +199,18 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             body: sanitizedBody,
             hasSecretAuth: hasSecretAuth
         )
-        // §37: a cross-origin redirect stops here with the absolute Location.
-        // The agent re-submits a new exact request to that URL, which goes
-        // through the ordinary authorization flow on its own; SVLT never
-        // silently follows to another origin.
-        if (300...399).contains(response.statusCode), let redirectLocation {
+        // §37: every redirect stops here with the absolute Location. A
+        // redirect without a valid Location is a malformed server response,
+        // never a successful request.
+        if (300...399).contains(response.statusCode) {
+            guard let redirectLocation else {
+                return SecretOperationOutput(
+                    status: "MALFORMED_REDIRECT",
+                    httpStatus: response.statusCode,
+                    sessionID: response.sessionID,
+                    redacted: true
+                )
+            }
             return SecretOperationOutput(
                 status: "REDIRECT_REQUIRES_REVIEW",
                 httpStatus: response.statusCode,
@@ -761,38 +771,47 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
 
     private func sanitizedResponseBody(
         _ data: Data,
+        secrets: [Data],
         fingerprints: [SecretOutputFingerprint]
     ) throws -> String {
-        switch outputSanitizer.sanitize(
-            ProcessResult(exitCode: 0, stdout: data, stderr: Data()),
-            fingerprints: fingerprints
-        ) {
-        case .quarantined:
+        let safeData = try sanitizedResponseData(data, secrets: secrets, fingerprints: fingerprints)
+        guard let body = String(data: safeData, encoding: .utf8) else {
             throw SecretOperationExecutionError.outputQuarantined
-        case let .sanitized(result):
-            guard let body = String(data: result.stdout, encoding: .utf8) else {
-                throw SecretOperationExecutionError.outputQuarantined
-            }
-            return body
         }
+        return body
     }
 
     /// Response headers are remote-controlled strings just like the body.
     /// They must pass the same fingerprint guard before being exposed to MCP.
     private func sanitizedResponseText(
         _ value: String?,
+        secrets: [Data],
         fingerprints: [SecretOutputFingerprint]
     ) throws -> String? {
         guard let value else { return nil }
-        switch outputSanitizer.sanitize(
-            ProcessResult(exitCode: 0, stdout: Data(value.utf8), stderr: Data()),
-            fingerprints: fingerprints
-        ) {
-        case .quarantined:
+        _ = try sanitizedResponseData(Data(value.utf8), secrets: secrets, fingerprints: fingerprints)
+        return value
+    }
+
+    /// Server-controlled response data is checked twice: the retained digest
+    /// guard covers an SSH-session-style opaque fingerprint, while the
+    /// resolved secret guard can detect bounded percent-decoding variants.
+    /// Raw matches are quarantined here instead of returning the sanitizer's
+    /// redacted placeholder as an apparently valid server response.
+    private func sanitizedResponseData(
+        _ data: Data,
+        secrets: [Data],
+        fingerprints: [SecretOutputFingerprint]
+    ) throws -> Data {
+        let result = ProcessResult(exitCode: 0, stdout: data, stderr: Data())
+        guard case .sanitized = outputSanitizer.sanitize(result, fingerprints: fingerprints) else {
             throw SecretOperationExecutionError.outputQuarantined
-        case .sanitized:
-            return value
         }
+        guard case let .sanitized(sanitized) = outputSanitizer.sanitize(result, secrets: secrets),
+              sanitized.stdout == data else {
+            throw SecretOperationExecutionError.outputQuarantined
+        }
+        return data
     }
 
     private static func normalizedOrigin(_ rawOrigin: String) -> String? {

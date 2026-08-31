@@ -85,12 +85,44 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
         context: context,
         resolve: { _ in Data("ASV_HTTP_TEST_TOKEN".utf8) }
     )
-    // §37: a surfaced redirect always stops with the absolute Location so a
-    // new exact request can be authorized. (The URLProtocol test harness
-    // surfaces redirects directly; in production the origin-aware delegate
-    // follows same-origin hops and only cross-origin stops here.)
+    // §37: every surfaced redirect stops with the absolute Location so a
+    // new exact request can be authorized. The production delegate also
+    // refuses same-origin redirects; no resolved credential is forwarded.
     #expect(output.status == "REDIRECT_REQUIRES_REVIEW")
     #expect(output.redirectLocation == "http://\(httpTestHost)/ok")
+}
+
+@Test func typedHTTPAdapterDoesNotCompleteRedirectWithoutLocation() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/redirect-missing-location",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+            )
+        )
+    )
+
+    let output = try await adapter.execute(
+        descriptor,
+        metadata: [httpMetadata(reference)],
+        context: SecretOperationExecutionContext(principal: "malformed-redirect", securityGeneration: 1),
+        resolve: { _ in Data(httpTestSecret.utf8) }
+    )
+
+    #expect(output.status == "MALFORMED_REDIRECT")
+    #expect(output.httpStatus == 302)
+    #expect(output.redirectLocation == nil)
 }
 @Test func typedHTTPAdapterExecutesInsecureTransportBecauseTransportRiskIsTheOwnerDecision() async throws {
     let reference = try SecretReference(httpTestReference)
@@ -182,6 +214,8 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
         "/leak-body",
         "/leak-location",
         "/leak-encoded-location",
+        "/leak-lowercase-encoded-location",
+        "/leak-double-encoded-location",
         "/leak-content-type"
     ]
 
@@ -661,11 +695,20 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
         let isCrossRedirect = url.path == "/cross-redirect"
         let isLeakingLocation = url.path == "/leak-location"
         let isLeakingEncodedLocation = url.path == "/leak-encoded-location"
+        let isLeakingLowercaseEncodedLocation = url.path == "/leak-lowercase-encoded-location"
+        let isLeakingDoubleEncodedLocation = url.path == "/leak-double-encoded-location"
         let isLeakingContentType = url.path == "/leak-content-type"
         let isLeakingBody = url.path == "/leak-body"
         let isLarge = url.path == "/large"
         let isUnicode = url.path == "/unicode"
-        let statusCode = isRedirect || isCrossRedirect || isLeakingLocation || isLeakingEncodedLocation ? 302 : 200
+        let isRedirectResponse = isRedirect
+            || isCrossRedirect
+            || isLeakingLocation
+            || isLeakingEncodedLocation
+            || isLeakingLowercaseEncodedLocation
+            || isLeakingDoubleEncodedLocation
+            || url.path == "/redirect-missing-location"
+        let statusCode = isRedirectResponse ? 302 : 200
         let headers = isRedirect
             ? ["Location": "http://\(httpTestHost)/ok"]
             : isCrossRedirect
@@ -674,6 +717,10 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
                     ? ["Location": "http://\(httpTestHost)/ok?token=\(httpTestSecret)"]
                 : isLeakingEncodedLocation
                     ? ["Location": "http://\(httpTestHost)/ok?token=ASV%5FHTTP%5FTEST%5FTOKEN"]
+                : isLeakingLowercaseEncodedLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=ASV%5fHTTP%5fTEST%5fTOKEN"]
+                : isLeakingDoubleEncodedLocation
+                    ? ["Location": "http://\(httpTestHost)/ok?token=ASV%255FHTTP%255FTEST%255FTOKEN"]
                 : isLeakingContentType
                     ? ["Content-Type": "text/plain; token=\(httpTestSecret)"]
                 : ["Content-Type": "application/json"]
@@ -688,7 +735,7 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
         }
 
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !isRedirect {
+        if !isRedirectResponse {
             let data = isLarge
                 ? Data("0123456789abcdef".utf8)
                 : isUnicode
