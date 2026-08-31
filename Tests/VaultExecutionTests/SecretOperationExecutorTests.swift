@@ -48,6 +48,62 @@ import VaultCore
     #expect(output.redacted)
 }
 
+@Test func sshExecutorNeverPromotesAnUnprovenZeroToCompleted() async throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let runner = CapturingProcessRunner(
+        result: ProcessResult(exitCode: 0, stdout: Data("not proven".utf8), stderr: Data()),
+        appendCompletionMarker: false
+    )
+    let executor = LocalSecretOperationExecutor(processRunner: runner)
+
+    let output = try await executor.execute(
+        sshDescriptor(reference: reference),
+        metadata: [],
+        resolve: { _ in Data("ASV_CANARY_UNPROVEN_ZERO".utf8) }
+    )
+
+    #expect(output.status == "WRAPPER_FAILED")
+    #expect(output.exitCode == 125)
+    #expect(output.stage == .sshWrapper)
+    #expect(output.sessionID == nil)
+}
+
+@Test func sshOutcomeUsesChannelStateBeforeExitCodeNamespace() {
+    let remoteExit = ProcessResult(exitCode: 125, stdout: Data(), stderr: Data())
+    let remoteOutcome = LocalSecretOperationExecutor.sshOutcome(
+        for: .remoteCommandCompleted,
+        result: remoteExit
+    )
+    #expect(remoteOutcome.status == "FAILED")
+    #expect(remoteOutcome.stage == .remoteCommand)
+
+    let unprovenZero = SSHSessionCommandExecution(
+        processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+        channelState: .wrapperFailed
+    )
+    let normalized = LocalSecretOperationExecutor.normalizedProcessResult(for: unprovenZero)
+    let wrapperOutcome = LocalSecretOperationExecutor.sshOutcome(
+        for: unprovenZero.channelState,
+        result: normalized
+    )
+    #expect(normalized.exitCode != 0)
+    #expect(wrapperOutcome.status == "WRAPPER_FAILED")
+    #expect(wrapperOutcome.stage == .sshWrapper)
+
+    let failedTransport = SSHSessionCommandExecution(
+        processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+        channelState: .transportFailed
+    )
+    let transportResult = LocalSecretOperationExecutor.normalizedProcessResult(for: failedTransport)
+    let transportOutcome = LocalSecretOperationExecutor.sshOutcome(
+        for: failedTransport.channelState,
+        result: transportResult
+    )
+    #expect(transportResult.exitCode == 255)
+    #expect(transportOutcome.status != "COMPLETED")
+    #expect(transportOutcome.stage == .connection)
+}
+
 @Test func sshExpectTransportReadsFramedStdinWithoutArgv() async throws {
     let result = try await FoundationProcessRunner().run(
         ProcessInvocation(
@@ -323,12 +379,14 @@ private func sshDescriptor(
 
 private actor CapturingProcessRunner: ProcessRunning {
     let result: ProcessResult
+    let appendCompletionMarker: Bool
     private(set) var invocation: ProcessInvocation?
     private(set) var stdin = Data()
     private(set) var timeout: Duration?
 
-    init(result: ProcessResult) {
+    init(result: ProcessResult, appendCompletionMarker: Bool = true) {
         self.result = result
+        self.appendCompletionMarker = appendCompletionMarker
     }
 
     func run(
@@ -341,6 +399,13 @@ private actor CapturingProcessRunner: ProcessRunning {
             self.invocation = invocation
             self.stdin = stdin
             self.timeout = timeout
+        }
+        if invocation.executable == "/usr/bin/expect", appendCompletionMarker, result.exitCode != 126 {
+            return ProcessResult(
+                exitCode: result.exitCode,
+                stdout: result.stdout,
+                stderr: result.stderr + Data("\(LocalSecretOperationExecutor.sshCompletionMarker)\n".utf8)
+            )
         }
         if invocation.arguments.contains("check") {
             return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
@@ -381,7 +446,11 @@ private actor BatchProcessRunner: ProcessRunning {
     ) async throws -> ProcessResult {
         invocations.append(invocation)
         if invocation.executable == "/usr/bin/expect" {
-            return firstResult
+            return ProcessResult(
+                exitCode: firstResult.exitCode,
+                stdout: firstResult.stdout,
+                stderr: firstResult.stderr + Data("\(LocalSecretOperationExecutor.sshCompletionMarker)\n".utf8)
+            )
         }
         if invocation.arguments.contains("check") {
             return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())

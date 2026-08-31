@@ -11,6 +11,22 @@ public enum SSHSessionManagerError: Error, Equatable, Sendable {
     case sessionLimitReached
 }
 
+/// The result of one SSH channel is intentionally separate from the child
+/// process exit status. An exit status of zero is only a remote-command
+/// success when the wrapper has completed its own protocol and reported that
+/// the SSH child was authenticated and waited to completion.
+public enum SSHChannelState: String, Codable, Equatable, Sendable {
+    /// The local wrapper or process boundary failed before it could prove an
+    /// authenticated SSH channel and completed remote command.
+    case wrapperFailed
+    /// SSH ran, but the transport/authentication failed before a remote
+    /// command completion was proven.
+    case transportFailed
+    /// The authenticated SSH child was waited successfully; its exit status
+    /// is therefore the remote command's status, including non-zero values.
+    case remoteCommandCompleted
+}
+
 /// The transport scope contains no plaintext. `principal` is supplied by the
 /// trusted IPC boundary, never by an Agent descriptor.
 public struct SSHSessionScope: Hashable, Sendable {
@@ -62,10 +78,22 @@ public struct SSHSessionAccess: Sendable, Equatable {
 
 public struct SSHSessionCommandExecution: Sendable, Equatable {
     public let processResult: ProcessResult
-    public let transportReady: Bool
+    public let channelState: SSHChannelState
     public let sessionID: String?
     let outputFingerprints: [SecretOutputFingerprint]
 
+    /// Compatibility projection for callers compiled against the original
+    /// boolean transport result. New code should use `channelState` so a
+    /// wrapper failure cannot be confused with a completed remote command.
+    @available(*, deprecated, message: "Use channelState")
+    public var transportReady: Bool {
+        channelState == .remoteCommandCompleted
+    }
+
+    /// Compatibility initializer for existing in-process test doubles and
+    /// adapters. A false value is conservatively treated as a transport
+    /// failure; it is never eligible to publish or reuse a session.
+    @available(*, deprecated, message: "Use the channelState initializer")
     public init(
         processResult: ProcessResult,
         transportReady: Bool,
@@ -73,7 +101,19 @@ public struct SSHSessionCommandExecution: Sendable, Equatable {
     ) {
         self.init(
             processResult: processResult,
-            transportReady: transportReady,
+            channelState: transportReady ? .remoteCommandCompleted : .transportFailed,
+            sessionID: sessionID
+        )
+    }
+
+    public init(
+        processResult: ProcessResult,
+        channelState: SSHChannelState,
+        sessionID: String? = nil
+    ) {
+        self.init(
+            processResult: processResult,
+            channelState: channelState,
             sessionID: sessionID,
             outputFingerprints: []
         )
@@ -81,12 +121,12 @@ public struct SSHSessionCommandExecution: Sendable, Equatable {
 
     init(
         processResult: ProcessResult,
-        transportReady: Bool,
+        channelState: SSHChannelState,
         sessionID: String? = nil,
         outputFingerprints: [SecretOutputFingerprint]
     ) {
         self.processResult = processResult
-        self.transportReady = transportReady
+        self.channelState = channelState
         self.sessionID = sessionID
         self.outputFingerprints = outputFingerprints
     }
@@ -94,7 +134,7 @@ public struct SSHSessionCommandExecution: Sendable, Equatable {
     func assigningSessionID(_ id: String?) -> Self {
         Self(
             processResult: processResult,
-            transportReady: transportReady,
+            channelState: channelState,
             sessionID: id,
             outputFingerprints: outputFingerprints
         )
@@ -104,7 +144,7 @@ public struct SSHSessionCommandExecution: Sendable, Equatable {
         guard outputFingerprints.isEmpty else { return self }
         return Self(
             processResult: processResult,
-            transportReady: transportReady,
+            channelState: channelState,
             sessionID: sessionID,
             outputFingerprints: fingerprints
         )
@@ -178,6 +218,10 @@ public actor SSHSessionManager {
     private let maxGlobalSessions: Int
     private let now: @Sendable () -> Date
     private let monotonicNow: @Sendable () -> UInt64
+    // Darwin's sockaddr_un reserves 104 bytes for sun_path. Leave room for
+    // its NUL terminator and fail before OpenSSH receives an unrepresentable
+    // socket path.
+    private static let maxControlPathBytes = 103
     private var records: [String: Record] = [:]
     private var openingTasks: [SSHSessionScope: OpeningTask] = [:]
     private var didCleanStaleControlPaths = false
@@ -432,11 +476,11 @@ public actor SSHSessionManager {
             return result.assigningSessionID(nil)
         }
 
-        guard result.transportReady else {
+        guard result.channelState == .remoteCommandCompleted else {
             openingTasks.removeValue(forKey: scope)
-            // A failed first channel is not an authenticated transport. Do
-            // not issue `ssh -O exit` on a path that may never have been a
-            // live master.
+            // A wrapper or transport failure is not an authenticated,
+            // completed channel. Do not issue `ssh -O exit` on a path that
+            // may never have been a live master.
             records.removeValue(forKey: record.id)
             removeControlPath(record.controlPath)
             return result.assigningSessionID(nil)
@@ -496,7 +540,7 @@ public actor SSHSessionManager {
             outputFingerprints: record.outputFingerprints
         )
         let result = try await operation(access)
-        guard result.transportReady else {
+        guard result.channelState == .remoteCommandCompleted else {
             await closeRecord(record)
             return result.assigningSessionID(nil)
         }
@@ -603,11 +647,12 @@ public actor SSHSessionManager {
     private func makeControlPath() throws -> String {
         try ensureSessionDirectory()
         let path = sessionDirectory.appendingPathComponent(
-            // Keep the socket below macOS's sockaddr_un path limit even when
-            // the user's home path contains localized or long components.
             "s-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24))",
             isDirectory: false
         ).path
+        guard path.utf8.count < Self.maxControlPathBytes else {
+            throw SSHSessionManagerError.controlDirectoryUnavailable
+        }
         // A path collision is extraordinarily unlikely, but never reuse or
         // follow an existing path. The SSH process must create the socket.
         var info = stat()

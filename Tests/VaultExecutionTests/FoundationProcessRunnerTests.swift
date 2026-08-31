@@ -79,6 +79,25 @@ import Testing
     #expect(result.stderr.isEmpty)
 }
 
+@Test func processLaunchFailureIsDistinctFromStdinFailure() async throws {
+    do {
+        _ = try await FoundationProcessRunner().run(
+            ProcessInvocation(
+                executable: "/private/tmp/svlt-executable-that-does-not-exist",
+                arguments: []
+            ),
+            stdin: Data(),
+            timeout: .seconds(2),
+            outputLimitBytes: 1_024
+        )
+        Issue.record("A missing executable unexpectedly launched.")
+    } catch ProcessRunError.processLaunchFailed(let message) {
+        #expect(!message.isEmpty)
+    } catch {
+        Issue.record("Unexpected process error: \(error)")
+    }
+}
+
 private func expectRunError(
     _ expected: ProcessRunError,
     performing operation: () async throws -> Void

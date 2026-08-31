@@ -228,6 +228,10 @@ public extension SecretOperationExecuting {
 /// query, or log field.
 public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     private static let expectExecutablePath = "/usr/bin/expect"
+    /// Written only by the wrapper to its own stderr after a successful
+    /// `wait`. Spawned SSH output is logged to the wrapper's stdout, so a
+    /// remote command cannot manufacture this out-of-band completion proof.
+    static let sshCompletionMarker = "__SVLT_SSH_REMOTE_COMMAND_COMPLETED_v1__"
     private let processRunner: any ProcessRunning
     private let outputSanitizer: OutputSanitizer
     private let sshSessionManager: SSHSessionManager
@@ -493,15 +497,23 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 throw SecretOperationExecutionError.outputLimitExceeded
             }
 
-            sessionID = execution.sessionID ?? sessionID
-            totalOutputBytes += execution.processResult.stdout.count + execution.processResult.stderr.count
+            if execution.channelState == .remoteCommandCompleted {
+                sessionID = execution.sessionID ?? sessionID
+            } else {
+                // A failed wrapper/transport cannot keep an old session handle
+                // alive. The caller must not mistake it for a reusable
+                // transport after a command that was never proven to run.
+                sessionID = nil
+            }
+            let processResult = Self.normalizedProcessResult(for: execution)
+            totalOutputBytes += processResult.stdout.count + processResult.stderr.count
             guard totalOutputBytes <= batchOutputLimitBytes else {
                 throw SecretOperationExecutionError.outputLimitExceeded
             }
 
             let sanitized: ProcessResult
             switch outputSanitizer.sanitize(
-                execution.processResult,
+                processResult,
                 fingerprints: execution.outputFingerprints
             ) {
             case .quarantined:
@@ -516,8 +528,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             }
 
             let outcome = Self.sshOutcome(
-                for: sanitized.exitCode,
-                stderr: stderr
+                for: execution.channelState,
+                result: sanitized
             )
             let commandResult = SSHCommandResult(
                 index: index,
@@ -602,16 +614,38 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                     timeout: operationTimeout,
                     outputLimitBytes: outputLimitBytes
                 )
-            } catch ProcessRunError.timedOut {
-                return SSHSessionCommandExecution(
-                    processResult: ProcessResult(exitCode: SSHWrapperExitCode.timedOut, stdout: Data(), stderr: Data()),
-                    transportReady: false,
-                    outputFingerprints: OutputSanitizer.fingerprints(for: passwordData)
-                )
+            } catch let error as ProcessRunError {
+                switch error {
+                case .timedOut:
+                    return SSHSessionCommandExecution(
+                        processResult: ProcessResult(
+                            exitCode: SSHWrapperExitCode.timedOut,
+                            stdout: Data(),
+                            stderr: Data()
+                        ),
+                        channelState: .wrapperFailed,
+                        outputFingerprints: OutputSanitizer.fingerprints(for: passwordData)
+                    )
+                case let .processLaunchFailed(message),
+                     let .stdinWriteFailed(message),
+                     let .launchFailed(message):
+                    return SSHSessionCommandExecution(
+                        processResult: ProcessResult(
+                            exitCode: SSHWrapperExitCode.wrapperFailed,
+                            stdout: Data(),
+                            stderr: Data(message.utf8)
+                        ),
+                        channelState: .wrapperFailed,
+                        outputFingerprints: OutputSanitizer.fingerprints(for: passwordData)
+                    )
+                case .outputLimitExceeded:
+                    throw error
+                }
             }
 
+            let (unmarkedResult, remoteCommandCompleted) = Self.removeCompletionMarker(from: rawResult)
             let sanitized: ProcessResult
-            switch outputSanitizer.sanitize(rawResult, secrets: [passwordData]) {
+            switch outputSanitizer.sanitize(unmarkedResult, secrets: [passwordData]) {
             case .quarantined:
                 throw SecretOperationExecutionError.outputQuarantined
             case let .sanitized(result):
@@ -619,7 +653,10 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             }
             return SSHSessionCommandExecution(
                 processResult: sanitized,
-                transportReady: Self.transportReady(for: sanitized, authenticationAttempt: true),
+                channelState: Self.initialChannelState(
+                    for: sanitized,
+                    remoteCommandCompleted: remoteCommandCompleted
+                ),
                 outputFingerprints: OutputSanitizer.fingerprints(for: passwordData)
             )
         }
@@ -634,10 +671,9 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ControlMaster=auto",
                         "-o", "ControlPersist=300",
-                        // `-S` passes the socket path as a dedicated argv
-                        // value. OpenSSH's `-o ControlPath=...` parser treats
-                        // spaces in macOS Application Support paths as extra
-                        // config words even when the argv element is intact.
+                        // `-S` passes the socket path through OpenSSH's
+                        // dedicated socket-option boundary. Keep this in sync
+                        // with the Expect-backed first channel.
                         "-S", access.controlPath,
                         "-o", "ConnectTimeout=\(timeoutSeconds)",
                         "-p", String(port),
@@ -650,16 +686,33 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 timeout: operationTimeout,
                 outputLimitBytes: outputLimitBytes
             )
-        } catch ProcessRunError.timedOut {
-            return SSHSessionCommandExecution(
-                processResult: ProcessResult(exitCode: 124, stdout: Data(), stderr: Data()),
-                transportReady: false,
-                outputFingerprints: access.outputFingerprints
-            )
+        } catch let error as ProcessRunError {
+            switch error {
+            case .timedOut:
+                return SSHSessionCommandExecution(
+                    processResult: ProcessResult(exitCode: 124, stdout: Data(), stderr: Data()),
+                    channelState: .wrapperFailed,
+                    outputFingerprints: access.outputFingerprints
+                )
+            case let .processLaunchFailed(message),
+                 let .stdinWriteFailed(message),
+                 let .launchFailed(message):
+                return SSHSessionCommandExecution(
+                    processResult: ProcessResult(
+                        exitCode: SSHWrapperExitCode.wrapperFailed,
+                        stdout: Data(),
+                        stderr: Data(message.utf8)
+                    ),
+                    channelState: .wrapperFailed,
+                    outputFingerprints: access.outputFingerprints
+                )
+            case .outputLimitExceeded:
+                throw error
+            }
         }
         return SSHSessionCommandExecution(
             processResult: result,
-            transportReady: Self.transportReady(for: result, authenticationAttempt: false),
+            channelState: result.exitCode == 255 ? .transportFailed : .remoteCommandCompleted,
             outputFingerprints: access.outputFingerprints
         )
     }
@@ -675,18 +728,45 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         }
     }
 
-    private static func transportReady(
+    private static func initialChannelState(
         for result: ProcessResult,
-        authenticationAttempt: Bool
-    ) -> Bool {
-        if authenticationAttempt {
-            return ![SSHWrapperExitCode.frameRead, SSHWrapperExitCode.frameDecode,
-                     SSHWrapperExitCode.argumentValidation, SSHWrapperExitCode.timedOut,
-                     SSHWrapperExitCode.wrapperFailed, SSHWrapperExitCode.authenticationFailed]
-                .contains(result.exitCode)
-                && !containsHostKeyFailure(result)
+        remoteCommandCompleted: Bool
+    ) -> SSHChannelState {
+        guard remoteCommandCompleted else {
+            // A non-marker result is never allowed to become a remote
+            // command result merely because its process exit code is zero.
+            // Preserve OpenSSH's conventional 255 connection failure when it
+            // is available; all other unproven exits are wrapper failures.
+            return result.exitCode == 255 ? .transportFailed : .wrapperFailed
         }
-        return result.exitCode != 255 && !containsHostKeyFailure(result)
+        // OpenSSH reserves 255 for its own transport errors. A remote command
+        // that exits with any other status, including 125/126, is a completed
+        // command and must not be confused with our wrapper status namespace.
+        return result.exitCode == 255 ? .transportFailed : .remoteCommandCompleted
+    }
+
+    static func normalizedProcessResult(
+        for execution: SSHSessionCommandExecution
+    ) -> ProcessResult {
+        guard execution.processResult.exitCode == 0 else {
+            return execution.processResult
+        }
+        switch execution.channelState {
+        case .wrapperFailed:
+            return ProcessResult(
+                exitCode: SSHWrapperExitCode.wrapperFailed,
+                stdout: execution.processResult.stdout,
+                stderr: execution.processResult.stderr
+            )
+        case .transportFailed:
+            return ProcessResult(
+                exitCode: 255,
+                stdout: execution.processResult.stdout,
+                stderr: execution.processResult.stderr
+            )
+        case .remoteCommandCompleted:
+            return execution.processResult
+        }
     }
 
     private static func containsHostKeyFailure(_ result: ProcessResult) -> Bool {
@@ -771,6 +851,31 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         }.joined(separator: "\n").appending("\n").utf8)
     }
 
+    /// Removes the wrapper-only completion line from stderr and reports
+    /// whether the authenticated child reached the post-`wait` proof point.
+    /// The marker is intentionally not accepted from stdout, where Expect
+    /// logs all spawned SSH output.
+    static func removeCompletionMarker(
+        from result: ProcessResult
+    ) -> (result: ProcessResult, completed: Bool) {
+        let marker = Data("\(sshCompletionMarker)\n".utf8)
+        guard let range = result.stderr.range(of: marker) else {
+            return (result, false)
+        }
+
+        var stderr = result.stderr
+        stderr.removeSubrange(range)
+        guard stderr.range(of: marker) == nil else {
+            // Multiple markers are not a valid wrapper transcript. Leave the
+            // bytes untouched so the caller treats it as unproven.
+            return (result, false)
+        }
+        return (
+            ProcessResult(exitCode: result.exitCode, stdout: result.stdout, stderr: stderr),
+            true
+        )
+    }
+
     static func expectTimeoutSeconds(for timeout: Duration) -> Int {
         max(1, Int(timeout.timeInterval.rounded(.up)))
     }
@@ -779,32 +884,34 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         data.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func sshOutcome(
-        for exitCode: Int32,
-        stderr: String
+    static func sshOutcome(
+        for channelState: SSHChannelState,
+        result: ProcessResult
     ) -> (status: String, stage: SecretOperationStage?) {
-        let lowercasedStderr = stderr.lowercased()
-        if lowercasedStderr.contains("remote host identification has changed")
-            || lowercasedStderr.contains("host key verification failed") {
-            return ("HOST_KEY_FAILED", .hostKey)
-        }
-        switch exitCode {
-        case 0:
-            return ("COMPLETED", nil)
-        case SSHWrapperExitCode.frameRead:
-            return ("WRAPPER_FAILED", .frameRead)
-        case SSHWrapperExitCode.frameDecode:
-            return ("WRAPPER_FAILED", .frameDecode)
-        case SSHWrapperExitCode.argumentValidation:
-            return ("WRAPPER_FAILED", .argumentValidation)
-        case SSHWrapperExitCode.timedOut:
-            return ("TIMED_OUT", .timeout)
-        case SSHWrapperExitCode.wrapperFailed:
-            return ("WRAPPER_FAILED", .sshWrapper)
-        case SSHWrapperExitCode.authenticationFailed:
-            return ("AUTH_FAILED", .authentication)
-        default:
-            return ("FAILED", .remoteCommand)
+        switch channelState {
+        case .remoteCommandCompleted:
+            return result.exitCode == 0
+                ? ("COMPLETED", nil)
+                : ("FAILED", .remoteCommand)
+        case .transportFailed:
+            return containsHostKeyFailure(result)
+                ? ("HOST_KEY_FAILED", .hostKey)
+                : ("FAILED", .connection)
+        case .wrapperFailed:
+            switch result.exitCode {
+            case SSHWrapperExitCode.frameRead:
+                return ("WRAPPER_FAILED", .frameRead)
+            case SSHWrapperExitCode.frameDecode:
+                return ("WRAPPER_FAILED", .frameDecode)
+            case SSHWrapperExitCode.argumentValidation:
+                return ("WRAPPER_FAILED", .argumentValidation)
+            case SSHWrapperExitCode.timedOut:
+                return ("TIMED_OUT", .timeout)
+            case SSHWrapperExitCode.authenticationFailed:
+                return ("AUTH_FAILED", .authentication)
+            default:
+                return ("WRAPPER_FAILED", .sshWrapper)
+            }
         }
     }
 
@@ -844,45 +951,68 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
         set timeout $timeoutSeconds
+        set passwordSent 0
         log_user 1
-        # Build an actual Tcl list and expand it as argv. This is important
-        # because the macOS Application Support path may contain spaces;
-        # string-concatenating a spawn command would split ControlPath before
-        # OpenSSH sees it. The final command remains ONE ssh argv element, so
-        # the local shell never interprets it and the remote login shell
-        # receives it byte-for-byte, including newlines and quotes.
+        # Build an actual Tcl list and expand it as argv. The final command and
+        # socket path each remain one ssh argv element, including spaces and
+        # newlines; the local shell never interprets either value.
         set sshArguments [list \
             /usr/bin/ssh \
             -o BatchMode=no \
             -o StrictHostKeyChecking=accept-new \
             -o ControlMaster=yes \
             -o ControlPersist=300 \
+            -o PubkeyAuthentication=no \
+            -o PreferredAuthentications=password,keyboard-interactive \
             -S $controlPath \
             -o ConnectTimeout=$timeoutSeconds \
             -p $port \
             -- \
             "$username@$host" \
             $command]
-        if {[catch {spawn {*}$sshArguments}]} {
+        if {[catch {spawn -noecho {*}$sshArguments}]} {
             exit \(SSHWrapperExitCode.wrapperFailed)
         }
         expect {
             -re "(?i)permission denied" { exit \(SSHWrapperExitCode.authenticationFailed) }
-            -re "(?i)(password|passphrase).*:" { send -- "$password\\r" }
+            -re "(?i)(password|passphrase).*:" {
+                send -- "$password\\r"
+                set passwordSent 1
+            }
             eof {}
             timeout { exit \(SSHWrapperExitCode.timedOut) }
         }
-        # After the one authentication response, recognize authentication
-        # failure but never send the credential a second time. A remote command
-        # that prints "password:" must not receive the credential again.
-        expect {
-            -re "(?i)permission denied" { exit \(SSHWrapperExitCode.authenticationFailed) }
-            -re "(?i)(password|passphrase).*:" { exit \(SSHWrapperExitCode.authenticationFailed) }
-            eof {}
-            timeout { exit \(SSHWrapperExitCode.timedOut) }
+        # EOF before a password prompt means SSH never established the
+        # password-backed channel. Do not issue a second expect against the
+        # closed spawn id; only wait once to collect the child's real status.
+        if {$passwordSent} {
+            # After the one authentication response, recognize authentication
+            # failure but never send the credential a second time. A remote
+            # command that prints "password:" must not receive it again.
+            expect {
+                -re "(?i)permission denied" { exit \(SSHWrapperExitCode.authenticationFailed) }
+                -re "(?i)(password|passphrase).*:" { exit \(SSHWrapperExitCode.authenticationFailed) }
+                eof {}
+                timeout { exit \(SSHWrapperExitCode.timedOut) }
+            }
         }
-        if {[catch {wait} result]} { exit \(SSHWrapperExitCode.wrapperFailed) }
-        exit [lindex $result 3]
+        if {[catch {wait} waitResult]} { exit \(SSHWrapperExitCode.wrapperFailed) }
+        if {[llength $waitResult] < 4} { exit \(SSHWrapperExitCode.wrapperFailed) }
+        lassign $waitResult pid spawnId osError childStatus
+        if {![string is integer -strict $osError] || $osError != 0} { exit \(SSHWrapperExitCode.wrapperFailed) }
+        if {![string is integer -strict $childStatus] || $childStatus < 0 || $childStatus > 255} { exit \(SSHWrapperExitCode.wrapperFailed) }
+        if {!$passwordSent || $childStatus == 255} {
+            # Preserve OpenSSH's 255 connection failure for diagnostics. Any
+            # other exit without a password prompt is an unproven wrapper
+            # result and must not be allowed to look like remote success.
+            if {$childStatus == 255} { exit 255 }
+            exit \(SSHWrapperExitCode.wrapperFailed)
+        }
+        # This line is a wrapper-only protocol proof. Spawned SSH output is
+        # logged to stdout; the completion marker is written to Expect's own
+        # stderr only after wait and authentication have succeeded.
+        puts stderr "\(sshCompletionMarker)"
+        exit $childStatus
         """
     }
 }
