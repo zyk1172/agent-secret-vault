@@ -204,6 +204,59 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
     }
 }
 
+@Test func typedHTTPAdapterTreatsProtocolAndDestinationAsAnAtomicBinding() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let metadata = SecretPolicyMetadata(
+        reference: reference,
+        policy: .credential,
+        label: "HTTP test credential",
+        allowedDestinations: ["\(httpTestHost):8080", "\(httpTestHost):3000"],
+        allowedProtocols: ["ssh", "http"],
+        allowedBindings: [
+            SecretDestinationBinding(protocolType: .ssh, destination: "\(httpTestHost):8080"),
+            SecretDestinationBinding(protocolType: .http, destination: "http://\(httpTestHost):3000")
+        ]
+    )
+
+    func descriptor(port: Int) -> SecretOperationDescriptor {
+        SecretOperationDescriptor(
+            actionType: .apiRequest,
+            secretReferences: [reference],
+            destination: "\(httpTestHost):\(port)",
+            port: port,
+            protocolType: .http,
+            httpMethod: "GET",
+            url: "http://\(httpTestHost):\(port)/ok",
+            payload: .http(
+                HTTPOperation(
+                    method: .get,
+                    auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference)
+                )
+            )
+        )
+    }
+
+    let newBindingOutput = try await adapter.execute(
+        descriptor(port: 3000),
+        metadata: [metadata],
+        context: SecretOperationExecutionContext(principal: "atomic-new", securityGeneration: 1),
+        resolve: { _ in Data(httpTestSecret.utf8) }
+    )
+    #expect(newBindingOutput.status == "COMPLETED")
+
+    await #expect(throws: SecretOperationExecutionError.insecureTransportDenied) {
+        _ = try await adapter.execute(
+            descriptor(port: 8080),
+            metadata: [metadata],
+            context: SecretOperationExecutionContext(principal: "atomic-old", securityGeneration: 1),
+            resolve: { _ in Data(httpTestSecret.utf8) }
+        )
+    }
+}
+
 @Test func typedHTTPAdapterQuarantinesSecretsInBodyLocationAndContentType() async throws {
     let reference = try SecretReference(httpTestReference)
     let adapter = HTTPSecretOperationAdapter(

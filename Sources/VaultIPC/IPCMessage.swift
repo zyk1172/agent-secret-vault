@@ -617,6 +617,7 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
     public let label: String?
     public let allowedDestinations: [String]
     public let allowedProtocols: [String]
+    public let allowedBindings: [SecretDestinationBinding]
     public let createdAt: Date
     public let updatedAt: Date
 
@@ -626,6 +627,7 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
         label: String?,
         allowedDestinations: [String] = [],
         allowedProtocols: [String] = [],
+        allowedBindings: [SecretDestinationBinding] = [],
         createdAt: Date,
         updatedAt: Date
     ) {
@@ -634,6 +636,7 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
         self.label = label
         self.allowedDestinations = allowedDestinations
         self.allowedProtocols = allowedProtocols
+        self.allowedBindings = allowedBindings
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -644,6 +647,7 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
         case label
         case allowedDestinations
         case allowedProtocols
+        case allowedBindings
         case createdAt
         case updatedAt
     }
@@ -656,6 +660,7 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
             label: try container.decodeIfPresent(String.self, forKey: .label),
             allowedDestinations: try container.decodeIfPresent([String].self, forKey: .allowedDestinations) ?? [],
             allowedProtocols: try container.decodeIfPresent([String].self, forKey: .allowedProtocols) ?? [],
+            allowedBindings: try container.decodeIfPresent([SecretDestinationBinding].self, forKey: .allowedBindings) ?? [],
             createdAt: try container.decode(Date.self, forKey: .createdAt),
             updatedAt: try container.decode(Date.self, forKey: .updatedAt)
         )
@@ -668,6 +673,7 @@ public struct SecretReferenceMetadata: Codable, Equatable, Sendable {
         try container.encodeIfPresent(label, forKey: .label)
         try container.encode(allowedDestinations, forKey: .allowedDestinations)
         try container.encode(allowedProtocols, forKey: .allowedProtocols)
+        try container.encode(allowedBindings, forKey: .allowedBindings)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
     }

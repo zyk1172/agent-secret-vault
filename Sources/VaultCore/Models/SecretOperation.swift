@@ -198,6 +198,47 @@ public enum SecretOperationProtocol: String, Codable, CaseIterable, Sendable {
     case file
 }
 
+/// An owner-approved service binding. The protocol and destination are one
+/// authenticated unit; keeping them together prevents independently stored
+/// arrays from being interpreted as an implicit Cartesian product.
+public struct SecretDestinationBinding: Codable, Equatable, Sendable {
+    public let protocolType: SecretOperationProtocol
+    public let destination: String
+
+    public init(
+        protocolType: SecretOperationProtocol,
+        destination: String
+    ) {
+        self.protocolType = protocolType
+        self.destination = destination
+    }
+
+    public func matches(
+        requestedProtocol: SecretOperationProtocol,
+        destination: String?,
+        url: String?
+    ) -> Bool {
+        guard protocolType == requestedProtocol else { return false }
+        if requestedProtocol == .http || requestedProtocol == .https {
+            let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
+                url ?? destination,
+                expectedScheme: requestedProtocol.rawValue,
+                defaultPort: requestedProtocol == .https ? 443 : 80,
+                allowURLPath: true
+            )
+            let savedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
+                self.destination,
+                expectedScheme: requestedProtocol.rawValue,
+                requireExplicitPort: true,
+                allowURLPath: false
+            )
+            return requestedOrigin != nil && requestedOrigin == savedOrigin
+        }
+        return SecretOperationDescriptor.normalizeDestination(destination ?? url)
+            == SecretOperationDescriptor.normalizeDestination(self.destination)
+    }
+}
+
 /// Descriptive transport markers retained in Secret metadata. An explicit
 /// `http` entry is an owner-saved opt-in for insecure HTTP; the exact origin
 /// check is performed by the HTTP executor. Host-class helpers below are not
@@ -413,6 +454,24 @@ public struct SecretPolicyMetadata: Codable, Equatable, Sendable {
     public let label: String?
     public let allowedDestinations: [String]
     public let allowedProtocols: [String]
+    public let allowedBindings: [SecretDestinationBinding]
+
+    /// Legacy records only have separate arrays. Preserve their historical
+    /// behavior when it is unambiguous (one protocol marker), but once an
+    /// explicit binding exists it is the sole source for pair-sensitive
+    /// checks. Never synthesize a cross-product for mixed legacy protocols.
+    public var destinationBindings: [SecretDestinationBinding] {
+        guard allowedBindings.isEmpty else { return allowedBindings }
+        guard allowedProtocols.count == 1 else { return [] }
+        let marker = allowedProtocols[0].lowercased()
+        let protocolType = marker == "http-loopback"
+            ? SecretOperationProtocol.http
+            : SecretOperationProtocol(rawValue: marker)
+        guard let protocolType else { return [] }
+        return allowedDestinations.map {
+            SecretDestinationBinding(protocolType: protocolType, destination: $0)
+        }
+    }
 
     public var httpTransportSecurityPolicy: HTTPTransportSecurityPolicy {
         HTTPTransportSecurityPolicy.fromAllowedProtocols(allowedProtocols)
@@ -423,13 +482,15 @@ public struct SecretPolicyMetadata: Codable, Equatable, Sendable {
         policy: SecretPolicy,
         label: String?,
         allowedDestinations: [String] = [],
-        allowedProtocols: [String] = []
+        allowedProtocols: [String] = [],
+        allowedBindings: [SecretDestinationBinding] = []
     ) {
         self.reference = reference
         self.policy = policy
         self.label = label
         self.allowedDestinations = allowedDestinations
         self.allowedProtocols = allowedProtocols
+        self.allowedBindings = allowedBindings
     }
 }
 

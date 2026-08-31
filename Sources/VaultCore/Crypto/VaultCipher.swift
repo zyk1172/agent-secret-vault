@@ -18,6 +18,7 @@ public struct VaultCipher: Sendable {
         policy: SecretPolicy,
         allowedDestinations: [String] = [],
         allowedProtocols: [String] = [],
+        allowedBindings: [SecretDestinationBinding] = [],
         masterKey: SymmetricKey,
         formatVersion: Int = VaultFormat.current
     ) throws -> EncryptedRecord {
@@ -30,6 +31,7 @@ public struct VaultCipher: Sendable {
             policy: policy,
             allowedDestinations: allowedDestinations,
             allowedProtocols: allowedProtocols,
+            allowedBindings: allowedBindings,
             masterKey: masterKey,
             formatVersion: formatVersion,
             createdAt: now,
@@ -46,6 +48,7 @@ public struct VaultCipher: Sendable {
         _ record: EncryptedRecord,
         allowedDestinations: [String],
         allowedProtocols: [String],
+        allowedBindings: [SecretDestinationBinding],
         masterKey: SymmetricKey,
         updatedAt: Date = Date()
     ) throws -> EncryptedRecord {
@@ -61,6 +64,7 @@ public struct VaultCipher: Sendable {
             policy: record.policy,
             allowedDestinations: allowedDestinations,
             allowedProtocols: allowedProtocols,
+            allowedBindings: allowedBindings,
             masterKey: masterKey,
             formatVersion: VaultFormat.current,
             createdAt: record.createdAt,
@@ -76,6 +80,7 @@ public struct VaultCipher: Sendable {
         policy: SecretPolicy,
         allowedDestinations: [String],
         allowedProtocols: [String],
+        allowedBindings: [SecretDestinationBinding],
         masterKey: SymmetricKey,
         formatVersion: Int,
         createdAt: Date,
@@ -96,6 +101,7 @@ public struct VaultCipher: Sendable {
             policy: policy,
             allowedDestinations: allowedDestinations,
             allowedProtocols: allowedProtocols,
+            allowedBindings: allowedBindings,
             policyBindingVersion: formatVersion >= 2 ? 1 : 0,
             createdAt: createdAt,
             updatedAt: updatedAt
@@ -133,6 +139,7 @@ public struct VaultCipher: Sendable {
             policy: policy,
             allowedDestinations: allowedDestinations,
             allowedProtocols: allowedProtocols,
+            allowedBindings: allowedBindings,
             policyBindingVersion: formatVersion >= 2 ? 1 : 0,
             createdAt: createdAt,
             updatedAt: updatedAt
@@ -155,6 +162,7 @@ public struct VaultCipher: Sendable {
             policy: record.policy,
             allowedDestinations: record.allowedDestinations,
             allowedProtocols: record.allowedProtocols,
+            allowedBindings: record.allowedBindings,
             policyBindingVersion: record.policyBindingVersion,
             createdAt: record.createdAt,
             updatedAt: record.updatedAt
@@ -202,6 +210,7 @@ public struct VaultCipher: Sendable {
         policy: SecretPolicy,
         allowedDestinations: [String],
         allowedProtocols: [String],
+        allowedBindings: [SecretDestinationBinding],
         policyBindingVersion: Int,
         createdAt: Date,
         updatedAt: Date
@@ -219,6 +228,23 @@ public struct VaultCipher: Sendable {
         if policyBindingVersion > 0 {
             data.appendLengthPrefixed(Data(allowedDestinations.sorted().joined(separator: "\u{1F}" ).utf8))
             data.appendLengthPrefixed(Data(allowedProtocols.sorted().joined(separator: "\u{1F}" ).utf8))
+        }
+        // Keep the legacy AAD byte-for-byte stable when no typed binding is
+        // present, but authenticate any non-empty binding list even on a
+        // legacy-format record. Otherwise an out-of-band edit could change
+        // the pair-sensitive metadata without invalidating the ciphertext.
+        if !allowedBindings.isEmpty {
+            let sortedBindings = allowedBindings.sorted {
+                if $0.protocolType.rawValue == $1.protocolType.rawValue {
+                    return $0.destination < $1.destination
+                }
+                return $0.protocolType.rawValue < $1.protocolType.rawValue
+            }
+            data.appendLengthPrefixed(Data(String(sortedBindings.count).utf8))
+            for binding in sortedBindings {
+                data.appendLengthPrefixed(Data(binding.protocolType.rawValue.utf8))
+                data.appendLengthPrefixed(Data(binding.destination.utf8))
+            }
         }
         return data
     }

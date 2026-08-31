@@ -36,6 +36,7 @@ import {
   SecretOperationStage,
   SecretOperationProtocol,
   SecretAllowedProtocol,
+  SecretDestinationBinding,
   SecretReference,
   SecretReferenceMetadata,
   UniqueSecretReferences,
@@ -164,6 +165,7 @@ const InspectOutput = z
         label: z.string().nullable(),
         allowedDestinations: z.array(z.string()),
         allowedProtocols: z.array(z.string()),
+        allowedBindings: z.array(SecretDestinationBinding).default([]),
         createdAt: z.union([z.string(), z.number()]),
         updatedAt: z.union([z.string(), z.number()])
       })
@@ -1869,7 +1871,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "SVLT",
-    version: "0.1.20"
+    version: "0.1.21"
   });
 
   registerVaultTools(server, client);
@@ -1999,6 +2001,7 @@ function metadataResult(metadata: SecretReferenceMetadata): Record<string, unkno
     label: metadata.label,
     allowedDestinations: metadata.allowedDestinations,
     allowedProtocols: metadata.allowedProtocols,
+    allowedBindings: metadata.allowedBindings,
     createdAt: metadata.createdAt,
     updatedAt: metadata.updatedAt
   };
@@ -2034,10 +2037,13 @@ async function handleBindDestination(
   if (output.status !== "BOUND") {
     return structuredResult({ status: output.status, redacted: true });
   }
+  if (!output.destination || !output.protocolType) {
+    return structuredResult({ status: "BINDING_RESULT_INCOMPLETE", redacted: true });
+  }
   return structuredResult({
     status: "BOUND",
-    destination: parsed.destination,
-    protocol: parsed.protocol,
+    destination: output.destination,
+    protocol: output.protocolType,
     redacted: true
   });
 }

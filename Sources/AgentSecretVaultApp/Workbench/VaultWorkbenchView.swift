@@ -2124,6 +2124,7 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
             let endpointIdentity = Self.urlIdentity(endpointValue)
             let isMatchingField: (Self) -> Bool = { draft in
                 guard draft.field.type == .url,
+                      Self.isServiceAddressKey(draft.field.key),
                       case let .string(value)? = draft.field.value,
                       !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 else { return false }
@@ -2167,7 +2168,7 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
         return drafts
     }
 
-    private static func isServiceAddressKey(_ key: String) -> Bool {
+    static func isServiceAddressKey(_ key: String) -> Bool {
         guard key.hasPrefix(serviceAddressKey) else { return false }
         let suffix = key.dropFirst(serviceAddressKey.count)
         return suffix.isEmpty || suffix.allSatisfy { $0.isNumber }
@@ -2212,6 +2213,30 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
             : endpoint.host
         let port = endpoint.port.map { ":\($0)" } ?? ""
         return "\(endpoint.type.lowercased())://\(host)\(port)"
+    }
+
+    static func endpoints(from fields: [SecretCatalogFieldValue]) -> [CatalogEndpoint] {
+        var seen = Set<String>()
+        return fields.compactMap { field in
+            guard field.type == .url,
+                  Self.isServiceAddressKey(field.key),
+                  case let .string(value)? = field.value,
+                  let url = URL(string: value),
+                  let scheme = url.scheme,
+                  !scheme.isEmpty,
+                  let host = url.host,
+                  !host.isEmpty,
+                  url.user == nil,
+                  url.password == nil,
+                  url.query == nil,
+                  url.fragment == nil,
+                  url.path.isEmpty || url.path == "/"
+            else { return nil }
+            let endpoint = CatalogEndpoint(type: scheme.lowercased(), host: host, port: url.port)
+            let identity = "\(endpoint.type.lowercased())|\(endpoint.host.lowercased())|\(endpoint.port.map(String.init) ?? "")"
+            guard seen.insert(identity).inserted else { return nil }
+            return endpoint
+        }
     }
 
     static func newField(key: String) -> Self {
@@ -3544,7 +3569,7 @@ private struct SensitiveCatalogEntryRow: View {
             title: title,
             type: entry.type,
             aliases: Self.csv(draftAliases),
-            endpoints: Self.endpoints(from: fields),
+            endpoints: CatalogFieldDraft.endpoints(from: fields),
             fields: fields,
             notes: draftNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftNotes,
             tags: Self.csv(draftTags),
@@ -3622,28 +3647,6 @@ private struct SensitiveCatalogEntryRow: View {
         value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     }
 
-    private static func endpoints(from fields: [SecretCatalogFieldValue]) -> [CatalogEndpoint] {
-        var seen = Set<String>()
-        return fields.compactMap { field in
-            guard field.type == .url,
-                  case let .string(value)? = field.value,
-                  let url = URL(string: value),
-                  let scheme = url.scheme,
-                  !scheme.isEmpty,
-                  let host = url.host,
-                  !host.isEmpty,
-                  url.user == nil,
-                  url.password == nil,
-                  url.query == nil,
-                  url.fragment == nil,
-                  url.path.isEmpty || url.path == "/"
-            else { return nil }
-            let endpoint = CatalogEndpoint(type: scheme.lowercased(), host: host, port: url.port)
-            let identity = "\(endpoint.type.lowercased())|\(endpoint.host.lowercased())|\(endpoint.port.map(String.init) ?? "")"
-            guard seen.insert(identity).inserted else { return nil }
-            return endpoint
-        }
-    }
 }
 
 private struct SensitiveCatalogFieldEditorRow: View {

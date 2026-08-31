@@ -109,6 +109,32 @@ import VaultCore
     ])
 }
 
+@Test func catalogFieldDraftOnlyServiceAddressFieldsWriteCatalogEndpoints() {
+    let fields = [
+        SecretCatalogFieldValue(
+            key: "documentation",
+            label: "文档地址",
+            type: .url,
+            value: .string("https://docs.example.com")
+        ),
+        SecretCatalogFieldValue(
+            key: CatalogFieldDraft.serviceAddressKey,
+            label: "服务地址",
+            type: .url,
+            value: .string("http://192.168.2.240:3000")
+        )
+    ]
+
+    #expect(CatalogFieldDraft.endpoints(from: fields) == [
+        CatalogEndpoint(type: "http", host: "192.168.2.240", port: 3000)
+    ])
+    let roundTripped = CatalogFieldDraft.make(
+        from: fields,
+        endpoints: CatalogFieldDraft.endpoints(from: fields)
+    )
+    #expect(roundTripped.map(\.field) == fields)
+}
+
 @Test func batchSelectionHasExplicitBeginSelectAllAndFinishState() {
     var state = CatalogBatchSelectionState()
     state.begin()

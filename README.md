@@ -152,7 +152,9 @@ for one-lock, one-revision multi-operation changes.
 
 In the App editor, service endpoints are editable URL fields rather than a
 separate endpoint text area. Existing endpoint metadata is projected into those
-fields on load and written back when the entry is saved.
+fields on load and written back when the entry is saved. Only `serviceURL`,
+`serviceURL2`, and subsequent `serviceURL*` keys are endpoint fields; ordinary
+URL fields such as documentation links remain ordinary Catalog metadata.
 
 SVLT-generated and controlled insertions use three logical zones in the managed Markdown:
 preamble, a contiguous Catalog body, and trailing unmanaged Markdown. Notes, callouts,
@@ -207,8 +209,11 @@ not force conversion or substitution in that case.
 - `ftp_transfer_with_secret` for private/loopback FTP list/download/upload;
   plaintext FTP always requires fresh device-owner approval.
 - `secret_bind_destination` to add one exact scheme/host/port and protocol to
-  an existing `secret://` record. Each change requires fresh device-owner
-  approval and re-seals the encrypted record without returning plaintext.
+  an existing `secret://` record. The protocol and destination are stored as
+  one authenticated pair, not as independently combinable arrays. Each change
+  requires fresh device-owner approval and re-seals the encrypted record
+  without returning plaintext; success reports the daemon's canonical
+  destination.
 - `browser_web_login_with_secret` for specific local/private browser login form
   fills.
 - `local_app_form_fill_with_secret` for specific macOS app form fills.

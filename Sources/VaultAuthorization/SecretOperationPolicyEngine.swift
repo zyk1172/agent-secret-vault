@@ -565,9 +565,22 @@ public struct SecretOperationPolicyEngine: Sendable {
                 continue
             }
 
-            let exactBinding = secret.allowedDestinations.contains {
-                SecretOperationDescriptor.normalizeDestination($0) == normalizedDestination
-            }
+            let bindingProtocol: SecretOperationProtocol? = {
+                if descriptor.protocolType == .browser,
+                   let scheme = descriptor.url.flatMap({ URL(string: $0)?.scheme?.lowercased() }) {
+                    return SecretOperationProtocol(rawValue: scheme)
+                }
+                return descriptor.protocolType
+            }()
+            let exactBinding = bindingProtocol.map { requestedProtocol in
+                secret.destinationBindings.contains {
+                    $0.matches(
+                        requestedProtocol: requestedProtocol,
+                        destination: descriptor.destination,
+                        url: descriptor.url
+                    )
+                }
+            } ?? false
             if exactBinding {
                 continue
             }

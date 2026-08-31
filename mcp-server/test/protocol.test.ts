@@ -153,6 +153,7 @@ describe("IPC response schema", () => {
           label: "NAS password",
           allowedDestinations: [],
           allowedProtocols: [],
+          allowedBindings: [],
           createdAt: 1,
           updatedAt: 2
         }

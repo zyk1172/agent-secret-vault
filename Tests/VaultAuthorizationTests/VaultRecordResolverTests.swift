@@ -88,6 +88,10 @@ import VaultCore
 
     #expect(metadata.allowedDestinations == ["qnap.local", "http://192.168.2.240:3000"])
     #expect(metadata.allowedProtocols == ["ssh", "http"])
+    #expect(metadata.allowedBindings == [
+        SecretDestinationBinding(protocolType: .ssh, destination: "qnap.local"),
+        SecretDestinationBinding(protocolType: .http, destination: "http://192.168.2.240:3000")
+    ])
     #expect(metadata.updatedAt == reboundAt)
     #expect(rebound.recordVersion == 2)
     #expect(try cipher.decrypt(rebound, masterKey: key) == Data("ASV_CANARY_BINDING_SECRET".utf8))

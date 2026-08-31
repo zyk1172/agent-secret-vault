@@ -255,6 +255,7 @@ describe("MCP tool contracts", () => {
         label: "QNAP credential",
         allowedDestinations: ["192.168.2.240", "qnap.local"],
         allowedProtocols: ["ssh", "https"],
+        allowedBindings: [],
         createdAt: 1,
         updatedAt: 2
       }
@@ -267,13 +268,18 @@ describe("MCP tool contracts", () => {
       label: "QNAP credential",
       allowedDestinations: ["192.168.2.240", "qnap.local"],
       allowedProtocols: ["ssh", "https"],
+      allowedBindings: [],
       createdAt: 1,
       updatedAt: 2
     });
   });
 
   it("routes owner-approved destination binding without exposing plaintext", async () => {
-    const client = new FakeClient([operationResponse({ status: "BOUND" })]);
+    const client = new FakeClient([operationResponse({
+      status: "BOUND",
+      destination: "http://192.168.2.240:3000",
+      protocolType: "http"
+    })]);
 
     const result = await tool(client, "secret_bind_destination").handler({
       reference,
@@ -300,6 +306,27 @@ describe("MCP tool contracts", () => {
       }
     });
     expect(JSON.stringify(client.requests)).not.toContain("plaintext");
+  });
+
+  it("returns the daemon's canonical bound destination", async () => {
+    const client = new FakeClient([operationResponse({
+      status: "BOUND",
+      destination: "http://example.com:80",
+      protocolType: "http"
+    })]);
+
+    const result = await tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "http://example.com",
+      protocol: "http"
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "BOUND",
+      destination: "http://example.com:80",
+      protocol: "http",
+      redacted: true
+    });
   });
 
   it("rejects a destination containing a secret reference before IPC", async () => {

@@ -1157,31 +1157,53 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.actionExecutionFailed
         }
 
+        // Final pre-commit security check. Once the persistence call starts,
+        // it is the binding commit linearization point: a later security
+        // invalidation may clear future authorization state, but it must not
+        // rewrite a successfully persisted binding as CANCELLED.
         guard generation == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
         }
 
+        let boundMetadata: SecretReferenceMetadata
         do {
-            _ = try await recordResolver.bindDestination(
+            boundMetadata = try await recordResolver.bindDestination(
                 reference: descriptor.secretReferences[0].description,
                 destination: binding.destination,
                 protocolType: binding.protocolType,
                 masterKey: key,
-                now: now()
+                now: now(),
+                preCommitCheck: { [self] in
+                    guard await securityGenerationIsCurrent(generation) else {
+                        throw VaultRecordBindingError.authorizationCancelled
+                    }
+                }
             )
         } catch let error as VaultRecordBindingError {
-            await emitAudit(
-                action: "绑定凭据地址",
-                target: binding.destination,
-                referenceCount: descriptor.secretReferences.count,
-                result: "参数无效",
-                operation: .secureExecute,
-                authorizationOutcome: authorizationPath.auditOutcome,
-                authorizationMode: authorizationPath.auditMode,
-                status: .failure
-            )
             switch error {
-            case .invalidReference, .invalidDestination, .tooManyDestinations, .tooManyProtocols:
+            case .authorizationCancelled:
+                await emitAudit(
+                    action: "绑定凭据地址",
+                    target: binding.destination,
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "已取消",
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .cancelled
+                )
+                throw SecretOperationError.authorizationCancelled
+            case .invalidReference, .invalidDestination, .tooManyDestinations, .tooManyProtocols, .tooManyBindings:
+                await emitAudit(
+                    action: "绑定凭据地址",
+                    target: binding.destination,
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "参数无效",
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .failure
+                )
                 throw SecretOperationError.invalidOperationParameters
             }
         } catch {
@@ -1198,9 +1220,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.actionExecutionFailed
         }
 
-        guard generation == securityGeneration else {
-            throw SecretOperationError.authorizationCancelled
-        }
         await notifySavedReferencesChanged()
         await emitAudit(
             action: "绑定凭据地址",
@@ -1212,7 +1231,18 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             authorizationMode: authorizationPath.auditMode,
             status: .completed
         )
-        return SecretOperationOutput(status: "BOUND", redacted: true)
+        return SecretOperationOutput(
+            status: "BOUND",
+            destination: boundMetadata.allowedBindings.first(where: {
+                $0.protocolType == binding.protocolType && $0.destination == binding.destination
+            })?.destination ?? binding.destination,
+            protocolType: binding.protocolType,
+            redacted: true
+        )
+    }
+
+    private func securityGenerationIsCurrent(_ expected: UInt64) -> Bool {
+        expected == securityGeneration
     }
 
     private func normalizedDestinationBindingDescriptor(
@@ -1382,7 +1412,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 policy: metadata.policy,
                 label: metadata.label,
                 allowedDestinations: metadata.allowedDestinations,
-                allowedProtocols: metadata.allowedProtocols
+                allowedProtocols: metadata.allowedProtocols,
+                allowedBindings: metadata.allowedBindings
             )]
         )
         guard decision.risk != .denied else {
@@ -1395,7 +1426,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 policy: metadata.policy,
                 label: metadata.label,
                 allowedDestinations: metadata.allowedDestinations,
-                allowedProtocols: metadata.allowedProtocols
+                allowedProtocols: metadata.allowedProtocols,
+                allowedBindings: metadata.allowedBindings
             )],
             decision: decision
         )
@@ -4021,7 +4053,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     policy: recordMetadata.policy,
                     label: recordMetadata.label,
                     allowedDestinations: recordMetadata.allowedDestinations,
-                    allowedProtocols: recordMetadata.allowedProtocols
+                    allowedProtocols: recordMetadata.allowedProtocols,
+                    allowedBindings: recordMetadata.allowedBindings
                 )
             )
         }

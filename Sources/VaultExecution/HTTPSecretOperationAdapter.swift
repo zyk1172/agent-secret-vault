@@ -264,15 +264,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             return
         }
 
-        guard let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
-            url.absoluteString,
-            expectedScheme: "http",
-            defaultPort: 80,
-            allowURLPath: true
-        ) else {
-            throw HTTPAdapterError.invalidParameter
-        }
-
         var metadataByReference: [SecretReference: SecretPolicyMetadata] = [:]
         for item in metadata {
             guard metadataByReference[item.reference] == nil else {
@@ -298,13 +289,12 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                 throw HTTPAdapterError.insecureTransportDenied
             }
 
-            let exactOrigin = secret.allowedDestinations.contains {
-                SecretOperationDescriptor.normalizeHTTPOrigin(
-                    $0,
-                    expectedScheme: "http",
-                    defaultPort: 80,
-                    requireExplicitPort: true
-                ) == requestedOrigin
+            let exactOrigin = secret.destinationBindings.contains { binding in
+                binding.matches(
+                    requestedProtocol: .http,
+                    destination: descriptor.destination,
+                    url: url.absoluteString
+                )
             }
             guard exactOrigin else {
                 throw HTTPAdapterError.insecureTransportDenied

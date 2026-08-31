@@ -39,6 +39,10 @@ import Testing
         record,
         allowedDestinations: ["qnap.local", "http://192.168.2.240:3000"],
         allowedProtocols: ["ssh", "http"],
+        allowedBindings: [
+            SecretDestinationBinding(protocolType: .ssh, destination: "qnap.local"),
+            SecretDestinationBinding(protocolType: .http, destination: "http://192.168.2.240:3000")
+        ],
         masterKey: master,
         updatedAt: updatedAt
     )
@@ -48,6 +52,10 @@ import Testing
     #expect(rebound.updatedAt == updatedAt)
     #expect(rebound.allowedDestinations == ["qnap.local", "http://192.168.2.240:3000"])
     #expect(rebound.allowedProtocols == ["ssh", "http"])
+    #expect(rebound.allowedBindings == [
+        SecretDestinationBinding(protocolType: .ssh, destination: "qnap.local"),
+        SecretDestinationBinding(protocolType: .http, destination: "http://192.168.2.240:3000")
+    ])
     #expect(try cipher.decrypt(rebound, masterKey: master) == Data("sensitive".utf8))
 
     let tampered = EncryptedRecord(
@@ -90,6 +98,46 @@ import Testing
     #expect(legacy.formatVersion == VaultFormat.legacyV1)
     #expect(legacy.keyDerivationSalt == nil)
     #expect(try cipher.decrypt(legacy, masterKey: master) == Data("legacy sensitive".utf8))
+}
+
+@Test func typedBindingsRemainAuthenticatedOnLegacyFormatRecords() throws {
+    let master = SymmetricKey(size: .bits256)
+    let cipher = VaultCipher()
+    let binding = SecretDestinationBinding(protocolType: .http, destination: "http://nas.local:3000")
+    let legacy = try cipher.encrypt(
+        Data("legacy sensitive".utf8),
+        id: "01JABCDEF0123456789ABCDEFG",
+        version: 1,
+        label: "legacy",
+        policy: .credential,
+        allowedBindings: [binding],
+        masterKey: master,
+        formatVersion: VaultFormat.legacyV1
+    )
+
+    #expect(try cipher.decrypt(legacy, masterKey: master) == Data("legacy sensitive".utf8))
+
+    let tampered = EncryptedRecord(
+        formatVersion: legacy.formatVersion,
+        id: legacy.id,
+        recordVersion: legacy.recordVersion,
+        ciphertext: legacy.ciphertext,
+        nonce: legacy.nonce,
+        tag: legacy.tag,
+        wrappedDataKey: legacy.wrappedDataKey,
+        wrappedDataKeyNonce: legacy.wrappedDataKeyNonce,
+        wrappedDataKeyTag: legacy.wrappedDataKeyTag,
+        keyDerivationSalt: legacy.keyDerivationSalt,
+        label: legacy.label,
+        policy: legacy.policy,
+        allowedBindings: [SecretDestinationBinding(protocolType: .http, destination: "http://attacker.local:3000")],
+        policyBindingVersion: legacy.policyBindingVersion,
+        createdAt: legacy.createdAt,
+        updatedAt: legacy.updatedAt
+    )
+    #expect(throws: VaultCryptoError.integrityFailed) {
+        _ = try cipher.decrypt(tampered, masterKey: master)
+    }
 }
 
 @Test func missingV2DerivationSaltFailsClosed() throws {

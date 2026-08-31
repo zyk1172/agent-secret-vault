@@ -110,12 +110,19 @@ export const OrphanScanResult = z.object({
 }).strict();
 export type OrphanScanResult = z.infer<typeof OrphanScanResult>;
 
+export const SecretDestinationBinding = z.object({
+  protocolType: z.string().min(1).max(32),
+  destination: z.string().min(1).max(512)
+}).strict();
+export type SecretDestinationBinding = z.infer<typeof SecretDestinationBinding>;
+
 export const SecretReferenceMetadata = z.object({
   reference: SecretReference,
   policy: SecretPolicy,
   label: z.string().nullable(),
   allowedDestinations: z.array(z.string()).default([]),
   allowedProtocols: z.array(z.string()).default([]),
+  allowedBindings: z.array(SecretDestinationBinding).default([]),
   createdAt: z.union([z.string().min(1), z.number()]),
   updatedAt: z.union([z.string().min(1), z.number()])
 }).strict();
@@ -1138,6 +1145,8 @@ export const SecretOperationOutput = z
     listingPreview: z.string().optional(),
     localPath: z.string().optional(),
     remotePath: z.string().optional(),
+    destination: z.string().min(1).optional(),
+    protocolType: z.string().min(1).max(32).optional(),
     sessionID: z.string().min(1).max(128).optional(),
     failedIndex: z.number().int().min(0).optional(),
     results: z.array(z.object({

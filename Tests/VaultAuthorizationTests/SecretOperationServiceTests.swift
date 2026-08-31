@@ -31,10 +31,16 @@ import VaultIPC
 
     #expect(output.status == "BOUND")
     #expect(output.redacted)
+    #expect(output.destination == "http://192.168.2.240:3000")
+    #expect(output.protocolType == .http)
     #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 0)
     #expect(record.allowedDestinations == ["qnap.local", "http://192.168.2.240:3000"])
     #expect(record.allowedProtocols == ["ssh", "http"])
+    #expect(record.allowedBindings == [
+        SecretDestinationBinding(protocolType: .ssh, destination: "qnap.local"),
+        SecretDestinationBinding(protocolType: .http, destination: "http://192.168.2.240:3000")
+    ])
     #expect(record.recordVersion == 2)
     #expect(try VaultCipher().decrypt(record, masterKey: fixture.key) == Data("ASV_CANARY_OPERATION_SECRET".utf8))
     #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope(for: descriptor)) == false)
@@ -54,6 +60,35 @@ import VaultIPC
     }
     #expect(await fixture.approver.count == 0)
     #expect(await fixture.executor.count == 0)
+}
+
+@Test func destinationBindingReportsCommittedResultAfterSecurityInvalidation() async throws {
+    let saveGate = BindingCommitGate()
+    let fixture = try await OperationServiceFixture(bindingSaveGate: saveGate)
+    defer { fixture.remove() }
+
+    await saveGate.pauseNextSave()
+    let operation = Task { () -> SecretOperationOutput? in
+        try? await fixture.service.performSecretOperation(
+            fixture.bind(destination: "http://192.168.2.240:3000")
+        )
+    }
+
+    await saveGate.waitUntilSaveStarts()
+    await fixture.service.invalidateSecurityState()
+    await saveGate.releaseSave()
+
+    let output = await operation.value
+    #expect(output?.status == "BOUND")
+    #expect(output?.destination == "http://192.168.2.240:3000")
+    let record = try await fixture.store.latest(id: fixture.reference.id)
+    #expect(record.recordVersion == 2)
+    #expect(record.allowedBindings.contains(
+        SecretDestinationBinding(
+            protocolType: .http,
+            destination: "http://192.168.2.240:3000"
+        )
+    ))
 }
 
 @Test func insecureHTTPProfileMismatchDoesNotSelfDenyBeforeOwnerApproval() async throws {
@@ -952,6 +987,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
         usesMasterKeyProvider: Bool = false,
         contextApprover: (any OperationApproving)? = nil,
         contextualKeyProvider: ContextualKeyProvider? = nil,
+        bindingSaveGate: BindingCommitGate? = nil,
         allowedDestinations: [String] = ["qnap.local"],
         allowedProtocols: [String] = ["ssh"],
         now: @escaping @Sendable () -> Date = Date.init
@@ -1006,6 +1042,10 @@ private final class OperationServiceFixture: @unchecked Sendable {
             freshMasterKeyProviderWithAuthenticationContext = nil
         }
 
+        let resolverStore: any RecordStore = bindingSaveGate.map {
+            SaveGatedRecordStore(base: store, gate: $0)
+        } ?? store
+
         let statuses = StatusRecorder()
         statusRecorder = statuses
         approver = ApprovalRecorder(mode: approval, gate: approvalGate)
@@ -1021,7 +1061,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
         service = VaultAppServices(
             textEncryptor: DummyTextEncryptor(),
             activeRoot: nil,
-            recordResolver: VaultRecordResolver(recordStore: store),
+            recordResolver: VaultRecordResolver(recordStore: resolverStore),
             masterKey: keyProvider == nil && contextualKeyProvider == nil ? key : nil,
             masterKeyProvider: masterKeyProvider,
             freshMasterKeyProvider: freshMasterKeyProvider,
@@ -1165,6 +1205,59 @@ private final class OperationServiceFixture: @unchecked Sendable {
 
     func remove() {
         try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private actor BindingCommitGate {
+    private var shouldPauseNextSave = false
+    private var saveStarted = false
+    private var saveStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func pauseNextSave() {
+        shouldPauseNextSave = true
+    }
+
+    func waitUntilSaveStarts() async {
+        if saveStarted { return }
+        await withCheckedContinuation { continuation in
+            saveStartWaiters.append(continuation)
+        }
+    }
+
+    func beforeSave() async {
+        guard shouldPauseNextSave else { return }
+        shouldPauseNextSave = false
+        saveStarted = true
+        let waiters = saveStartWaiters
+        saveStartWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func releaseSave() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private struct SaveGatedRecordStore: RecordStore, Sendable {
+    let base: FileRecordStore
+    let gate: BindingCommitGate
+
+    func save(_ record: EncryptedRecord) async throws {
+        await gate.beforeSave()
+        try await base.save(record)
+    }
+
+    func latest(id: String) async throws -> EncryptedRecord {
+        try await base.latest(id: id)
+    }
+
+    func versions(id: String) async throws -> [Int] {
+        try await base.versions(id: id)
     }
 }
 
