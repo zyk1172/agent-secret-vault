@@ -86,6 +86,32 @@ public struct SSHSessionCommandExecution: Sendable, Equatable {
     public let sessionID: String?
     let outputFingerprints: [SecretOutputFingerprint]
 
+    /// Compatibility projection for callers compiled against the original
+    /// boolean transport result. New code should use `channelState` so a
+    /// wrapper failure cannot be confused with a completed remote command.
+    @available(*, deprecated, message: "Use channelState")
+    public var transportReady: Bool {
+        channelState == .remoteCommandCompleted
+    }
+
+    /// Compatibility initializer for existing in-process clients. A false
+    /// value is conservatively treated as a failed transport and never as a
+    /// completed remote command.
+    @available(*, deprecated, message: "Use the channelState initializer")
+    public init(
+        processResult: ProcessResult,
+        transportReady: Bool,
+        sessionID: String? = nil
+    ) {
+        self.init(
+            processResult: processResult,
+            channelState: transportReady ? .remoteCommandCompleted : .transportFailed,
+            sessionID: sessionID,
+            masterReady: transportReady,
+            outputFingerprints: []
+        )
+    }
+
     public init(
         processResult: ProcessResult,
         channelState: SSHChannelState,
