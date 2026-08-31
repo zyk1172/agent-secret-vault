@@ -1198,6 +1198,36 @@ describe("MCP tool contracts", () => {
     expect(client.requests.some((request) => request.type === "restoreReferences")).toBe(false);
   });
 
+  it("routes local export directly to App IPC without an adapter capability preflight", async () => {
+    const client = new FakeClient([{ type: "exported", path: "/Users/example/Desktop/export.md" }]);
+    const result = await tool(client, "export_resolved_text_to_local_file").handler({
+      text: `Token: ${reference}`,
+      reason: "write an approved local export",
+      destinationPath: "/Users/example/Desktop/export.md"
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "EXPORTED",
+      path: "/Users/example/Desktop/export.md"
+    });
+    expect(client.requests).toEqual([{
+      type: "exportResolvedText",
+      references: [reference],
+      destinationPath: "/Users/example/Desktop/export.md",
+      context: {
+        reason: "write an approved local export",
+        template: "Token: {{0}}",
+        ranges: [{ index: 0, placeholder: "{{0}}" }],
+        agentAssessment: {
+          declaredRisk: "silent",
+          reason: "Local file export request",
+          intendedEffect: "write local file"
+        }
+      }
+    }]);
+    expect(client.requests.some((request) => request.type === "secretOperationCapabilities")).toBe(false);
+  });
+
   it("states the risk-aware workflow without a global unlock instruction", async () => {
     const result = await tool(new FakeClient([]), "agent_secret_usage_policy").handler({});
     const policy = result.structuredContent as { safeWorkflow: string[]; forbidden: string[] };
