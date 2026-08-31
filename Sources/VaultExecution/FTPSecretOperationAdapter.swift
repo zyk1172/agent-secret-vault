@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import Network
 import VaultCore
 
@@ -334,6 +335,45 @@ private final class FTPWire: @unchecked Sendable {
     }
 }
 
+enum FTPPathEncoding: Sendable, Equatable {
+    case utf8
+    case gb18030
+
+    var stringEncoding: String.Encoding {
+        switch self {
+        case .utf8:
+            return .utf8
+        case .gb18030:
+            // CFString encoding 0x0632 is GB 18030-2000 on Apple platforms.
+            return String.Encoding(
+                rawValue: CFStringConvertEncodingToNSStringEncoding(
+                    CFStringEncoding(0x0632)
+                )
+            )
+        }
+    }
+
+    func data(for value: String) -> Data? {
+        value.data(using: stringEncoding)
+    }
+
+    static func candidates(
+        for remotePath: String,
+        operation: SecretFileOperation
+    ) -> [FTPPathEncoding] {
+        guard remotePath.unicodeScalars.contains(where: { $0.value > 0x7F }) else {
+            return [.utf8]
+        }
+        switch operation {
+        case .list, .download:
+            return [.utf8, .gb18030]
+        default:
+            // Do not silently repeat a remote write or delete with another encoding.
+            return [.utf8]
+        }
+    }
+}
+
 private struct FTPClient: Sendable {
     let host: String
     let port: Int
@@ -343,6 +383,37 @@ private struct FTPClient: Sendable {
         plan: FileTransferPlan,
         username: String,
         password: String
+    ) async throws -> FTPTransferResult {
+        let encodings = FTPPathEncoding.candidates(
+            for: plan.remotePath,
+            operation: plan.operation
+        )
+        var lastRetryableError: FTPClientError?
+        for (index, encoding) in encodings.enumerated() {
+            do {
+                return try await executeOnce(
+                    plan: plan,
+                    username: username,
+                    password: password,
+                    pathEncoding: encoding
+                )
+            } catch let error as FTPClientError {
+                if index + 1 < encodings.count,
+                   Self.shouldRetry(error: error, plan: plan, encoding: encoding) {
+                    lastRetryableError = error
+                    continue
+                }
+                throw error
+            }
+        }
+        throw lastRetryableError ?? FTPClientError.connection
+    }
+
+    private func executeOnce(
+        plan: FileTransferPlan,
+        username: String,
+        password: String,
+        pathEncoding: FTPPathEncoding
     ) async throws -> FTPTransferResult {
         let control = FTPWire(host: host, port: port)
         var reader = FTPReplyReader()
@@ -384,6 +455,7 @@ private struct FTPClient: Sendable {
                 defer { dataConnection.cancel() }
                 let preliminary = try await command(
                     "LIST \(plan.remotePath)",
+                    encoding: pathEncoding,
                     on: control,
                     reader: &reader
                 )
@@ -399,7 +471,10 @@ private struct FTPClient: Sendable {
                 guard (200...299).contains(finalReply.code) else {
                     throw FTPClientError.server(finalReply.code)
                 }
-                return FTPTransferResult(listing: listing, localURL: nil)
+                return FTPTransferResult(
+                    listing: Self.normalizedListingData(listing, using: pathEncoding),
+                    localURL: nil
+                )
             case .download:
                 guard let destination = plan.localURL else { throw FTPClientError.localIO }
                 let staging = FileTransferAdapterSupport.makeStagingURL(for: destination)
@@ -422,6 +497,7 @@ private struct FTPClient: Sendable {
                 defer { dataConnection.cancel() }
                 let preliminary = try await command(
                     "RETR \(plan.remotePath)",
+                    encoding: pathEncoding,
                     on: control,
                     reader: &reader
                 )
@@ -454,6 +530,7 @@ private struct FTPClient: Sendable {
                 defer { dataConnection.cancel() }
                 let preliminary = try await command(
                     "STOR \(plan.remotePath)",
+                    encoding: pathEncoding,
                     on: control,
                     reader: &reader
                 )
@@ -470,6 +547,7 @@ private struct FTPClient: Sendable {
             case .delete:
                 let reply = try await command(
                     "DELE \(plan.remotePath)",
+                    encoding: pathEncoding,
                     on: control,
                     reader: &reader
                 )
@@ -489,13 +567,58 @@ private struct FTPClient: Sendable {
         }
     }
 
+    private static func shouldRetry(
+        error: FTPClientError,
+        plan: FileTransferPlan,
+        encoding: FTPPathEncoding
+    ) -> Bool {
+        guard encoding == .utf8,
+              plan.operation == .list || plan.operation == .download,
+              plan.remotePath.unicodeScalars.contains(where: { $0.value > 0x7F }),
+              case let .server(code) = error else {
+            return false
+        }
+        return [450, 451, 500, 501, 550, 553].contains(code)
+    }
+
+    private static func normalizedListingData(
+        _ data: Data,
+        using encoding: FTPPathEncoding
+    ) -> Data {
+        if let listing = String(data: data, encoding: encoding.stringEncoding) {
+            return Data(listing.utf8)
+        }
+        if encoding == .utf8,
+           let listing = String(data: data, encoding: FTPPathEncoding.gb18030.stringEncoding) {
+            return Data(listing.utf8)
+        }
+        return data
+    }
+
     private func command(
         _ value: String,
         on wire: FTPWire,
         reader: inout FTPReplyReader
     ) async throws -> FTPReply {
+        try await command(
+            value,
+            encoding: .utf8,
+            on: wire,
+            reader: &reader
+        )
+    }
+
+    private func command(
+        _ value: String,
+        encoding: FTPPathEncoding,
+        on wire: FTPWire,
+        reader: inout FTPReplyReader
+    ) async throws -> FTPReply {
+        guard let commandData = encoding.data(for: value + "\r\n") else {
+            throw FTPClientError.connection
+        }
         try await withFTPTimeout(timeout) {
-            try await wire.send(Data((value + "\r\n").utf8))
+            try await wire.send(commandData)
         }
         return try await readReply(on: wire, reader: &reader)
     }
@@ -542,8 +665,17 @@ private struct FTPClient: Sendable {
     private func readData(from wire: FTPWire, maxBytes: Int) async throws -> Data {
         var data = Data()
         while true {
-            let received = try await withFTPTimeout(timeout) {
-                try await wire.receive(maxLength: 64 * 1024)
+            let received: FTPReceiveResult
+            do {
+                received = try await withFTPTimeout(timeout) {
+                    try await wire.receive(maxLength: 64 * 1024)
+                }
+            } catch FTPClientError.connection {
+                // Some NAS FTP daemons reset the passive data socket after the
+                // final payload while still sending a successful control reply.
+                // Let the 2xx completion reply below decide whether the transfer
+                // really succeeded.
+                return data
             }
             guard data.count + received.data.count <= maxBytes else {
                 throw FTPClientError.localIO
@@ -555,8 +687,15 @@ private struct FTPClient: Sendable {
 
     private func writeData(from wire: FTPWire, to handle: FileHandle) async throws {
         while true {
-            let received = try await withFTPTimeout(timeout) {
-                try await wire.receive(maxLength: 64 * 1024)
+            let received: FTPReceiveResult
+            do {
+                received = try await withFTPTimeout(timeout) {
+                    try await wire.receive(maxLength: 64 * 1024)
+                }
+            } catch FTPClientError.connection {
+                // See readData: validate the transfer using the final control
+                // reply instead of treating a post-payload data reset as failure.
+                return
             }
             do {
                 try handle.write(contentsOf: received.data)
@@ -633,7 +772,11 @@ private struct FTPReplyReader: Sendable {
             if let newline = buffer.firstIndex(of: 0x0A) {
                 let lineData = buffer[..<newline]
                 buffer.removeSubrange(...newline)
-                guard let line = String(data: lineData, encoding: .utf8) else {
+                guard let line = String(data: lineData, encoding: .utf8)
+                    ?? String(
+                        data: lineData,
+                        encoding: FTPPathEncoding.gb18030.stringEncoding
+                    ) else {
                     throw FTPClientError.connection
                 }
                 return line.hasSuffix("\r") ? String(line.dropLast()) : line

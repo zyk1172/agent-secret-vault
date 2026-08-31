@@ -29,6 +29,9 @@ export interface LocalIpcClientOptions {
 
 const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
 const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
+// This is only a control-request timeout. Secret operations have their own
+// adapter-owned execution timeout, which starts after any device-owner
+// approval completes, so the MCP transport must not reuse this deadline.
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export function appSupportIpcPaths(): IpcPaths {
@@ -121,7 +124,7 @@ export class LocalIpcClient {
       const responseFrame = await sendFramedRequest(
         this.socketPath,
         IpcFrameCodec.encode(authenticatedRequest),
-        this.requestTimeoutMs
+        parsedRequest.type === "executeSecretOperation" ? undefined : this.requestTimeoutMs
       );
       return IpcFrameCodec.decode(responseFrame, IpcResponse);
     } catch (error) {
@@ -140,7 +143,7 @@ function delay(milliseconds: number): Promise<void> {
 function sendFramedRequest(
   socketPath: string,
   requestFrame: Buffer,
-  timeoutMs: number
+  timeoutMs: number | undefined
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
@@ -155,9 +158,11 @@ function sendFramedRequest(
       socket.destroy();
     };
 
-    socket.setTimeout(timeoutMs, () => {
-      settle(() => reject(new Error("IPC request timed out.")));
-    });
+    if (timeoutMs !== undefined) {
+      socket.setTimeout(timeoutMs, () => {
+        settle(() => reject(new Error("IPC request timed out.")));
+      });
+    }
 
     socket.on("connect", () => {
       socket.end(requestFrame);

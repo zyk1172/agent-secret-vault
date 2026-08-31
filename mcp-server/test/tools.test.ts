@@ -1231,6 +1231,33 @@ describe("MCP tool contracts", () => {
     }
   });
 
+  it("preserves only the sanitized failure stage for file transfers", async () => {
+    const client = new FakeClient([
+      capabilityResponse("ftpTransfer"),
+      {
+        type: "secretOperation",
+        output: { status: "FAILED", stage: "REMOTE_COMMAND", redacted: true }
+      } as IpcResponse
+    ]);
+
+    const definition = tool(client, "ftp_transfer_with_secret");
+    const result = await definition.handler({
+      operation: "download",
+      host: "nas.local",
+      username: "zyk",
+      remotePath: "/share/file.mp4",
+      localPath: "/Users/example/Library/Application Support/AgentSecretVault/Downloads/file.mp4",
+      passwordRef: reference
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "FAILED",
+      stage: "REMOTE_COMMAND",
+      redacted: true
+    });
+    expect(() => definition.outputSchema.parse(result.structuredContent)).not.toThrow();
+  });
+
   it("rejects duplicate secret references in adapter-specific inputs before IPC", async () => {
     const sftpClient = new FakeClient([]);
     await expect(tool(sftpClient, "sftp_transfer_with_secret").handler({

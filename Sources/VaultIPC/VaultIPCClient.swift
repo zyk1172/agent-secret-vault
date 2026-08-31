@@ -292,7 +292,13 @@ public actor VaultIPCClient {
     public func performSecretOperation(
         _ descriptor: SecretOperationDescriptor
     ) async throws -> SecretOperationOutput {
-        let response = try await send(.executeSecretOperation(descriptor))
+        // The adapter owns the execution deadline and starts it after the
+        // service has completed any device-owner approval. Do not apply the
+        // short control-request timeout to this long-running response.
+        let response = try await send(
+            .executeSecretOperation(descriptor),
+            ioTimeoutSeconds: nil
+        )
         guard case let .secretOperation(output) = response else {
             throw unexpected(response)
         }
@@ -361,6 +367,13 @@ public actor VaultIPCClient {
     }
 
     public func send(_ request: IPCRequest) async throws -> IPCResponse {
+        try await send(request, ioTimeoutSeconds: Self.ioTimeoutSeconds)
+    }
+
+    private func send(
+        _ request: IPCRequest,
+        ioTimeoutSeconds: Int32?
+    ) async throws -> IPCResponse {
         try validateEndpoint()
         let token = try readCapabilityToken()
         let fileDescriptor = try connect()
@@ -369,7 +382,7 @@ public actor VaultIPCClient {
             Darwin.close(fileDescriptor)
         }
 
-        try setIOTimeouts(on: fileDescriptor)
+        try setIOTimeouts(on: fileDescriptor, seconds: ioTimeoutSeconds)
         let frame = try IPCFrameCodec.encode(
             AuthenticatedIPCRequest(capabilityToken: token, request: request)
         )
@@ -429,7 +442,6 @@ public actor VaultIPCClient {
         }
         do {
             try setNoSIGPIPE(on: fileDescriptor)
-            try setIOTimeouts(on: fileDescriptor)
             let originalFlags = Darwin.fcntl(fileDescriptor, F_GETFL, 0)
             guard originalFlags >= 0 else {
                 throw VaultIPCClientError.operationFailed("fcntl-getfl", errno: errno)
@@ -532,8 +544,9 @@ public actor VaultIPCClient {
         }
     }
 
-    private func setIOTimeouts(on fileDescriptor: Int32) throws {
-        var timeout = timeval(tv_sec: Int(Self.ioTimeoutSeconds), tv_usec: 0)
+    private func setIOTimeouts(on fileDescriptor: Int32, seconds: Int32?) throws {
+        guard let seconds else { return }
+        var timeout = timeval(tv_sec: Int(seconds), tv_usec: 0)
         let receiveResult = withUnsafePointer(to: &timeout) { pointer in
             setsockopt(fileDescriptor, SOL_SOCKET, SO_RCVTIMEO, pointer, socklen_t(MemoryLayout<timeval>.size))
         }

@@ -136,6 +136,23 @@ private let transferReferenceText = "secret://0123456789ABCDEFGHJKMNPQRS"
     }
 }
 
+@Test func ftpAdapterSupportsLegacyQNAPPathEncodingOnlyForReads() {
+    let encoded = FTPPathEncoding.gb18030.data(for: "不说.mp4")
+    #expect(encoded == Data([0xB2, 0xBB, 0xCB, 0xB5, 0x2E, 0x6D, 0x70, 0x34]))
+    #expect(
+        FTPPathEncoding.candidates(
+            for: "/USBSSD/temp/不说.mp4",
+            operation: .download
+        ) == [.utf8, .gb18030]
+    )
+    #expect(
+        FTPPathEncoding.candidates(
+            for: "/USBSSD/temp/不说.mp4",
+            operation: .upload
+        ) == [.utf8]
+    )
+}
+
 private func transferDescriptor(
     action: SecretOperationAction,
     protocolType: SecretOperationProtocol,

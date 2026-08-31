@@ -511,6 +511,13 @@ const FileTransferOutput = z
         redacted: z.literal(true)
       })
       .strict(),
+    z
+      .object({
+        status: z.string().min(1),
+        stage: SecretOperationStage.optional(),
+        redacted: z.literal(true)
+      })
+      .strict(),
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("SFTP/SCP/FTP result. Secret material is used only inside SVLTAgent and plaintext is never returned.");
@@ -2508,8 +2515,15 @@ async function handleFileTransferWithSecret(
     },
     agentAssessment: agentAssessment(parsed)
   });
-  if (!isSecretOperationOutput(output) || output.status !== "COMPLETED") {
+  if (!isSecretOperationOutput(output)) {
     return structuredResult({ status: output.status });
+  }
+  if (output.status !== "COMPLETED") {
+    return structuredResult({
+      status: output.status,
+      ...(output.stage === undefined ? {} : { stage: output.stage }),
+      redacted: true
+    });
   }
   return structuredResult({
     status: "COMPLETED",

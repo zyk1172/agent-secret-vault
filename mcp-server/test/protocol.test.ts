@@ -895,6 +895,61 @@ describe("local IPC client", () => {
       request: { type: "status" }
     });
   });
+
+  it("does not apply the control timeout to a secret operation response", async () => {
+    const directory = await makeTempDirectory();
+    const socketPath = path.join(directory, "agent-secret-vault.sock");
+    const tokenPath = path.join(directory, "capability.token");
+    await writeFile(tokenPath, validToken, { mode: 0o600 });
+    await chmod(tokenPath, 0o600);
+
+    const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      socket.on("data", () => {
+        setTimeout(() => {
+          socket.end(IpcFrameCodec.encode({
+            type: "secretOperation",
+            output: { status: "COMPLETED", redacted: true }
+          }));
+          server.close();
+        }, 50);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+      server.listen(socketPath);
+    });
+
+    const client = new LocalIpcClient({
+      socketPath,
+      tokenPath,
+      requestTimeoutMs: 10
+    });
+    await expect(client.request({
+      type: "executeSecretOperation",
+      descriptor: {
+        actionType: "sshCommand",
+        secretReferences: [validReference],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: "ssh",
+        command: "hostname",
+        requestedEffects: ["read-only"],
+        parameters: {
+          passwordRef: validReference,
+          username: "admin"
+        },
+        agentAssessment: {
+          declaredRisk: "silent",
+          reason: "test operation",
+          intendedEffect: "read status"
+        }
+      }
+    })).resolves.toEqual({
+      type: "secretOperation",
+      output: { status: "COMPLETED", redacted: true }
+    });
+  });
 });
 
 async function makeTempDirectory(): Promise<string> {
