@@ -233,8 +233,8 @@ public enum HTTPTransportSecurityPolicy: String, Codable, CaseIterable, Sendable
     /// adapters use this as a fail-closed egress guard before resolving a
     /// Secret.
     public static func isPrivateOrLoopbackHost(_ host: String) -> Bool {
-        let normalizedHost = normalizedHost(host)
-        return isLoopbackHost(normalizedHost) || isPrivateHost(normalizedHost)
+        let normalizedHost = Self.normalizedHost(host)
+        return Self.isLoopbackHost(normalizedHost) || Self.isPrivateHost(normalizedHost)
     }
 
     private static func normalizedHost(_ host: String) -> String {

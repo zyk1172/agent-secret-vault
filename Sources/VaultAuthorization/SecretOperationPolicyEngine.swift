@@ -421,7 +421,15 @@ public struct SecretOperationPolicyEngine: Sendable {
         case let .trustedProcess(operation):
             guard descriptor.actionType == .trustedProcess,
                   !operation.profileID.isEmpty,
-                  operation.arguments.count <= 32
+                  operation.profileID.utf8.count <= 128,
+                  operation.arguments.count <= 32,
+                  !operation.profileID.contains("secret://"),
+                  operation.profileID.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar),
+                  operation.arguments.allSatisfy({ argument in
+                      argument.utf8.count <= 4_096
+                          && !argument.contains("secret://")
+                          && argument.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar)
+                  })
             else {
                 return ("trusted process typed payload 无效", "trusted-process.payload.invalid")
             }
@@ -430,9 +438,11 @@ public struct SecretOperationPolicyEngine: Sendable {
                   !operation.executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   operation.executable.utf8.count <= 4_096,
                   operation.arguments.count <= 32,
+                  !operation.executable.contains("secret://"),
                   operation.executable.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar),
                   operation.arguments.allSatisfy({ argument in
                       argument.utf8.count <= 4_096
+                          && !argument.contains("secret://")
                           && argument.unicodeScalars.allSatisfy(Self.isSafeProcessMetadataScalar)
                   })
             else {

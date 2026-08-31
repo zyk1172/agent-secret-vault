@@ -49,7 +49,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 准确填写 `intendedEffect` 和风险提示。不得拆小、改写、伪装或谎报 destructive/不可逆操作；SVLT 会把完整原始命令展示给设备所有者，由用户通过 Touch ID/密码做最终决定。AgentRisk 仅用于显示和审计，不会改变 SVLT 本地计算出的授权级别。
 - 授权分层（§22 新模型）：所有使用 Secret 的 SSH 命令——包括 hostname、df、cat、未知 NAS CLI——默认都是普通操作：第一次 Touch ID/密码，之后同 scope 300 秒免审批。只有固定 5 类高危操作每次 fresh approval：电源控制（reboot/shutdown/poweroff/halt/systemctl kexec·isolate）、文件删除（rm/shred）、块设备与文件系统（mkfs*/wipefs/fdisk/parted/dd）、存储/RAID 破坏（zpool destroy、破坏性 mdadm）、容器删除（docker rm/volume rm/system prune）。fresh approval 不会刷新或延长普通 lease。
 - MCP 连接建立后应声明客户端名称与版本；Audit/UI 只显示 `Codex（自报）`、`Pi（自报）` 等 display metadata。该 identity 不是可信 security principal，也不能改变 lease 隔离。
-- 以上是行为指导。SVLT 的职责是判断授权级别、展示事实、执行用户决定；它不替设备所有者拒绝任何技术上可执行的请求，最终允许/拒绝由用户通过 Touch ID/密码决定。
+- 以上是行为指导。SVLT 的职责是判断授权级别、展示事实、执行用户决定；除公网 Secret 发送、凭据 URL/query、不安全 HTTP profile 缺失等明确技术安全边界外，最终允许/拒绝由用户通过 Touch ID/密码决定。
 
 ### 非 SSH 执行器与能力清单
 
