@@ -42,7 +42,7 @@ echo "已创建隔离 Release E2E Catalog：$CATALOG_PATH"
 echo "这次回归不会使用生产 Catalog，也不会在终端记录秘密明文。"
 echo
 echo "手工步骤："
-echo "1. 打开 $APP_PATH，并在 SVLT 中选择 $CATALOG_PATH。"
+echo "1. 打开 ${APP_PATH}，并在 SVLT 中选择 ${CATALOG_PATH}。"
 echo "2. 通过 App 创建一个测试 Entry 和至少一个空 secret placeholder。"
 echo "3. 让已安装的 MCP 调用 secret_catalog_request_secure_inputs；记录返回的 PENDING/requestID。"
 echo "4. 在 SVLT SecureField 中完成测试输入并确认一次 Touch ID 或 macOS 密码认证。"
