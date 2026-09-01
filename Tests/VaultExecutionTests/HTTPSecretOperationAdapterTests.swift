@@ -7,7 +7,7 @@ private let httpTestReference = "secret://0123456789ABCDEFGHJKMNPQRS"
 private let httpTestHost = "svlt.local"
 private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
 
-@Test func typedHTTPAdapterReusesTransportAndNeverPreviewsAuthenticatedBody() async throws {
+@Test func typedHTTPAdapterReusesTransportAndReturnsSafeAuthenticatedJSONPreview() async throws {
     let reference = try SecretReference(httpTestReference)
     let manager = HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
     let adapter = HTTPSecretOperationAdapter(sessionManager: manager)
@@ -52,9 +52,75 @@ private let httpTestSecret = "ASV_HTTP_TEST_TOKEN"
     #expect(second.status == "COMPLETED")
     #expect(first.sessionID?.hasPrefix("http_session_") == true)
     #expect(second.sessionID == first.sessionID)
-    #expect(first.bodyPreview == nil)
-    #expect(second.bodyPreview == nil)
+    #expect(adapter.capability.features.response.contains("sanitizedPreview"))
+    #expect(first.bodyPreview == "{\"ok\":true}")
+    #expect(second.bodyPreview == "{\"ok\":true}")
     #expect(await manager.activeSessionCount(for: "test-principal") == 1)
+}
+
+@Test func typedHTTPAdapterReturnsNewAPIModelListInSafeAuthenticatedPreview() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/models",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference),
+                responsePolicy: HTTPResponsePolicy(kind: .sanitizedPreview)
+            )
+        )
+    )
+
+    let output = try await adapter.execute(
+        descriptor,
+        metadata: [httpMetadata(reference)],
+        context: SecretOperationExecutionContext(principal: "newapi-preview", securityGeneration: 1),
+        resolve: { _ in Data(httpTestSecret.utf8) }
+    )
+
+    #expect(output.status == "COMPLETED")
+    #expect(output.bodyPreview == "{\"object\":\"list\",\"data\":[{\"id\":\"model-a\",\"object\":\"model\",\"created\":1700000000,\"owned_by\":\"test\"}]}")
+}
+
+@Test func typedHTTPAdapterQuarantinesSensitiveAuthenticatedJSONPreview() async throws {
+    let reference = try SecretReference(httpTestReference)
+    let adapter = HTTPSecretOperationAdapter(
+        sessionManager: HTTPSessionManager(configurationProvider: testURLSessionConfiguration)
+    )
+    let descriptor = SecretOperationDescriptor(
+        actionType: .apiRequest,
+        secretReferences: [reference],
+        destination: httpTestHost,
+        port: 80,
+        protocolType: .http,
+        httpMethod: "GET",
+        url: "http://\(httpTestHost)/projected",
+        payload: .http(
+            HTTPOperation(
+                method: .get,
+                auth: HTTPAuthStrategy(kind: .bearer, valueReference: reference),
+                responsePolicy: HTTPResponsePolicy(kind: .sanitizedPreview)
+            )
+        )
+    )
+
+    await #expect(throws: SecretOperationExecutionError.outputQuarantined) {
+        _ = try await adapter.execute(
+            descriptor,
+            metadata: [httpMetadata(reference)],
+            context: SecretOperationExecutionContext(principal: "safe-preview-sensitive", securityGeneration: 1),
+            resolve: { _ in Data(httpTestSecret.utf8) }
+        )
+    }
 }
 
 @Test func typedHTTPAdapterStopsEveryRedirectForExplicitResubmission() async throws {
@@ -796,6 +862,8 @@ private final class DeterministicHTTPURLProtocol: URLProtocol {
                     ? Data(httpTestSecret.utf8)
                 : url.path == "/projected"
                     ? Data("{\"status\":\"ok\",\"access_token\":\"derived-secret\"}".utf8)
+                : url.path == "/models"
+                    ? Data("{\"object\":\"list\",\"data\":[{\"id\":\"model-a\",\"object\":\"model\",\"created\":1700000000,\"owned_by\":\"test\"}]}".utf8)
                 : url.path == "/sensitive"
                     ? Data("{\"data\":{\"token\":\"derived-secret\"}}".utf8)
                 : Data("{\"ok\":true}".utf8)

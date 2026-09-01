@@ -700,7 +700,7 @@ const LocalHttpInput = z
     usernameRef: SecretReference.optional(),
     passwordRef: SecretReference.optional(),
     sessionID: z.string().min(1).max(128).optional(),
-    includeBodyPreview: z.boolean().optional(),
+    includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
@@ -795,7 +795,7 @@ const ApiRequestInput = z
     body: z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 65_536, {
       message: "body must be at most 65536 UTF-8 bytes"
     }).optional(),
-    includeBodyPreview: z.boolean().optional(),
+    includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
@@ -2777,7 +2777,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display metadata only; it never becomes the security principal.",
       "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. Every Secret-bearing network send, including public HTTPS, shows the exact target and requires fresh device-owner authentication; insecure HTTP additionally needs an exact saved scheme/host/port profile checked by the executor after approval. Never add an insecure-HTTP flag to a tool call.",
       "HTTP tools reject unsafe/arbitrary secret headers, URL authority credentials, and secret:// body fragments. Credential-shaped URL query parameters receive a fresh owner warning rather than an autonomous Agent-side denial. Authorization defaults to Bearer; a custom API-key header receives the raw token unless a profile/request explicitly supplies a safe scheme.",
-      "Authenticated HTTP responses are metadata-only by default. Response body previews, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
+      "Authenticated HTTP responses are metadata-only by default. An explicit includeBodyPreview request may return at most 16 KiB of valid JSON only when it contains no sensitive response field names or secret:// references; body, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
       "The generic localExecution action is a very-high-risk, fresh owner-approval boundary and is audited as userApprovedSecretRelease. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
       "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
       "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with controlled SVLT Downloads paths; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",

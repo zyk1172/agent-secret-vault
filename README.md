@@ -283,12 +283,15 @@ must never be returned to the agent.
   fresh warning and owner decision, while URL authority credentials remain
   invalid. Authenticated response body, `Location`, and `Content-Type` values
   are fingerprint-checked before reaching the Agent; a match quarantines the
-  complete output. Other authenticated responses are metadata-only unless an
-  App-owned response projection profile allowlists the requested JSON
-pointers. The production daemon receives those non-secret profiles through
-  `VaultDaemonConfiguration`; its default empty configuration advertises
-  metadata-only responses. Derived credential/cookie capture is not implemented
-  in this release.
+  complete output. Authenticated responses are metadata-only by default, but
+  an explicit `includeBodyPreview` request may return a bounded (16 KiB), valid
+  JSON-only preview when the response contains no sensitive field names or
+  `secret://` references; unsafe, non-JSON, or oversized output is quarantined.
+  An App-owned response projection profile remains available for stricter
+  allowlisted JSON pointers. The production daemon receives those non-secret
+  profiles through `VaultDaemonConfiguration`; its default configuration
+  advertises metadata-only plus the safe preview capability. Derived
+  credential/cookie capture is not implemented in this release.
 - `localExecution` (handing a Secret to an arbitrary local process) is a
   very-high-risk fresh approval explicitly labeled `userApprovedSecretRelease`
   in audit and capability output; the device owner sees the process, arguments,

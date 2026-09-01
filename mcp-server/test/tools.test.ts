@@ -1080,6 +1080,38 @@ describe("MCP tool contracts", () => {
     });
   });
 
+  it("forwards an explicit safe HTTP response preview", async () => {
+    const client = new FakeClient([
+      capabilityResponse("apiRequest"),
+      operationResponse({
+        httpStatus: 200,
+        contentType: "application/json",
+        bodyPreview: '{"object":"list","data":[{"id":"model-a"}]}'
+      })
+    ]);
+    const result = await tool(client, "api_request_with_token").handler({
+      url: "https://qnap.local/v1/models",
+      tokenRef: reference,
+      includeBodyPreview: true
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "COMPLETED",
+      httpStatus: 200,
+      contentType: "application/json",
+      bodyPreview: '{"object":"list","data":[{"id":"model-a"}]}',
+      redacted: true
+    });
+    const request = client.requests[1];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor.parameters).toMatchObject({ includeBodyPreview: "true" });
+    expect(request.descriptor.payload).toMatchObject({
+      type: "http",
+      operation: { responsePolicy: { kind: "sanitizedPreview" } }
+    });
+  });
+
   it("does not add an implicit Bearer scheme to custom API-key headers", async () => {
     const client = new FakeClient([capabilityResponse("apiRequest"), operationResponse({ httpStatus: 200 })]);
     await tool(client, "api_request_with_token").handler({

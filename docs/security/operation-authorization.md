@@ -37,7 +37,7 @@ opaque descriptor
 | 明文显示、复制、删除或安全设置变更 | `freshApprovalRequired` | 使用 `deviceOwnerAuthentication` |
 | `localExecution`（交给任意本地进程） | `freshApprovalRequired` | 明确标记 `userApprovedSecretRelease`，由设备所有者决定 |
 
-Secret metadata 保留旧版兼容字段 `allowedDestinations` 和 `allowedProtocols`；新绑定同时写入经过认证的 `allowedBindings`，每个元素把 protocol 和 destination 作为一个不可拆分的 pair。存在 `allowedBindings` 时，HTTP/其他 pair-sensitive 检查只使用它；无法从混合旧数组安全还原 pair 时 fail closed，不生成笛卡尔积。普通目标/协议绑定不匹配是提示并进入新的 scope，元数据缺失或引用集合无法验证才是策略层技术性失败。对携 Secret 的明文 HTTP，执行器在设备所有者审批之后还会要求每个引用都匹配保存的精确 `scheme://host:port` profile；这只防止 profile 横向扩大到另一台主机或端口，不把 hostname 当作 DNS/实际 egress 证明。HTTP 不自动跟随任何重定向，发现新目标时必须重新提交一个独立操作；响应 body、`Location`、`Content-Type` 命中 Secret fingerprint 时整次输出 quarantine。
+Secret metadata 保留旧版兼容字段 `allowedDestinations` 和 `allowedProtocols`；新绑定同时写入经过认证的 `allowedBindings`，每个元素把 protocol 和 destination 作为一个不可拆分的 pair。存在 `allowedBindings` 时，HTTP/其他 pair-sensitive 检查只使用它；无法从混合旧数组安全还原 pair 时 fail closed，不生成笛卡尔积。普通目标/协议绑定不匹配是提示并进入新的 scope，元数据缺失或引用集合无法验证才是策略层技术性失败。对携 Secret 的明文 HTTP，执行器在设备所有者审批之后还会要求每个引用都匹配保存的精确 `scheme://host:port` profile；这只防止 profile 横向扩大到另一台主机或端口，不把 hostname 当作 DNS/实际 egress 证明。HTTP 不自动跟随任何重定向，发现新目标时必须重新提交一个独立操作；响应 body、`Location`、`Content-Type` 命中 Secret fingerprint 时整次输出 quarantine。认证响应默认只返回元数据；只有明确请求 `includeBodyPreview` 时，才允许最多 16 KiB 且必须是无敏感字段名、无 `secret://` 的合法 JSON 预览，否则 quarantine。更严格的字段投影仍由 App-owned profile 控制。
 
 ## ApprovalTicket
 
