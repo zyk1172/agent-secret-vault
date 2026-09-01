@@ -104,9 +104,6 @@ public struct MenuBarVaultPanel: View {
         }
         .frame(width: MenuBarPresentation.panelSize.width, height: MenuBarPresentation.panelSize.height)
         .onDisappear { clearSensitiveState() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
-            clearSensitiveState()
-        }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
             clearSensitiveState()
         }

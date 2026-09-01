@@ -84,6 +84,110 @@ private func qnapCatalogDocument() -> SecretCatalogDocument {
     #expect(hidden.matches[0].entry.fields.contains { $0.key == "username" } == false)
 }
 
+@Test func entrySearchFindsUserFacingSecretFieldLabelAndKeepsStableKeyFallback() {
+    let indexID = "0123456789ABCDEFGHJKMNPQRY"
+    let entryID = "0123456789ABCDEFGHJKMNPQRZ"
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: indexID, title: "API")],
+        entries: [SecretCatalogEntry(
+            id: entryID,
+            indexId: indexID,
+            title: "NewAPI",
+            fields: [SecretCatalogFieldValue(
+                key: "field4",
+                label: "API Token",
+                type: .secret,
+                searchable: true,
+                secretRef: "secret://0123456789ABCDEFGHJKMNPQRS"
+            )]
+        )]
+    )
+    let service = SecretCatalogEntrySearchService()
+
+    let byLabel = service.search(query: "API Token", document: document)
+    let byKey = service.search(query: "field4", document: document)
+
+    #expect(byLabel.status == .found)
+    #expect(byLabel.matches.count == 1)
+    #expect(byLabel.matches[0].entry.id == entryID)
+    #expect(byLabel.matches[0].entry.fields == [SecretCatalogFieldMatch(
+        key: "field4",
+        label: "API Token",
+        type: .secret,
+        secretRef: "secret://0123456789ABCDEFGHJKMNPQRS"
+    )])
+    #expect(byKey.status == .found)
+    #expect(byKey.matches.count == 1)
+    #expect(byKey.matches[0].entry.id == entryID)
+}
+
+@Test func entrySearchStructuredFieldFilterUsesKeyAndUserFacingLabel() {
+    let indexID = "0123456789ABCDEFGHJKMNPQRY"
+    let entryID = "0123456789ABCDEFGHJKMNPQRZ"
+    let legacyEntryID = "0123456789ABCDEFGHJKMNPQSA"
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: indexID, title: "API")],
+        entries: [
+            SecretCatalogEntry(
+                id: entryID,
+                indexId: indexID,
+                title: "NewAPI",
+                fields: [
+                    SecretCatalogFieldValue(
+                        key: "field4",
+                        label: "密码",
+                        type: .secret,
+                        secretRef: "secret://0123456789ABCDEFGHJKMNPQRS"
+                    ),
+                    SecretCatalogFieldValue(
+                        key: "field5",
+                        label: "API 密钥",
+                        type: .secret,
+                        secretRef: "secret://0123456789ABCDEFGHJKMNPQRT"
+                    )
+                ]
+            ),
+            SecretCatalogEntry(
+                id: legacyEntryID,
+                indexId: indexID,
+                title: "Legacy",
+                fields: [
+                    SecretCatalogFieldValue(
+                        key: "password",
+                        label: "登录口令",
+                        type: .secret,
+                        secretRef: "secret://0123456789ABCDEFGHJKMNPQRV"
+                    )
+                ]
+            )
+        ]
+    )
+    let service = SecretCatalogEntrySearchService()
+
+    let passwordByLabel = service.search(
+        query: "NewAPI",
+        field: .password,
+        document: document
+    )
+    let apiKeyByLabel = service.search(
+        query: "NewAPI",
+        field: .apiKey,
+        document: document
+    )
+    let legacyPasswordByKey = service.search(
+        query: "Legacy",
+        field: .password,
+        document: document
+    )
+
+    #expect(passwordByLabel.status == .found)
+    #expect(passwordByLabel.matches.map { $0.entry.id } == [entryID])
+    #expect(apiKeyByLabel.status == .found)
+    #expect(apiKeyByLabel.matches.map { $0.entry.id } == [entryID])
+    #expect(legacyPasswordByKey.status == .found)
+    #expect(legacyPasswordByKey.matches.map { $0.entry.id } == [legacyEntryID])
+}
+
 @Test func sameDestinationDoesNotMergeDifferentEntries() {
     let result = SecretCatalogEntrySearchService().search(query: "192.168.2.240", limit: 20, document: qnapCatalogDocument())
     let ids = Set(result.matches.map { $0.entry.id })

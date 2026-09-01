@@ -542,9 +542,145 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable 
 
 public extension Notification.Name {
     static let vaultWorkbenchNavigate = Notification.Name("AgentSecretVaultWorkbenchNavigate")
+    /// Authentication UI can briefly deactivate the App/window without
+    /// representing a lock or sleep security boundary. Catalog detail views
+    /// hide already displayed plaintext for this event but keep an in-flight
+    /// owner authentication alive.
+    static let vaultWorkbenchTransientFocusLost = Notification.Name(
+        "AgentSecretVaultWorkbenchTransientFocusLost"
+    )
     static let vaultWorkbenchSecurityStateInvalidated = Notification.Name(
         "AgentSecretVaultWorkbenchSecurityStateInvalidated"
     )
+}
+
+enum CatalogRevealInterruption: Sendable {
+    case transientFocusLoss
+    case hardSecurityInvalidation
+}
+
+struct CatalogRevealLifecycleAction: Equatable, Sendable {
+    let hidePlaintext: Bool
+    let cancelInFlight: Bool
+    let invalidateGeneration: Bool
+
+    static func forInterruption(_ interruption: CatalogRevealInterruption) -> Self {
+        switch interruption {
+        case .transientFocusLoss:
+            return Self(
+                hidePlaintext: true,
+                cancelInFlight: false,
+                invalidateGeneration: false
+            )
+        case .hardSecurityInvalidation:
+            return Self(
+                hidePlaintext: true,
+                cancelInFlight: true,
+                invalidateGeneration: true
+            )
+        }
+    }
+}
+
+/// Keeps a decrypted Catalog result out of the visible state while the App or
+/// its window is temporarily inactive for authentication UI.  This state is
+/// deliberately separate from the in-flight authentication Task: a transient
+/// focus loss may hide existing plaintext without cancelling the owner-auth
+/// operation, while a hard security invalidation clears both values.
+enum CatalogRevealPresentationTransition: Equatable, Sendable {
+    case presented
+    case heldPending
+    case noPending
+}
+
+enum CatalogRevealPresentationTiming {
+    /// Pending plaintext is held only briefly while the App returns from a
+    /// transient authentication/focus transition. Task.sleep(for:) uses the
+    /// continuous (monotonic) clock, so wall-clock changes cannot extend it.
+    static let pendingTTL: Duration = .seconds(30)
+    static let visibleTTL: Duration = .seconds(45)
+}
+
+struct CatalogRevealPresentationState: Equatable, Sendable {
+    private(set) var visiblePlaintext: String?
+    private(set) var pendingPlaintext: String?
+    private(set) var pendingGeneration: UUID?
+
+    init(
+        visiblePlaintext: String? = nil,
+        pendingPlaintext: String? = nil,
+        pendingGeneration: UUID? = nil
+    ) {
+        self.visiblePlaintext = visiblePlaintext
+        self.pendingPlaintext = pendingPlaintext
+        self.pendingGeneration = pendingGeneration
+    }
+
+    @discardableResult
+    mutating func receive(
+        _ plaintext: String,
+        generation: UUID,
+        isActive: Bool
+    ) -> CatalogRevealPresentationTransition {
+        if isActive {
+            pendingPlaintext = nil
+            pendingGeneration = nil
+            visiblePlaintext = plaintext
+            return .presented
+        }
+
+        visiblePlaintext = nil
+        pendingPlaintext = plaintext
+        pendingGeneration = generation
+        return .heldPending
+    }
+
+    @discardableResult
+    mutating func presentPending(
+        generation: UUID
+    ) -> CatalogRevealPresentationTransition {
+        guard let pendingPlaintext,
+              pendingGeneration == generation
+        else {
+            visiblePlaintext = nil
+            self.pendingPlaintext = nil
+            pendingGeneration = nil
+            return .noPending
+        }
+        self.pendingPlaintext = nil
+        pendingGeneration = nil
+        visiblePlaintext = pendingPlaintext
+        return .presented
+    }
+
+    mutating func clearForNewReveal() {
+        visiblePlaintext = nil
+        pendingPlaintext = nil
+        pendingGeneration = nil
+    }
+
+    mutating func invalidate() {
+        clearForNewReveal()
+    }
+
+    mutating func hideVisible() {
+        visiblePlaintext = nil
+    }
+
+    @discardableResult
+    mutating func expirePending(generation: UUID) -> Bool {
+        guard pendingPlaintext != nil,
+              pendingGeneration == generation
+        else { return false }
+
+        pendingPlaintext = nil
+        pendingGeneration = nil
+        return true
+    }
+
+    mutating func expire() {
+        visiblePlaintext = nil
+    }
 }
 
 public struct VaultWorkbenchView: View {
@@ -2083,18 +2219,15 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
     static let serviceAddressKey = "serviceURL"
 
     let id: UUID
-    let originalKey: String?
     var field: SecretCatalogFieldValue
     var secretInput: String
 
     init(
         id: UUID = UUID(),
-        originalKey: String? = nil,
         field: SecretCatalogFieldValue,
         secretInput: String = ""
     ) {
         self.id = id
-        self.originalKey = originalKey
         self.field = field
         self.secretInput = secretInput
     }
@@ -2103,9 +2236,7 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
         from fields: [SecretCatalogFieldValue],
         endpoints: [CatalogEndpoint] = []
     ) -> [Self] {
-        var drafts = fields.map { field in
-            Self(originalKey: field.key, field: field)
-        }
+        var drafts = fields.map { field in Self(field: field) }
 
         guard !endpoints.isEmpty else { return drafts }
 
@@ -2241,6 +2372,17 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
 
     static func newField(key: String) -> Self {
         Self(field: SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
+    }
+
+    static func nextCustomFieldKey(for drafts: [Self]) -> String {
+        let usedKeys = Set(drafts.map { $0.field.key })
+        var number = drafts.count + 1
+        var key = "field\(number)"
+        while usedKeys.contains(key) {
+            number += 1
+            key = "field\(number)"
+        }
+        return key
     }
 
     var selectionID: String { id.uuidString }
@@ -2962,12 +3104,14 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var isSaving = false
     @State private var editorError: String?
     @State private var showingDetails: Bool
-    @State private var revealedPlaintexts: [String: String] = [:]
+    @State private var revealPresentationStates: [String: CatalogRevealPresentationState] = [:]
     @State private var revealingKeys: Set<String> = []
     @State private var revealTasks: [String: Task<Void, Never>] = [:]
     @State private var revealExpiryTasks: [String: Task<Void, Never>] = [:]
+    @State private var revealPendingExpiryTasks: [String: Task<Void, Never>] = [:]
     @State private var revealGenerations: [String: UUID] = [:]
     @State private var revealError: String?
+    @State private var canPresentReveals = true
     @State private var isHovering = false
     @State private var detailContentHeight: CGFloat = 260
     @State private var detailAvailableWidth: CGFloat = 760
@@ -3065,32 +3209,60 @@ private struct SensitiveCatalogEntryRow: View {
         .scaleEffect(isHovering && !reduceMotion ? 1.01 : 1)
         .onHover { isHovering = $0 }
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)
-        .sheet(isPresented: $showingDetails, onDismiss: clearSensitiveOutput) {
+        .sheet(isPresented: $showingDetails, onDismiss: invalidateRevealState) {
             entryDetails
         }
         .onDisappear {
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onChange(of: showingDetails) { _, isPresented in
-            if !isPresented { cancelEditing() }
+            if isPresented {
+                canPresentReveals = scenePhase == .active
+            } else {
+                canPresentReveals = false
+                cancelEditing()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .inactive || phase == .background { clearSensitiveOutput() }
+            switch phase {
+            case .active:
+                canPresentReveals = true
+                presentPendingReveals()
+            case .inactive:
+                canPresentReveals = false
+                hideRevealedPlaintexts()
+            case .background:
+                canPresentReveals = false
+                invalidateRevealState()
+            @unknown default:
+                canPresentReveals = false
+                invalidateRevealState()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
-            clearSensitiveOutput()
+            canPresentReveals = false
+            hideRevealedPlaintexts()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            guard scenePhase == .active else { return }
+            canPresentReveals = true
+            presentPendingReveals()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchTransientFocusLost)) { _ in
+            canPresentReveals = false
+            hideRevealedPlaintexts()
         }
         .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchSecurityStateInvalidated)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
     }
 
@@ -3298,7 +3470,7 @@ private struct SensitiveCatalogEntryRow: View {
     private func detailValue(for field: SecretCatalogFieldValue) -> some View {
         let presentation = CatalogFieldPresentation.resolve(
             field: field,
-            revealedPlaintext: revealedPlaintexts[field.key]
+            revealedPlaintext: revealPresentationStates[field.key]?.visiblePlaintext
         )
         Text(presentation.displayText)
             .font(presentation.isSecret ? .system(.body, design: .monospaced) : .body)
@@ -3315,7 +3487,7 @@ private struct SensitiveCatalogEntryRow: View {
     private func detailAction(for field: SecretCatalogFieldValue) -> some View {
         let presentation = CatalogFieldPresentation.resolve(
             field: field,
-            revealedPlaintext: revealedPlaintexts[field.key]
+            revealedPlaintext: revealPresentationStates[field.key]?.visiblePlaintext
         )
         Group {
             switch presentation.actionKind {
@@ -3350,9 +3522,14 @@ private struct SensitiveCatalogEntryRow: View {
         revealTasks[fieldKey]?.cancel()
         revealExpiryTasks[fieldKey]?.cancel()
         revealExpiryTasks.removeValue(forKey: fieldKey)
+        revealPendingExpiryTasks[fieldKey]?.cancel()
+        revealPendingExpiryTasks.removeValue(forKey: fieldKey)
         let generation = UUID()
         revealGenerations[fieldKey] = generation
-        revealedPlaintexts.removeValue(forKey: fieldKey)
+        var presentationState = revealPresentationStates[fieldKey] ?? CatalogRevealPresentationState()
+        presentationState.clearForNewReveal()
+        revealPresentationStates[fieldKey] = presentationState
+        canPresentReveals = scenePhase == .active
         revealingKeys.insert(fieldKey)
         revealError = nil
 
@@ -3365,45 +3542,23 @@ private struct SensitiveCatalogEntryRow: View {
             }
             do {
                 let plaintext = try await revealCatalogField(entry.id, fieldKey)
+                // LocalAuthentication may briefly make the App/window
+                // inactive while its system UI is on screen. Hard security
+                // events invalidate the generation instead; a transient
+                // focus change must not discard this successful reveal.
                 guard revealGenerations[fieldKey] == generation,
-                      showingDetails,
-                      scenePhase == .active
+                      showingDetails
                 else { return }
-
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
-                    revealedPlaintexts[fieldKey] = plaintext
-                }
-
-                let expiryTask: Task<Void, Never> = Task { @MainActor in
-                    do {
-                        try await Task.sleep(for: .seconds(45))
-                    } catch is CancellationError {
-                        return
-                    } catch {
-                        return
-                    }
-
-                    guard !Task.isCancelled,
-                          revealGenerations[fieldKey] == generation,
-                          showingDetails,
-                          scenePhase == .active
-                    else { return }
-
-                    revealedPlaintexts.removeValue(forKey: fieldKey)
-                    revealExpiryTasks.removeValue(forKey: fieldKey)
-                }
-
-                guard revealGenerations[fieldKey] == generation else {
-                    expiryTask.cancel()
-                    return
-                }
-                revealExpiryTasks[fieldKey] = expiryTask
+                presentRevealResult(
+                    plaintext,
+                    fieldKey: fieldKey,
+                    generation: generation
+                )
             } catch is CancellationError {
                 return
             } catch {
                 guard revealGenerations[fieldKey] == generation,
-                      showingDetails,
-                      scenePhase == .active
+                      showingDetails
                 else { return }
                 revealError = "字段解密失败或本机授权未完成"
             }
@@ -3411,15 +3566,180 @@ private struct SensitiveCatalogEntryRow: View {
         revealTasks[fieldKey] = task
     }
 
-    private func clearSensitiveOutput() {
-        revealTasks.values.forEach { $0.cancel() }
+    private func presentRevealResult(
+        _ plaintext: String,
+        fieldKey: String,
+        generation: UUID
+    ) {
+        guard revealGenerations[fieldKey] == generation,
+              showingDetails
+        else { return }
+
+        var state = revealPresentationStates[fieldKey] ?? CatalogRevealPresentationState()
+        let transition = state.receive(
+            plaintext,
+            generation: generation,
+            isActive: scenePhase == .active && canPresentReveals
+        )
+
+        if transition == .presented {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                revealPresentationStates[fieldKey] = state
+            }
+        } else {
+            revealPresentationStates[fieldKey] = state
+        }
+
+        switch transition {
+        case .presented:
+            revealPendingExpiryTasks[fieldKey]?.cancel()
+            revealPendingExpiryTasks.removeValue(forKey: fieldKey)
+            scheduleRevealExpiry(for: fieldKey, generation: generation)
+        case .heldPending:
+            schedulePendingRevealExpiry(for: fieldKey, generation: generation)
+        case .noPending:
+            break
+        }
+    }
+
+    private func presentPendingReveals() {
+        guard scenePhase == .active,
+              canPresentReveals,
+              showingDetails
+        else { return }
+
+        let pendingKeys = revealPresentationStates.compactMap { key, state in
+            state.pendingPlaintext == nil ? nil : key
+        }
+
+        for fieldKey in pendingKeys {
+            guard let generation = revealGenerations[fieldKey] else {
+                revealPresentationStates.removeValue(forKey: fieldKey)
+                continue
+            }
+
+            revealPendingExpiryTasks[fieldKey]?.cancel()
+            revealPendingExpiryTasks.removeValue(forKey: fieldKey)
+            var state = revealPresentationStates[fieldKey] ?? CatalogRevealPresentationState()
+            guard state.presentPending(generation: generation) == .presented else {
+                revealPresentationStates[fieldKey] = state
+                continue
+            }
+
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                revealPresentationStates[fieldKey] = state
+            }
+            scheduleRevealExpiry(for: fieldKey, generation: generation)
+        }
+    }
+
+    private func scheduleRevealExpiry(for fieldKey: String, generation: UUID) {
+        revealExpiryTasks[fieldKey]?.cancel()
+        let expiryTask: Task<Void, Never> = Task { @MainActor in
+            do {
+                try await Task.sleep(for: CatalogRevealPresentationTiming.visibleTTL)
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled,
+                  revealGenerations[fieldKey] == generation,
+                  showingDetails,
+                  scenePhase == .active,
+                  canPresentReveals
+            else { return }
+
+            guard var state = revealPresentationStates[fieldKey] else { return }
+            state.expire()
+            revealPresentationStates[fieldKey] = state
+            revealExpiryTasks.removeValue(forKey: fieldKey)
+        }
+
+        guard revealGenerations[fieldKey] == generation,
+              showingDetails,
+              scenePhase == .active,
+              canPresentReveals
+        else {
+            expiryTask.cancel()
+            return
+        }
+        revealExpiryTasks[fieldKey] = expiryTask
+    }
+
+    private func schedulePendingRevealExpiry(for fieldKey: String, generation: UUID) {
+        revealPendingExpiryTasks[fieldKey]?.cancel()
+        let expiryTask: Task<Void, Never> = Task { @MainActor in
+            do {
+                // This is an independent pending-result deadline. It starts
+                // only after decryption has completed while the App is
+                // inactive; it is not the 45-second visible-display TTL.
+                try await Task.sleep(for: CatalogRevealPresentationTiming.pendingTTL)
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled,
+                  revealGenerations[fieldKey] == generation,
+                  showingDetails,
+                  revealPresentationStates[fieldKey]?.pendingGeneration == generation
+            else { return }
+
+            guard var state = revealPresentationStates[fieldKey],
+                  state.expirePending(generation: generation)
+            else { return }
+            revealPresentationStates[fieldKey] = state
+            revealPendingExpiryTasks.removeValue(forKey: fieldKey)
+        }
+
+        guard revealGenerations[fieldKey] == generation,
+              showingDetails,
+              revealPresentationStates[fieldKey]?.pendingGeneration == generation
+        else {
+            expiryTask.cancel()
+            return
+        }
+        revealPendingExpiryTasks[fieldKey] = expiryTask
+    }
+
+    private func hideRevealedPlaintexts() {
+        let action = CatalogRevealLifecycleAction.forInterruption(.transientFocusLoss)
+        guard action.hidePlaintext,
+              !action.cancelInFlight,
+              !action.invalidateGeneration
+        else { return }
+
+        canPresentReveals = false
         revealExpiryTasks.values.forEach { $0.cancel() }
-        revealTasks.removeAll()
         revealExpiryTasks.removeAll()
-        revealGenerations.removeAll()
-        revealedPlaintexts.removeAll()
-        revealingKeys.removeAll()
+        // Keep the pending deadline alive across transient focus loss. Only
+        // a hard security invalidation may clear a pending plaintext early.
+        revealPresentationStates = revealPresentationStates.mapValues { currentState in
+            var state = currentState
+            state.hideVisible()
+            return state
+        }
         revealError = nil
+    }
+
+    private func invalidateRevealState() {
+        let action = CatalogRevealLifecycleAction.forInterruption(.hardSecurityInvalidation)
+        guard action.hidePlaintext,
+              action.cancelInFlight,
+              action.invalidateGeneration
+        else { return }
+
+        revealTasks.values.forEach { $0.cancel() }
+        revealTasks.removeAll()
+        revealPendingExpiryTasks.values.forEach { $0.cancel() }
+        revealPendingExpiryTasks.removeAll()
+        hideRevealedPlaintexts()
+        revealPresentationStates.removeAll()
+        revealGenerations.removeAll()
+        revealingKeys.removeAll()
     }
 
     private func copy(_ value: String) {
@@ -3471,13 +3791,11 @@ private struct SensitiveCatalogEntryRow: View {
                         .font(.headline)
                     Spacer()
                     Button("新增自定义字段") {
-                        var number = draftFields.count + 1
-                        var key = "field\(number)"
-                        while draftFields.contains(where: { $0.field.key == key }) {
-                            number += 1
-                            key = "field\(number)"
-                        }
-                        draftFields.append(CatalogFieldDraft.newField(key: key))
+                        draftFields.append(
+                            CatalogFieldDraft.newField(
+                                key: CatalogFieldDraft.nextCustomFieldKey(for: draftFields)
+                            )
+                        )
                     }
                     .buttonStyle(.bordered)
                     Button("批量编辑") {
@@ -3634,7 +3952,7 @@ private struct SensitiveCatalogEntryRow: View {
         }
         editing = false
         editorError = nil
-        clearSensitiveOutput()
+        invalidateRevealState()
     }
 
     private func closeDetails() {
@@ -3700,11 +4018,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
         nonmutating set { draft.secretInput = newValue }
     }
 
-    private var hasUnsavedKeyChange: Bool {
-        guard let originalKey = draft.originalKey else { return false }
-        return field.key != originalKey
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             if isSelecting {
@@ -3725,9 +4038,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
                 .accessibilityValue(isSelected ? "已选中" : "未选中")
             } else {
                 HStack(spacing: 7) {
-                    TextField("key", text: keyBinding)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("字段标签", text: labelBinding)
+                    TextField("字段名称", text: labelBinding)
                         .textFieldStyle(.roundedBorder)
                     Picker("类型", selection: typeBinding) {
                         ForEach(SecretCatalogFieldType.allCases, id: \.self) { type in
@@ -3795,7 +4106,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
                             submitSecretReplacement()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil || hasUnsavedKeyChange)
+                        .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil)
                     } else {
                         Text("已绑定")
                             .font(.callout)
@@ -3806,7 +4117,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
                             isReplacingSecret = true
                         }
                         .buttonStyle(.bordered)
-                        .disabled(replaceSecret == nil || hasUnsavedKeyChange)
+                        .disabled(replaceSecret == nil)
                     }
                 } else {
                     secretInputEditor(prompt: "输入密码")
@@ -3817,12 +4128,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
                 }
             }
 
-            if hasUnsavedKeyChange {
-                Text("字段 key 已修改，请先保存条目，再替换密码。")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .lineLimit(2)
-            }
         }
     }
 
@@ -3857,15 +4162,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
             TextField(Self.typeName(field.type), text: textBinding)
                 .textFieldStyle(.roundedBorder)
         }
-    }
-
-    private var keyBinding: Binding<String> {
-        Binding(
-            get: { field.key },
-            set: { newKey in
-                field = updatedField(from: field, key: newKey)
-            }
-        )
     }
 
     private var labelBinding: Binding<String> {
@@ -3984,7 +4280,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
 
     private func updatedField(
         from current: SecretCatalogFieldValue,
-        key: String? = nil,
         label: String? = nil,
         type: SecretCatalogFieldType? = nil,
         agentVisible: Bool? = nil,
@@ -3998,7 +4293,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
         let resolvedValue = setValue ? value : current.value
         let resolvedSecretRef = setSecretRef ? secretRef : current.secretRef
         return SecretCatalogFieldValue(
-            key: key ?? current.key,
+            key: current.key,
             label: label ?? current.label,
             type: resolvedType,
             agentVisible: agentVisible ?? current.agentVisible,
@@ -4011,7 +4306,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
     private func submitSecretReplacement() {
         guard let replaceSecret,
               !secretInput.isEmpty,
-              !hasUnsavedKeyChange
+              field.secretRef != nil
         else { return }
         let plaintext = secretInput
         let key = field.key

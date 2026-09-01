@@ -3720,14 +3720,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             effects: ["display-to-local-user"]
         )
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-        try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
+        let authorizationPath = try await authorizeIfNeeded(
+            descriptor,
+            metadata: metadata,
+            decision: decision
+        )
 
         // Keep the one-field result in the App's caller memory only. The
         // audit event contains no reference ID or resolved value.
         let plaintext = try await resolveReferences(
             references: [secretRef],
             context: context,
-            forceFreshAuthorization: true
+            forceFreshAuthorization: true,
+            authenticationContext: authorizationPath.authenticationContext
         )
         await emitAudit(
             action: "本机显示目录凭据",
@@ -5033,12 +5038,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func resolveReferences(
         references: [String],
         context: RevealContext,
-        forceFreshAuthorization: Bool = false
+        forceFreshAuthorization: Bool = false,
+        authenticationContext: LocalAuthenticationContext? = nil
     ) async throws -> String {
         try await resolveReferencesWithValues(
             references: references,
             context: context,
-            forceFreshAuthorization: forceFreshAuthorization
+            forceFreshAuthorization: forceFreshAuthorization,
+            authenticationContext: authenticationContext
         ).text
     }
 
@@ -5046,6 +5053,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         references: [String],
         context: RevealContext,
         forceFreshAuthorization: Bool = false,
+        authenticationContext: LocalAuthenticationContext? = nil,
         masterKeyOverride: SymmetricKey? = nil
     ) async throws -> RestoredParagraph {
         guard !references.isEmpty else {
@@ -5083,6 +5091,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 reason: context.reason,
                 allowsAgentDecryptReuse: !forceFreshAuthorization,
                 destination: context.destination,
+                authenticationContext: authenticationContext,
                 forceFresh: forceFreshAuthorization
             )
         }

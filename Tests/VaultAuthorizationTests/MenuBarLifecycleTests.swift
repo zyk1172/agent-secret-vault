@@ -52,6 +52,53 @@ import Testing
     #expect(!source.contains("controller?.stop()"))
 }
 
+@Test func appTreatsResignActiveAsTransientCatalogFocusLoss() throws {
+    let source = try appSource()
+    guard let start = source.range(of: "NSApplication.didResignActiveNotification"),
+          let end = source.range(of: "NSWorkspace.screensDidSleepNotification", range: start.upperBound..<source.endIndex)
+    else {
+        Issue.record("application focus-loss handler not found")
+        return
+    }
+
+    let handler = source[start.lowerBound..<end.lowerBound]
+    #expect(handler.contains("vaultWorkbenchTransientFocusLost"))
+    #expect(handler.contains("runtime.clearRevealSessionsForTransientFocusLoss()"))
+    #expect(!handler.contains("runtime.clearRevealSessions()"))
+    #expect(!handler.contains("runtime.cancelAllSecureInputRequests()"))
+}
+
+@Test func transientRevealCleanupDoesNotBroadcastCatalogSecurityInvalidation() throws {
+    let source = try appSource()
+    guard let start = source.range(of: "func clearRevealSessionsForTransientFocusLoss() async"),
+          let end = source.range(of: "    func lockVault() async", range: start.upperBound..<source.endIndex)
+    else {
+        Issue.record("transient reveal cleanup helper not found")
+        return
+    }
+
+    let helper = source[start.lowerBound..<end.lowerBound]
+    #expect(helper.contains("RevealSessionLifecycle.clearPresentedSessionsForFocusLoss()"))
+    #expect(helper.contains("uiRevealSessionStore.clearAll()"))
+    #expect(helper.contains("agentClient?.clearRevealSessions()"))
+    #expect(!helper.contains("vaultWorkbenchSecurityStateInvalidated"))
+    #expect(!helper.contains("cancelAllSecureInputRequests()"))
+
+    // Hard security paths must continue to retain the broadcast/full cleanup.
+    #expect(source.contains("name: .vaultWorkbenchSecurityStateInvalidated"))
+    #expect(source.contains("RevealSessionLifecycle.clearAll()"))
+}
+
+@Test func menuBarDoesNotClearSharedRevealStateOnTransientAppFocusLoss() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/MenuBar/MenuBarVaultPanel.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    #expect(!source.contains("NSApplication.didResignActiveNotification"))
+}
+
 @Test func agentServiceActionsRoundTripThroughRuntimeState() throws {
     let source = try appSource()
 
