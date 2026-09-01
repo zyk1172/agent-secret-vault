@@ -42,15 +42,100 @@ import VaultCore
     #expect(PendingCatalogSecretResolver.resolve(in: advanced)?.remainingCount == 1)
 }
 
-@Test func catalogFieldDraftKeepsStableIdentityWhenEditableKeyChanges() {
-    let field = SecretCatalogFieldValue(key: "username", label: "用户名", type: .text)
+@Test func catalogFieldDraftEditsHumanLabelWithoutChangingStableKey() {
+    let field = SecretCatalogFieldValue(key: "field2", label: "密码", type: .secret, secretRef: "secret://password")
     let draft = CatalogFieldDraft.make(from: [field])[0]
     var edited = draft
-    edited.field = SecretCatalogFieldValue(key: "account", label: "用户名", type: .text)
+    edited.field = SecretCatalogFieldValue(
+        key: draft.field.key,
+        label: "数据库密码",
+        type: draft.field.type,
+        agentVisible: draft.field.agentVisible,
+        searchable: draft.field.searchable,
+        value: draft.field.value,
+        secretRef: draft.field.secretRef
+    )
+    let reopened = CatalogFieldDraft.make(from: [edited.field])[0]
 
     #expect(edited.id == draft.id)
-    #expect(edited.originalKey == "username")
+    #expect(edited.field.key == "field2")
+    #expect(edited.field.label == "数据库密码")
+    #expect(reopened.field.key == "field2")
+    #expect(reopened.field.label == "数据库密码")
+    #expect(reopened.field.secretRef == "secret://password")
     #expect(edited.selectionID == draft.selectionID)
+}
+
+@Test func catalogFieldDraftKeepsServiceURLIdentityWhenLabelChanges() {
+    let field = SecretCatalogFieldValue(
+        key: CatalogFieldDraft.serviceAddressKey,
+        label: "服务地址",
+        type: .url,
+        value: .string("http://192.168.2.240:3000")
+    )
+    let renamed = SecretCatalogFieldValue(
+        key: field.key,
+        label: "NewAPI 地址",
+        type: field.type,
+        agentVisible: field.agentVisible,
+        searchable: field.searchable,
+        value: field.value,
+        secretRef: field.secretRef
+    )
+
+    let reopened = CatalogFieldDraft.make(
+        from: [renamed],
+        endpoints: CatalogFieldDraft.endpoints(from: [renamed])
+    )
+
+    #expect(reopened.count == 1)
+    #expect(reopened[0].field.key == CatalogFieldDraft.serviceAddressKey)
+    #expect(reopened[0].field.label == "NewAPI 地址")
+    #expect(CatalogFieldDraft.endpoints(from: reopened.map(\.field)) == [
+        CatalogEndpoint(type: "http", host: "192.168.2.240", port: 3000)
+    ])
+}
+
+@Test func catalogFieldDraftGeneratesUniqueStableCustomKeys() {
+    let baseFields = [
+        SecretCatalogFieldValue(key: "field2", label: "已有字段", type: .text),
+        SecretCatalogFieldValue(key: "field3", label: "另一个字段", type: .text)
+    ]
+    var drafts = CatalogFieldDraft.make(from: baseFields)
+
+    let firstKey = CatalogFieldDraft.nextCustomFieldKey(for: drafts)
+    drafts.append(CatalogFieldDraft.newField(key: firstKey))
+    let secondKey = CatalogFieldDraft.nextCustomFieldKey(for: drafts)
+    drafts.append(CatalogFieldDraft.newField(key: secondKey))
+
+    #expect(firstKey == "field4")
+    #expect(secondKey == "field5")
+    #expect(!firstKey.isEmpty)
+    #expect(Set(drafts.map { $0.field.key }).count == drafts.count)
+
+    let renamed = SecretCatalogFieldValue(key: firstKey, label: "API", type: .text)
+    let reopened = CatalogFieldDraft.make(from: [renamed])[0]
+    #expect(reopened.field.key == firstKey)
+    #expect(reopened.field.label == "API")
+}
+
+@Test func catalogRevealLifecycleKeepsTransientFocusLossSeparateFromHardInvalidation() {
+    #expect(
+        CatalogRevealLifecycleAction.forInterruption(.transientFocusLoss)
+            == CatalogRevealLifecycleAction(
+                hidePlaintext: true,
+                cancelInFlight: false,
+                invalidateGeneration: false
+            )
+    )
+    #expect(
+        CatalogRevealLifecycleAction.forInterruption(.hardSecurityInvalidation)
+            == CatalogRevealLifecycleAction(
+                hidePlaintext: true,
+                cancelInFlight: true,
+                invalidateGeneration: true
+            )
+    )
 }
 
 @Test func catalogFieldDraftProjectsExistingEndpointAsAnEditableField() {
@@ -417,6 +502,14 @@ import VaultCore
 
     #expect(source.contains("ForEach($draftFields)"))
     #expect(source.contains("CatalogFieldDraft"))
+    #expect(source.contains("TextField(\"字段名称\", text: labelBinding)"))
+    #expect(!source.contains("TextField(\"key\""))
+    #expect(!source.contains("keyBinding"))
+    #expect(!source.contains("hasUnsavedKeyChange"))
+    #expect(!source.contains("originalKey"))
+    #expect(!source.contains("字段 key 已修改"))
+    #expect(source.contains("key: current.key"))
+    #expect(source.contains("let key = field.key"))
     #expect(!source.contains("ForEach($draftFields, id: \\.key)"))
     #expect(source.contains("fieldSelection"))
     #expect(source.contains("deleteSelectedFields()"))

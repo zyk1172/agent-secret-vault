@@ -1,7 +1,8 @@
 import Foundation
 import CryptoKit
+import LocalAuthentication
 import Testing
-import VaultAuthorization
+@testable import VaultAuthorization
 import VaultCore
 import VaultIPC
 import VaultService
@@ -16,6 +17,86 @@ private struct CatalogTextEncryptor: TextEncrypting {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference {
         try SecretReference(servicePasswordRef)
     }
+}
+
+@Test func catalogRevealUsesOneApprovalContextAndReturnsOnlyTheLocalPlaintext() async throws {
+    let fixture = try await CatalogFixture()
+    defer { fixture.cleanup() }
+
+    let snapshot = try await fixture.store.snapshot()
+    let entry = try #require(snapshot.document.entries.first)
+    let boundEntry = SecretCatalogEntry(
+        id: entry.id,
+        indexId: entry.indexId,
+        title: entry.title,
+        type: entry.type,
+        aliases: entry.aliases,
+        endpoints: entry.endpoints,
+        fields: [
+            entry.fields[0],
+            SecretCatalogFieldValue(
+                key: "password",
+                label: "密码",
+                type: .secret,
+                secretRef: servicePasswordRef
+            )
+        ],
+        notes: entry.notes,
+        tags: entry.tags,
+        schema: entry.schema
+    )
+    _ = try await fixture.store.updateEntry(boundEntry, expectedRevision: snapshot.revision)
+
+    let recordStore = FileRecordStore(baseDirectory: fixture.root)
+    let reference = try SecretReference(servicePasswordRef)
+    let masterKey = SymmetricKey(data: Data(repeating: 0x44, count: 32))
+    let canary = "svlt-catalog-reveal-canary"
+    let record = try VaultCipher().encrypt(
+        Data(canary.utf8),
+        id: reference.id,
+        version: 1,
+        label: "QNAP credential",
+        policy: .credential,
+        masterKey: masterKey
+    )
+    try await recordStore.save(record)
+
+    let authenticationContext = LocalAuthenticationContext(rawContext: LAContext())
+    let approver = CatalogContextApprovalRecorder(context: authenticationContext)
+    let keyProvider = CatalogContextKeyProvider(key: masterKey)
+    let auditRecorder = CatalogAuditRecorder()
+    let service = VaultAppServices(
+        textEncryptor: CatalogTextEncryptor(),
+        activeRoot: nil,
+        recordResolver: VaultRecordResolver(recordStore: recordStore),
+        catalogDocumentStore: fixture.store,
+        catalogSelectionManifestURL: fixture.selectionURL,
+        catalogAgentWriteAuthorization: fixture.agentAuthorization,
+        freshMasterKeyProviderWithAuthenticationContext: { _, _, context in
+            await keyProvider.resolve(authenticationContext: context)
+        },
+        operationApprover: approver,
+        auditObserver: { entry in
+            await auditRecorder.append(entry)
+        }
+    )
+
+    let plaintext = try await service.catalogRevealField(
+        entryID: serviceEntryID,
+        key: "password"
+    )
+    #expect(plaintext == canary)
+    #expect(await approver.count == 1)
+
+    let receivedContexts = await keyProvider.recordedContexts()
+    #expect(receivedContexts.count == 1)
+    let receivedContext = try #require(receivedContexts.first ?? nil)
+    #expect(receivedContext === authenticationContext)
+
+    let catalogMarkdown = try String(contentsOf: fixture.documentURL, encoding: .utf8)
+    #expect(!catalogMarkdown.contains(canary))
+    let auditEntries = await auditRecorder.recordedEntries()
+    #expect(!String(describing: auditEntries).contains(canary))
 }
 
 @Test func agentWriteAccessRequestRequiresExplicitUserApproval() async throws {
@@ -313,6 +394,55 @@ private actor CatalogApprovalRecorder: OperationApproving {
     func approve(summary: String) async throws {
         count += 1
         summaries.append(summary)
+    }
+}
+
+private actor CatalogContextApprovalRecorder: OperationApprovalContextProviding {
+    private(set) var count = 0
+    let context: LocalAuthenticationContext
+
+    init(context: LocalAuthenticationContext) {
+        self.context = context
+    }
+
+    func approve(summary: String) async throws {
+        _ = try await approveWithAuthenticationContext(summary: summary)
+    }
+
+    func approveWithAuthenticationContext(summary: String) async throws -> LocalAuthenticationContext? {
+        _ = summary
+        count += 1
+        return context
+    }
+}
+
+private actor CatalogContextKeyProvider {
+    let key: SymmetricKey
+    private(set) var contexts: [LocalAuthenticationContext?] = []
+
+    init(key: SymmetricKey) {
+        self.key = key
+    }
+
+    func resolve(authenticationContext: LocalAuthenticationContext?) -> SymmetricKey {
+        contexts.append(authenticationContext)
+        return key
+    }
+
+    func recordedContexts() -> [LocalAuthenticationContext?] {
+        contexts
+    }
+}
+
+private actor CatalogAuditRecorder {
+    private(set) var entries: [AgentAutomationAuditEntry] = []
+
+    func append(_ entry: AgentAutomationAuditEntry) {
+        entries.append(entry)
+    }
+
+    func recordedEntries() -> [AgentAutomationAuditEntry] {
+        entries
     }
 }
 

@@ -542,9 +542,44 @@ public enum VaultWorkbenchSection: String, CaseIterable, Identifiable, Sendable 
 
 public extension Notification.Name {
     static let vaultWorkbenchNavigate = Notification.Name("AgentSecretVaultWorkbenchNavigate")
+    /// Authentication UI can briefly deactivate the App/window without
+    /// representing a lock or sleep security boundary. Catalog detail views
+    /// hide already displayed plaintext for this event but keep an in-flight
+    /// owner authentication alive.
+    static let vaultWorkbenchTransientFocusLost = Notification.Name(
+        "AgentSecretVaultWorkbenchTransientFocusLost"
+    )
     static let vaultWorkbenchSecurityStateInvalidated = Notification.Name(
         "AgentSecretVaultWorkbenchSecurityStateInvalidated"
     )
+}
+
+enum CatalogRevealInterruption: Sendable {
+    case transientFocusLoss
+    case hardSecurityInvalidation
+}
+
+struct CatalogRevealLifecycleAction: Equatable, Sendable {
+    let hidePlaintext: Bool
+    let cancelInFlight: Bool
+    let invalidateGeneration: Bool
+
+    static func forInterruption(_ interruption: CatalogRevealInterruption) -> Self {
+        switch interruption {
+        case .transientFocusLoss:
+            return Self(
+                hidePlaintext: true,
+                cancelInFlight: false,
+                invalidateGeneration: false
+            )
+        case .hardSecurityInvalidation:
+            return Self(
+                hidePlaintext: true,
+                cancelInFlight: true,
+                invalidateGeneration: true
+            )
+        }
+    }
 }
 
 public struct VaultWorkbenchView: View {
@@ -2083,18 +2118,15 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
     static let serviceAddressKey = "serviceURL"
 
     let id: UUID
-    let originalKey: String?
     var field: SecretCatalogFieldValue
     var secretInput: String
 
     init(
         id: UUID = UUID(),
-        originalKey: String? = nil,
         field: SecretCatalogFieldValue,
         secretInput: String = ""
     ) {
         self.id = id
-        self.originalKey = originalKey
         self.field = field
         self.secretInput = secretInput
     }
@@ -2103,9 +2135,7 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
         from fields: [SecretCatalogFieldValue],
         endpoints: [CatalogEndpoint] = []
     ) -> [Self] {
-        var drafts = fields.map { field in
-            Self(originalKey: field.key, field: field)
-        }
+        var drafts = fields.map { field in Self(field: field) }
 
         guard !endpoints.isEmpty else { return drafts }
 
@@ -2241,6 +2271,17 @@ struct CatalogFieldDraft: Identifiable, Equatable, Sendable {
 
     static func newField(key: String) -> Self {
         Self(field: SecretCatalogFieldValue(key: key, label: "新字段", type: .text))
+    }
+
+    static func nextCustomFieldKey(for drafts: [Self]) -> String {
+        let usedKeys = Set(drafts.map { $0.field.key })
+        var number = drafts.count + 1
+        var key = "field\(number)"
+        while usedKeys.contains(key) {
+            number += 1
+            key = "field\(number)"
+        }
+        return key
     }
 
     var selectionID: String { id.uuidString }
@@ -3065,32 +3106,42 @@ private struct SensitiveCatalogEntryRow: View {
         .scaleEffect(isHovering && !reduceMotion ? 1.01 : 1)
         .onHover { isHovering = $0 }
         .animation(reduceMotion ? nil : VaultWorkbenchMotion.interactive, value: isHovering)
-        .sheet(isPresented: $showingDetails, onDismiss: clearSensitiveOutput) {
+        .sheet(isPresented: $showingDetails, onDismiss: invalidateRevealState) {
             entryDetails
         }
         .onDisappear {
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onChange(of: showingDetails) { _, isPresented in
             if !isPresented { cancelEditing() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .inactive || phase == .background { clearSensitiveOutput() }
+            switch phase {
+            case .inactive:
+                hideRevealedPlaintexts()
+            case .background:
+                invalidateRevealState()
+            default:
+                break
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
-            clearSensitiveOutput()
+            hideRevealedPlaintexts()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchTransientFocusLost)) { _ in
+            hideRevealedPlaintexts()
         }
         .onReceive(NotificationCenter.default.publisher(for: .vaultWorkbenchSecurityStateInvalidated)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in
-            clearSensitiveOutput()
+            invalidateRevealState()
         }
     }
 
@@ -3365,9 +3416,12 @@ private struct SensitiveCatalogEntryRow: View {
             }
             do {
                 let plaintext = try await revealCatalogField(entry.id, fieldKey)
+                // LocalAuthentication may briefly make the App/window
+                // inactive while its system UI is on screen. Hard security
+                // events invalidate the generation instead; a transient
+                // focus change must not discard this successful reveal.
                 guard revealGenerations[fieldKey] == generation,
-                      showingDetails,
-                      scenePhase == .active
+                      showingDetails
                 else { return }
 
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
@@ -3385,8 +3439,7 @@ private struct SensitiveCatalogEntryRow: View {
 
                     guard !Task.isCancelled,
                           revealGenerations[fieldKey] == generation,
-                          showingDetails,
-                          scenePhase == .active
+                          showingDetails
                     else { return }
 
                     revealedPlaintexts.removeValue(forKey: fieldKey)
@@ -3402,8 +3455,7 @@ private struct SensitiveCatalogEntryRow: View {
                 return
             } catch {
                 guard revealGenerations[fieldKey] == generation,
-                      showingDetails,
-                      scenePhase == .active
+                      showingDetails
                 else { return }
                 revealError = "字段解密失败或本机授权未完成"
             }
@@ -3411,15 +3463,31 @@ private struct SensitiveCatalogEntryRow: View {
         revealTasks[fieldKey] = task
     }
 
-    private func clearSensitiveOutput() {
-        revealTasks.values.forEach { $0.cancel() }
+    private func hideRevealedPlaintexts() {
+        let action = CatalogRevealLifecycleAction.forInterruption(.transientFocusLoss)
+        guard action.hidePlaintext,
+              !action.cancelInFlight,
+              !action.invalidateGeneration
+        else { return }
+
         revealExpiryTasks.values.forEach { $0.cancel() }
-        revealTasks.removeAll()
         revealExpiryTasks.removeAll()
-        revealGenerations.removeAll()
         revealedPlaintexts.removeAll()
-        revealingKeys.removeAll()
         revealError = nil
+    }
+
+    private func invalidateRevealState() {
+        let action = CatalogRevealLifecycleAction.forInterruption(.hardSecurityInvalidation)
+        guard action.hidePlaintext,
+              action.cancelInFlight,
+              action.invalidateGeneration
+        else { return }
+
+        revealTasks.values.forEach { $0.cancel() }
+        revealTasks.removeAll()
+        hideRevealedPlaintexts()
+        revealGenerations.removeAll()
+        revealingKeys.removeAll()
     }
 
     private func copy(_ value: String) {
@@ -3471,13 +3539,11 @@ private struct SensitiveCatalogEntryRow: View {
                         .font(.headline)
                     Spacer()
                     Button("新增自定义字段") {
-                        var number = draftFields.count + 1
-                        var key = "field\(number)"
-                        while draftFields.contains(where: { $0.field.key == key }) {
-                            number += 1
-                            key = "field\(number)"
-                        }
-                        draftFields.append(CatalogFieldDraft.newField(key: key))
+                        draftFields.append(
+                            CatalogFieldDraft.newField(
+                                key: CatalogFieldDraft.nextCustomFieldKey(for: draftFields)
+                            )
+                        )
                     }
                     .buttonStyle(.bordered)
                     Button("批量编辑") {
@@ -3634,7 +3700,7 @@ private struct SensitiveCatalogEntryRow: View {
         }
         editing = false
         editorError = nil
-        clearSensitiveOutput()
+        invalidateRevealState()
     }
 
     private func closeDetails() {
@@ -3700,11 +3766,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
         nonmutating set { draft.secretInput = newValue }
     }
 
-    private var hasUnsavedKeyChange: Bool {
-        guard let originalKey = draft.originalKey else { return false }
-        return field.key != originalKey
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             if isSelecting {
@@ -3725,9 +3786,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
                 .accessibilityValue(isSelected ? "已选中" : "未选中")
             } else {
                 HStack(spacing: 7) {
-                    TextField("key", text: keyBinding)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("字段标签", text: labelBinding)
+                    TextField("字段名称", text: labelBinding)
                         .textFieldStyle(.roundedBorder)
                     Picker("类型", selection: typeBinding) {
                         ForEach(SecretCatalogFieldType.allCases, id: \.self) { type in
@@ -3795,7 +3854,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
                             submitSecretReplacement()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil || hasUnsavedKeyChange)
+                        .disabled(isSubmittingReplacement || secretInput.isEmpty || replaceSecret == nil)
                     } else {
                         Text("已绑定")
                             .font(.callout)
@@ -3806,7 +3865,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
                             isReplacingSecret = true
                         }
                         .buttonStyle(.bordered)
-                        .disabled(replaceSecret == nil || hasUnsavedKeyChange)
+                        .disabled(replaceSecret == nil)
                     }
                 } else {
                     secretInputEditor(prompt: "输入密码")
@@ -3817,12 +3876,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
                 }
             }
 
-            if hasUnsavedKeyChange {
-                Text("字段 key 已修改，请先保存条目，再替换密码。")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .lineLimit(2)
-            }
         }
     }
 
@@ -3857,15 +3910,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
             TextField(Self.typeName(field.type), text: textBinding)
                 .textFieldStyle(.roundedBorder)
         }
-    }
-
-    private var keyBinding: Binding<String> {
-        Binding(
-            get: { field.key },
-            set: { newKey in
-                field = updatedField(from: field, key: newKey)
-            }
-        )
     }
 
     private var labelBinding: Binding<String> {
@@ -3984,7 +4028,6 @@ private struct SensitiveCatalogFieldEditorRow: View {
 
     private func updatedField(
         from current: SecretCatalogFieldValue,
-        key: String? = nil,
         label: String? = nil,
         type: SecretCatalogFieldType? = nil,
         agentVisible: Bool? = nil,
@@ -3998,7 +4041,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
         let resolvedValue = setValue ? value : current.value
         let resolvedSecretRef = setSecretRef ? secretRef : current.secretRef
         return SecretCatalogFieldValue(
-            key: key ?? current.key,
+            key: current.key,
             label: label ?? current.label,
             type: resolvedType,
             agentVisible: agentVisible ?? current.agentVisible,
@@ -4011,7 +4054,7 @@ private struct SensitiveCatalogFieldEditorRow: View {
     private func submitSecretReplacement() {
         guard let replaceSecret,
               !secretInput.isEmpty,
-              !hasUnsavedKeyChange
+              field.secretRef != nil
         else { return }
         let plaintext = secretInput
         let key = field.key

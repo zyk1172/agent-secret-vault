@@ -165,6 +165,9 @@ public struct SecretCatalogEntrySearchService: Sendable {
 
         let metadataTerms = entry.fields.flatMap { field -> [String] in
             guard field.searchable else { return [] }
+            // `label` is the user-facing searchable name. Keep the stable
+            // machine key as a compatibility term for existing Agent/MCP
+            // queries without making it a second user-editable name.
             var terms = [normalize(field.key), normalize(field.label)]
             if let value = field.value {
                 terms.append(contentsOf: valueTerms(value))

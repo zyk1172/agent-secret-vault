@@ -52,6 +52,21 @@ import Testing
     #expect(!source.contains("controller?.stop()"))
 }
 
+@Test func appTreatsResignActiveAsTransientCatalogFocusLoss() throws {
+    let source = try appSource()
+    guard let start = source.range(of: "NSApplication.didResignActiveNotification"),
+          let end = source.range(of: "NSWorkspace.screensDidSleepNotification", range: start.upperBound..<source.endIndex)
+    else {
+        Issue.record("application focus-loss handler not found")
+        return
+    }
+
+    let handler = source[start.lowerBound..<end.lowerBound]
+    #expect(handler.contains("vaultWorkbenchTransientFocusLost"))
+    #expect(!handler.contains("runtime.clearRevealSessions()"))
+    #expect(!handler.contains("runtime.cancelAllSecureInputRequests()"))
+}
+
 @Test func agentServiceActionsRoundTripThroughRuntimeState() throws {
     let source = try appSource()
 

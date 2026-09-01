@@ -84,6 +84,43 @@ private func qnapCatalogDocument() -> SecretCatalogDocument {
     #expect(hidden.matches[0].entry.fields.contains { $0.key == "username" } == false)
 }
 
+@Test func entrySearchFindsUserFacingSecretFieldLabelAndKeepsStableKeyFallback() {
+    let indexID = "0123456789ABCDEFGHJKMNPQRY"
+    let entryID = "0123456789ABCDEFGHJKMNPQRZ"
+    let document = SecretCatalogDocument(
+        indexes: [SecretCatalogIndex(id: indexID, title: "API")],
+        entries: [SecretCatalogEntry(
+            id: entryID,
+            indexId: indexID,
+            title: "NewAPI",
+            fields: [SecretCatalogFieldValue(
+                key: "field4",
+                label: "API Token",
+                type: .secret,
+                searchable: true,
+                secretRef: "secret://0123456789ABCDEFGHJKMNPQRS"
+            )]
+        )]
+    )
+    let service = SecretCatalogEntrySearchService()
+
+    let byLabel = service.search(query: "API Token", document: document)
+    let byKey = service.search(query: "field4", document: document)
+
+    #expect(byLabel.status == .found)
+    #expect(byLabel.matches.count == 1)
+    #expect(byLabel.matches[0].entry.id == entryID)
+    #expect(byLabel.matches[0].entry.fields == [SecretCatalogFieldMatch(
+        key: "field4",
+        label: "API Token",
+        type: .secret,
+        secretRef: "secret://0123456789ABCDEFGHJKMNPQRS"
+    )])
+    #expect(byKey.status == .found)
+    #expect(byKey.matches.count == 1)
+    #expect(byKey.matches[0].entry.id == entryID)
+}
+
 @Test func sameDestinationDoesNotMergeDifferentEntries() {
     let result = SecretCatalogEntrySearchService().search(query: "192.168.2.240", limit: 20, document: qnapCatalogDocument())
     let ids = Set(result.matches.map { $0.entry.id })

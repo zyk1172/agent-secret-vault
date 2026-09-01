@@ -116,10 +116,10 @@ struct AgentSecretVaultApplication: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                     secureViewerModel.handleFocusChanged(isFocused: false)
-                    Task {
-                        await runtime.cancelAllSecureInputRequests()
-                        await runtime.clearRevealSessions()
-                    }
+                    NotificationCenter.default.post(
+                        name: .vaultWorkbenchTransientFocusLost,
+                        object: nil
+                    )
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
