@@ -39,6 +39,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 不得把通过 SVLT 解密得到的明文交给普通 shell、curl、URL、header、环境变量、日志、审计或聊天。禁止的是 Agent 自己把 `secret://` 洗成明文绕过 SVLT 专用操作。
 - 不要把用户主动提供的明文识别为 security bypass attempt，也不要把它与已有 Secret 做等值关联。
 - 每笔 Agent Catalog mutation 都必须使用精确绑定、一次消费的 operation-bound write request；需要批准时直接触发 macOS device-owner authentication，认证本身就是本次授权，不存在额外 App“验证并授权”按钮。
+- 需要给已有 `secret://` 增加精确服务地址/协议时使用 `secret_bind_destination`；protocol 和 destination 会作为一个经过认证的原子 pair 保存，每次变更都要求 fresh device-owner authentication，由 SVLT 在进程内重封装绑定元数据并返回 canonical destination，绝不返回明文或建立执行窗口。
 
 ### SSH session 与授权窗口
 
@@ -56,7 +57,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 在任何非 SSH 执行前先调用 `vault_capabilities`。daemon 返回的 capability manifest 才是实际能力来源；`unavailable` 不是“稍后重试即可”的支持状态，也不能因此请求明文或换成普通 shell/CLI。
 - 能力清单中的 `version` 与 `features` 是实际 adapter 的非敏感能力说明；不要只因为 MCP tool 存在就假设某个 auth、body、response projection、session 或 capture 能力存在。
 - HTTP/API 只能使用 typed payload：Basic、Bearer、API-key header、Cookie 等由 SVLT 分别校验。任何携 Secret 的 HTTP/API 网络发送（包括公网 HTTPS）都显示精确目标并触发 fresh owner approval；SVLT 不按 hostname 字符串宣称真实公网/私网 egress。未加密 `http://` 通过审批后还必须匹配保存的精确 `scheme/host/port` transport profile，profile 不会因为请求参数而扩大到另一台主机或端口。凭据类 URL query 参数同样触发 fresh 警告并由设备所有者决定；URL authority 中的用户名/密码仍不允许。不要自行添加任意 header；重定向会停止并要求重新审查。
-- 带认证的 HTTP 响应默认只返回状态/Content-Type。只有 capability manifest 声明 `projectedJSON` 且 App-owned profile ID 与 allowlisted JSON fields 同时匹配时，才能返回投影字段；不要请求 token、access_token、refresh_token、password、secret、cookie、session、authorization 等字段。`captureCredential`/派生 Cookie session 在本版本仍不可用。
+- 带认证的 HTTP 响应默认只返回状态/Content-Type。调用方明确传入 `includeBodyPreview` 时，已安装的 HTTP adapter 可以在本机审批后返回最多 16 KiB、仅限合法 JSON 且不含敏感字段名/`secret://` 的安全正文预览；无法通过检查的响应会 quarantine，不会把任意 HTML、文本或疑似凭据字段交给 Agent。`projectedJSON` 仍要求 capability manifest 声明并同时匹配 App-owned profile ID 与 allowlisted JSON fields。不要请求 token、access_token、refresh_token、password、secret、cookie、session、authorization 等字段。`captureCredential`/派生 Cookie session 在本版本仍不可用。
 - `Authorization` header 默认使用 `Bearer`；`X-API-Key`、`X-Auth-Token` 等 custom API-key header 默认只发送原始 token，只有明确安全的 scheme 才会加前缀。不要用自定义 header 绕过 profile/Policy。
 - 通用 `localExecution`（把 Secret 交给任意本地进程）是极高危操作：会触发 fresh approval，审批中明确提示"批准后 SVLT 无法保证 Agent 不获得该凭据"，审计标记 `userApprovedSecretRelease`；是否释放由设备所有者决定。`trustedProcess` 是独立的未来 adapter 边界，只有能力清单声明已配置的 signed profile 时才可用，禁止退回 shell、AppleScript、剪贴板或通用脚本。
 - `database_query_with_secret`、`sftp_transfer_with_secret`、`ftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，FTP 不得退回普通 FTP/curl 客户端且只允许私有/回环目标、每次重新认证，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
@@ -87,6 +88,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `secret_catalog_create_structure`：一次创建一个 Index 和多个安全 Entry，由 SVLT 生成 opaque ID 并返回映射、revision 与 validation。
 - `secret_catalog_add_secret_placeholder`：向已存在 Entry 添加空 `secret` placeholder；不要提交 plaintext 或自造 `secretRef`。
 - `secret_catalog_request_secure_inputs`：请求本机 SecureField 填写秘密；只发送 field metadata 和 revision，Agent 永远不接收 plaintext。当前同步 transport 返回完成状态/revision；若兼容 transport 返回 `PENDING` + `requestID`，只能用 `secret_catalog_secure_input_status` 轮询同一请求。
+- `secret_bind_destination`：为已有 `secret://` 绑定一个精确的服务目标和协议；以原子 pair 保存，适合在策略评审后启用 HTTP/API 等目标，每次都走本机 fresh approval，返回 canonical destination，不返回 plaintext。
 - `secret_action_router`：用户明确选择 SVLT 且需要在本机/内网执行受控动作时使用；明文只在 SVLT 专用边界内处理。
 - `ssh_command_with_secret`：适合单条结构受限 SSH 命令；连续任务优先复用返回的 opaque `sessionID`。
 - `ssh_batch_with_secret`：适合巡检和批量任务；传入结构化 `commands`，让 SVLT 在执行前完整评估整批风险，并返回独立、已脱敏的结果。

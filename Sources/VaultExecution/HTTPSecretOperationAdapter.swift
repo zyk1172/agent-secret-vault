@@ -80,8 +80,8 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                 auth: ["basic", "bearer", "apiKeyHeader", "staticCookie"],
                 body: ["none", "raw", "json", "form"],
                 response: profiles.isEmpty
-                    ? ["metadataOnly"]
-                    : ["metadataOnly", "projectedJSON"],
+                    ? ["metadataOnly", "sanitizedPreview"]
+                    : ["metadataOnly", "sanitizedPreview", "projectedJSON"],
                 transportSessionReuse: true,
                 derivedCredentialCapture: false,
                 publicNetworkEgress: true,
@@ -264,15 +264,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             return
         }
 
-        guard let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
-            url.absoluteString,
-            expectedScheme: "http",
-            defaultPort: 80,
-            allowURLPath: true
-        ) else {
-            throw HTTPAdapterError.invalidParameter
-        }
-
         var metadataByReference: [SecretReference: SecretPolicyMetadata] = [:]
         for item in metadata {
             guard metadataByReference[item.reference] == nil else {
@@ -298,13 +289,12 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
                 throw HTTPAdapterError.insecureTransportDenied
             }
 
-            let exactOrigin = secret.allowedDestinations.contains {
-                SecretOperationDescriptor.normalizeHTTPOrigin(
-                    $0,
-                    expectedScheme: "http",
-                    defaultPort: 80,
-                    requireExplicitPort: true
-                ) == requestedOrigin
+            let exactOrigin = secret.destinationBindings.contains { binding in
+                binding.matches(
+                    requestedProtocol: .http,
+                    destination: descriptor.destination,
+                    url: url.absoluteString
+                )
             }
             guard exactOrigin else {
                 throw HTTPAdapterError.insecureTransportDenied
@@ -727,16 +717,28 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         hasSecretAuth: Bool
     ) throws -> String? {
         // A credential-bearing response can contain cookies, access tokens, or
-        // refresh tokens that are not among the request secrets. A profile
-        // projection is the only authenticated response path; it is checked
-        // against an App-owned allowlist before reaching this method.
-        if hasSecretAuth && policy.kind != .projectedJSON && policy.kind != .structuredFields {
+        // refresh tokens that are not among the request secrets. An explicit
+        // sanitized preview is allowed only for JSON that passes the
+        // sensitive-field quarantine below; profile projections remain the
+        // stricter App-owned allowlist path.
+        if hasSecretAuth,
+           policy.kind != .sanitizedPreview,
+           policy.kind != .projectedJSON,
+           policy.kind != .structuredFields {
             return nil
         }
         switch policy.kind {
         case .metadataOnly:
             return nil
         case .sanitizedPreview:
+            if hasSecretAuth {
+                guard let data = body.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+                      !Self.containsSensitiveResponseData(json),
+                      !body.contains("secret://") else {
+                    throw SecretOperationExecutionError.outputQuarantined
+                }
+            }
             return utf8Prefix(body, maxBytes: policy.maxBytes)
         case .structuredFields, .projectedJSON:
             guard let data = body.data(using: .utf8),

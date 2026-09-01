@@ -90,6 +90,7 @@ describe("MCP tool contracts", () => {
       "secret_catalog_validate",
       "secret_catalog_file_preflight",
       "secret_inspect_reference",
+      "secret_bind_destination",
       "ssh_command_with_secret",
       "ssh_batch_with_secret",
       "ssh_session_status",
@@ -254,6 +255,7 @@ describe("MCP tool contracts", () => {
         label: "QNAP credential",
         allowedDestinations: ["192.168.2.240", "qnap.local"],
         allowedProtocols: ["ssh", "https"],
+        allowedBindings: [],
         createdAt: 1,
         updatedAt: 2
       }
@@ -266,9 +268,76 @@ describe("MCP tool contracts", () => {
       label: "QNAP credential",
       allowedDestinations: ["192.168.2.240", "qnap.local"],
       allowedProtocols: ["ssh", "https"],
+      allowedBindings: [],
       createdAt: 1,
       updatedAt: 2
     });
+  });
+
+  it("routes owner-approved destination binding without exposing plaintext", async () => {
+    const client = new FakeClient([operationResponse({
+      status: "BOUND",
+      destination: "http://192.168.2.240:3000",
+      protocolType: "http"
+    })]);
+
+    const result = await tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "http://192.168.2.240:3000",
+      protocol: "http"
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "BOUND",
+      destination: "http://192.168.2.240:3000",
+      protocol: "http",
+      redacted: true
+    });
+    expect(client.requests).toHaveLength(1);
+    expect(client.requests[0]).toMatchObject({
+      type: "executeSecretOperation",
+      descriptor: {
+        actionType: "changeDestinationBinding",
+        secretReferences: [reference],
+        destination: "http://192.168.2.240:3000",
+        protocolType: "http",
+        requestedEffects: ["bind-secret-destination"],
+        parameters: {}
+      }
+    });
+    expect(JSON.stringify(client.requests)).not.toContain("plaintext");
+  });
+
+  it("returns the daemon's canonical bound destination", async () => {
+    const client = new FakeClient([operationResponse({
+      status: "BOUND",
+      destination: "http://example.com:80",
+      protocolType: "http"
+    })]);
+
+    const result = await tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "http://example.com",
+      protocol: "http"
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "BOUND",
+      destination: "http://example.com:80",
+      protocol: "http",
+      redacted: true
+    });
+  });
+
+  it("rejects a destination containing a secret reference before IPC", async () => {
+    const client = new FakeClient([]);
+
+    await expect(tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "http://example.com/secret://token",
+      protocol: "http"
+    })).rejects.toThrow(/secret:\/\//i);
+    expect(client.requests).toHaveLength(0);
   });
 
   it("searches the local catalog by service and returns opaque metadata only", async () => {
@@ -1008,6 +1077,38 @@ describe("MCP tool contracts", () => {
       httpMethod: "POST",
       url: "https://qnap.local/api/status",
       requestedEffects: ["remote-write"]
+    });
+  });
+
+  it("forwards an explicit safe HTTP response preview", async () => {
+    const client = new FakeClient([
+      capabilityResponse("apiRequest"),
+      operationResponse({
+        httpStatus: 200,
+        contentType: "application/json",
+        bodyPreview: '{"object":"list","data":[{"id":"model-a"}]}'
+      })
+    ]);
+    const result = await tool(client, "api_request_with_token").handler({
+      url: "https://qnap.local/v1/models",
+      tokenRef: reference,
+      includeBodyPreview: true
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "COMPLETED",
+      httpStatus: 200,
+      contentType: "application/json",
+      bodyPreview: '{"object":"list","data":[{"id":"model-a"}]}',
+      redacted: true
+    });
+    const request = client.requests[1];
+    expect(request.type).toBe("executeSecretOperation");
+    if (request.type !== "executeSecretOperation") return;
+    expect(request.descriptor.parameters).toMatchObject({ includeBodyPreview: "true" });
+    expect(request.descriptor.payload).toMatchObject({
+      type: "http",
+      operation: { responsePolicy: { kind: "sanitizedPreview" } }
     });
   });
 

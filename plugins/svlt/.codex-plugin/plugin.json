@@ -1,6 +1,6 @@
 {
   "name": "svlt",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Use a local macOS vault for secrets the user chooses to manage, without returning SVLT-managed plaintext to Codex, Claude, Hermes, or other MCP agents.",
   "author": {
     "name": "Local developer"
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "SVLT",
     "shortDescription": "Opt-in encrypted secret references without exposing SVLT-managed plaintext.",
-    "longDescription": "SVLT connects MCP-capable agents to a local macOS app over authenticated IPC for secrets the user chooses to manage. Agents can inspect secret:// references, request local reveal, export app-resolved text to local files, and perform restricted local SSH, HTTP/API, database, SFTP/SCP, browser-login, and app-form actions without returning SVLT-managed plaintext. User-selected external providers and explicitly supplied plaintext remain outside SVLT scope.",
+    "longDescription": "SVLT connects MCP-capable agents to a local macOS app over authenticated IPC for secrets the user chooses to manage. Agents can inspect secret:// references, bind an exact service destination with fresh owner approval, request local reveal, export app-resolved text to local files, and perform restricted local SSH, HTTP/API, database, SFTP/SCP, browser-login, and app-form actions without returning SVLT-managed plaintext. User-selected external providers and explicitly supplied plaintext remain outside SVLT scope.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [

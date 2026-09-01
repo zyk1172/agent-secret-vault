@@ -150,6 +150,12 @@ and WikiLinks; the coordinator applies source-range patches and never
 canonicalizes the whole document for a single edit. Use `secret_catalog_batch`
 for one-lock, one-revision multi-operation changes.
 
+In the App editor, service endpoints are editable URL fields rather than a
+separate endpoint text area. Existing endpoint metadata is projected into those
+fields on load and written back when the entry is saved. Only `serviceURL`,
+`serviceURL2`, and subsequent `serviceURL*` keys are endpoint fields; ordinary
+URL fields such as documentation links remain ordinary Catalog metadata.
+
 SVLT-generated and controlled insertions use three logical zones in the managed Markdown:
 preamble, a contiguous Catalog body, and trailing unmanaged Markdown. Notes, callouts,
 ordinary paragraphs, comments, and WikiLinks remain unmanaged and stay in place even when a
@@ -202,6 +208,12 @@ not force conversion or substitution in that case.
   through a purpose-built runner.
 - `ftp_transfer_with_secret` for private/loopback FTP list/download/upload;
   plaintext FTP always requires fresh device-owner approval.
+- `secret_bind_destination` to add one exact scheme/host/port and protocol to
+  an existing `secret://` record. The protocol and destination are stored as
+  one authenticated pair, not as independently combinable arrays. Each change
+  requires fresh device-owner approval and re-seals the encrypted record
+  without returning plaintext; success reports the daemon's canonical
+  destination.
 - `browser_web_login_with_secret` for specific local/private browser login form
   fills.
 - `local_app_form_fill_with_secret` for specific macOS app form fills.
@@ -271,12 +283,15 @@ must never be returned to the agent.
   fresh warning and owner decision, while URL authority credentials remain
   invalid. Authenticated response body, `Location`, and `Content-Type` values
   are fingerprint-checked before reaching the Agent; a match quarantines the
-  complete output. Other authenticated responses are metadata-only unless an
-  App-owned response projection profile allowlists the requested JSON
-pointers. The production daemon receives those non-secret profiles through
-  `VaultDaemonConfiguration`; its default empty configuration advertises
-  metadata-only responses. Derived credential/cookie capture is not implemented
-  in this release.
+  complete output. Authenticated responses are metadata-only by default, but
+  an explicit `includeBodyPreview` request may return a bounded (16 KiB), valid
+  JSON-only preview when the response contains no sensitive field names or
+  `secret://` references; unsafe, non-JSON, or oversized output is quarantined.
+  An App-owned response projection profile remains available for stricter
+  allowlisted JSON pointers. The production daemon receives those non-secret
+  profiles through `VaultDaemonConfiguration`; its default configuration
+  advertises metadata-only plus the safe preview capability. Derived
+  credential/cookie capture is not implemented in this release.
 - `localExecution` (handing a Secret to an arbitrary local process) is a
   very-high-risk fresh approval explicitly labeled `userApprovedSecretRelease`
   in audit and capability output; the device owner sees the process, arguments,

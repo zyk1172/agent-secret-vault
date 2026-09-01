@@ -36,6 +36,7 @@ import {
   SecretOperationStage,
   SecretOperationProtocol,
   SecretAllowedProtocol,
+  SecretDestinationBinding,
   SecretReference,
   SecretReferenceMetadata,
   UniqueSecretReferences,
@@ -164,6 +165,7 @@ const InspectOutput = z
         label: z.string().nullable(),
         allowedDestinations: z.array(z.string()),
         allowedProtocols: z.array(z.string()),
+        allowedBindings: z.array(SecretDestinationBinding).default([]),
         createdAt: z.union([z.string(), z.number()]),
         updatedAt: z.union([z.string(), z.number()])
       })
@@ -171,6 +173,22 @@ const InspectOutput = z
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Non-sensitive metadata for a secret reference. Plaintext is never returned.");
+
+const DestinationBindingOutput = z
+  .union([
+    z.object({
+      status: z.literal("BOUND"),
+      destination: z.string().min(1),
+      protocol: SecretOperationProtocol,
+      redacted: z.literal(true)
+    }).strict(),
+    z.object({
+      status: z.string().min(1),
+      redacted: z.literal(true)
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Owner-approved exact destination binding result. Secret plaintext is never returned.");
 
 const SecretSearchInput = z
   .object({
@@ -646,6 +664,34 @@ const InspectInput = z
   })
   .strict();
 
+const BindDestinationInput = z
+  .object({
+    reference: SecretReference,
+    destination: z.string().trim().min(1).max(512),
+    protocol: SecretOperationProtocol,
+    agentAssessment: optionalAgentRiskAssessment
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.destination.includes("secret://")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["destination"],
+        message: "destination must not contain secret:// references."
+      });
+    }
+    if ([...value.destination].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint < 0x21 || codePoint === 0x7f;
+    })) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["destination"],
+        message: "destination must not contain whitespace or control characters."
+      });
+    }
+  });
+
 const LocalHttpInput = z
   .object({
     url: z.string().url(),
@@ -654,7 +700,7 @@ const LocalHttpInput = z
     usernameRef: SecretReference.optional(),
     passwordRef: SecretReference.optional(),
     sessionID: z.string().min(1).max(128).optional(),
-    includeBodyPreview: z.boolean().optional(),
+    includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
@@ -749,7 +795,7 @@ const ApiRequestInput = z
     body: z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 65_536, {
       message: "body must be at most 65536 UTF-8 bytes"
     }).optional(),
-    includeBodyPreview: z.boolean().optional(),
+    includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
@@ -1200,6 +1246,17 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
           return structuredResult(metadataResult(response.metadata));
         }
         return structuredResult(statusOnly(response));
+      }
+    },
+    {
+      name: "secret_bind_destination",
+      title: "Bind Secret Destination",
+      description:
+        "Adds one exact host/origin and protocol to an existing secret:// record. SVLT shows the exact binding in the macOS app and requires fresh device-owner authentication for every change; the record is re-sealed without returning plaintext. Use this before a policy-reviewed insecure HTTP/API request.",
+      inputSchema: BindDestinationInput,
+      outputSchema: DestinationBindingOutput,
+      async handler(input) {
+        return handleBindDestination(client, BindDestinationInput.parse(input));
       }
     },
     {
@@ -1814,7 +1871,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
 export function createMcpServer(client: VaultIpcClient = new LocalIpcClient()): McpServer {
   const server = new McpServer({
     name: "SVLT",
-    version: "0.1.19"
+    version: "0.1.21"
   });
 
   registerVaultTools(server, client);
@@ -1944,9 +2001,51 @@ function metadataResult(metadata: SecretReferenceMetadata): Record<string, unkno
     label: metadata.label,
     allowedDestinations: metadata.allowedDestinations,
     allowedProtocols: metadata.allowedProtocols,
+    allowedBindings: metadata.allowedBindings,
     createdAt: metadata.createdAt,
     updatedAt: metadata.updatedAt
   };
+}
+
+async function handleBindDestination(
+  client: VaultIpcClient,
+  parsed: z.infer<typeof BindDestinationInput>
+): Promise<CallToolResult> {
+  const output = await executeOpaqueOperation(client, {
+    actionType: "changeDestinationBinding",
+    secretReferences: [parsed.reference],
+    destination: parsed.destination,
+    port: null,
+    protocolType: parsed.protocol,
+    command: null,
+    httpMethod: null,
+    url: null,
+    databaseStatement: null,
+    fileOperation: null,
+    fileTarget: null,
+    localAppBundleID: null,
+    sessionID: null,
+    sshCommandBatch: null,
+    payload: null,
+    requestedEffects: ["bind-secret-destination"],
+    parameters: {},
+    agentAssessment: agentAssessment(parsed)
+  });
+  if (!isSecretOperationOutput(output)) {
+    return structuredResult({ status: output.status });
+  }
+  if (output.status !== "BOUND") {
+    return structuredResult({ status: output.status, redacted: true });
+  }
+  if (!output.destination || !output.protocolType) {
+    return structuredResult({ status: "BINDING_RESULT_INCOMPLETE", redacted: true });
+  }
+  return structuredResult({
+    status: "BOUND",
+    destination: output.destination,
+    protocol: output.protocolType,
+    redacted: true
+  });
 }
 
 async function handleExportResolvedText(
@@ -2016,7 +2115,7 @@ async function executeOpaqueOperation(
   // perform a fresh capability preflight for this call; an unavailable
   // adapter stops here and never reaches the daemon's approval/decryption
   // path.
-  if (descriptor.actionType !== "sshCommand") {
+  if (descriptor.actionType !== "sshCommand" && descriptor.actionType !== "changeDestinationBinding") {
     const capabilityStatus = await ensureSecretOperationCapability(client, descriptor.actionType);
     if (capabilityStatus !== undefined) {
       return { status: capabilityStatus };
@@ -2667,6 +2766,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Treat a controlled write as health-confirmed only when validation.status is FOUND and validation.diagnostics is empty. CREATED with CATALOG_UNAVAILABLE or another validation status may mean the commit succeeded but confirmation did not complete; do not blindly repeat the write, and use secret_catalog_validate after service recovery.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
+      "Use secret_bind_destination to add one exact destination/protocol to an existing secret:// record; every binding change requires fresh device-owner authentication and never returns plaintext.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
       "Use ssh_command_with_secret for one restricted local/private-network SSH command; reuse its opaque sessionID for subsequent commands.",
@@ -2677,7 +2777,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display metadata only; it never becomes the security principal.",
       "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. Every Secret-bearing network send, including public HTTPS, shows the exact target and requires fresh device-owner authentication; insecure HTTP additionally needs an exact saved scheme/host/port profile checked by the executor after approval. Never add an insecure-HTTP flag to a tool call.",
       "HTTP tools reject unsafe/arbitrary secret headers, URL authority credentials, and secret:// body fragments. Credential-shaped URL query parameters receive a fresh owner warning rather than an autonomous Agent-side denial. Authorization defaults to Bearer; a custom API-key header receives the raw token unless a profile/request explicitly supplies a safe scheme.",
-      "Authenticated HTTP responses are metadata-only by default. Response body previews, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
+      "Authenticated HTTP responses are metadata-only by default. An explicit includeBodyPreview request may return at most 16 KiB of valid JSON only when it contains no sensitive response field names or secret:// references; body, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
       "The generic localExecution action is a very-high-risk, fresh owner-approval boundary and is audited as userApprovedSecretRelease. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
       "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
       "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with controlled SVLT Downloads paths; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.",
@@ -2705,6 +2805,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "vault_capabilities",
       "secret_search",
       "secret_inspect_reference",
+      "secret_bind_destination",
       "secret_reveal_request",
       "paragraph_reveal_request",
       "export_resolved_text_to_local_file",

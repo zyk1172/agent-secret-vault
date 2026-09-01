@@ -53,6 +53,88 @@ import VaultCore
     #expect(edited.selectionID == draft.selectionID)
 }
 
+@Test func catalogFieldDraftProjectsExistingEndpointAsAnEditableField() {
+    let fields = [
+        SecretCatalogFieldValue(key: "username", label: "用户名", type: .text)
+    ]
+    let drafts = CatalogFieldDraft.make(
+        from: fields,
+        endpoints: [CatalogEndpoint(type: "http", host: "192.168.2.240", port: 3000)]
+    )
+
+    #expect(drafts.count == 2)
+    #expect(drafts[0].field.key == CatalogFieldDraft.serviceAddressKey)
+    #expect(drafts[0].field.label == "服务地址")
+    #expect(drafts[0].field.type == .url)
+    #expect(drafts[0].field.value == .string("http://192.168.2.240:3000"))
+    #expect(drafts[1].field.key == "username")
+}
+
+@Test func catalogFieldDraftDoesNotDuplicateAnAlreadyVisibleServiceAddress() {
+    let visibleAddress = SecretCatalogFieldValue(
+        key: CatalogFieldDraft.serviceAddressKey,
+        label: "服务地址",
+        type: .url,
+        value: .string("http://192.168.2.240:3000")
+    )
+    let drafts = CatalogFieldDraft.make(
+        from: [visibleAddress],
+        endpoints: [CatalogEndpoint(type: "http", host: "192.168.2.240", port: 3000)]
+    )
+
+    #expect(drafts.count == 1)
+    #expect(drafts[0].field.value == .string("http://192.168.2.240:3000"))
+}
+
+@Test func catalogFieldDraftKeepsUnrelatedURLAndProjectsEveryEndpoint() {
+    let documentationURL = SecretCatalogFieldValue(
+        key: "documentation",
+        label: "文档地址",
+        type: .url,
+        value: .string("https://docs.example.com")
+    )
+    let drafts = CatalogFieldDraft.make(
+        from: [documentationURL],
+        endpoints: [
+            CatalogEndpoint(type: "http", host: "192.168.2.240", port: 3000),
+            CatalogEndpoint(type: "ssh", host: "192.168.2.240", port: 22)
+        ]
+    )
+
+    #expect(drafts.count == 3)
+    #expect(drafts.filter { $0.field.type == .url }.map { $0.field.value } == [
+        .string("http://192.168.2.240:3000"),
+        .string("ssh://192.168.2.240:22"),
+        .string("https://docs.example.com")
+    ])
+}
+
+@Test func catalogFieldDraftOnlyServiceAddressFieldsWriteCatalogEndpoints() {
+    let fields = [
+        SecretCatalogFieldValue(
+            key: "documentation",
+            label: "文档地址",
+            type: .url,
+            value: .string("https://docs.example.com")
+        ),
+        SecretCatalogFieldValue(
+            key: CatalogFieldDraft.serviceAddressKey,
+            label: "服务地址",
+            type: .url,
+            value: .string("http://192.168.2.240:3000")
+        )
+    ]
+
+    #expect(CatalogFieldDraft.endpoints(from: fields) == [
+        CatalogEndpoint(type: "http", host: "192.168.2.240", port: 3000)
+    ])
+    let roundTripped = CatalogFieldDraft.make(
+        from: fields,
+        endpoints: CatalogFieldDraft.endpoints(from: fields)
+    )
+    #expect(roundTripped.map(\.field) == fields)
+}
+
 @Test func batchSelectionHasExplicitBeginSelectAllAndFinishState() {
     var state = CatalogBatchSelectionState()
     state.begin()

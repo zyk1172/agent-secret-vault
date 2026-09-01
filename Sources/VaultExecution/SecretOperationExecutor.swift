@@ -94,6 +94,10 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
     public let sessionID: String?
     public let failedIndex: Int?
     public let results: [SSHCommandResult]?
+    /// Populated only for a successful destination-binding operation. These
+    /// are non-sensitive canonical metadata values, not resolved Secret data.
+    public let destination: String?
+    public let protocolType: SecretOperationProtocol?
     /// Set when an HTTP redirect stopped for an owner decision (§37). The
     /// agent re-submits a new exact request to this URL; that request is
     /// authorized through the ordinary flow.
@@ -117,6 +121,8 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         sessionID: String? = nil,
         failedIndex: Int? = nil,
         results: [SSHCommandResult]? = nil,
+        destination: String? = nil,
+        protocolType: SecretOperationProtocol? = nil,
         redirectLocation: String? = nil,
         redacted: Bool = true
     ) {
@@ -136,6 +142,8 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         self.sessionID = sessionID
         self.failedIndex = failedIndex
         self.results = results
+        self.destination = destination
+        self.protocolType = protocolType
         self.redirectLocation = redirectLocation
         self.redacted = redacted
     }
