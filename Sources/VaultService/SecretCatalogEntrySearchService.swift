@@ -181,16 +181,40 @@ public struct SecretCatalogEntrySearchService: Sendable {
     }
 
     private func matches(_ field: SecretCatalogFieldValue, legacyField: SecretCatalogField) -> Bool {
-        let key = normalize(field.key)
+        // The key remains the stable machine identifier, while the label is
+        // the user-facing field name.  Structured searches must understand
+        // both so hiding key editing in the App does not remove the semantic
+        // password/API-key filters for newly created fields.
+        let terms = [field.key, field.label].map(normalizeSemanticFieldTerm)
         switch legacyField {
-        case .username: return ["username", "user", "account", "账号", "用户名"].contains(key)
-        case .password: return ["password", "pass", "pwd", "密码"].contains(key)
-        case .token: return key.contains("token") || key.contains("令牌")
-        case .apiKey: return key.contains("apikey") || key.contains("api密钥")
-        case .cookie: return key.contains("cookie")
-        case .privateKey: return key.contains("privatekey") || key.contains("私钥")
+        case .username:
+            return terms.contains { term in
+                ["username", "user", "account"].contains(term)
+                    || term.contains("账号")
+                    || term.contains("用户名")
+            }
+        case .password:
+            return terms.contains { term in
+                ["password", "pass", "pwd"].contains(term)
+                    || term.contains("密码")
+            }
+        case .token:
+            return terms.contains { $0.contains("token") || $0.contains("令牌") }
+        case .apiKey:
+            return terms.contains { $0.contains("apikey") || $0.contains("api密钥") }
+        case .cookie:
+            return terms.contains { $0.contains("cookie") }
+        case .privateKey:
+            return terms.contains { $0.contains("privatekey") || $0.contains("私钥") }
         case .other: return true
         }
+    }
+
+    private func normalizeSemanticFieldTerm(_ value: String) -> String {
+        normalize(value)
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
     }
 
     private func valueTerms(_ value: SecretCatalogValue) -> [String] {

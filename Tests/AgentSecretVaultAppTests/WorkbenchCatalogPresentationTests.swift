@@ -138,6 +138,108 @@ import VaultCore
     )
 }
 
+@Test func catalogRevealHoldsCallbackResultUntilAppBecomesActive() {
+    var state = CatalogRevealPresentationState()
+    let generation = UUID()
+
+    #expect(
+        state.receive(
+            "pending-reveal-test-value",
+            generation: generation,
+            isActive: false
+        )
+            == .heldPending
+    )
+    #expect(state.visiblePlaintext == nil)
+    #expect(state.pendingPlaintext == "pending-reveal-test-value")
+    #expect(state.pendingGeneration == generation)
+
+    #expect(state.presentPending(generation: generation) == .presented)
+    #expect(state.pendingPlaintext == nil)
+    #expect(state.pendingGeneration == nil)
+    #expect(state.visiblePlaintext == "pending-reveal-test-value")
+}
+
+@Test func catalogRevealInvalidationDropsPendingCallbackResult() {
+    var state = CatalogRevealPresentationState()
+    let generation = UUID()
+    _ = state.receive(
+        "pending-reveal-test-value",
+        generation: generation,
+        isActive: false
+    )
+
+    state.invalidate()
+
+    #expect(state.visiblePlaintext == nil)
+    #expect(state.pendingPlaintext == nil)
+    #expect(state.pendingGeneration == nil)
+    #expect(state.presentPending(generation: generation) == .noPending)
+}
+
+@Test func catalogRevealPendingResultCannotCrossRevealGeneration() {
+    var state = CatalogRevealPresentationState()
+    let originalGeneration = UUID()
+    let replacementGeneration = UUID()
+    _ = state.receive(
+        "pending-reveal-test-value",
+        generation: originalGeneration,
+        isActive: false
+    )
+
+    #expect(state.presentPending(generation: replacementGeneration) == .noPending)
+    #expect(state.visiblePlaintext == nil)
+    #expect(state.pendingPlaintext == nil)
+}
+
+@Test func catalogRevealExpiryStateStartsOnlyAfterPresentation() {
+    var state = CatalogRevealPresentationState()
+    let generation = UUID()
+
+    _ = state.receive(
+        "pending-reveal-test-value",
+        generation: generation,
+        isActive: false
+    )
+    state.expire()
+    #expect(state.visiblePlaintext == nil)
+    #expect(state.pendingPlaintext == "pending-reveal-test-value")
+
+    _ = state.presentPending(generation: generation)
+    #expect(state.visiblePlaintext == "pending-reveal-test-value")
+    state.expire()
+    #expect(state.visiblePlaintext == nil)
+    #expect(state.pendingPlaintext == nil)
+}
+
+@Test func catalogRevealRejectsPendingResultFromAnInvalidatedGeneration() {
+    var state = CatalogRevealPresentationState()
+    let generation = UUID()
+
+    _ = state.receive(
+        "pending-reveal-test-value",
+        generation: generation,
+        isActive: false
+    )
+
+    #expect(state.presentPending(generation: UUID()) == .noPending)
+    #expect(state.visiblePlaintext == nil)
+    #expect(state.pendingPlaintext == nil)
+}
+
+@Test func catalogRevealPresentationWiringDefersExpiryForInactiveCallback() throws {
+    let source = try workbenchSource()
+
+    #expect(source.contains("@State private var revealPresentationStates"))
+    #expect(source.contains("isActive: scenePhase == .active && canPresentReveals"))
+    #expect(source.contains("generation: generation"))
+    #expect(source.contains("guard transition == .presented else { return }"))
+    #expect(source.contains("private func presentPendingReveals()"))
+    #expect(source.contains("state.presentPending(generation: generation)"))
+    #expect(source.contains("scheduleRevealExpiry(for: fieldKey, generation: generation)"))
+    #expect(source.contains("revealPresentationStates.removeAll()"))
+}
+
 @Test func catalogFieldDraftProjectsExistingEndpointAsAnEditableField() {
     let fields = [
         SecretCatalogFieldValue(key: "username", label: "用户名", type: .text)
