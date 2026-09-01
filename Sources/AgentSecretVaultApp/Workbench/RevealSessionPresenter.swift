@@ -25,6 +25,13 @@ public enum RevealSessionLifecycle {
     @MainActor public static func clearAll() {
         RevealSessionWindowRegistry.shared.clearAll()
     }
+
+    /// Closes only the already-presented standalone reveal windows. The App
+    /// uses this for transient focus loss, where Catalog field authentication
+    /// may still be waiting for Touch ID or the system password UI.
+    @MainActor public static func clearPresentedSessionsForFocusLoss() {
+        RevealSessionWindowRegistry.shared.clearAll()
+    }
 }
 
 @MainActor

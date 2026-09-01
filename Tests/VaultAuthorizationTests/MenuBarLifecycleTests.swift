@@ -63,8 +63,30 @@ import Testing
 
     let handler = source[start.lowerBound..<end.lowerBound]
     #expect(handler.contains("vaultWorkbenchTransientFocusLost"))
+    #expect(handler.contains("runtime.clearRevealSessionsForTransientFocusLoss()"))
     #expect(!handler.contains("runtime.clearRevealSessions()"))
     #expect(!handler.contains("runtime.cancelAllSecureInputRequests()"))
+}
+
+@Test func transientRevealCleanupDoesNotBroadcastCatalogSecurityInvalidation() throws {
+    let source = try appSource()
+    guard let start = source.range(of: "func clearRevealSessionsForTransientFocusLoss() async"),
+          let end = source.range(of: "    func lockVault() async", range: start.upperBound..<source.endIndex)
+    else {
+        Issue.record("transient reveal cleanup helper not found")
+        return
+    }
+
+    let helper = source[start.lowerBound..<end.lowerBound]
+    #expect(helper.contains("RevealSessionLifecycle.clearPresentedSessionsForFocusLoss()"))
+    #expect(helper.contains("uiRevealSessionStore.clearAll()"))
+    #expect(helper.contains("agentClient?.clearRevealSessions()"))
+    #expect(!helper.contains("vaultWorkbenchSecurityStateInvalidated"))
+    #expect(!helper.contains("cancelAllSecureInputRequests()"))
+
+    // Hard security paths must continue to retain the broadcast/full cleanup.
+    #expect(source.contains("name: .vaultWorkbenchSecurityStateInvalidated"))
+    #expect(source.contains("RevealSessionLifecycle.clearAll()"))
 }
 
 @Test func menuBarDoesNotClearSharedRevealStateOnTransientAppFocusLoss() throws {

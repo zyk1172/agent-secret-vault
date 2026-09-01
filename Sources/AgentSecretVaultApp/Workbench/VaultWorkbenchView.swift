@@ -593,6 +593,14 @@ enum CatalogRevealPresentationTransition: Equatable, Sendable {
     case noPending
 }
 
+enum CatalogRevealPresentationTiming {
+    /// Pending plaintext is held only briefly while the App returns from a
+    /// transient authentication/focus transition. Task.sleep(for:) uses the
+    /// continuous (monotonic) clock, so wall-clock changes cannot extend it.
+    static let pendingTTL: Duration = .seconds(30)
+    static let visibleTTL: Duration = .seconds(45)
+}
+
 struct CatalogRevealPresentationState: Equatable, Sendable {
     private(set) var visiblePlaintext: String?
     private(set) var pendingPlaintext: String?
@@ -657,6 +665,17 @@ struct CatalogRevealPresentationState: Equatable, Sendable {
 
     mutating func hideVisible() {
         visiblePlaintext = nil
+    }
+
+    @discardableResult
+    mutating func expirePending(generation: UUID) -> Bool {
+        guard pendingPlaintext != nil,
+              pendingGeneration == generation
+        else { return false }
+
+        pendingPlaintext = nil
+        pendingGeneration = nil
+        return true
     }
 
     mutating func expire() {
@@ -3089,6 +3108,7 @@ private struct SensitiveCatalogEntryRow: View {
     @State private var revealingKeys: Set<String> = []
     @State private var revealTasks: [String: Task<Void, Never>] = [:]
     @State private var revealExpiryTasks: [String: Task<Void, Never>] = [:]
+    @State private var revealPendingExpiryTasks: [String: Task<Void, Never>] = [:]
     @State private var revealGenerations: [String: UUID] = [:]
     @State private var revealError: String?
     @State private var canPresentReveals = true
@@ -3502,6 +3522,8 @@ private struct SensitiveCatalogEntryRow: View {
         revealTasks[fieldKey]?.cancel()
         revealExpiryTasks[fieldKey]?.cancel()
         revealExpiryTasks.removeValue(forKey: fieldKey)
+        revealPendingExpiryTasks[fieldKey]?.cancel()
+        revealPendingExpiryTasks.removeValue(forKey: fieldKey)
         let generation = UUID()
         revealGenerations[fieldKey] = generation
         var presentationState = revealPresentationStates[fieldKey] ?? CatalogRevealPresentationState()
@@ -3568,8 +3590,16 @@ private struct SensitiveCatalogEntryRow: View {
             revealPresentationStates[fieldKey] = state
         }
 
-        guard transition == .presented else { return }
-        scheduleRevealExpiry(for: fieldKey, generation: generation)
+        switch transition {
+        case .presented:
+            revealPendingExpiryTasks[fieldKey]?.cancel()
+            revealPendingExpiryTasks.removeValue(forKey: fieldKey)
+            scheduleRevealExpiry(for: fieldKey, generation: generation)
+        case .heldPending:
+            schedulePendingRevealExpiry(for: fieldKey, generation: generation)
+        case .noPending:
+            break
+        }
     }
 
     private func presentPendingReveals() {
@@ -3588,6 +3618,8 @@ private struct SensitiveCatalogEntryRow: View {
                 continue
             }
 
+            revealPendingExpiryTasks[fieldKey]?.cancel()
+            revealPendingExpiryTasks.removeValue(forKey: fieldKey)
             var state = revealPresentationStates[fieldKey] ?? CatalogRevealPresentationState()
             guard state.presentPending(generation: generation) == .presented else {
                 revealPresentationStates[fieldKey] = state
@@ -3605,7 +3637,7 @@ private struct SensitiveCatalogEntryRow: View {
         revealExpiryTasks[fieldKey]?.cancel()
         let expiryTask: Task<Void, Never> = Task { @MainActor in
             do {
-                try await Task.sleep(for: .seconds(45))
+                try await Task.sleep(for: CatalogRevealPresentationTiming.visibleTTL)
             } catch is CancellationError {
                 return
             } catch {
@@ -3636,6 +3668,43 @@ private struct SensitiveCatalogEntryRow: View {
         revealExpiryTasks[fieldKey] = expiryTask
     }
 
+    private func schedulePendingRevealExpiry(for fieldKey: String, generation: UUID) {
+        revealPendingExpiryTasks[fieldKey]?.cancel()
+        let expiryTask: Task<Void, Never> = Task { @MainActor in
+            do {
+                // This is an independent pending-result deadline. It starts
+                // only after decryption has completed while the App is
+                // inactive; it is not the 45-second visible-display TTL.
+                try await Task.sleep(for: CatalogRevealPresentationTiming.pendingTTL)
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled,
+                  revealGenerations[fieldKey] == generation,
+                  showingDetails,
+                  revealPresentationStates[fieldKey]?.pendingGeneration == generation
+            else { return }
+
+            guard var state = revealPresentationStates[fieldKey],
+                  state.expirePending(generation: generation)
+            else { return }
+            revealPresentationStates[fieldKey] = state
+            revealPendingExpiryTasks.removeValue(forKey: fieldKey)
+        }
+
+        guard revealGenerations[fieldKey] == generation,
+              showingDetails,
+              revealPresentationStates[fieldKey]?.pendingGeneration == generation
+        else {
+            expiryTask.cancel()
+            return
+        }
+        revealPendingExpiryTasks[fieldKey] = expiryTask
+    }
+
     private func hideRevealedPlaintexts() {
         let action = CatalogRevealLifecycleAction.forInterruption(.transientFocusLoss)
         guard action.hidePlaintext,
@@ -3646,6 +3715,8 @@ private struct SensitiveCatalogEntryRow: View {
         canPresentReveals = false
         revealExpiryTasks.values.forEach { $0.cancel() }
         revealExpiryTasks.removeAll()
+        // Keep the pending deadline alive across transient focus loss. Only
+        // a hard security invalidation may clear a pending plaintext early.
         revealPresentationStates = revealPresentationStates.mapValues { currentState in
             var state = currentState
             state.hideVisible()
@@ -3663,6 +3734,8 @@ private struct SensitiveCatalogEntryRow: View {
 
         revealTasks.values.forEach { $0.cancel() }
         revealTasks.removeAll()
+        revealPendingExpiryTasks.values.forEach { $0.cancel() }
+        revealPendingExpiryTasks.removeAll()
         hideRevealedPlaintexts()
         revealPresentationStates.removeAll()
         revealGenerations.removeAll()

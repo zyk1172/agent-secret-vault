@@ -120,6 +120,9 @@ struct AgentSecretVaultApplication: App {
                         name: .vaultWorkbenchTransientFocusLost,
                         object: nil
                     )
+                    Task {
+                        await runtime.clearRevealSessionsForTransientFocusLoss()
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
                     secureViewerModel.handleSleepNotification()
@@ -511,6 +514,19 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             object: nil
         )
         RevealSessionLifecycle.clearAll()
+        await uiRevealSessionStore.clearAll()
+        presentedAgentSessionIDs.removeAll()
+        try? await agentClient?.clearRevealSessions()
+    }
+
+    /// Clears already-presented paragraph reveal sessions after the App loses
+    /// focus, without invalidating Catalog field authentication in flight.
+    /// Authentication UI such as Touch ID can temporarily deactivate this App;
+    /// that transient event must still close older standalone plaintext
+    /// windows, but it must not broadcast the hard security invalidation that
+    /// cancels a Catalog reveal waiting for its owner-authentication result.
+    func clearRevealSessionsForTransientFocusLoss() async {
+        RevealSessionLifecycle.clearPresentedSessionsForFocusLoss()
         await uiRevealSessionStore.clearAll()
         presentedAgentSessionIDs.removeAll()
         try? await agentClient?.clearRevealSessions()

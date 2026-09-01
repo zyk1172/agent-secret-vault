@@ -192,6 +192,50 @@ import VaultCore
     #expect(state.pendingPlaintext == nil)
 }
 
+@Test func catalogRevealPendingPlaintextExpiresBeforeLaterActivation() {
+    var state = CatalogRevealPresentationState()
+    let generation = UUID()
+
+    let transition = state.receive(
+        "pending-reveal-test-value",
+        generation: generation,
+        isActive: false
+    )
+    #expect(transition == .heldPending)
+    let expired = state.expirePending(generation: generation)
+    #expect(expired)
+    #expect(state.visiblePlaintext == nil)
+    #expect(state.pendingPlaintext == nil)
+    #expect(state.pendingGeneration == nil)
+    let presentation = state.presentPending(generation: generation)
+    #expect(presentation == .noPending)
+}
+
+@Test func catalogRevealPendingExpiryCannotClearNewerGeneration() {
+    var state = CatalogRevealPresentationState()
+    let originalGeneration = UUID()
+    let replacementGeneration = UUID()
+
+    _ = state.receive(
+        "original-pending-reveal-test-value",
+        generation: originalGeneration,
+        isActive: false
+    )
+    _ = state.receive(
+        "replacement-pending-reveal-test-value",
+        generation: replacementGeneration,
+        isActive: false
+    )
+
+    let expiredOriginal = state.expirePending(generation: originalGeneration)
+    #expect(!expiredOriginal)
+    #expect(state.pendingPlaintext == "replacement-pending-reveal-test-value")
+    #expect(state.pendingGeneration == replacementGeneration)
+    let presentation = state.presentPending(generation: replacementGeneration)
+    #expect(presentation == .presented)
+    #expect(state.visiblePlaintext == "replacement-pending-reveal-test-value")
+}
+
 @Test func catalogRevealExpiryStateStartsOnlyAfterPresentation() {
     var state = CatalogRevealPresentationState()
     let generation = UUID()
@@ -231,12 +275,17 @@ import VaultCore
     let source = try workbenchSource()
 
     #expect(source.contains("@State private var revealPresentationStates"))
+    #expect(source.contains("@State private var revealPendingExpiryTasks"))
     #expect(source.contains("isActive: scenePhase == .active && canPresentReveals"))
     #expect(source.contains("generation: generation"))
-    #expect(source.contains("guard transition == .presented else { return }"))
+    #expect(source.contains("schedulePendingRevealExpiry(for: fieldKey, generation: generation)"))
+    #expect(source.contains("state.expirePending(generation: generation)"))
+    #expect(source.contains("CatalogRevealPresentationTiming.pendingTTL"))
+    #expect(source.contains("CatalogRevealPresentationTiming.visibleTTL"))
     #expect(source.contains("private func presentPendingReveals()"))
     #expect(source.contains("state.presentPending(generation: generation)"))
     #expect(source.contains("scheduleRevealExpiry(for: fieldKey, generation: generation)"))
+    #expect(source.contains("revealPendingExpiryTasks.values.forEach { $0.cancel() }"))
     #expect(source.contains("revealPresentationStates.removeAll()"))
 }
 
