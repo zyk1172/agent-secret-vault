@@ -67,6 +67,15 @@ import Testing
     #expect(!handler.contains("runtime.cancelAllSecureInputRequests()"))
 }
 
+@Test func menuBarDoesNotClearSharedRevealStateOnTransientAppFocusLoss() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/MenuBar/MenuBarVaultPanel.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    #expect(!source.contains("NSApplication.didResignActiveNotification"))
+}
+
 @Test func agentServiceActionsRoundTripThroughRuntimeState() throws {
     let source = try appSource()
 
